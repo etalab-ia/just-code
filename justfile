@@ -17,7 +17,7 @@ help:
     @just --list
 
 # Start the sandbox and attach the native OpenCode TUI
-start: up
+code: up
     #!/usr/bin/env sh
     until curl -s -u {{username}}:{{password}} http://localhost:{{port}}/global/health 2>/dev/null | grep -q healthy; do sleep 0.5; done
     exec opencode attach http://localhost:{{port}} --username {{username}} --password {{password}}
@@ -55,5 +55,5 @@ shell:
 
 # Remove container and image
 clean: stop
-    @docker rmi opencode-docker-experiment-opencode-backend 2>/dev/null || true
+    @docker rmi just-code-opencode-backend 2>/dev/null || true
     @echo "Image removed."
