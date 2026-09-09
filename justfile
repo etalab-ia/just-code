@@ -1,10 +1,7 @@
 # Albert Code / OpenCode sandbox experiment
-# Requires: just, opencode CLI, ALBERT_API_KEY, and the selected runtime
+# Requires: just, opencode CLI, ALBERT_API_KEY, and Docker or Microsandbox
 
 set dotenv-load
-
-# Runtime selected through RUNTIME=docker|microsandbox
-runtime := env_var_or_default("RUNTIME", "docker")
 
 # Project directory mounted into the sandbox as /workspace
 project_dir := env_var_or_default("PROJECT_DIR", justfile_directory() / "workspace")
@@ -18,62 +15,165 @@ port := "4096"
 # Show this help
 default: help
 
-# List available commands and the selected runtime
-help: _check-runtime
+# List available commands
+help:
     @just --list
-    @echo
-    @echo "Selected runtime: {{ runtime }}"
 
-# Start the selected sandbox and attach the native OpenCode TUI
-code: up
+# Start a sandbox and attach the native OpenCode TUI
+code runtime_flag: (up runtime_flag)
     #!/usr/bin/env sh
     set -eu
+    runtime=$(just _runtime-name {{ quote(runtime_flag) }})
+
+    ask_to_stop() {
+        status=$?
+        trap - EXIT HUP INT TERM
+
+        if just _running-runtimes | grep -Fxq "$runtime"; then
+            if [ -t 0 ]; then
+                printf 'Stop the %s runtime? [y/N] ' "$runtime"
+                read -r reply || reply=
+                case "$reply" in
+                    y|Y|yes|YES|Yes) just "_$runtime-stop" ;;
+                    *) echo "$runtime left running. Run 'just stop' when finished." ;;
+                esac
+            else
+                echo "$runtime left running. Run 'just stop' when finished."
+            fi
+        fi
+
+        exit "$status"
+    }
+
+    trap ask_to_stop EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
     until curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/global/health" 2>/dev/null | grep -q healthy; do sleep 0.5; done
-    exec opencode attach "http://localhost:{{ port }}" --username "{{ username }}" --password "{{ password }}"
+    opencode attach "http://localhost:{{ port }}" --username "{{ username }}" --password "{{ password }}"
 
-# Stop the selected sandbox
-stop: _check-runtime
-    @just "_{{ runtime }}-stop"
+# Stop every currently running just-code sandbox
+stop:
+    #!/usr/bin/env sh
+    set -eu
+    running=$(just _running-runtimes)
+    if [ -z "$running" ]; then
+        echo "No just-code runtime is running."
+        exit 0
+    fi
 
-# Start the OpenCode backend without attaching the TUI
-up: _check-runtime
-    @just "_{{ runtime }}-up"
+    status=0
+    for runtime in $running; do
+        just "_$runtime-stop" || status=$?
+    done
+    exit "$status"
 
-# Build or pull the selected runtime image
-build: _check-runtime
-    @just "_{{ runtime }}-build"
+# Start an explicitly selected backend without attaching the TUI
+up runtime_flag:
+    @just _prepare-runtime {{ quote(runtime_flag) }}
+    @just _dispatch up {{ quote(runtime_flag) }}
 
-# Recreate the selected sandbox from its image and configuration
-restart: _check-runtime
-    @just "_{{ runtime }}-restart"
+# Build or pull an explicitly selected runtime image
+build runtime_flag:
+    @just _dispatch build {{ quote(runtime_flag) }}
 
-# Follow backend logs
-logs: _check-runtime
-    @just "_{{ runtime }}-logs"
+# Recreate an explicitly selected sandbox
+restart runtime_flag:
+    @just _prepare-runtime {{ quote(runtime_flag) }}
+    @just _dispatch restart {{ quote(runtime_flag) }}
 
-# Check backend health and registered Albert provider
-check: _check-runtime
+# Follow logs for an explicitly selected runtime
+logs runtime_flag:
+    @just _dispatch logs {{ quote(runtime_flag) }}
+
+# Check the single running backend and registered Albert provider
+check:
+    @just _single-running-runtime >/dev/null
     @curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/global/health"
     @echo
     @curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
 
-# Open a shell inside the selected sandbox
-shell: _check-runtime
-    @just "_{{ runtime }}-shell"
+# Open a shell inside an explicitly selected runtime
+shell runtime_flag:
+    @just _dispatch shell {{ quote(runtime_flag) }}
 
-# Remove the selected sandbox and its runtime image or writable state
-clean: _check-runtime
-    @just "_{{ runtime }}-clean"
+# Remove an explicitly selected sandbox and its image or writable state
+clean runtime_flag:
+    @just _dispatch clean {{ quote(runtime_flag) }}
 
-# Check the selected runtime installation
-doctor: _check-runtime
-    @just "_{{ runtime }}-doctor"
+# Check an explicitly selected runtime installation
+doctor runtime_flag:
+    @just _dispatch doctor {{ quote(runtime_flag) }}
 
-_check-runtime:
+_runtime-name runtime_flag:
     #!/usr/bin/env sh
-    case "{{ runtime }}" in
-        docker|microsandbox) ;;
-        *) echo "Unsupported RUNTIME={{ runtime }}; expected docker or microsandbox." >&2; exit 2 ;;
+    case {{ quote(runtime_flag) }} in
+        --docker) echo docker ;;
+        --microsandbox) echo microsandbox ;;
+        *) echo "Expected --docker or --microsandbox." >&2; exit 2 ;;
+    esac
+
+_dispatch action runtime_flag:
+    #!/usr/bin/env sh
+    set -eu
+    action={{ quote(action) }}
+    case "$action" in
+        up|build|restart|logs|shell|clean|doctor) ;;
+        *) echo "Unsupported runtime action: $action" >&2; exit 2 ;;
+    esac
+    runtime=$(just _runtime-name {{ quote(runtime_flag) }})
+    just "_$runtime-$action"
+
+_running-runtimes:
+    #!/usr/bin/env sh
+    if command -v docker >/dev/null 2>&1 && docker container top albert-opencode-sandbox >/dev/null 2>&1; then
+        echo docker
+    fi
+    if command -v msb >/dev/null 2>&1 && msb ls --running -q 2>/dev/null | grep -Fxq "{{ msb_sandbox }}"; then
+        echo microsandbox
+    fi
+
+_single-running-runtime:
+    #!/usr/bin/env sh
+    set -eu
+    running=$(just _running-runtimes)
+    set -- $running
+    case "$#" in
+        0) echo "No just-code runtime is running." >&2; exit 1 ;;
+        1) echo "$1" ;;
+        *) echo "Multiple just-code runtimes are running; run 'just stop' first." >&2; exit 1 ;;
+    esac
+
+_prepare-runtime runtime_flag:
+    #!/usr/bin/env sh
+    set -eu
+    requested=$(just _runtime-name {{ quote(runtime_flag) }})
+    conflicts=
+
+    for active in $(just _running-runtimes); do
+        if [ "$active" != "$requested" ]; then
+            conflicts="$conflicts $active"
+        fi
+    done
+
+    conflicts=${conflicts# }
+    [ -n "$conflicts" ] || exit 0
+
+    if [ ! -t 0 ]; then
+        echo "$conflicts is already running. Run 'just stop' before starting $requested." >&2
+        exit 1
+    fi
+
+    printf '%s is already running. Stop it and start %s? [y/N] ' "$conflicts" "$requested"
+    read -r reply || reply=
+    case "$reply" in
+        y|Y|yes|YES|Yes)
+            for active in $conflicts; do
+                just "_$active-stop"
+            done
+            ;;
+        *) echo "Keeping $conflicts running."; exit 1 ;;
     esac
 
 _docker-up:

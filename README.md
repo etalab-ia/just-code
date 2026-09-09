@@ -48,42 +48,32 @@ Crée ta configuration locale depuis l'exemple :
 cp .env.example .env
 ```
 
-Renseigne `ALBERT_API_KEY`, puis choisis le runtime dans `.env` :
-
-```dotenv
-RUNTIME=docker
-# ou
-RUNTIME=microsandbox
-```
-
-Docker est utilisé par défaut quand `RUNTIME` n'est pas défini. Les deux runtimes publient les mêmes ports et ne doivent pas tourner simultanément : exécute `just stop` avant de modifier `RUNTIME`.
+Renseigne `ALBERT_API_KEY` dans `.env`. Le runtime n'est pas enregistré dans la configuration : chaque commande qui en a besoin exige un choix explicite avec `--docker` ou `--microsandbox`.
 
 ## Utilisation
 
 ```bash
 just          # liste les commandes
-just doctor   # vérifie l'installation du runtime sélectionné
-just code     # démarre le sandbox sélectionné et attache le TUI OpenCode
-just stop     # arrête le sandbox sélectionné
-just check    # santé du backend + provider Albert
-just logs     # logs du backend
-just shell    # shell dans le sandbox sélectionné
-just build    # construit ou télécharge l'image du runtime sélectionné
-just restart  # recrée le sandbox sélectionné (destructif)
-just clean    # supprime le sandbox et son image ou état local
+just code --docker                # démarre Docker et attache le TUI
+just code --microsandbox          # démarre Microsandbox et attache le TUI
+just up --docker                  # démarre un backend sans attacher le TUI
+just stop                         # arrête tout runtime just-code actif
+just check                        # santé du backend actif + provider Albert
+just logs --microsandbox          # logs d'un runtime explicite
+just shell --docker               # shell dans un runtime explicite
+just build --microsandbox         # construit ou télécharge son image
+just restart --docker             # recrée le sandbox (destructif)
+just clean --microsandbox         # supprime le sandbox et son état local
+just doctor --microsandbox        # vérifie l'installation du runtime
 ```
 
-Pour tester ponctuellement l'autre runtime sans modifier `.env` :
-
-```bash
-RUNTIME=microsandbox just code
-```
+Les deux runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si l'autre runtime est déjà actif, `just code` et `just up` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just stop` détecte l'état réel et ne dépend d'aucun choix mémorisé.
 
 Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
 
 ```bash
 export PROJECT_DIR="$HOME/Code/mon-projet"
-just code
+just code --microsandbox
 ```
 
 Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte (`http://localhost:3000`, etc.).
@@ -97,14 +87,14 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 3. **« Code un petit jeu snake servi par un serveur Node sur le port 3000, puis lance-le. »** — écriture de fichiers + serveur de dev ; ouvre `http://localhost:3000` pour vérifier la preview.
 4. **« Écris un script python qui affiche la suite de Fibonacci et exécute-le. »** — toolchain polyglotte dans le sandbox.
 5. **« Modifie un fichier, puis annule ta modification. »** — outils d'édition et revue de diff.
-6. **Détache-toi (Ctrl+C / quitte) et relance `just code`** — continuité de session et reconnexion.
+6. **Détache-toi (Ctrl+C / quitte), conserve le runtime, puis relance `just code --docker` ou `just code --microsandbox`** — continuité de session et reconnexion.
 7. **« Envoie les logs de ton serveur de dev dans /tmp/server.log et montre-moi les dernières lignes. »** — comportement du scratch space hors du répertoire projet.
 
 ## Choix de conception
 
-- **Deux runtimes, une interface.** Les commandes `just` pilotent Docker par défaut ou Microsandbox avec `RUNTIME=microsandbox`. Le répertoire projet, le port OpenCode et les ports de preview restent identiques.
+- **Deux runtimes, aucun défaut implicite.** Les commandes qui ciblent un runtime exigent `--docker` ou `--microsandbox`. Le répertoire projet, le port OpenCode et les ports de preview restent identiques.
 - **Docker préservé.** Le conteneur d'origine reste disponible pour une installation familière et compatible avec les machines sans hyperviseur Microsandbox.
-- **MicroVM nommée et persistante.** Avec Microsandbox, `just stop` conserve le système de fichiers inscriptible et `just code` le redémarre. `just restart` repart de l'image OCI et de `microsandbox.yaml` quand la configuration, l'image ou le projet monté change.
+- **MicroVM nommée et persistante.** Avec Microsandbox, `just stop` conserve le système de fichiers inscriptible et `just code --microsandbox` le redémarre. `just restart --microsandbox` repart de l'image OCI et de `microsandbox.yaml` quand la configuration, l'image ou le projet monté change.
 - **Pas de démon Docker pour Microsandbox.** La microVM démarre à la demande depuis l'image OCI officielle `ghcr.io/anomalyco/opencode:latest`.
 - **Pas de fichier de config OpenCode bind-mounté.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` dans le fichier du runtime. Le seul bind-mount est le répertoire projet.
 - **Éditions visibles sur l'hôte.** Les modifications de l'agent atterrissent directement dans ton checkout local. Le modèle « remote-authoritative » (clone dans le sandbox, livraison via branche/PR) reste une expérience ultérieure.
