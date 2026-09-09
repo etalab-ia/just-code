@@ -304,42 +304,61 @@ _tart-up:
     mkdir -p "{{ project_dir }}"
     mkdir -p "$HOME/.local/state/just-code"
 
-    if just _running-runtimes | grep -Fxq "tart"; then
-        echo "{{ tart_vm }} is already running."
-    else
-        if ! tart list 2>/dev/null | awk '$1 == "local" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
-            echo "Cloning {{ tart_image }} to {{ tart_vm }}..."
-            tart clone "{{ tart_image }}" "{{ tart_vm }}"
-        fi
+    log_file="$HOME/.local/state/just-code/tart.log"
+    stage_dir="$HOME/.local/state/just-code/tart"
+    guest_bootstrap="/Volumes/My Shared Files/just-code/tart-bootstrap.sh"
 
-        log_file="$HOME/.local/state/just-code/tart.log"
-        echo "Starting {{ tart_vm }} with Tart..."
-        nohup tart run --no-graphics \
-            --dir="workspace:{{ project_dir }}" \
-            --dir="just-code:{{ justfile_directory() }}" \
-            "{{ tart_vm }}" > "$log_file" 2>&1 &
+    launch_backend() {
+        echo "Launching OpenCode server inside {{ tart_vm }}..."
+        printf '%s\n' "$ALBERT_API_KEY" |
+            nohup tart exec -i "{{ tart_vm }}" /bin/sh "$guest_bootstrap" \
+                "{{ port }}" "{{ password }}" "{{ username }}" >> "$log_file" 2>&1 &
+    }
 
-        echo "Waiting for guest agent to become responsive..."
+    wait_for_agent() {
         i=0
         while [ "$i" -lt 60 ]; do
             if tart exec "{{ tart_vm }}" true 2>/dev/null; then
-                break
+                return 0
             fi
             sleep 1
             i=$((i + 1))
         done
+        echo "Timed out waiting for {{ tart_vm }} guest agent." >&2
+        return 1
+    }
 
-        if [ "$i" -ge 60 ]; then
-            echo "Timed out waiting for {{ tart_vm }} guest agent." >&2
-            exit 1
+    if just _running-runtimes | grep -Fxq "tart"; then
+        wait_for_agent || exit 1
+        vm_ip=$(tart ip --wait 60 "{{ tart_vm }}" 2>/dev/null || true)
+        if [ -n "$vm_ip" ] && curl -s -u "{{ username }}:{{ password }}" "http://$vm_ip:{{ port }}/global/health" 2>/dev/null | grep -q healthy; then
+            echo "{{ tart_vm }} is running with a healthy OpenCode backend."
+            exit 0
         fi
-
-        echo "Launching OpenCode server inside {{ tart_vm }}..."
-        printf '%s\n' "$ALBERT_API_KEY" |
-            nohup tart exec -i "{{ tart_vm }}" /bin/sh \
-                "/Volumes/My Shared Files/just-code/tart-bootstrap.sh" \
-                "{{ port }}" "{{ password }}" "{{ username }}" >> "$log_file" 2>&1 &
+        echo "{{ tart_vm }} is running but OpenCode is not healthy; relaunching backend..."
+        launch_backend
+        exit 0
     fi
+
+    if ! tart list 2>/dev/null | awk '$1 == "local" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        echo "Cloning {{ tart_image }} to {{ tart_vm }}..."
+        tart clone "{{ tart_image }}" "{{ tart_vm }}"
+    fi
+
+    # Stage only the bootstrap script in a dedicated read-only share so the
+    # guest never sees the checkout, its .env, or other host-only files.
+    mkdir -p "$stage_dir"
+    cp "{{ justfile_directory() }}/tart-bootstrap.sh" "$stage_dir/tart-bootstrap.sh"
+    chmod 644 "$stage_dir/tart-bootstrap.sh"
+
+    echo "Starting {{ tart_vm }} with Tart..."
+    nohup tart run --no-graphics \
+        --dir="workspace:{{ project_dir }}" \
+        --dir="just-code:$stage_dir:ro" \
+        "{{ tart_vm }}" > "$log_file" 2>&1 &
+
+    wait_for_agent || exit 1
+    launch_backend
 
 _tart-stop:
     #!/usr/bin/env sh

@@ -89,7 +89,7 @@ export PROJECT_DIR="$HOME/Code/mon-projet"
 just code --microsandbox
 ```
 
-Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte (`http://localhost:3000`, etc.). Avec Tart, la VM macOS est joignable par son adresse (`tart ip albert-opencode-tart`) : le TUI OpenCode et les previews utilisent cette adresse au lieu de `localhost`.
+Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte : `http://localhost:3000`, etc. pour Docker et Microsandbox. Avec Tart, la VM macOS est une machine à part entière sur le réseau NAT : les previews et le TUI OpenCode utilisent l'adresse de la VM, par exemple `open "http://$(tart ip albert-opencode-tart):3000"`.
 
 ## Prompts d'exemple
 
@@ -105,9 +105,9 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 ## Choix de conception
 
-- **Trois runtimes, aucun défaut intégré.** Les commandes ciblent `--docker`, `--microsandbox` ou `--tart`, avec une préférence `RUNTIME` facultative pour les usages répétés. Le flag explicite est toujours prioritaire. Le répertoire projet, le port OpenCode et les ports de preview restent identiques.
-- **Docker et Microsandbox préservés.** Les environnements conteneurisés et microVM Linux d'origine restent inchangés.
-- **VM macOS avec Tart pour Xcode/iOS.** Tart permet d'exécuter l'agent OpenCode directement dans un système macOS invité, donnant accès aux outils de compilation Xcode (`xcodebuild`, `swift`, simulateurs). Par défaut, l'image `ghcr.io/cirruslabs/macos-sonoma-base:latest` est clonée dans une VM locale nommée `albert-opencode-tart` (surchargeable via `TART_IMAGE`). L'utilisateur ou le développeur peut ensuite y installer les outils Xcode nécessaires. `ALBERT_API_KEY` est transmise à la VM sur l'entrée standard du processus de bootstrap, jamais dans la liste des arguments.
+- **Trois runtimes, aucun défaut intégré.** Les commandes ciblent `--docker`, `--microsandbox` ou `--tart`, avec une préférence `RUNTIME` facultative pour les usages répétés. Le flag explicite est toujours prioritaire. Le répertoire projet et le port OpenCode (4096) restent identiques.
+- **Docker et Microsandbox préservés.** Les environnements conteneurisés et microVM Linux d'origine restent inchangés. Ils exposent les previews sur `localhost` (ports 3000-3010).
+- **VM macOS avec Tart pour Xcode/iOS.** Tart permet d'exécuter l'agent OpenCode directement dans un système macOS invité, donnant accès aux outils de compilation Xcode (`xcodebuild`, `swift`, simulateurs). Par défaut, l'image `ghcr.io/cirruslabs/macos-sonoma-base:latest` est clonée dans une VM locale nommée `albert-opencode-tart` (surchargeable via `TART_IMAGE`). L'utilisateur ou le développeur peut ensuite y installer les outils Xcode nécessaires. La VM étant une machine invitée macOS sur le réseau NAT, le TUI et les previews sont joints par son adresse (`tart ip albert-opencode-tart`) plutôt que par `localhost`. `ALBERT_API_KEY` est transmise sur l'entrée standard du processus de bootstrap, jamais dans la liste des arguments ; seul `tart-bootstrap.sh` (copie dédiée en lecture seule) est partagé avec la VM, pas le dépôt ni `.env`.
 - **MicroVM nommée et persistante.** Avec Microsandbox et Tart, `just stop` conserve l'état inscriptible de la VM et les relances ultérieures évitent de repartir de zéro. `just restart` recrée la VM proprement.
 - **Pas de démon Docker pour Microsandbox.** La microVM démarre à la demande depuis l'image OCI officielle `ghcr.io/anomalyco/opencode:latest`.
 - **Pas de fichier de config OpenCode bind-mounté.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` dans le fichier du runtime. Le seul bind-mount est le répertoire projet.
