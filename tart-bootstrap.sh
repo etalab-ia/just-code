@@ -5,7 +5,9 @@ set -eu
 PORT="${1:-4096}"
 PASSWORD="${2:-albert-dev-pass}"
 USERNAME="${3:-opencode}"
-ALBERT_API_KEY="${4:-}"
+
+# Read ALBERT_API_KEY from stdin (first line) to keep it out of process arguments
+IFS= read -r ALBERT_API_KEY || ALBERT_API_KEY=
 
 # Check if opencode is installed
 if ! command -v opencode >/dev/null 2>&1; then
@@ -15,6 +17,15 @@ if ! command -v opencode >/dev/null 2>&1; then
     else
         curl -fsSL https://opencode.ai/install | bash
     fi
+fi
+
+# The curl installer drops the binary in ~/.opencode/bin without touching PATH
+if ! command -v opencode >/dev/null 2>&1 && [ -x "$HOME/.opencode/bin/opencode" ]; then
+    export PATH="$HOME/.opencode/bin:$PATH"
+fi
+if ! command -v opencode >/dev/null 2>&1; then
+    echo "opencode is not available on PATH inside the VM." >&2
+    exit 1
 fi
 
 # Ensure git safe directory

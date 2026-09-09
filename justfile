@@ -59,8 +59,17 @@ code runtime_flag=preferred_runtime_flag: (up runtime_flag)
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    until curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/global/health" 2>/dev/null | grep -q healthy; do sleep 0.5; done
-    opencode attach "http://localhost:{{ port }}" --username "{{ username }}" --password "{{ password }}"
+    case "$runtime" in
+        tart)
+            endpoint="http://$(tart ip --wait 60 "{{ tart_vm }}"):{{ port }}"
+            ;;
+        *)
+            endpoint="http://localhost:{{ port }}"
+            ;;
+    esac
+
+    until curl -s -u "{{ username }}:{{ password }}" "$endpoint/global/health" 2>/dev/null | grep -q healthy; do sleep 0.5; done
+    opencode attach "$endpoint" --username "{{ username }}" --password "{{ password }}"
 
 # Stop every currently running just-code sandbox
 stop:
@@ -98,10 +107,20 @@ logs runtime_flag=preferred_runtime_flag:
 
 # Check the single running backend and registered Albert provider
 check:
-    @just _single-running-runtime >/dev/null
-    @curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/global/health"
-    @echo
-    @curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
+    #!/usr/bin/env sh
+    set -eu
+    runtime=$(just _single-running-runtime)
+    case "$runtime" in
+        tart)
+            endpoint="http://$(tart ip --wait 60 "{{ tart_vm }}"):{{ port }}"
+            ;;
+        *)
+            endpoint="http://localhost:{{ port }}"
+            ;;
+    esac
+    curl -s -u "{{ username }}:{{ password }}" "$endpoint/global/health"
+    echo
+    curl -s -u "{{ username }}:{{ password }}" "$endpoint/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
 
 # Open a shell inside the selected runtime
 shell runtime_flag=preferred_runtime_flag:
@@ -228,20 +247,20 @@ _microsandbox-up:
     if msb ls --running -q | grep -Fxq "{{ msb_sandbox }}"; then
         echo "{{ msb_sandbox }} is already running."
     elif msb inspect "{{ msb_sandbox }}" >/dev/null 2>&1; then
-        msb modify "{{ msb_sandbox }}" 
-            --env "OPENCODE_SERVER_PASSWORD={{ password }}" 
-            --env "OPENCODE_SERVER_USERNAME={{ username }}" 
+        msb modify "{{ msb_sandbox }}" \
+            --env "OPENCODE_SERVER_PASSWORD={{ password }}" \
+            --env "OPENCODE_SERVER_USERNAME={{ username }}" \
             --next-start
         msb start "{{ msb_sandbox }}"
     else
-        msb run 
-            --name "{{ msb_sandbox }}" 
-            --detach 
-            --conf "{{ msb_config }}" 
-            --root-disk "8G" 
-            --volume "{{ project_dir }}:/workspace" 
-            --env "OPENCODE_SERVER_PASSWORD={{ password }}" 
-            --env "OPENCODE_SERVER_USERNAME={{ username }}" 
+        msb run \
+            --name "{{ msb_sandbox }}" \
+            --detach \
+            --conf "{{ msb_config }}" \
+            --root-disk "8G" \
+            --volume "{{ project_dir }}:/workspace" \
+            --env "OPENCODE_SERVER_PASSWORD={{ password }}" \
+            --env "OPENCODE_SERVER_USERNAME={{ username }}" \
             "{{ msb_image }}"
     fi
 
@@ -295,11 +314,9 @@ _tart-up:
 
         log_file="$HOME/.local/state/just-code/tart.log"
         echo "Starting {{ tart_vm }} with Tart..."
-        nohup tart run --no-graphics 
-            --dir="workspace:{{ project_dir }}" 
-            --net-softnet 
-            --net-softnet-allow=0.0.0.0/0 
-            --net-softnet-expose="{{ port }}:{{ port }}" 
+        nohup tart run --no-graphics \
+            --dir="workspace:{{ project_dir }}" \
+            --dir="just-code:{{ justfile_directory() }}" \
             "{{ tart_vm }}" > "$log_file" 2>&1 &
 
         echo "Waiting for guest agent to become responsive..."
@@ -317,9 +334,11 @@ _tart-up:
             exit 1
         fi
 
-        bootstrap_script="{{ justfile_directory() }}/tart-bootstrap.sh"
         echo "Launching OpenCode server inside {{ tart_vm }}..."
-        nohup tart exec -i "{{ tart_vm }}" /bin/sh -s "{{ port }}" "{{ password }}" "{{ username }}" "${ALBERT_API_KEY}" < "$bootstrap_script" >> "$log_file" 2>&1 &
+        printf '%s\n' "$ALBERT_API_KEY" |
+            nohup tart exec -i "{{ tart_vm }}" /bin/sh \
+                "/Volumes/My Shared Files/just-code/tart-bootstrap.sh" \
+                "{{ port }}" "{{ password }}" "{{ username }}" >> "$log_file" 2>&1 &
     fi
 
 _tart-stop:
