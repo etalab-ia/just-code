@@ -3,6 +3,10 @@
 
 set dotenv-load
 
+# Optional runtime preference; an explicit command argument takes precedence
+runtime_preference := env_var_or_default("RUNTIME", "")
+preferred_runtime_flag := if runtime_preference == "" { "" } else { "--" + runtime_preference }
+
 # Project directory mounted into the sandbox as /workspace
 project_dir := env_var_or_default("PROJECT_DIR", justfile_directory() / "workspace")
 msb_config := justfile_directory() / "microsandbox.yaml"
@@ -17,10 +21,13 @@ default: help
 
 # List available commands
 help:
+    @echo "Runtime: pass --docker or --microsandbox."
+    @echo "Set RUNTIME=docker|microsandbox in .env to omit the flag."
+    @echo
     @just --list
 
 # Start a sandbox and attach the native OpenCode TUI
-code runtime_flag: (up runtime_flag)
+code runtime_flag=preferred_runtime_flag: (up runtime_flag)
     #!/usr/bin/env sh
     set -eu
     runtime=$(just _runtime-name {{ quote(runtime_flag) }})
@@ -69,22 +76,22 @@ stop:
     done
     exit "$status"
 
-# Start an explicitly selected backend without attaching the TUI
-up runtime_flag:
+# Start the selected backend without attaching the TUI
+up runtime_flag=preferred_runtime_flag:
     @just _prepare-runtime {{ quote(runtime_flag) }}
     @just _dispatch up {{ quote(runtime_flag) }}
 
-# Build or pull an explicitly selected runtime image
-build runtime_flag:
+# Build or pull the selected runtime image
+build runtime_flag=preferred_runtime_flag:
     @just _dispatch build {{ quote(runtime_flag) }}
 
-# Recreate an explicitly selected sandbox
-restart runtime_flag:
+# Recreate the selected sandbox
+restart runtime_flag=preferred_runtime_flag:
     @just _prepare-runtime {{ quote(runtime_flag) }}
     @just _dispatch restart {{ quote(runtime_flag) }}
 
-# Follow logs for an explicitly selected runtime
-logs runtime_flag:
+# Follow logs for the selected runtime
+logs runtime_flag=preferred_runtime_flag:
     @just _dispatch logs {{ quote(runtime_flag) }}
 
 # Check the single running backend and registered Albert provider
@@ -94,16 +101,16 @@ check:
     @echo
     @curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
 
-# Open a shell inside an explicitly selected runtime
-shell runtime_flag:
+# Open a shell inside the selected runtime
+shell runtime_flag=preferred_runtime_flag:
     @just _dispatch shell {{ quote(runtime_flag) }}
 
-# Remove an explicitly selected sandbox and its image or writable state
-clean runtime_flag:
+# Remove the selected sandbox and its image or writable state
+clean runtime_flag=preferred_runtime_flag:
     @just _dispatch clean {{ quote(runtime_flag) }}
 
-# Check an explicitly selected runtime installation
-doctor runtime_flag:
+# Check the selected runtime installation
+doctor runtime_flag=preferred_runtime_flag:
     @just _dispatch doctor {{ quote(runtime_flag) }}
 
 _runtime-name runtime_flag:
@@ -111,7 +118,8 @@ _runtime-name runtime_flag:
     case {{ quote(runtime_flag) }} in
         --docker) echo docker ;;
         --microsandbox) echo microsandbox ;;
-        *) echo "Expected --docker or --microsandbox." >&2; exit 2 ;;
+        "") echo "Select --docker or --microsandbox, or set RUNTIME in .env." >&2; exit 2 ;;
+        *) echo "Expected --docker or --microsandbox (RUNTIME must be docker or microsandbox)." >&2; exit 2 ;;
     esac
 
 _dispatch action runtime_flag:

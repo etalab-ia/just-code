@@ -48,7 +48,15 @@ Crée ta configuration locale depuis l'exemple :
 cp .env.example .env
 ```
 
-Renseigne `ALBERT_API_KEY` dans `.env`. Le runtime n'est pas enregistré dans la configuration : chaque commande qui en a besoin exige un choix explicite avec `--docker` ou `--microsandbox`.
+Renseigne `ALBERT_API_KEY` dans `.env`. Sans autre configuration, chaque commande qui cible un runtime exige `--docker` ou `--microsandbox`. Pour conserver une préférence locale, décommente aussi l'une de ces lignes :
+
+```dotenv
+RUNTIME=docker
+# ou
+RUNTIME=microsandbox
+```
+
+Un flag explicite reste prioritaire sur `RUNTIME` : `just code --docker` utilise toujours Docker, même si `.env` préfère Microsandbox. Il n'existe aucun runtime par défaut intégré.
 
 ## Utilisation
 
@@ -56,6 +64,7 @@ Renseigne `ALBERT_API_KEY` dans `.env`. Le runtime n'est pas enregistré dans la
 just          # liste les commandes
 just code --docker                # démarre Docker et attache le TUI
 just code --microsandbox          # démarre Microsandbox et attache le TUI
+just code                         # utilise RUNTIME défini dans .env
 just up --docker                  # démarre un backend sans attacher le TUI
 just stop                         # arrête tout runtime just-code actif
 just check                        # santé du backend actif + provider Albert
@@ -67,7 +76,7 @@ just clean --microsandbox         # supprime le sandbox et son état local
 just doctor --microsandbox        # vérifie l'installation du runtime
 ```
 
-Les deux runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si l'autre runtime est déjà actif, `just code` et `just up` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just stop` détecte l'état réel et ne dépend d'aucun choix mémorisé.
+Les deux runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si l'autre runtime est déjà actif, `just code` et `just up` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just stop` détecte l'état réel et ignore volontairement `RUNTIME`.
 
 Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
 
@@ -92,7 +101,7 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 ## Choix de conception
 
-- **Deux runtimes, aucun défaut implicite.** Les commandes qui ciblent un runtime exigent `--docker` ou `--microsandbox`. Le répertoire projet, le port OpenCode et les ports de preview restent identiques.
+- **Deux runtimes, aucun défaut intégré.** Les commandes ciblent `--docker` ou `--microsandbox`, avec une préférence `RUNTIME` facultative pour les usages répétés. Le flag explicite est toujours prioritaire. Le répertoire projet, le port OpenCode et les ports de preview restent identiques.
 - **Docker préservé.** Le conteneur d'origine reste disponible pour une installation familière et compatible avec les machines sans hyperviseur Microsandbox.
 - **MicroVM nommée et persistante.** Avec Microsandbox, `just stop` conserve le système de fichiers inscriptible et `just code --microsandbox` le redémarre. `just restart --microsandbox` repart de l'image OCI et de `microsandbox.yaml` quand la configuration, l'image ou le projet monté change.
 - **Pas de démon Docker pour Microsandbox.** La microVM démarre à la demande depuis l'image OCI officielle `ghcr.io/anomalyco/opencode:latest`.
