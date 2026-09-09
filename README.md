@@ -32,7 +32,7 @@ Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence
 - L'un des runtimes disponibles :
   - Docker ou [Colima](https://github.com/abiosoft/colima) ;
   - [Microsandbox](https://github.com/superradcompany/microsandbox) (`msb` >= 0.6.16) sur un Mac Apple Silicon ou un hôte Linux avec KVM ;
-  - [Tart](https://tart.run) (`brew install cirruslabs/cli/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
+  - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
 
 Installation de Microsandbox :
 
