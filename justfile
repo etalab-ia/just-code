@@ -1,5 +1,5 @@
 # Albert Code / OpenCode sandbox experiment
-# Requires: just, opencode CLI, ALBERT_API_KEY, and Docker or Microsandbox
+# Requires: just, opencode CLI, ALBERT_API_KEY, and Docker, Microsandbox, or Tart
 
 set dotenv-load
 
@@ -12,6 +12,8 @@ project_dir := env_var_or_default("PROJECT_DIR", justfile_directory() / "workspa
 msb_config := justfile_directory() / "microsandbox.yaml"
 msb_image := "ghcr.io/anomalyco/opencode:latest"
 msb_sandbox := "albert-opencode-sandbox"
+tart_image := env_var_or_default("TART_IMAGE", "ghcr.io/cirruslabs/macos-sonoma-base:latest")
+tart_vm := "albert-opencode-tart"
 password := env_var_or_default("OPENCODE_SERVER_PASSWORD", "albert-dev-pass")
 username := env_var_or_default("OPENCODE_SERVER_USERNAME", "opencode")
 port := "4096"
@@ -21,8 +23,8 @@ default: help
 
 # List available commands
 help:
-    @echo "Runtime: pass --docker or --microsandbox."
-    @echo "Set RUNTIME=docker|microsandbox in .env to omit the flag."
+    @echo "Runtime: pass --docker, --microsandbox, or --tart."
+    @echo "Set RUNTIME=docker|microsandbox|tart in .env to omit the flag."
     @echo
     @just --list
 
@@ -118,8 +120,9 @@ _runtime-name runtime_flag:
     case {{ quote(runtime_flag) }} in
         --docker) echo docker ;;
         --microsandbox) echo microsandbox ;;
-        "") echo "Select --docker or --microsandbox, or set RUNTIME in .env." >&2; exit 2 ;;
-        *) echo "Expected --docker or --microsandbox (RUNTIME must be docker or microsandbox)." >&2; exit 2 ;;
+        --tart) echo tart ;;
+        "") echo "Select --docker, --microsandbox, or --tart, or set RUNTIME in .env." >&2; exit 2 ;;
+        *) echo "Expected --docker, --microsandbox, or --tart (RUNTIME must be docker, microsandbox, or tart)." >&2; exit 2 ;;
     esac
 
 _dispatch action runtime_flag:
@@ -140,6 +143,9 @@ _running-runtimes:
     fi
     if command -v msb >/dev/null 2>&1 && msb ls --running -q 2>/dev/null | grep -Fxq "{{ msb_sandbox }}"; then
         echo microsandbox
+    fi
+    if command -v tart >/dev/null 2>&1 && tart list 2>/dev/null | awk '$1 == "local" && $2 == "{{ tart_vm }}" && $NF == "running" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        echo tart
     fi
 
 _single-running-runtime:
@@ -222,20 +228,20 @@ _microsandbox-up:
     if msb ls --running -q | grep -Fxq "{{ msb_sandbox }}"; then
         echo "{{ msb_sandbox }} is already running."
     elif msb inspect "{{ msb_sandbox }}" >/dev/null 2>&1; then
-        msb modify "{{ msb_sandbox }}" \
-            --env "OPENCODE_SERVER_PASSWORD={{ password }}" \
-            --env "OPENCODE_SERVER_USERNAME={{ username }}" \
+        msb modify "{{ msb_sandbox }}" 
+            --env "OPENCODE_SERVER_PASSWORD={{ password }}" 
+            --env "OPENCODE_SERVER_USERNAME={{ username }}" 
             --next-start
         msb start "{{ msb_sandbox }}"
     else
-        msb run \
-            --name "{{ msb_sandbox }}" \
-            --detach \
-            --conf "{{ msb_config }}" \
-            --root-disk "8G" \
-            --volume "{{ project_dir }}:/workspace" \
-            --env "OPENCODE_SERVER_PASSWORD={{ password }}" \
-            --env "OPENCODE_SERVER_USERNAME={{ username }}" \
+        msb run 
+            --name "{{ msb_sandbox }}" 
+            --detach 
+            --conf "{{ msb_config }}" 
+            --root-disk "8G" 
+            --volume "{{ project_dir }}:/workspace" 
+            --env "OPENCODE_SERVER_PASSWORD={{ password }}" 
+            --env "OPENCODE_SERVER_USERNAME={{ username }}" 
             "{{ msb_image }}"
     fi
 
@@ -271,3 +277,84 @@ _microsandbox-clean:
 
 _microsandbox-doctor:
     msb doctor
+
+_tart-up:
+    #!/usr/bin/env sh
+    set -eu
+    : "${ALBERT_API_KEY:?Set ALBERT_API_KEY in the environment or .env}"
+    mkdir -p "{{ project_dir }}"
+    mkdir -p "$HOME/.local/state/just-code"
+
+    if just _running-runtimes | grep -Fxq "tart"; then
+        echo "{{ tart_vm }} is already running."
+    else
+        if ! tart list 2>/dev/null | awk '$1 == "local" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+            echo "Cloning {{ tart_image }} to {{ tart_vm }}..."
+            tart clone "{{ tart_image }}" "{{ tart_vm }}"
+        fi
+
+        log_file="$HOME/.local/state/just-code/tart.log"
+        echo "Starting {{ tart_vm }} with Tart..."
+        nohup tart run --no-graphics 
+            --dir="workspace:{{ project_dir }}" 
+            --net-softnet 
+            --net-softnet-allow=0.0.0.0/0 
+            --net-softnet-expose="{{ port }}:{{ port }}" 
+            "{{ tart_vm }}" > "$log_file" 2>&1 &
+
+        echo "Waiting for guest agent to become responsive..."
+        i=0
+        while [ "$i" -lt 60 ]; do
+            if tart exec "{{ tart_vm }}" true 2>/dev/null; then
+                break
+            fi
+            sleep 1
+            i=$((i + 1))
+        done
+
+        if [ "$i" -ge 60 ]; then
+            echo "Timed out waiting for {{ tart_vm }} guest agent." >&2
+            exit 1
+        fi
+
+        bootstrap_script="{{ justfile_directory() }}/tart-bootstrap.sh"
+        echo "Launching OpenCode server inside {{ tart_vm }}..."
+        nohup tart exec -i "{{ tart_vm }}" /bin/sh -s "{{ port }}" "{{ password }}" "{{ username }}" "${ALBERT_API_KEY}" < "$bootstrap_script" >> "$log_file" 2>&1 &
+    fi
+
+_tart-stop:
+    #!/usr/bin/env sh
+    set -eu
+    if just _running-runtimes | grep -Fxq "tart"; then
+        echo "Stopping {{ tart_vm }}..."
+        tart stop "{{ tart_vm }}" --timeout 5 || true
+    else
+        echo "{{ tart_vm }} is not running."
+    fi
+
+_tart-build:
+    tart pull "{{ tart_image }}"
+
+_tart-restart: _tart-clean _tart-up
+
+_tart-logs:
+    tail -f "$HOME/.local/state/just-code/tart.log"
+
+_tart-shell:
+    tart exec -it "{{ tart_vm }}" /bin/zsh
+
+_tart-clean:
+    #!/usr/bin/env sh
+    set -eu
+    if just _running-runtimes | grep -Fxq "tart"; then
+        just _tart-stop
+    fi
+    if tart list 2>/dev/null | awk '$1 == "local" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        tart delete "{{ tart_vm }}"
+    else
+        echo "{{ tart_vm }} does not exist."
+    fi
+
+_tart-doctor:
+    @tart --version
+    @echo "Tart runtime is ready."
