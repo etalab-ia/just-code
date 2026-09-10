@@ -114,7 +114,13 @@ check:
     runtime=$(just _single-running-runtime)
     case "$runtime" in
         tart)
-            endpoint="http://$(tart ip --wait 60 "{{ tart_vm }}"):{{ port }}"
+            vm=$(tart list 2>/dev/null | awk '$1 == "local" && $2 ~ /^opencode-/ && $NF == "running" { print $2 }')
+            set -- $vm
+            case "$#" in
+                0) echo "No just-code Tart VM is running." >&2; exit 1 ;;
+                1) endpoint="http://$(tart ip --wait 60 "$1"):{{ port }}" ;;
+                *) echo "Multiple Tart VMs are running; run 'just stop' first." >&2; exit 1 ;;
+            esac
             ;;
         *)
             endpoint="http://localhost:{{ port }}"
@@ -341,10 +347,18 @@ _tart-start:
         tart exec "{{ tart_vm }}" pkill -x opencode 2>/dev/null || true
         i=0
         while tart exec "{{ tart_vm }}" pgrep -x opencode >/dev/null 2>&1; do
-            sleep 1
             i=$((i + 1))
-            [ "$i" -lt 10 ] || break
+            if [ "$i" -ge 10 ]; then
+                echo "opencode ignored SIGTERM; force-killing..." >&2
+                tart exec "{{ tart_vm }}" pkill -9 -x opencode 2>/dev/null || true
+                break
+            fi
+            sleep 1
         done
+        if tart exec "{{ tart_vm }}" pgrep -x opencode >/dev/null 2>&1; then
+            echo "Failed to stop the previous opencode process; refusing to relaunch." >&2
+            exit 1
+        fi
         launch_backend
         exit 0
     fi
