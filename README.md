@@ -67,7 +67,7 @@ Un flag explicite reste prioritaire sur `RUNTIME` : `just code --docker` utilise
 
 Dans `.env`, `TART_MTU` accepte un entier de **1280 à 1500**, ou **`auto`** pour ne pas modifier la MTU. `auto` ne restaure pas une valeur précédemment appliquée ; utiliser `1500` pour revenir à la valeur habituelle. L'application nécessite `sudo` sans mot de passe dans l'invité (disponible dans l'image de base utilisée). Les erreurs sont consignées dans `just logs --tart`.
 
-Après modification, exécuter **`just stop` puis `just code --tart`** pour réappliquer le réglage tout en conservant les logiciels installés. Un backend déjà sain n'est pas reconfiguré par `just up`. Ne pas utiliser `just restart` pour cela : cette commande recrée la VM.
+Après modification, exécuter **`just stop` puis `just code --tart`** pour réappliquer le réglage tout en conservant les logiciels installés. Un backend déjà sain n'est pas reconfiguré par `just start`. Ne pas utiliser `just restart` pour cela : cette commande recrée la VM.
 
 Sur macOS, autoriser également le terminal utilisé dans **Réglages Système > Confidentialité et sécurité > Réseau local**. Cette permission couvre l'accès à l'adresse privée de la VM, même si elle tourne sur le même Mac. Sans elle, le TUI peut rester en attente ou signaler une erreur trompeuse d'URL/port.
 
@@ -102,7 +102,7 @@ just code --docker                # démarre Docker et attache le TUI
 just code --microsandbox          # démarre Microsandbox et attache le TUI
 just code --tart                  # démarre Tart (VM macOS) et attache le TUI
 just code                         # utilise RUNTIME défini dans .env
-just up --tart                    # démarre un backend sans attacher le TUI
+just start --tart                  # démarre un backend sans attacher le TUI
 just stop                         # arrête tout runtime just-code actif
 just check                        # santé du backend actif + provider Albert
 just logs --tart                  # logs d'un runtime explicite
@@ -113,7 +113,7 @@ just clean --tart                 # supprime le sandbox et son état local
 just doctor --tart                # vérifie l'installation du runtime
 ```
 
-Les deux runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si l'autre runtime est déjà actif, `just code` et `just up` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just stop` détecte l'état réel et ignore volontairement `RUNTIME`.
+Les deux runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si l'autre runtime est déjà actif, `just code` et `just start` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just stop` détecte l'état réel et ignore volontairement `RUNTIME`.
 
 Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
 

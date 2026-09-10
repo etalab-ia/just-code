@@ -31,7 +31,7 @@ help:
     @just --list
 
 # Start a sandbox and attach the native OpenCode TUI
-code runtime_flag=preferred_runtime_flag: (up runtime_flag)
+code runtime_flag=preferred_runtime_flag: (start runtime_flag)
     #!/usr/bin/env sh
     set -eu
     runtime=$(just _runtime-name {{ quote(runtime_flag) }})
@@ -90,9 +90,9 @@ stop:
     exit "$status"
 
 # Start the selected backend without attaching the TUI
-up runtime_flag=preferred_runtime_flag:
+start runtime_flag=preferred_runtime_flag:
     @just _prepare-runtime {{ quote(runtime_flag) }}
-    @just _dispatch up {{ quote(runtime_flag) }}
+    @just _dispatch start {{ quote(runtime_flag) }}
 
 # Build or pull the selected runtime image
 build runtime_flag=preferred_runtime_flag:
@@ -151,7 +151,7 @@ _dispatch action runtime_flag:
     set -eu
     action={{ quote(action) }}
     case "$action" in
-        up|build|restart|logs|shell|clean|doctor) ;;
+        start|build|restart|logs|shell|clean|doctor) ;;
         *) echo "Unsupported runtime action: $action" >&2; exit 2 ;;
     esac
     runtime=$(just _runtime-name {{ quote(runtime_flag) }})
@@ -211,7 +211,7 @@ _prepare-runtime runtime_flag:
         *) echo "Keeping $conflicts running."; exit 1 ;;
     esac
 
-_docker-up:
+_docker-start:
     #!/usr/bin/env sh
     set -eu
     : "${ALBERT_API_KEY:?Set ALBERT_API_KEY in the environment or .env}"
@@ -224,7 +224,7 @@ _docker-stop:
 _docker-build:
     docker compose build --quiet
 
-_docker-restart: _docker-stop _docker-build _docker-up
+_docker-restart: _docker-stop _docker-build _docker-start
 
 _docker-logs:
     docker compose logs --follow
@@ -240,7 +240,7 @@ _docker-doctor:
     @docker compose version
     @echo "Docker runtime is ready."
 
-_microsandbox-up:
+_microsandbox-start:
     #!/usr/bin/env sh
     set -eu
     : "${ALBERT_API_KEY:?Set ALBERT_API_KEY in the environment or .env}"
@@ -279,7 +279,7 @@ _microsandbox-stop:
 _microsandbox-build:
     msb pull "{{ msb_image }}"
 
-_microsandbox-restart: _microsandbox-clean _microsandbox-up
+_microsandbox-restart: _microsandbox-clean _microsandbox-start
 
 _microsandbox-logs:
     msb logs --follow "{{ msb_sandbox }}"
@@ -299,7 +299,7 @@ _microsandbox-clean:
 _microsandbox-doctor:
     msb doctor
 
-_tart-up:
+_tart-start:
     #!/usr/bin/env sh
     set -eu
     : "${ALBERT_API_KEY:?Set ALBERT_API_KEY in the environment or .env}"
@@ -375,7 +375,7 @@ _tart-stop:
 _tart-build:
     tart pull "{{ tart_image }}"
 
-_tart-restart: _tart-clean _tart-up
+_tart-restart: _tart-clean _tart-start
 
 _tart-logs:
     tail -f "$HOME/.local/state/just-code/tart.log"
