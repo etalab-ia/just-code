@@ -72,7 +72,7 @@ code runtime_flag=preferred_runtime_flag: (start runtime_flag)
     esac
 
     start=$(date +%s)
-    until curl -s --max-time 5 -u "{{ username }}:{{ password }}" "$endpoint/global/health" 2>/dev/null | grep -q healthy; do
+    until curl -s --max-time 5 -u {{ quote(username + ":" + password) }} "$endpoint/global/health" 2>/dev/null | grep -q healthy; do
         now=$(date +%s)
         if [ $((now - start)) -ge 120 ]; then
             echo "Backend did not become healthy within 120s. Check 'just logs --$runtime'." >&2
@@ -80,7 +80,7 @@ code runtime_flag=preferred_runtime_flag: (start runtime_flag)
         fi
         sleep 0.5
     done
-    opencode attach "$endpoint" --username "{{ username }}" --password "{{ password }}"
+    opencode attach "$endpoint" --username {{ quote(username) }} --password {{ quote(password) }}
 
 # Stop every currently running just-code sandbox
 stop:
@@ -135,9 +135,9 @@ check:
             endpoint="http://localhost:{{ port }}"
             ;;
     esac
-    curl -s -u "{{ username }}:{{ password }}" "$endpoint/global/health"
+    curl -s -u {{ quote(username + ":" + password) }} "$endpoint/global/health"
     echo
-    curl -s -u "{{ username }}:{{ password }}" "$endpoint/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
+    curl -s -u {{ quote(username + ":" + password) }} "$endpoint/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
 
 # Open a shell inside the selected runtime
 shell runtime_flag=preferred_runtime_flag:
@@ -327,9 +327,9 @@ _tart-start:
 
     launch_backend() {
         echo "Launching OpenCode server inside {{ tart_vm }}..."
-        printf '%s\n%s\n' "{{ password }}" "$ALBERT_API_KEY" |
+        printf '%s\n%s\n' {{ quote(password) }} "$ALBERT_API_KEY" |
             nohup tart exec -i "{{ tart_vm }}" /bin/sh "$guest_bootstrap" \
-                "{{ port }}" "{{ username }}" {{ quote(tart_mtu) }} >> "$log_file" 2>&1 &
+                "{{ port }}" {{ quote(username) }} {{ quote(tart_mtu) }} >> "$log_file" 2>&1 &
     }
 
     stage_bootstrap() {
@@ -354,7 +354,7 @@ _tart-start:
     if tart list 2>/dev/null | awk '$1 == "local" && $2 == "{{ tart_vm }}" && $NF == "running" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
         wait_for_agent || exit 1
         vm_ip=$(tart ip --wait 60 "{{ tart_vm }}" 2>/dev/null || true)
-        if [ -n "$vm_ip" ] && curl -s -u "{{ username }}:{{ password }}" "http://$vm_ip:{{ port }}/global/health" 2>/dev/null | grep -q healthy; then
+        if [ -n "$vm_ip" ] && curl -s --max-time 5 -u {{ quote(username + ":" + password) }} "http://$vm_ip:{{ port }}/global/health" 2>/dev/null | grep -q healthy; then
             echo "{{ tart_vm }} is running with a healthy OpenCode backend."
             exit 0
         fi
