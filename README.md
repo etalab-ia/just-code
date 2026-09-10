@@ -73,16 +73,18 @@ Sur macOS, autoriser également le terminal utilisé dans **Réglages Système >
 
 ### Images Tart et nommage des VM
 
-L'image par défaut est **macOS Tahoe**, figée par digest immuable :
+L'image par défaut est **macOS Tahoe** (`:latest`) :
 
 ```dotenv
-TART_IMAGE=ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e
+TART_IMAGE=ghcr.io/cirruslabs/macos-tahoe-base:latest
 ```
 
-Le nom de la VM dérive de la référence image (nom du fichier, `:` et `@sha256` remplacés par `-`, préfixe `opencode-`) :
+Le nom de la VM dérive du nom de fichier de la référence image (`:` et `@sha256` remplacés par `-`, préfixe `opencode-`) :
 
 - **Tahoe** (`:latest`) : `opencode-tahoe-base-latest`
 - **Sonoma** (`:latest`) : `opencode-sonoma-base-latest`
+
+Deux images partageant le même nom de fichier (par exemple issues de registres différents) produiraient le même nom de VM. Les images Cirrus Labs de Tahoe et Sonoma ont des noms de fichier distincts et constituent le cas pris en charge.
 
 Pour basculer vers Sonoma :
 

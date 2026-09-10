@@ -12,7 +12,7 @@ project_dir := env_var_or_default("PROJECT_DIR", justfile_directory() / "workspa
 msb_config := justfile_directory() / "microsandbox.yaml"
 msb_image := "ghcr.io/anomalyco/opencode:latest"
 msb_sandbox := "albert-opencode-sandbox"
-tart_image := env_var_or_default("TART_IMAGE", "ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e")
+tart_image := env_var_or_default("TART_IMAGE", "ghcr.io/cirruslabs/macos-tahoe-base:latest")
 # Derive a stable VM name from the image reference (e.g. opencode-tahoe-base-latest)
 tart_vm := "opencode-" + replace(replace(trim_start_matches(file_name(tart_image), "macos-"), ":", "-"), "@sha256", "-sha256")
 tart_mtu := env_var_or_default("TART_MTU", "1280")
@@ -165,7 +165,7 @@ _running-runtimes:
     if command -v msb >/dev/null 2>&1 && msb ls --running -q 2>/dev/null | grep -Fxq "{{ msb_sandbox }}"; then
         echo microsandbox
     fi
-    if command -v tart >/dev/null 2>&1 && tart list 2>/dev/null | awk '$1 == "local" && $2 == "{{ tart_vm }}" && $NF == "running" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+    if command -v tart >/dev/null 2>&1 && tart list 2>/dev/null | awk '$1 == "local" && $2 ~ /^opencode-/ && $NF == "running" { print $2 }' | grep -q .; then
         echo tart
     fi
 
@@ -312,9 +312,9 @@ _tart-start:
 
     launch_backend() {
         echo "Launching OpenCode server inside {{ tart_vm }}..."
-        printf '%s\n' "$ALBERT_API_KEY" |
+        printf '%s\n%s\n' "{{ password }}" "$ALBERT_API_KEY" |
             nohup tart exec -i "{{ tart_vm }}" /bin/sh "$guest_bootstrap" \
-                "{{ port }}" "{{ password }}" "{{ username }}" {{ quote(tart_mtu) }} >> "$log_file" 2>&1 &
+                "{{ port }}" "{{ username }}" {{ quote(tart_mtu) }} >> "$log_file" 2>&1 &
     }
 
     wait_for_agent() {
@@ -330,14 +330,21 @@ _tart-start:
         return 1
     }
 
-    if just _running-runtimes | grep -Fxq "tart"; then
+    if tart list 2>/dev/null | awk '$1 == "local" && $2 == "{{ tart_vm }}" && $NF == "running" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
         wait_for_agent || exit 1
         vm_ip=$(tart ip --wait 60 "{{ tart_vm }}" 2>/dev/null || true)
         if [ -n "$vm_ip" ] && curl -s -u "{{ username }}:{{ password }}" "http://$vm_ip:{{ port }}/global/health" 2>/dev/null | grep -q healthy; then
             echo "{{ tart_vm }} is running with a healthy OpenCode backend."
             exit 0
         fi
-        echo "{{ tart_vm }} is running but OpenCode is not healthy; relaunching backend..."
+        echo "{{ tart_vm }} is running but OpenCode is not healthy; restarting backend..."
+        tart exec "{{ tart_vm }}" pkill -x opencode 2>/dev/null || true
+        i=0
+        while tart exec "{{ tart_vm }}" pgrep -x opencode >/dev/null 2>&1; do
+            sleep 1
+            i=$((i + 1))
+            [ "$i" -lt 10 ] || break
+        done
         launch_backend
         exit 0
     fi
@@ -365,12 +372,17 @@ _tart-start:
 _tart-stop:
     #!/usr/bin/env sh
     set -eu
-    if just _running-runtimes | grep -Fxq "tart"; then
-        echo "Stopping {{ tart_vm }}..."
-        tart stop "{{ tart_vm }}" --timeout 5 || true
-    else
-        echo "{{ tart_vm }} is not running."
+    vms=$(tart list 2>/dev/null | awk '$1 == "local" && $2 ~ /^opencode-/ && $NF == "running" { print $2 }')
+    if [ -z "$vms" ]; then
+        echo "No just-code Tart VM is running."
+        exit 0
     fi
+    status=0
+    for vm in $vms; do
+        echo "Stopping $vm..."
+        tart stop "$vm" --timeout 5 || status=$?
+    done
+    exit "$status"
 
 _tart-build:
     tart pull "{{ tart_image }}"
@@ -386,8 +398,8 @@ _tart-shell:
 _tart-clean:
     #!/usr/bin/env sh
     set -eu
-    if just _running-runtimes | grep -Fxq "tart"; then
-        just _tart-stop
+    if tart list 2>/dev/null | awk '$1 == "local" && $2 == "{{ tart_vm }}" && $NF == "running" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        tart stop "{{ tart_vm }}" --timeout 5
     fi
     if tart list 2>/dev/null | awk '$1 == "local" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
         tart delete "{{ tart_vm }}"

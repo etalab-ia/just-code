@@ -3,9 +3,8 @@
 set -eu
 
 PORT="${1:-4096}"
-PASSWORD="${2:-albert-dev-pass}"
-USERNAME="${3:-opencode}"
-TART_MTU="${4-1280}"
+USERNAME="${2:-opencode}"
+TART_MTU="${3-1280}"
 
 # Include macOS network tools in the non-login guest agent environment.
 export PATH="$PATH:/usr/sbin:/sbin"
@@ -34,8 +33,10 @@ if [ "$TART_MTU" != auto ]; then
     echo "Guest network: $interface MTU=$TART_MTU"
 fi
 
-# Read ALBERT_API_KEY from stdin (first line) to keep it out of process arguments
+# Read secrets from stdin: server password on line 1, API key on line 2.
+IFS= read -r PASSWORD || PASSWORD=
 IFS= read -r ALBERT_API_KEY || ALBERT_API_KEY=
+PASSWORD="${PASSWORD:-albert-dev-pass}"
 
 # Check if opencode is installed
 if ! command -v opencode >/dev/null 2>&1; then

@@ -22,11 +22,11 @@ class TartMtuTests(unittest.TestCase):
                 path = root / name
                 path.write_text("#!/bin/sh\n" + body + "\n")
                 path.chmod(0o755)
-            args = ["sh", str(BOOTSTRAP), "4096", "test-password", "test-user"]
+            args = ["sh", str(BOOTSTRAP), "4096", "test-user"]
             if mtu is not None:
                 args.append(mtu)
             return subprocess.run(
-                args, input="test-key\n", text=True, capture_output=True,
+                args, input="test-password\ntest-key\n", text=True, capture_output=True,
                 env={**os.environ, "HOME": directory,
                      "PATH": f"{directory}:/usr/bin:/bin"}, timeout=5,
             )
