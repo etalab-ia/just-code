@@ -5,6 +5,34 @@ set -eu
 PORT="${1:-4096}"
 PASSWORD="${2:-albert-dev-pass}"
 USERNAME="${3:-opencode}"
+TART_MTU="${4-1280}"
+
+# Include macOS network tools in the non-login guest agent environment.
+export PATH="$PATH:/usr/sbin:/sbin"
+if [ "$TART_MTU" != auto ]; then
+    case "$TART_MTU" in
+        1[234][0-9][0-9]|1500)
+            if [ "$TART_MTU" -lt 1280 ]; then
+                echo "TART_MTU must be auto or an integer from 1280 to 1500." >&2
+                exit 1
+            fi
+            ;;
+        *)
+            echo "TART_MTU must be auto or an integer from 1280 to 1500." >&2
+            exit 1
+            ;;
+    esac
+    interface=$(route -n get default | awk '$1 == "interface:" { print $2; exit }')
+    if [ -z "$interface" ]; then
+        echo "Cannot determine the guest default network interface for TART_MTU." >&2
+        exit 1
+    fi
+    if ! sudo -n ifconfig "$interface" mtu "$TART_MTU"; then
+        echo "Cannot apply TART_MTU=$TART_MTU to $interface (passwordless sudo required)." >&2
+        exit 1
+    fi
+    echo "Guest network: $interface MTU=$TART_MTU"
+fi
 
 # Read ALBERT_API_KEY from stdin (first line) to keep it out of process arguments
 IFS= read -r ALBERT_API_KEY || ALBERT_API_KEY=

@@ -14,6 +14,7 @@ msb_image := "ghcr.io/anomalyco/opencode:latest"
 msb_sandbox := "albert-opencode-sandbox"
 tart_image := env_var_or_default("TART_IMAGE", "ghcr.io/cirruslabs/macos-sonoma-base:latest")
 tart_vm := "albert-opencode-tart"
+tart_mtu := env_var_or_default("TART_MTU", "1280")
 password := env_var_or_default("OPENCODE_SERVER_PASSWORD", "albert-dev-pass")
 username := env_var_or_default("OPENCODE_SERVER_USERNAME", "opencode")
 port := "4096"
@@ -312,7 +313,7 @@ _tart-up:
         echo "Launching OpenCode server inside {{ tart_vm }}..."
         printf '%s\n' "$ALBERT_API_KEY" |
             nohup tart exec -i "{{ tart_vm }}" /bin/sh "$guest_bootstrap" \
-                "{{ port }}" "{{ password }}" "{{ username }}" >> "$log_file" 2>&1 &
+                "{{ port }}" "{{ password }}" "{{ username }}" {{ quote(tart_mtu) }} >> "$log_file" 2>&1 &
     }
 
     wait_for_agent() {
