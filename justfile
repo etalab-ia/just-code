@@ -13,7 +13,8 @@ msb_config := justfile_directory() / "microsandbox.yaml"
 msb_image := "ghcr.io/anomalyco/opencode:latest"
 msb_sandbox := "albert-opencode-sandbox"
 tart_image := env_var_or_default("TART_IMAGE", "ghcr.io/cirruslabs/macos-tahoe-base:latest")
-# Derive a stable VM name from the image reference (e.g. opencode-tahoe-base-latest)
+# Derive a stable VM name from the image reference; the opencode- prefix marks
+# just-code-managed VMs that `just stop` owns (e.g. opencode-tahoe-base-latest).
 tart_vm := "opencode-" + replace(replace(trim_start_matches(file_name(tart_image), "macos-"), ":", "-"), "@sha256", "-sha256")
 tart_mtu := env_var_or_default("TART_MTU", "1280")
 password := env_var_or_default("OPENCODE_SERVER_PASSWORD", "albert-dev-pass")
@@ -323,6 +324,12 @@ _tart-start:
                 "{{ port }}" "{{ username }}" {{ quote(tart_mtu) }} >> "$log_file" 2>&1 &
     }
 
+    stage_bootstrap() {
+        mkdir -p "$stage_dir"
+        cp "{{ justfile_directory() }}/tart-bootstrap.sh" "$stage_dir/tart-bootstrap.sh"
+        chmod 644 "$stage_dir/tart-bootstrap.sh"
+    }
+
     wait_for_agent() {
         i=0
         while [ "$i" -lt 60 ]; do
@@ -359,6 +366,7 @@ _tart-start:
             echo "Failed to stop the previous opencode process; refusing to relaunch." >&2
             exit 1
         fi
+        stage_bootstrap
         launch_backend
         exit 0
     fi
@@ -370,9 +378,7 @@ _tart-start:
 
     # Stage only the bootstrap script in a dedicated read-only share so the
     # guest never sees the checkout, its .env, or other host-only files.
-    mkdir -p "$stage_dir"
-    cp "{{ justfile_directory() }}/tart-bootstrap.sh" "$stage_dir/tart-bootstrap.sh"
-    chmod 644 "$stage_dir/tart-bootstrap.sh"
+    stage_bootstrap
 
     echo "Starting {{ tart_vm }} with Tart..."
     nohup tart run --no-graphics \

@@ -86,6 +86,8 @@ Le nom de la VM dérive du nom de fichier de la référence image (`:` et `@sha2
 
 Deux images partageant le même nom de fichier (par exemple issues de registres différents) produiraient le même nom de VM. Les images Cirrus Labs de Tahoe et Sonoma ont des noms de fichier distincts et constituent le cas pris en charge.
 
+Le préfixe `opencode-` identifie les VM gérées par just-code : `just stop` arrête toutes les VM Tart locales portant ce préfixe. Ne pas le réutiliser pour des VM créées en dehors de just-code.
+
 Pour basculer vers Sonoma :
 
 ```dotenv
