@@ -71,6 +71,28 @@ Après modification, exécuter **`just stop` puis `just code --tart`** pour réa
 
 Sur macOS, autoriser également le terminal utilisé dans **Réglages Système > Confidentialité et sécurité > Réseau local**. Cette permission couvre l'accès à l'adresse privée de la VM, même si elle tourne sur le même Mac. Sans elle, le TUI peut rester en attente ou signaler une erreur trompeuse d'URL/port.
 
+### Images Tart et nommage des VM
+
+L'image par défaut est **macOS Tahoe** figée par digest immuable :
+
+```dotenv
+TART_IMAGE=ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e
+```
+
+Les noms de VM sont stables et distincts :
+- **Tahoe** (par défaut) : `albert-opencode-tahoe`
+- **Sonoma** (`:latest`) : `albert-opencode-tart` (nom historique préservé)
+
+Pour basculer vers Sonoma :
+
+```dotenv
+TART_IMAGE=ghcr.io/cirruslabs/macos-sonoma-base:latest
+```
+
+Les VM Tahoe et Sonoma coexistent ; changer `TART_IMAGE` cible l'autre VM sans supprimer la précédente. Utiliser `tart list` pour voir les VM disponibles et `tart delete <nom>` pour libérer l'espace.
+
+**Note** : Tahoe est nécessaire pour Xcode 26.3+. Sonoma ne supporte que Xcode 16.2 et versions antérieures.
+
 ## Utilisation
 
 ```bash
