@@ -1,5 +1,5 @@
 # Albert Code / OpenCode sandbox experiment
-# Requires: just, opencode CLI, ALBERT_API_KEY, and Docker or Microsandbox
+# Requires: just, opencode CLI, ALBERT_API_KEY, and Docker, Microsandbox, or Tart
 
 set dotenv-load
 
@@ -12,6 +12,11 @@ project_dir := env_var_or_default("PROJECT_DIR", justfile_directory() / "workspa
 msb_config := justfile_directory() / "microsandbox.yaml"
 msb_image := "ghcr.io/anomalyco/opencode:latest"
 msb_sandbox := "albert-opencode-sandbox"
+tart_image := env_var_or_default("TART_IMAGE", "ghcr.io/cirruslabs/macos-tahoe-base:latest")
+# Derive a stable VM name from the image reference; the opencode- prefix marks
+# just-code-managed VMs that `just stop` owns (e.g. opencode-tahoe-base-latest).
+tart_vm := "opencode-" + replace(replace(trim_start_matches(file_name(tart_image), "macos-"), ":", "-"), "@sha256", "-sha256")
+tart_mtu := env_var_or_default("TART_MTU", "1280")
 password := env_var_or_default("OPENCODE_SERVER_PASSWORD", "albert-dev-pass")
 username := env_var_or_default("OPENCODE_SERVER_USERNAME", "opencode")
 port := "4096"
@@ -21,13 +26,13 @@ default: help
 
 # List available commands
 help:
-    @echo "Runtime: pass --docker or --microsandbox."
-    @echo "Set RUNTIME=docker|microsandbox in .env to omit the flag."
+    @echo "Runtime: pass --docker, --microsandbox, or --tart."
+    @echo "Set RUNTIME=docker|microsandbox|tart in .env to omit the flag."
     @echo
     @just --list
 
 # Start a sandbox and attach the native OpenCode TUI
-code runtime_flag=preferred_runtime_flag: (up runtime_flag)
+code runtime_flag=preferred_runtime_flag: (start runtime_flag)
     #!/usr/bin/env sh
     set -eu
     runtime=$(just _runtime-name {{ quote(runtime_flag) }})
@@ -57,8 +62,25 @@ code runtime_flag=preferred_runtime_flag: (up runtime_flag)
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    until curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/global/health" 2>/dev/null | grep -q healthy; do sleep 0.5; done
-    opencode attach "http://localhost:{{ port }}" --username "{{ username }}" --password "{{ password }}"
+    case "$runtime" in
+        tart)
+            endpoint="http://$(tart ip --wait 60 "{{ tart_vm }}"):{{ port }}"
+            ;;
+        *)
+            endpoint="http://localhost:{{ port }}"
+            ;;
+    esac
+
+    start=$(date +%s)
+    until curl -s --max-time 5 -u {{ quote(username + ":" + password) }} "$endpoint/global/health" 2>/dev/null | grep -q healthy; do
+        now=$(date +%s)
+        if [ $((now - start)) -ge 120 ]; then
+            echo "Backend did not become healthy within 120s. Check 'just logs --$runtime'." >&2
+            exit 1
+        fi
+        sleep 0.5
+    done
+    opencode attach "$endpoint" --username {{ quote(username) }} --password {{ quote(password) }}
 
 # Stop every currently running just-code sandbox
 stop:
@@ -77,9 +99,9 @@ stop:
     exit "$status"
 
 # Start the selected backend without attaching the TUI
-up runtime_flag=preferred_runtime_flag:
+start runtime_flag=preferred_runtime_flag:
     @just _prepare-runtime {{ quote(runtime_flag) }}
-    @just _dispatch up {{ quote(runtime_flag) }}
+    @just _dispatch start {{ quote(runtime_flag) }}
 
 # Build or pull the selected runtime image
 build runtime_flag=preferred_runtime_flag:
@@ -96,10 +118,26 @@ logs runtime_flag=preferred_runtime_flag:
 
 # Check the single running backend and registered Albert provider
 check:
-    @just _single-running-runtime >/dev/null
-    @curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/global/health"
-    @echo
-    @curl -s -u "{{ username }}:{{ password }}" "http://localhost:{{ port }}/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
+    #!/usr/bin/env sh
+    set -eu
+    runtime=$(just _single-running-runtime)
+    case "$runtime" in
+        tart)
+            vm=$(tart list 2>/dev/null | awk '$1 == "local" && $2 ~ /^opencode-/ && $NF == "running" { print $2 }')
+            set -- $vm
+            case "$#" in
+                0) echo "No just-code Tart VM is running." >&2; exit 1 ;;
+                1) endpoint="http://$(tart ip --wait 60 "$1"):{{ port }}" ;;
+                *) echo "Multiple Tart VMs are running; run 'just stop' first." >&2; exit 1 ;;
+            esac
+            ;;
+        *)
+            endpoint="http://localhost:{{ port }}"
+            ;;
+    esac
+    curl -s -u {{ quote(username + ":" + password) }} "$endpoint/global/health"
+    echo
+    curl -s -u {{ quote(username + ":" + password) }} "$endpoint/provider" | python3 -c "import json,sys; d=json.load(sys.stdin); p=[x for x in d['all'] if x['id']=='albert']; print('albert provider:', 'registered, default', d['default'].get('albert') if p else 'MISSING')"
 
 # Open a shell inside the selected runtime
 shell runtime_flag=preferred_runtime_flag:
@@ -118,8 +156,9 @@ _runtime-name runtime_flag:
     case {{ quote(runtime_flag) }} in
         --docker) echo docker ;;
         --microsandbox) echo microsandbox ;;
-        "") echo "Select --docker or --microsandbox, or set RUNTIME in .env." >&2; exit 2 ;;
-        *) echo "Expected --docker or --microsandbox (RUNTIME must be docker or microsandbox)." >&2; exit 2 ;;
+        --tart) echo tart ;;
+        "") echo "Select --docker, --microsandbox, or --tart, or set RUNTIME in .env." >&2; exit 2 ;;
+        *) echo "Expected --docker, --microsandbox, or --tart (RUNTIME must be docker, microsandbox, or tart)." >&2; exit 2 ;;
     esac
 
 _dispatch action runtime_flag:
@@ -127,7 +166,7 @@ _dispatch action runtime_flag:
     set -eu
     action={{ quote(action) }}
     case "$action" in
-        up|build|restart|logs|shell|clean|doctor) ;;
+        start|build|restart|logs|shell|clean|doctor) ;;
         *) echo "Unsupported runtime action: $action" >&2; exit 2 ;;
     esac
     runtime=$(just _runtime-name {{ quote(runtime_flag) }})
@@ -140,6 +179,9 @@ _running-runtimes:
     fi
     if command -v msb >/dev/null 2>&1 && msb ls --running -q 2>/dev/null | grep -Fxq "{{ msb_sandbox }}"; then
         echo microsandbox
+    fi
+    if command -v tart >/dev/null 2>&1 && tart list 2>/dev/null | awk '$1 == "local" && $2 ~ /^opencode-/ && $NF == "running" { print $2 }' | grep -q .; then
+        echo tart
     fi
 
 _single-running-runtime:
@@ -184,7 +226,7 @@ _prepare-runtime runtime_flag:
         *) echo "Keeping $conflicts running."; exit 1 ;;
     esac
 
-_docker-up:
+_docker-start:
     #!/usr/bin/env sh
     set -eu
     : "${ALBERT_API_KEY:?Set ALBERT_API_KEY in the environment or .env}"
@@ -197,7 +239,7 @@ _docker-stop:
 _docker-build:
     docker compose build --quiet
 
-_docker-restart: _docker-stop _docker-build _docker-up
+_docker-restart: _docker-stop _docker-build _docker-start
 
 _docker-logs:
     docker compose logs --follow
@@ -213,7 +255,7 @@ _docker-doctor:
     @docker compose version
     @echo "Docker runtime is ready."
 
-_microsandbox-up:
+_microsandbox-start:
     #!/usr/bin/env sh
     set -eu
     : "${ALBERT_API_KEY:?Set ALBERT_API_KEY in the environment or .env}"
@@ -252,7 +294,7 @@ _microsandbox-stop:
 _microsandbox-build:
     msb pull "{{ msb_image }}"
 
-_microsandbox-restart: _microsandbox-clean _microsandbox-up
+_microsandbox-restart: _microsandbox-clean _microsandbox-start
 
 _microsandbox-logs:
     msb logs --follow "{{ msb_sandbox }}"
@@ -271,3 +313,128 @@ _microsandbox-clean:
 
 _microsandbox-doctor:
     msb doctor
+
+_tart-start:
+    #!/usr/bin/env sh
+    set -eu
+    : "${ALBERT_API_KEY:?Set ALBERT_API_KEY in the environment or .env}"
+    mkdir -p "{{ project_dir }}"
+    mkdir -p "$HOME/.local/state/just-code"
+
+    log_file="$HOME/.local/state/just-code/tart.log"
+    stage_dir="$HOME/.local/state/just-code/tart"
+    guest_bootstrap="/Volumes/My Shared Files/just-code/tart-bootstrap.sh"
+
+    launch_backend() {
+        echo "Launching OpenCode server inside {{ tart_vm }}..."
+        printf '%s\n%s\n' {{ quote(password) }} "$ALBERT_API_KEY" |
+            nohup tart exec -i "{{ tart_vm }}" /bin/sh "$guest_bootstrap" \
+                "{{ port }}" {{ quote(username) }} {{ quote(tart_mtu) }} >> "$log_file" 2>&1 &
+    }
+
+    stage_bootstrap() {
+        mkdir -p "$stage_dir"
+        cp "{{ justfile_directory() }}/tart-bootstrap.sh" "$stage_dir/tart-bootstrap.sh"
+        chmod 644 "$stage_dir/tart-bootstrap.sh"
+    }
+
+    wait_for_agent() {
+        i=0
+        while [ "$i" -lt 60 ]; do
+            if tart exec "{{ tart_vm }}" true 2>/dev/null; then
+                return 0
+            fi
+            sleep 1
+            i=$((i + 1))
+        done
+        echo "Timed out waiting for {{ tart_vm }} guest agent." >&2
+        return 1
+    }
+
+    if tart list 2>/dev/null | awk '$1 == "local" && $2 == "{{ tart_vm }}" && $NF == "running" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        wait_for_agent || exit 1
+        vm_ip=$(tart ip --wait 60 "{{ tart_vm }}" 2>/dev/null || true)
+        if [ -n "$vm_ip" ] && curl -s --max-time 5 -u {{ quote(username + ":" + password) }} "http://$vm_ip:{{ port }}/global/health" 2>/dev/null | grep -q healthy; then
+            echo "{{ tart_vm }} is running with a healthy OpenCode backend."
+            exit 0
+        fi
+        echo "{{ tart_vm }} is running but OpenCode is not healthy; restarting backend..."
+        tart exec "{{ tart_vm }}" pkill -x opencode 2>/dev/null || true
+        i=0
+        while tart exec "{{ tart_vm }}" pgrep -x opencode >/dev/null 2>&1; do
+            i=$((i + 1))
+            if [ "$i" -ge 10 ]; then
+                echo "opencode ignored SIGTERM; force-killing..." >&2
+                tart exec "{{ tart_vm }}" pkill -9 -x opencode 2>/dev/null || true
+                break
+            fi
+            sleep 1
+        done
+        if tart exec "{{ tart_vm }}" pgrep -x opencode >/dev/null 2>&1; then
+            echo "Failed to stop the previous opencode process; refusing to relaunch." >&2
+            exit 1
+        fi
+        stage_bootstrap
+        launch_backend
+        exit 0
+    fi
+
+    if ! tart list 2>/dev/null | awk '$1 == "local" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        echo "Cloning {{ tart_image }} to {{ tart_vm }}..."
+        tart clone "{{ tart_image }}" "{{ tart_vm }}"
+    fi
+
+    # Stage only the bootstrap script in a dedicated read-only share so the
+    # guest never sees the checkout, its .env, or other host-only files.
+    stage_bootstrap
+
+    echo "Starting {{ tart_vm }} with Tart..."
+    nohup tart run --no-graphics \
+        --dir="workspace:{{ project_dir }}" \
+        --dir="just-code:$stage_dir:ro" \
+        "{{ tart_vm }}" > "$log_file" 2>&1 &
+
+    wait_for_agent || exit 1
+    launch_backend
+
+_tart-stop:
+    #!/usr/bin/env sh
+    set -eu
+    vms=$(tart list 2>/dev/null | awk '$1 == "local" && $2 ~ /^opencode-/ && $NF == "running" { print $2 }')
+    if [ -z "$vms" ]; then
+        echo "No just-code Tart VM is running."
+        exit 0
+    fi
+    status=0
+    for vm in $vms; do
+        echo "Stopping $vm..."
+        tart stop "$vm" --timeout 5 || status=$?
+    done
+    exit "$status"
+
+_tart-build:
+    tart pull "{{ tart_image }}"
+
+_tart-restart: _tart-clean _tart-start
+
+_tart-logs:
+    tail -f "$HOME/.local/state/just-code/tart.log"
+
+_tart-shell:
+    tart exec -it "{{ tart_vm }}" /bin/zsh
+
+_tart-clean:
+    #!/usr/bin/env sh
+    set -eu
+    if tart list 2>/dev/null | awk '$1 == "local" && $2 == "{{ tart_vm }}" && $NF == "running" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        tart stop "{{ tart_vm }}" --timeout 5
+    fi
+    if tart list 2>/dev/null | awk '$1 == "local" { print $2 }' | grep -Fxq "{{ tart_vm }}"; then
+        tart delete "{{ tart_vm }}"
+    else
+        echo "{{ tart_vm }} does not exist."
+    fi
+
+_tart-doctor:
+    @tart --version
+    @echo "Tart runtime is ready."
