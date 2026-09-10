@@ -34,9 +34,12 @@ if [ "$TART_MTU" != auto ]; then
 fi
 
 # Read secrets from stdin: server password on line 1, API key on line 2.
-IFS= read -r PASSWORD || PASSWORD=
+if IFS= read -r PASSWORD; then
+    : # password provided on stdin (an empty line means no auth)
+else
+    PASSWORD="albert-dev-pass"
+fi
 IFS= read -r ALBERT_API_KEY || ALBERT_API_KEY=
-PASSWORD="${PASSWORD:-albert-dev-pass}"
 
 # Check if opencode is installed
 if ! command -v opencode >/dev/null 2>&1; then

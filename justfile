@@ -71,11 +71,11 @@ code runtime_flag=preferred_runtime_flag: (start runtime_flag)
             ;;
     esac
 
-    i=0
-    until curl -s -u "{{ username }}:{{ password }}" "$endpoint/global/health" 2>/dev/null | grep -q healthy; do
-        i=$((i + 1))
-        if [ "$i" -ge 240 ]; then
-            echo "Backend did not become healthy within 120s. Check 'just logs $runtime'." >&2
+    start=$(date +%s)
+    until curl -s --max-time 5 -u "{{ username }}:{{ password }}" "$endpoint/global/health" 2>/dev/null | grep -q healthy; do
+        now=$(date +%s)
+        if [ $((now - start)) -ge 120 ]; then
+            echo "Backend did not become healthy within 120s. Check 'just logs --$runtime'." >&2
             exit 1
         fi
         sleep 0.5
