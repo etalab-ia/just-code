@@ -13,8 +13,8 @@ msb_config := justfile_directory() / "microsandbox.yaml"
 msb_image := "ghcr.io/anomalyco/opencode:latest"
 msb_sandbox := "albert-opencode-sandbox"
 tart_image := env_var_or_default("TART_IMAGE", "ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e")
-# Preserve legacy VM name for Sonoma, use stable names for Tahoe variants
-tart_vm := if tart_image == "ghcr.io/cirruslabs/macos-sonoma-base:latest" { "albert-opencode-tart" } else if tart_image == "ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e" { "albert-opencode-tahoe" } else { replace(replace(tart_image, ":", "-"), "@", "-") }
+# Derive a stable VM name from the image reference (e.g. opencode-tahoe-base-latest)
+tart_vm := "opencode-" + replace(replace(trim_start_matches(file_name(tart_image), "macos-"), ":", "-"), "@sha256", "-sha256")
 tart_mtu := env_var_or_default("TART_MTU", "1280")
 password := env_var_or_default("OPENCODE_SERVER_PASSWORD", "albert-dev-pass")
 username := env_var_or_default("OPENCODE_SERVER_USERNAME", "opencode")
