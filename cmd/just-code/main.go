@@ -40,43 +40,100 @@ func run(args []string) (int, error) {
 	cfg := justcode.LoadConfigEnv()
 	d := justcode.NewDispatcher(cfg)
 
-	cmd, rest := resolveCommand(args)
+	parsed, err := parseArgs(args)
+	if err != nil {
+		return 2, err
+	}
+	if parsed.version {
+		printBuildInfo()
+		return 0, nil
+	}
 
-	switch cmd {
-	case "code":
-		return codeCmd(d, cfg, rest)
-	case "start":
-		return lifecycleCmd(d, rest, "start")
+	// These actions resolve their own target (or need none), so they must not be
+	// gated on a configured runtime.
+	switch parsed.action {
+	case "help":
+		usage()
+		return 0, nil
+	case "version":
+		printBuildInfo()
+		return 0, nil
 	case "stop":
 		return 0, d.StopAll(context.Background())
 	case "check":
 		return 0, d.Check(context.Background(), nil)
-	case "logs", "shell", "build", "restart", "clean", "doctor":
-		return lifecycleCmd(d, rest, cmd)
-	case "version", "-v", "--version":
-		printBuildInfo()
-		return 0, nil
-	case "help", "-h", "--help":
-		usage()
-		return 0, nil
+	}
+
+	rt, err := justcode.ResolveRuntime(parsed.runtime, os.Getenv("RUNTIME"))
+	if err != nil {
+		return 2, err
+	}
+
+	switch parsed.action {
+	case "attach":
+		return attachCmd(d, cfg, rt)
+	case "start", "logs", "shell", "build", "restart", "clean", "doctor":
+		return lifecycleCmd(d, rt, parsed.action)
 	default:
-		return 0, fmt.Errorf("unknown command %q", cmd)
+		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
 	}
 }
 
-// resolveCommand maps an invocation to a command and its remaining arguments.
-// A bare invocation (or one leading with a flag) runs `code`, matching the old
-// `just code` default; a known command name dispatches to its handler.
-func resolveCommand(args []string) (string, []string) {
-	if len(args) == 0 {
-		return "code", nil
+// parsedArgs is the result of a single pass over argv. Commands, runtime flags,
+// and the version flag may appear in any order.
+type parsedArgs struct {
+	// action is "attach" (the default) or one of the named commands.
+	action string
+	// runtime is the raw --docker/--microsandbox/--tart flag, or "".
+	runtime string
+	version bool
+}
+
+// actionNames lists the commands that can be typed. It deliberately excludes
+// "code": a bare invocation starts the backend and attaches the TUI, so there
+// is no such command to type. "version" is accepted as a convenience beyond the
+// TypeScript CLI, which exposes only -V/--version.
+var actionNames = map[string]bool{
+	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
+	"build": true, "restart": true, "clean": true, "doctor": true,
+	"help": true, "version": true,
+}
+
+func runtimeFlag(a string) bool {
+	return a == "--docker" || a == "--microsandbox" || a == "--tart"
+}
+
+// parseArgs mirrors the TypeScript CLI's parser: a single pass that accepts the
+// action and runtime flags in any order, and rejects anything unrecognised
+// rather than silently ignoring it.
+func parseArgs(args []string) (parsedArgs, error) {
+	var p parsedArgs
+	actionSet := false
+	for _, a := range args {
+		switch {
+		case runtimeFlag(a):
+			if p.runtime != "" && p.runtime != a {
+				return p, fmt.Errorf("Select exactly one runtime.")
+			}
+			p.runtime = a
+		case a == "-h" || a == "--help":
+			p.action = "help"
+			actionSet = true
+		case a == "-V" || a == "--version" || a == "-v":
+			p.version = true
+		case actionNames[a] && !actionSet:
+			p.action = a
+			actionSet = true
+		case a == "code":
+			return p, fmt.Errorf("The 'code' command was removed: run 'just-code' with no command to start the backend and attach the TUI.")
+		default:
+			return p, fmt.Errorf("Unknown argument: %s", a)
+		}
 	}
-	switch args[0] {
-	case "code", "start", "stop", "check", "logs", "shell", "build", "restart", "clean", "doctor", "version", "-v", "--version", "help", "-h", "--help":
-		return args[0], args[1:]
-	default:
-		return "code", args
+	if p.action == "" {
+		p.action = "attach"
 	}
+	return p, nil
 }
 
 // argOr returns args[i], or def when it is absent or empty.
@@ -87,11 +144,7 @@ func argOr(args []string, i int, def string) string {
 	return def
 }
 
-func codeCmd(d *justcode.Dispatcher, cfg justcode.Config, args []string) (int, error) {
-	rt, err := resolveRuntimeArg(args)
-	if err != nil {
-		return 0, err
-	}
+func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime) (int, error) {
 	b, err := d.Backend(rt)
 	if err != nil {
 		return 0, err
@@ -130,11 +183,7 @@ func codeCmd(d *justcode.Dispatcher, cfg justcode.Config, args []string) (int, e
 	return code, attachErr
 }
 
-func lifecycleCmd(d *justcode.Dispatcher, args []string, action string) (int, error) {
-	rt, err := resolveRuntimeArg(args)
-	if err != nil {
-		return 0, err
-	}
+func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (int, error) {
 	b, err := d.Backend(rt)
 	if err != nil {
 		return 0, err
@@ -192,26 +241,6 @@ func askToStop(ctx context.Context, d *justcode.Dispatcher, rt justcode.Runtime)
 	}
 }
 
-// resolveRuntimeArg scans args for --docker, --microsandbox, or --tart (the
-// explicit flag wins) and otherwise falls back to RUNTIME.
-func resolveRuntimeArg(args []string) (justcode.Runtime, error) {
-	var flag string
-	for _, a := range args {
-		switch a {
-		case "--docker", "--microsandbox", "--tart":
-			if flag != "" && flag != a {
-				return "", fmt.Errorf("conflicting runtime flags %q and %q", flag, a)
-			}
-			flag = a
-		default:
-			if strings.HasPrefix(a, "--") {
-				return "", fmt.Errorf("unknown argument %q", a)
-			}
-		}
-	}
-	return justcode.ResolveRuntime(flag, os.Getenv("RUNTIME"))
-}
-
 func isTTY() bool {
 	info, err := os.Stdin.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
@@ -232,20 +261,25 @@ func usage() {
 	fmt.Println(`just-code - a single Go binary for the OpenCode sandbox
 
 Usage:
-  just-code [--docker|--microsandbox|--tart]         start a backend and attach the OpenCode TUI
-  just-code code [--docker|--microsandbox|--tart]    alias for the bare command
-  just-code start [--docker|--microsandbox|--tart]   start a backend without attaching
-  just-code stop                                     stop every running runtime
-  just-code check                                    health + Albert provider of the running backend
-  just-code logs --docker|--microsandbox|--tart      follow the backend log
-  just-code shell --docker|--microsandbox|--tart     open a shell inside the runtime
-  just-code build --docker|--microsandbox|--tart     pull or update the runtime image
-  just-code restart --docker|--microsandbox|--tart   recreate the sandbox (destructive)
-  just-code clean --docker|--microsandbox|--tart     remove the sandbox and its state
-  just-code doctor --docker|--microsandbox|--tart    verify the runtime installation
-  just-code version                                  print the build identity
-  just-code help                                     show this help
+  just-code [command] [--docker | --microsandbox | --tart]
 
-Runtime: pass --docker, --microsandbox, or --tart explicitly, or set RUNTIME in
-.env to omit the flag. An explicit flag always takes precedence.`)
+Run just-code with no command to start the selected backend and attach the
+native OpenCode TUI.
+
+Commands:
+  start      Start a backend without attaching the TUI
+  stop       Stop every running just-code runtime
+  check      Check the active backend and Albert provider
+  build      Build or pull the selected runtime image
+  restart    Recreate the selected sandbox (destructive)
+  logs       Follow logs for the selected runtime
+  shell      Open a shell inside the selected runtime
+  clean      Remove the selected sandbox and its local state
+  doctor     Check the selected runtime installation
+  version    Print the build identity
+  help       Show this help
+
+Runtime selection:
+  Pass --docker, --microsandbox, or --tart. RUNTIME in .env is used when no
+  flag is provided; an explicit flag always takes precedence.`)
 }
