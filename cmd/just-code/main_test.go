@@ -1,40 +1,87 @@
 package main
 
 import (
-	"slices"
+	"strings"
 	"testing"
 )
 
-func TestResolveCommand(t *testing.T) {
+func TestParseArgs(t *testing.T) {
 	cases := []struct {
-		name string
-		args []string
-		cmd  string
-		rest []string
+		name    string
+		args    []string
+		action  string
+		runtime string
+		version bool
 	}{
-		{"bare is code", nil, "code", nil},
-		{"leading runtime flag is code", []string{"--tart"}, "code", []string{"--tart"}},
-		{"leading docker flag is code", []string{"--docker", "--wait"}, "code", []string{"--docker", "--wait"}},
-		{"explicit code", []string{"code", "--microsandbox"}, "code", []string{"--microsandbox"}},
-		{"start", []string{"start", "--tart"}, "start", []string{"--tart"}},
-		{"stop", []string{"stop"}, "stop", nil},
-		{"check", []string{"check"}, "check", nil},
-		{"logs", []string{"logs", "--tart"}, "logs", []string{"--tart"}},
-		{"help", []string{"help"}, "help", nil},
-		{"version", []string{"version"}, "version", nil},
-		{"version long flag", []string{"--version"}, "--version", nil},
-		{"version short flag", []string{"-v"}, "-v", nil},
-		{"unknown word is treated as code args", []string{"--podman"}, "code", []string{"--podman"}},
+		{"bare attaches", nil, "attach", "", false},
+		{"leading runtime flag attaches", []string{"--tart"}, "attach", "--tart", false},
+		{"runtime flag then command", []string{"--docker", "start"}, "start", "--docker", false},
+		{"command then runtime flag", []string{"start", "--docker"}, "start", "--docker", false},
+		{"explicit start", []string{"start", "--microsandbox"}, "start", "--microsandbox", false},
+		{"stop", []string{"stop"}, "stop", "", false},
+		{"check", []string{"check"}, "check", "", false},
+		{"logs", []string{"logs", "--tart"}, "logs", "--tart", false},
+		{"help", []string{"help"}, "help", "", false},
+		{"help flag", []string{"--help"}, "help", "", false},
+		{"version subcommand", []string{"version"}, "version", "", false},
+		{"version long flag", []string{"--version"}, "attach", "", true},
+		{"version short flag", []string{"-V"}, "attach", "", true},
+		{"version lowercase alias", []string{"-v"}, "attach", "", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd, rest := resolveCommand(c.args)
-			if cmd != c.cmd {
-				t.Errorf("cmd = %q, want %q", cmd, c.cmd)
+			got, err := parseArgs(c.args)
+			if err != nil {
+				t.Fatalf("parseArgs(%v): %v", c.args, err)
 			}
-			if !slices.Equal(rest, c.rest) {
-				t.Errorf("rest = %v, want %v", rest, c.rest)
+			if got.action != c.action {
+				t.Errorf("action = %q, want %q", got.action, c.action)
+			}
+			if got.runtime != c.runtime {
+				t.Errorf("runtime = %q, want %q", got.runtime, c.runtime)
+			}
+			if got.version != c.version {
+				t.Errorf("version = %v, want %v", got.version, c.version)
 			}
 		})
+	}
+}
+
+// TestParseArgsRejectsCode covers the deliberate break with the old CLI: the
+// `code` command is gone and the error explains the replacement.
+func TestParseArgsRejectsCode(t *testing.T) {
+	_, err := parseArgs([]string{"code"})
+	if err == nil {
+		t.Fatal("expected an error for the removed `code` command")
+	}
+	if !strings.Contains(err.Error(), "'code' command was removed") {
+		t.Fatalf("error = %q, want the migration message", err)
+	}
+}
+
+func TestParseArgsRejectsUnknown(t *testing.T) {
+	for _, args := range [][]string{{"foo"}, {"--podman"}, {"start", "stop"}, {"--docker", "--tart"}} {
+		if _, err := parseArgs(args); err == nil {
+			t.Errorf("parseArgs(%v): expected an error", args)
+		}
+	}
+}
+
+func TestParseArgsConflictingRuntimes(t *testing.T) {
+	_, err := parseArgs([]string{"--docker", "--tart"})
+	if err == nil || !strings.Contains(err.Error(), "Select exactly one runtime") {
+		t.Fatalf("error = %v, want the runtime conflict message", err)
+	}
+}
+
+// TestRunNeedsNoRuntimeForLocalActions guards a regression where the dispatch
+// resolved a runtime before handling actions that do not need one: `just-code
+// version` used to fail with "select --docker, ...".
+func TestRunNeedsNoRuntimeForLocalActions(t *testing.T) {
+	t.Setenv("RUNTIME", "")
+	for _, args := range [][]string{{"version"}, {"help"}, {"-V"}} {
+		if _, err := run(args); err != nil {
+			t.Errorf("run(%v) = %v, want no error", args, err)
+		}
 	}
 }

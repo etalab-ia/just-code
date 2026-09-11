@@ -110,10 +110,8 @@ Les VM Tahoe et Sonoma coexistent ; changer `TART_IMAGE` cible l'autre VM sans s
 ```bash
 just-code                        # démarre (RUNTIME) et attache le TUI
 just-code --tart                 # démarre Tart et attache le TUI
-just-code code --docker          # alias explicite de la commande par défaut
-just-code code --microsandbox    # démarre Microsandbox et attache le TUI
-just-code code --tart            # démarre Tart (VM macOS) et attache le TUI
-just-code code                   # utilise RUNTIME défini dans .env
+just-code --microsandbox         # démarre Microsandbox et attache le TUI
+just-code --docker               # démarre Docker et attache le TUI
 just-code start --tart           # démarre un backend sans attacher le TUI
 just-code stop                   # arrête tout runtime just-code actif
 just-code check                  # santé du backend actif + provider Albert
@@ -127,7 +125,9 @@ just-code version                # identifie le binaire (version, commit, platef
 just-code help                   # liste les commandes
 ```
 
-Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code code`, `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just-code code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code stop` détecte l'état réel et ignore volontairement `RUNTIME`.
+Lancer `just-code` sans commande démarre le backend sélectionné et attache le TUI natif OpenCode. Les commandes et les flags de runtime peuvent être donnés dans n'importe quel ordre (`just-code --docker start` et `just-code start --docker` sont équivalents). La commande `code` n'existe pas : la taper renvoie une erreur explicite.
+
+Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code stop` détecte l'état réel et ignore volontairement `RUNTIME`.
 
 Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
 
@@ -205,6 +205,31 @@ go vet ./...          # propre
 # Compilation croisée native (sans CGO)
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o just-code-darwin-arm64 ./cmd/just-code
 ```
+
+## Intégration continue et publication
+
+Deux workflows GitHub Actions accompagnent le CLI :
+
+- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race` et compilation.
+- **`release.yml`** (sur un tag `v*`) : compilation des quatre binaires (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`), génération de `SHA256SUMS`, puis création ou mise à jour de la release GitHub avec les binaires bruts et les sommes de contrôle.
+
+Le tag est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=$GITHUB_REF_NAME"`, donc `just-code version` affiche exactement la version publiée.
+
+Pour publier :
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Vérification après téléchargement (les sommes sont générées depuis `dist/`, donc les chemins correspondent aux fichiers publiés) :
+
+```bash
+curl -fsSLO https://github.com/etalab-ia/just-code/releases/latest/download/just-code-darwin-arm64
+curl -fsSLO https://github.com/etalab-ia/just-code/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-hoc (requise pour exécuter un binaire non signé sur Apple Silicon). `curl` ne pose pas l'attribut `com.apple.quarantine`, donc Gatekeeper ne bloque pas ce chemin d'installation ; un téléchargement via navigateur reste à débloquer avec `xattr -d com.apple.quarantine <binaire>`. La notarisation complète exigerait une adhésion Apple Developer et un certificat Developer ID.
 
 ## Choix de conception
 
