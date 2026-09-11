@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 
-BOOTSTRAP = Path(__file__).resolve().parents[1] / "tart-bootstrap.sh"
+BOOTSTRAP = Path(__file__).resolve().parents[1] / "assets" / "tart-bootstrap.sh"
 
 
 class TartMtuTests(unittest.TestCase):

@@ -20,9 +20,12 @@ type ExecResult struct {
 	Stderr   string
 }
 
-// Runner executes host-side commands (the `tart` CLI and friends).
+// Runner executes host-side commands (the `tart`, `docker`, and `msb` CLIs).
 type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (ExecResult, error)
+	// RunEnv runs a command with extra environment variables appended to the
+	// inherited environment.
+	RunEnv(ctx context.Context, env []string, name string, args ...string) (ExecResult, error)
 }
 
 // Starter launches a detached, long-running process (tart run / tart exec -i)
@@ -36,7 +39,18 @@ type Starter interface {
 type OSRunner struct{}
 
 func (OSRunner) Run(ctx context.Context, name string, args ...string) (ExecResult, error) {
+	return osRun(ctx, nil, name, args...)
+}
+
+func (OSRunner) RunEnv(ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
+	return osRun(ctx, env, name, args...)
+}
+
+func osRun(ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	out, err := cmd.CombinedOutput()
 	res := ExecResult{Stdout: string(out), Stderr: string(out)}
 	if err != nil {
@@ -84,10 +98,30 @@ func runOK(r Runner, ctx context.Context, name string, args ...string) error {
 	return nil
 }
 
+// runEnvOK is runOK with additional environment variables.
+func runEnvOK(r Runner, ctx context.Context, env []string, name string, args ...string) error {
+	res, err := r.RunEnv(ctx, env, name, args...)
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("%s %s failed (exit %d)", name, strings.Join(args, " "), res.ExitCode)
+	}
+	return nil
+}
+
 // RunInteractive runs a command attached to the current terminal's stdio. It is
 // used for `logs --follow` and interactive `shell`/`attach` commands.
 func RunInteractive(name string, args ...string) error {
+	return RunInteractiveEnv(nil, name, args...)
+}
+
+// RunInteractiveEnv is RunInteractive with additional environment variables.
+func RunInteractiveEnv(env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
