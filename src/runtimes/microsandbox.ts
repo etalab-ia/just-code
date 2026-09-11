@@ -2,10 +2,11 @@ import { mkdir } from "node:fs/promises";
 
 import { materializeAssets } from "../assets.ts";
 import { requireAlbertApiKey } from "../config.ts";
+import { CliError } from "../errors.ts";
 import { isHealthy } from "../health.ts";
 import type { CommandRunner } from "../process.ts";
 import type { Config, RuntimeAdapter } from "../types.ts";
-import { foregroundChecked, printCommandOutput } from "./shared.ts";
+import { foregroundChecked, printCommandOutput, sleep } from "./shared.ts";
 
 export interface MsbSandbox {
   name: string;
@@ -55,9 +56,9 @@ export class MicrosandboxRuntime implements RuntimeAdapter {
     const env = { ALBERT_API_KEY: apiKey };
 
     const sandbox = await this.findSandbox(config);
+
     if (sandbox?.status === "running") {
-      const endpoint = this.endpoint(config);
-      if (await isHealthy(endpoint, config)) {
+      if (await isHealthy(this.endpoint(config), config)) {
         console.log(`${config.msbSandbox} is already running with a healthy backend.`);
         return;
       }
@@ -65,14 +66,7 @@ export class MicrosandboxRuntime implements RuntimeAdapter {
         `${config.msbSandbox} is running but its backend is not responding; ` +
           "restarting OpenCode inside the microVM...",
       );
-      await this.runner.checked("msb", [
-        "exec",
-        config.msbSandbox,
-        "--",
-        "sh",
-        "-c",
-        RELAUNCH_COMMAND,
-      ], { env });
+      await this.launchBackend(config, env);
       return;
     }
 
@@ -89,6 +83,10 @@ export class MicrosandboxRuntime implements RuntimeAdapter {
       ], { env });
       const result = await this.runner.checked("msb", ["start", config.msbSandbox], { env });
       printCommandOutput(result.stdout);
+      // Booting a stopped VM does not re-run the container entrypoint, so the
+      // backend has to be launched explicitly.
+      console.log(`Launching OpenCode inside ${config.msbSandbox}...`);
+      await this.launchBackend(config, env);
       return;
     }
 
@@ -116,6 +114,34 @@ export class MicrosandboxRuntime implements RuntimeAdapter {
       config.msbImage,
     ], { env });
     printCommandOutput(result.stdout);
+  }
+
+  /**
+   * Run the container entrypoint inside a live VM. Recreating the sandbox runs
+   * it automatically; booting an existing one does not, so the backend has to
+   * be started here. The guest agent can lag the VM by a moment after start,
+   * hence the bounded retry.
+   */
+  private async launchBackend(config: Config, env: Record<string, string>): Promise<void> {
+    const attempts = 10;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const result = await this.runner.run("msb", [
+        "exec",
+        config.msbSandbox,
+        "--",
+        "sh",
+        "-c",
+        RELAUNCH_COMMAND,
+      ], { env });
+      if (result.exitCode === 0) return;
+      if (attempt === attempts) {
+        throw new CliError(
+          `Failed to launch OpenCode inside ${config.msbSandbox}: ` +
+            (result.stderr.trim() || `exit code ${result.exitCode}`),
+        );
+      }
+      await sleep(2_000);
+    }
   }
 
   async stop(config: Config): Promise<void> {

@@ -6,6 +6,7 @@ import { CliError, errorMessage } from "./errors.ts";
 import { RuntimeManager } from "./manager.ts";
 import { SystemCommandRunner } from "./process.ts";
 import { confirm } from "./prompts.ts";
+import { DEFAULT_ACTION } from "./types.ts";
 import packageJson from "../package.json" with { type: "json" };
 
 export const VERSION = packageJson.version;
@@ -48,7 +49,11 @@ export async function run(argv = process.argv.slice(2)): Promise<number> {
     }
 
     const ignoresRuntimePreference = parsed.action === "stop" || parsed.action === "check";
-    const config = loadConfig(process.env, process.cwd(), !parsed.runtime && !ignoresRuntimePreference);
+    const config = loadConfig(process.env, process.cwd(), {
+      validateRuntime: !parsed.runtime && !ignoresRuntimePreference,
+      // Only the default attach flow waits for backend health.
+      validateStartTimeout: parsed.action === DEFAULT_ACTION,
+    });
     const manager = new RuntimeManager(new SystemCommandRunner(), confirm);
     return await manager.execute(parsed.action, parsed.runtime, config);
   } catch (error) {

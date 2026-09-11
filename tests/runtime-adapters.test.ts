@@ -167,7 +167,7 @@ describe("Microsandbox start branches", () => {
     expect(runner.calls.some((call) => call.args[0] === "start")).toBe(false);
   });
 
-  test("starts an existing stopped sandbox without recreating it", async () => {
+  test("starts an existing stopped sandbox and launches the backend inside it", async () => {
     const runner = new StubRunner();
     runner.responses["msb ls"] = { exitCode: 0, stdout: MSB_LS_STOPPED, stderr: "" };
 
@@ -176,6 +176,8 @@ describe("Microsandbox start branches", () => {
     expect(runner.calls.some((call) => call.args[0] === "modify")).toBe(true);
     expect(runner.calls.some((call) => call.args[0] === "start")).toBe(true);
     expect(runner.calls.some((call) => call.args[0] === "run")).toBe(false);
+    // Booting a stopped VM does not re-run the container entrypoint.
+    expect(runner.calls.some((call) => call.args[0] === "exec")).toBe(true);
   });
 
   test("creates the sandbox when it is absent", async () => {

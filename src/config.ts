@@ -33,7 +33,7 @@ export function validateTartMtu(value: string): string {
   return value;
 }
 
-export function validateStartTimeout(value: string): number {
+export function parseStartTimeout(value: string): number {
   if (!/^\d+$/.test(value)) {
     throw new CliError("JUST_CODE_START_TIMEOUT must be a whole number of seconds.", 2);
   }
@@ -49,11 +49,23 @@ function expandPath(value: string, cwd: string, home: string): string {
   return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
 }
 
+export interface LoadConfigOptions {
+  /** Validate RUNTIME. Disable for commands that never select a runtime. */
+  validateRuntime?: boolean;
+  /**
+   * Validate JUST_CODE_START_TIMEOUT. Only the default attach flow reads it, so
+   * a typo there must not block `stop`, `clean`, `logs`, `doctor` or `check`.
+   */
+  validateStartTimeout?: boolean;
+}
+
 export function loadConfig(
   env: Record<string, string | undefined> = process.env,
   cwd = process.cwd(),
-  validateRuntime = true,
+  options: LoadConfigOptions = {},
 ): Config {
+  const validateRuntime = options.validateRuntime ?? true;
+  const validateStartTimeout = options.validateStartTimeout ?? true;
   const home = env.HOME || homedir();
   const runtimeValue = env.RUNTIME?.trim();
   if (runtimeValue && !isRuntimeName(runtimeValue) && validateRuntime) {
@@ -75,9 +87,10 @@ export function loadConfig(
     tartImage,
     tartVm: tartVmName(tartImage),
     tartMtu: env.TART_MTU ?? "1280",
-    startTimeoutMs: env.JUST_CODE_START_TIMEOUT
-      ? validateStartTimeout(env.JUST_CODE_START_TIMEOUT)
-      : DEFAULT_START_TIMEOUT_MS,
+    startTimeoutMs:
+      env.JUST_CODE_START_TIMEOUT && validateStartTimeout
+        ? parseStartTimeout(env.JUST_CODE_START_TIMEOUT)
+        : DEFAULT_START_TIMEOUT_MS,
   };
   if (runtimeValue && isRuntimeName(runtimeValue)) config.runtime = runtimeValue;
   if (env.ALBERT_API_KEY) config.albertApiKey = env.ALBERT_API_KEY;

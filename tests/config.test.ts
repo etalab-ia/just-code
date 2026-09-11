@@ -30,8 +30,24 @@ describe("configuration", () => {
   });
 
   test("can ignore an invalid runtime for commands that do not select one", () => {
-    const config = loadConfig({ HOME: "/home/test", RUNTIME: "podman" }, "/project", false);
+    const config = loadConfig({ HOME: "/home/test", RUNTIME: "podman" }, "/project", {
+      validateRuntime: false,
+    });
     expect(config.runtime).toBeUndefined();
+  });
+
+  test("skips start-timeout validation when the command never waits for health", () => {
+    // A typo must not block `stop`, `clean`, `logs`, `doctor` or `check`.
+    const config = loadConfig(
+      { HOME: "/home/test", JUST_CODE_START_TIMEOUT: "600s" },
+      "/project",
+      { validateStartTimeout: false },
+    );
+    expect(config.startTimeoutMs).toBe(300_000);
+
+    expect(() =>
+      loadConfig({ HOME: "/home/test", JUST_CODE_START_TIMEOUT: "600s" }, "/project"),
+    ).toThrow("JUST_CODE_START_TIMEOUT");
   });
 
   test("defaults the start timeout to five minutes and accepts an override", () => {
