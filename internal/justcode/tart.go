@@ -309,7 +309,7 @@ func (t *Tart) Start(ctx context.Context) error {
 		if err == nil && ip != "" {
 			client := &http.Client{Timeout: 5 * time.Second}
 			endpoint := "http://" + ip + ":" + strconv.Itoa(DefaultPort)
-			if healthy, _ := probeHealthy(ctx, client, endpoint, cfg.Username, cfg.Password); healthy {
+			if ProbeHealth(ctx, client, endpoint, cfg.Username, cfg.Password).Healthy {
 				fmt.Printf("%s is running with a healthy OpenCode backend.\n", cfg.TartVM)
 				return nil
 			}

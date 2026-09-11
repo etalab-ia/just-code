@@ -75,6 +75,14 @@ func (d *DockerRuntime) Start(ctx context.Context) error {
 	if err := os.MkdirAll(d.cfg.ProjectDir, 0o755); err != nil {
 		return err
 	}
+	// Report the backend's real state rather than assuming that a running
+	// container means a working backend.
+	if running, err := d.IsRunning(ctx); err == nil && running {
+		if endpoint, err := d.Endpoint(ctx); err == nil {
+			ReportRunningHealth(ctx, d.ID(), endpoint, d.cfg.Username, d.cfg.Password)
+		}
+		return nil
+	}
 	return d.compose(ctx, "up", "-d", "--quiet-pull")
 }
 

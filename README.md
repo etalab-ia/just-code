@@ -149,6 +149,18 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 6. **Détache-toi (Ctrl+C / quitte), conserve le runtime, puis relance `just-code code --docker` ou `just-code code --microsandbox`** — continuité de session et reconnexion.
 7. **« Envoie les logs de ton serveur de dev dans /tmp/server.log et montre-moi les dernières lignes. »** — comportement du scratch space hors du répertoire projet.
 
+## Dépannage
+
+### Le backend ne devient jamais healthy
+
+Si un sandbox tourne déjà mais que son backend OpenCode est mort (ou a été créé lors d'un run précédent avec un autre `.env`), `just-code code` l'indique immédiatement (`... is running but the OpenCode backend is not healthy`) puis attend en affichant l'avancement. À l'expiration des 120 s, l'erreur précise le dernier résultat observé, ce qui distingue les causes :
+
+- `HTTP 401: unauthorized` — le mot de passe attendu par le backend diffère de `OPENCODE_SERVER_PASSWORD`. Un sandbox créé lors d'un run précédent conserve l'ancien mot de passe. Utiliser `just-code restart --<runtime>` (destructif) ou `just-code stop` puis `just-code code --<runtime>`.
+- `connection refused` — le backend n'écoute pas ; `just-code logs --<runtime>` montre la sortie du bootstrap invité.
+- `HTTP 200: ...` sans `healthy` — l'application démarre encore ; attendre quelques secondes.
+
+Le réflexe le plus simple reste `just-code stop` suivi d'un relancement de `just-code code --<runtime>`.
+
 ## Portage Go
 
 Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les trois runtimes via une bibliothèque testée (`internal/justcode`), sans dépendance externe.
