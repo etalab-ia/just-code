@@ -273,7 +273,7 @@ func (t *Tart) clone(ctx context.Context) error {
 func (t *Tart) startVM(ctx context.Context) error {
 	args := []string{
 		"run", "--no-graphics",
-		"--dir=workspace:" + t.Config.ProjectDir,
+		"--dir=workspace:" + t.Config.WorkspaceDir,
 		"--dir=just-code:" + TartStageDir(t.StateDir) + ":ro",
 		t.Config.TartVM,
 	}
@@ -290,7 +290,7 @@ func (t *Tart) Start(ctx context.Context) error {
 	if err := ValidateMTU(cfg.TartMTU); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.ProjectDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(t.StateDir, 0o755); err != nil {

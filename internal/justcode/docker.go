@@ -41,7 +41,7 @@ func (d *DockerRuntime) ensureAssets() (string, error) {
 // next to the materialized Compose file.
 func (d *DockerRuntime) composeEnv() []string {
 	return []string{
-		"PROJECT_DIR=" + d.cfg.ProjectDir,
+		"WORKSPACE_DIR=" + d.cfg.WorkspaceDir,
 		"ALBERT_API_KEY=" + d.cfg.APIKey,
 		"OPENCODE_SERVER_PASSWORD=" + d.cfg.Password,
 		"OPENCODE_SERVER_USERNAME=" + d.cfg.Username,
@@ -72,7 +72,7 @@ func (d *DockerRuntime) Start(ctx context.Context) error {
 	if d.cfg.APIKey == "" {
 		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
 	}
-	if err := os.MkdirAll(d.cfg.ProjectDir, 0o755); err != nil {
+	if err := os.MkdirAll(d.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
 	// Report the backend's real state rather than assuming that a running

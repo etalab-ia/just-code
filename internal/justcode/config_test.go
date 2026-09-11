@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func lookupFrom(m map[string]string) EnvLookup {
@@ -58,7 +59,7 @@ func TestLoadConfigCustom(t *testing.T) {
 		"OPENCODE_SERVER_PASSWORD": "s3cret",
 		"TART_IMAGE":               "ghcr.io/cirruslabs/macos-sonoma-base:latest",
 		"TART_MTU":                 "1400",
-		"PROJECT_DIR":              "/tmp/proj",
+		"WORKSPACE_DIR":            "/tmp/proj",
 		"ALBERT_API_KEY":           "key123",
 	}))
 	if cfg.Username != "albert" || cfg.Password != "s3cret" || !cfg.PasswordSet {
@@ -67,8 +68,55 @@ func TestLoadConfigCustom(t *testing.T) {
 	if cfg.TartVM != "opencode-sonoma-base-latest" {
 		t.Errorf("TartVM = %q", cfg.TartVM)
 	}
-	if cfg.TartMTU != "1400" || cfg.ProjectDir != "/tmp/proj" || cfg.APIKey != "key123" {
+	if cfg.TartMTU != "1400" || cfg.WorkspaceDir != "/tmp/proj" || cfg.APIKey != "key123" {
 		t.Errorf("custom values wrong: %+v", cfg)
+	}
+}
+
+// TestLoadConfigLegacyProjectDir covers the deprecated PROJECT_DIR fallback.
+func TestLoadConfigLegacyProjectDir(t *testing.T) {
+	cfg := LoadConfig(lookupFrom(map[string]string{"PROJECT_DIR": "/tmp/legacy"}))
+	if cfg.WorkspaceDir != "/tmp/legacy" {
+		t.Errorf("WorkspaceDir = %q, want the legacy PROJECT_DIR value", cfg.WorkspaceDir)
+	}
+}
+
+// TestLoadConfigWorkspaceDirWins covers precedence when both are set.
+func TestLoadConfigWorkspaceDirWins(t *testing.T) {
+	cfg := LoadConfig(lookupFrom(map[string]string{
+		"PROJECT_DIR":   "/tmp/legacy",
+		"WORKSPACE_DIR": "/tmp/current",
+	}))
+	if cfg.WorkspaceDir != "/tmp/current" {
+		t.Errorf("WorkspaceDir = %q, want WORKSPACE_DIR to win", cfg.WorkspaceDir)
+	}
+}
+
+func TestLoadConfigStartTimeout(t *testing.T) {
+	if got := LoadConfig(lookupFrom(nil)).StartTimeout; got != DefaultStartTimeout {
+		t.Errorf("default StartTimeout = %v, want %v", got, DefaultStartTimeout)
+	}
+	cfg := LoadConfig(lookupFrom(map[string]string{"JUST_CODE_START_TIMEOUT": "42"}))
+	if cfg.StartTimeoutErr != nil {
+		t.Fatalf("unexpected parse error: %v", cfg.StartTimeoutErr)
+	}
+	if cfg.StartTimeout != 42*time.Second {
+		t.Errorf("StartTimeout = %v, want 42s", cfg.StartTimeout)
+	}
+}
+
+// TestLoadConfigInvalidStartTimeoutIsNotFatal records the deferred-validation
+// contract: an invalid JUST_CODE_START_TIMEOUT is stored rather than returned,
+// so commands that never start a runtime are not blocked by it.
+func TestLoadConfigInvalidStartTimeoutIsNotFatal(t *testing.T) {
+	for _, bad := range []string{"abc", "0", "-5", "1.5"} {
+		cfg := LoadConfig(lookupFrom(map[string]string{"JUST_CODE_START_TIMEOUT": bad}))
+		if cfg.StartTimeoutErr == nil {
+			t.Errorf("JUST_CODE_START_TIMEOUT=%q: expected a deferred parse error", bad)
+		}
+		if cfg.StartTimeout != DefaultStartTimeout {
+			t.Errorf("JUST_CODE_START_TIMEOUT=%q: StartTimeout = %v, want the default", bad, cfg.StartTimeout)
+		}
 	}
 }
 

@@ -132,9 +132,13 @@ Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément.
 Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
 
 ```bash
-export PROJECT_DIR="$HOME/Code/mon-projet"
+export WORKSPACE_DIR="$HOME/Code/mon-projet"
 just-code code --microsandbox
 ```
+
+`PROJECT_DIR` reste accepté mais est déprécié (un avertissement le signale).
+
+**Les montages sont figés à la création.** Docker recrée le conteneur quand la configuration change, mais Microsandbox et Tart fixent le volume au moment de la création du sandbox ou de la VM. Changer `WORKSPACE_DIR` sur un sandbox Microsandbox existant n'a donc aucun effet : `just-code` détecte l'écart et prévient. Pour l'appliquer, il faut recréer avec `just-code restart --microsandbox` (destructif). Tart ne permet pas cette détection ; le changement de répertoire y est donc uniquement documenté.
 
 Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte : `http://localhost:3000`, etc. pour Docker et Microsandbox. Avec Tart, la VM macOS est une machine à part entière sur le réseau NAT : les previews et le TUI OpenCode utilisent l'adresse de la VM, par exemple `open "http://$(tart ip opencode-tahoe-base-latest):3000"`.
 
@@ -154,11 +158,17 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 ### Le backend ne devient jamais healthy
 
-Si un sandbox tourne déjà mais que son backend OpenCode est mort (ou a été créé lors d'un run précédent avec un autre `.env`), `just-code code` l'indique immédiatement (`... is running but the OpenCode backend is not healthy`) puis attend en affichant l'avancement. À l'expiration des 120 s, l'erreur précise le dernier résultat observé, ce qui distingue les causes :
+Une VM Microsandbox survit à un redémarrage, mais son entrée de conteneur (`/.msb/scripts/start`, qui lance `opencode serve`) ne s'exécute qu'à la **création**. Une VM qui revient au démarrage est donc `running` sans aucun processus OpenCode : « VM démarrée » n'est pas « backend prêt ». C'est la cause la plus fréquente d'un backend qui ne devient jamais healthy.
+
+`just-code` en tient compte et se répare : si le sandbox tourne mais que le backend ne répond pas, l'entrée est relancée dans la microVM ; s'il est arrêté, il est démarré puis l'entrée est relancée (un simple `msb start` ne rejoue pas l'entrée). Le même correctif s'applique à Tart, où le processus OpenCode obsolète est tué avant relance.
+
+Si malgré cela le backend ne répond pas, `just-code code` attend en affichant l'avancement (300 s par défaut, réglable via `JUST_CODE_START_TIMEOUT` en secondes). À l'expiration, l'erreur précise le dernier résultat observé, ce qui distingue les causes :
 
 - `HTTP 401: unauthorized` — le mot de passe attendu par le backend diffère de `OPENCODE_SERVER_PASSWORD`. Un sandbox créé lors d'un run précédent conserve l'ancien mot de passe. Utiliser `just-code restart --<runtime>` (destructif) ou `just-code stop` puis `just-code code --<runtime>`.
 - `connection refused` — le backend n'écoute pas ; `just-code logs --<runtime>` montre la sortie du bootstrap invité.
 - `HTTP 200: ...` sans `healthy` — l'application démarre encore ; attendre quelques secondes.
+
+Le premier démarrage d'un sandbox Microsandbox installe ~384 Mio de paquets dans la microVM et peut dépasser largement une minute ; les démarrages suivants sont rapides (l'installation est marquée dans `/var/lib/just-code/toolchain-ready`).
 
 Le réflexe le plus simple reste `just-code stop` suivi d'un relancement de `just-code code --<runtime>`.
 
@@ -172,9 +182,17 @@ Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `
 
 Les trois régressions shell de l'ancien `justfile` sont corrigées et couvertes par `go test` :
 
-- **Délai de santé à horloge murale** : la boucle attend une échéance de 120 s mesurée en temps réel, avec un timeout de 5 s par requête (une connexion bloquée ne contourne plus la limite).
+- **Délai de santé à horloge murale** : la boucle attend une échéance mesurée en temps réel (300 s par défaut, `JUST_CODE_START_TIMEOUT` en secondes), avec un timeout de 5 s par requête (une connexion bloquée ne contourne plus la limite).
 - **Mot de passe vide préservé** : `OPENCODE_SERVER_PASSWORD=""` signifie « pas d'authentification », au lieu de retomber silencieusement sur `albert-dev-pass` (le défaut de `docker-compose.yml` est corrigé de la même manière).
 - **Surface des flags** : `--docker`, `--microsandbox` et `--tart` sont reconnus (flag explicite prioritaire sur `RUNTIME`), et les messages d'erreur reflètent exactement cette surface.
+
+Défauts découverts ensuite et corrigés dans le même esprit :
+
+- **Auto-réparation du backend Microsandbox** : découverte via `msb ls` (les codes de sortie de `msb inspect` ne sont pas fiables), relance de l'entrée de conteneur quand la VM tourne sans backend, avec nouvelle tentative bornée pendant que l'agent invité démarre.
+- **Clé API transmise explicitement à `msb`** : `msb` résout le secret `ALBERT_API_KEY` depuis l'environnement de l'hôte ; la variable est donc passée explicitement aux commandes `msb`.
+- **Montages figés à la création** : `WORKSPACE_DIR` remplace `PROJECT_DIR` (déprécié, encore honoré), et Microsandbox avertit quand le montage détecté diffère de la configuration.
+- **Pré-vol `opencode`** : le CLI de l'hôte est vérifié avant de démarrer un runtime, avec la commande d'installation.
+- **Validation différée de `JUST_CODE_START_TIMEOUT`** : une valeur malformée bloque la commande d'attachement, pas `stop`, `clean`, `logs`, `doctor` ni `check`.
 
 Contrats comportementaux reproduits : secrets (`ALBERT_API_KEY` et mot de passe) transmis sur l'entrée standard, jamais dans les arguments ; isolation par préfixe `opencode-` ; endpoints de santé ; clampage de MTU (1280-1500 ou `auto`) validé sur l'hôte avant le boot de la VM ; relance du backend (SIGTERM puis SIGKILL après 10 sondes) ; détection des runtimes actifs et résolution de conflits.
 

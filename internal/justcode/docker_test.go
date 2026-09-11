@@ -26,10 +26,10 @@ func newTestDocker(t *testing.T, runner Runner) *DockerRuntime {
 		runner = defaultDockerRunner()
 	}
 	d := NewDockerRuntime(Config{
-		APIKey:     "key",
-		ProjectDir: t.TempDir(),
-		Username:   "opencode",
-		Password:   "pw",
+		APIKey:       "key",
+		WorkspaceDir: t.TempDir(),
+		Username:     "opencode",
+		Password:     "pw",
 	})
 	d.Runner = runner
 	d.AssetsDir = t.TempDir()
@@ -37,7 +37,7 @@ func newTestDocker(t *testing.T, runner Runner) *DockerRuntime {
 }
 
 func TestDockerStartRequiresAPIKey(t *testing.T) {
-	d := NewDockerRuntime(Config{ProjectDir: t.TempDir()})
+	d := NewDockerRuntime(Config{WorkspaceDir: t.TempDir()})
 	if err := d.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "ALBERT_API_KEY") {
 		t.Fatalf("expected API key error, got %v", err)
 	}
@@ -75,7 +75,7 @@ func TestDockerComposeEnv(t *testing.T) {
 	}
 	env := strings.Join(r.lastEnv, "\n")
 	for _, want := range []string{
-		"PROJECT_DIR=" + d.cfg.ProjectDir,
+		"WORKSPACE_DIR=" + d.cfg.WorkspaceDir,
 		"ALBERT_API_KEY=key",
 		"OPENCODE_SERVER_PASSWORD=pw",
 		"OPENCODE_SERVER_USERNAME=opencode",
@@ -89,11 +89,11 @@ func TestDockerComposeEnv(t *testing.T) {
 func TestDockerComposePreservesEmptyPassword(t *testing.T) {
 	r := defaultDockerRunner()
 	d := NewDockerRuntime(Config{
-		APIKey:      "key",
-		ProjectDir:  t.TempDir(),
-		Username:    "opencode",
-		Password:    "",
-		PasswordSet: true,
+		APIKey:       "key",
+		WorkspaceDir: t.TempDir(),
+		Username:     "opencode",
+		Password:     "",
+		PasswordSet:  true,
 	})
 	d.Runner = r
 	d.AssetsDir = t.TempDir()

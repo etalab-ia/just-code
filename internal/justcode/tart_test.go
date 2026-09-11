@@ -64,14 +64,14 @@ func newTestTart(t *testing.T, runner Runner) *Tart {
 	t.Helper()
 	return &Tart{
 		Config: Config{
-			TartVM:      "opencode-tahoe-base-latest",
-			TartImage:   DefaultTartImage,
-			Username:    "opencode",
-			Password:    "pw",
-			PasswordSet: true,
-			TartMTU:     "1280",
-			ProjectDir:  t.TempDir(),
-			APIKey:      "key",
+			TartVM:       "opencode-tahoe-base-latest",
+			TartImage:    DefaultTartImage,
+			Username:     "opencode",
+			Password:     "pw",
+			PasswordSet:  true,
+			TartMTU:      "1280",
+			WorkspaceDir: t.TempDir(),
+			APIKey:       "key",
 		},
 		Runner:           runner,
 		Starter:          &fakeStarter{},
