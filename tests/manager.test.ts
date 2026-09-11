@@ -8,6 +8,7 @@ import type { Config, RuntimeAdapter, RuntimeName } from "../src/types.ts";
 
 class FakeRunner implements CommandRunner {
   readonly foregroundCalls: string[] = [];
+  hasExternalCommands = true;
 
   async run(): Promise<CommandResult> {
     return { exitCode: 0, stdout: "", stderr: "" };
@@ -27,7 +28,7 @@ class FakeRunner implements CommandRunner {
   }
 
   commandExists(): boolean {
-    return true;
+    return this.hasExternalCommands;
   }
 }
 
@@ -150,5 +151,15 @@ describe("runtime manager", () => {
     expect(runner.foregroundCalls).toEqual([]);
     expect(answers).toEqual([]);
     expect(docker.calls).toEqual(["start"]);
+  });
+
+  test("fails fast when the opencode CLI is missing, without starting a runtime", async () => {
+    const { manager, config, docker, runner } = setup();
+    runner.hasExternalCommands = false;
+
+    await expect(manager.execute("code", "docker", config)).rejects.toThrow(
+      "npm install -g opencode-ai",
+    );
+    expect(docker.calls).toEqual([]);
   });
 });

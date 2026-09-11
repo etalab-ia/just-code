@@ -95,6 +95,15 @@ export class RuntimeManager {
   }
 
   private async code(adapter: RuntimeAdapter, config: Config): Promise<number> {
+    // Fail before starting a runtime we could never attach to.
+    if (!this.runner.commandExists("opencode")) {
+      throw new CliError(
+        "The 'opencode' CLI is required to attach the TUI but was not found on PATH. " +
+          "Install it with 'npm install -g opencode-ai'.",
+        2,
+      );
+    }
+
     await adapter.start(config);
     const endpoint = await adapter.getEndpoint(config);
 
