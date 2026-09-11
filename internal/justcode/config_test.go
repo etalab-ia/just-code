@@ -1,6 +1,10 @@
 package justcode
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func lookupFrom(m map[string]string) EnvLookup {
 	return func(k string) (string, bool) {
@@ -65,5 +69,41 @@ func TestLoadConfigCustom(t *testing.T) {
 	}
 	if cfg.TartMTU != "1400" || cfg.ProjectDir != "/tmp/proj" || cfg.APIKey != "key123" {
 		t.Errorf("custom values wrong: %+v", cfg)
+	}
+}
+
+func TestParseDotenv(t *testing.T) {
+	m := parseDotenv("# comment\nALBERT_API_KEY=\nOPENCODE_SERVER_USERNAME=opencode\nexport OPENCODE_SERVER_PASSWORD=\"albert-dev-pass\"\nRUNTIME=tart\n")
+	if m["ALBERT_API_KEY"] != "" {
+		t.Errorf("empty value not preserved: %q", m["ALBERT_API_KEY"])
+	}
+	if m["OPENCODE_SERVER_USERNAME"] != "opencode" {
+		t.Errorf("username = %q", m["OPENCODE_SERVER_USERNAME"])
+	}
+	if m["OPENCODE_SERVER_PASSWORD"] != "albert-dev-pass" {
+		t.Errorf("quoted value not stripped: %q", m["OPENCODE_SERVER_PASSWORD"])
+	}
+	if m["RUNTIME"] != "tart" {
+		t.Errorf("RUNTIME = %q", m["RUNTIME"])
+	}
+	if _, ok := m["comment"]; ok {
+		t.Error("comment parsed as a key")
+	}
+}
+
+func TestApplyDotenvDoesNotOverrideExisting(t *testing.T) {
+	t.Setenv("EXISTING", "os-wins")
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("EXISTING=dotenv-wins\nNEWKEY=newval\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyDotenv(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("EXISTING"); got != "os-wins" {
+		t.Errorf("EXISTING = %q, want os-wins (os env wins)", got)
+	}
+	if got := os.Getenv("NEWKEY"); got != "newval" {
+		t.Errorf("NEWKEY = %q, want newval", got)
 	}
 }

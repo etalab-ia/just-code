@@ -1,9 +1,10 @@
-// Package justcode implements the just-code CLI as a tested Go library. This
-// first port covers the Tart runtime lifecycle — the source of the shell
-// fragility in the original justfile — plus the runtime-selection flag surface.
+// Package justcode implements the just-code CLI as a tested Go library — a
+// single binary replacing the original justfile across the Docker,
+// Microsandbox, and Tart runtimes.
 package justcode
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -16,6 +17,28 @@ const (
 	RuntimeMicrosandbox Runtime = "microsandbox"
 	RuntimeTart         Runtime = "tart"
 )
+
+// allRuntimes is the deterministic ordering used by `stop` and `check`, matching
+// the justfile's _running-runtimes.
+var allRuntimes = []Runtime{RuntimeDocker, RuntimeMicrosandbox, RuntimeTart}
+
+// Backend is the lifecycle of a single sandbox backend. Docker, Microsandbox,
+// and Tart each implement it.
+type Backend interface {
+	ID() Runtime
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+	Build(ctx context.Context) error
+	Restart(ctx context.Context) error
+	Clean(ctx context.Context) error
+	Doctor(ctx context.Context) error
+	// Logs and Shell are interactive and run attached to the terminal.
+	Logs() error
+	Shell() error
+	IsRunning(ctx context.Context) (bool, error)
+	// Endpoint returns the host-reachable backend URL when running.
+	Endpoint(ctx context.Context) (string, error)
+}
 
 // ResolveRuntime picks a runtime from an explicit --<runtime> flag and the
 // RUNTIME environment preference. The explicit flag always wins, mirroring the

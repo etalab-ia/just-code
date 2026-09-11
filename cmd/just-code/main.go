@@ -1,58 +1,153 @@
-// Command just-code is the Go port of the just-code CLI. This first PR
-// implements the Tart runtime lifecycle; Docker and Microsandbox remain in the
-// justfile.
+// Command just-code is a single Go binary that replaces the original justfile.
+// It manages an OpenCode backend in Docker, Microsandbox, or a Tart macOS VM.
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	code, err := run(os.Args[1:])
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "just-code:", err)
-		os.Exit(1)
+		if code == 0 {
+			code = 1
+		}
 	}
+	os.Exit(code)
 }
 
-func run(args []string) error {
+func run(args []string) (int, error) {
+	cfg := justcode.LoadConfigEnv()
+	d := justcode.NewDispatcher(cfg)
+
 	if len(args) == 0 {
 		usage()
-		return nil
+		return 0, nil
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "code":
+		return codeCmd(d, cfg, rest)
 	case "start":
-		return startCmd(rest)
+		return lifecycleCmd(d, rest, "start")
 	case "stop":
-		return stopCmd()
+		return 0, d.StopAll(context.Background())
 	case "check":
-		return checkCmd()
-	case "logs":
-		return logsCmd(rest)
-	case "build":
-		return buildCmd(rest)
-	case "clean":
-		return cleanCmd(rest)
-	case "doctor":
-		return doctorCmd(rest)
+		return 0, d.Check(context.Background(), nil)
+	case "logs", "shell", "build", "restart", "clean", "doctor":
+		return lifecycleCmd(d, rest, cmd)
 	case "help", "-h", "--help":
 		usage()
-		return nil
+		return 0, nil
 	default:
-		return fmt.Errorf("unknown command %q", cmd)
+		return 0, fmt.Errorf("unknown command %q", cmd)
 	}
 }
 
-// resolveRuntime scans args for --docker, --microsandbox, or --tart (the
+func codeCmd(d *justcode.Dispatcher, cfg justcode.Config, args []string) (int, error) {
+	rt, err := resolveRuntimeArg(args)
+	if err != nil {
+		return 0, err
+	}
+	b, err := d.Backend(rt)
+	if err != nil {
+		return 0, err
+	}
+	ctx := context.Background()
+	if err := d.Prepare(ctx, rt); err != nil {
+		return 0, err
+	}
+	if err := b.Start(ctx); err != nil {
+		return 0, err
+	}
+	endpoint, err := b.Endpoint(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, justcode.DefaultHealthConfig(), nil); err != nil {
+		return 0, err
+	}
+
+	attachErr := justcode.RunInteractive("opencode", "attach", endpoint, "--username", cfg.Username, "--password", cfg.Password)
+	code := exitCodeOf(attachErr)
+	askToStop(ctx, d, rt)
+	return code, attachErr
+}
+
+func lifecycleCmd(d *justcode.Dispatcher, args []string, action string) (int, error) {
+	rt, err := resolveRuntimeArg(args)
+	if err != nil {
+		return 0, err
+	}
+	b, err := d.Backend(rt)
+	if err != nil {
+		return 0, err
+	}
+	ctx := context.Background()
+
+	// start and restart refuse to run while another runtime is active.
+	if action == "start" || action == "restart" {
+		if err := d.Prepare(ctx, rt); err != nil {
+			return 0, err
+		}
+	}
+
+	switch action {
+	case "start":
+		err = b.Start(ctx)
+	case "build":
+		err = b.Build(ctx)
+	case "restart":
+		err = b.Restart(ctx)
+	case "clean":
+		err = b.Clean(ctx)
+	case "doctor":
+		err = b.Doctor(ctx)
+	case "logs":
+		err = b.Logs()
+	case "shell":
+		err = b.Shell()
+	default:
+		err = fmt.Errorf("unsupported action %q", action)
+	}
+	return 0, err
+}
+
+func askToStop(ctx context.Context, d *justcode.Dispatcher, rt justcode.Runtime) {
+	b, err := d.Backend(rt)
+	if err != nil {
+		return
+	}
+	running, err := b.IsRunning(ctx)
+	if err != nil || !running {
+		return
+	}
+	if !isTTY() {
+		fmt.Printf("%s left running. Run `just-code stop` when finished.\n", rt)
+		return
+	}
+	fmt.Printf("Stop the %s runtime? [y/N] ", rt)
+	reply, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(reply)) {
+	case "y", "yes":
+		_ = b.Stop(ctx)
+	default:
+		fmt.Printf("%s left running. Run `just-code stop` when finished.\n", rt)
+	}
+}
+
+// resolveRuntimeArg scans args for --docker, --microsandbox, or --tart (the
 // explicit flag wins) and otherwise falls back to RUNTIME.
-func resolveRuntime(args []string) (justcode.Runtime, error) {
+func resolveRuntimeArg(args []string) (justcode.Runtime, error) {
 	var flag string
 	for _, a := range args {
 		switch a {
@@ -70,120 +165,37 @@ func resolveRuntime(args []string) (justcode.Runtime, error) {
 	return justcode.ResolveRuntime(flag, os.Getenv("RUNTIME"))
 }
 
-func requireTart(rt justcode.Runtime) error {
-	if rt != justcode.RuntimeTart {
-		return fmt.Errorf("the %s runtime is not ported to Go yet; use `just code --%s`", rt, rt)
-	}
-	return nil
+func isTTY() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-func startCmd(args []string) error {
-	wait := false
-	var rest []string
-	for _, a := range args {
-		if a == "--wait" {
-			wait = true
-		} else {
-			rest = append(rest, a)
-		}
+func exitCodeOf(err error) int {
+	if err == nil {
+		return 0
 	}
-	rt, err := resolveRuntime(rest)
-	if err != nil {
-		return err
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
 	}
-	if err := requireTart(rt); err != nil {
-		return err
-	}
-	ctx := context.Background()
-	t := justcode.NewTart(justcode.LoadConfig(nil))
-	if err := t.Start(ctx); err != nil {
-		return err
-	}
-	if !wait {
-		return nil
-	}
-	ip, err := t.IP(ctx, t.Config.TartVM)
-	if err != nil {
-		return err
-	}
-	endpoint := "http://" + ip + ":" + strconv.Itoa(justcode.DefaultPort)
-	return justcode.WaitHealthy(ctx, endpoint, t.Config.Username, t.Config.Password, justcode.DefaultHealthConfig(), nil)
-}
-
-func stopCmd() error {
-	t := justcode.NewTart(justcode.LoadConfig(nil))
-	return t.StopAll(context.Background())
-}
-
-func checkCmd() error {
-	t := justcode.NewTart(justcode.LoadConfig(nil))
-	return t.Check(context.Background(), nil)
-}
-
-func logsCmd(args []string) error {
-	rt, err := resolveRuntime(args)
-	if err != nil {
-		return err
-	}
-	if err := requireTart(rt); err != nil {
-		return err
-	}
-	t := justcode.NewTart(justcode.LoadConfig(nil))
-	cmd := exec.Command("tail", "-f", t.LogPath())
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	return cmd.Run()
-}
-
-func buildCmd(args []string) error {
-	rt, err := resolveRuntime(args)
-	if err != nil {
-		return err
-	}
-	if err := requireTart(rt); err != nil {
-		return err
-	}
-	t := justcode.NewTart(justcode.LoadConfig(nil))
-	return t.Build(context.Background())
-}
-
-func cleanCmd(args []string) error {
-	rt, err := resolveRuntime(args)
-	if err != nil {
-		return err
-	}
-	if err := requireTart(rt); err != nil {
-		return err
-	}
-	t := justcode.NewTart(justcode.LoadConfig(nil))
-	return t.Clean(context.Background())
-}
-
-func doctorCmd(args []string) error {
-	rt, err := resolveRuntime(args)
-	if err != nil {
-		return err
-	}
-	if err := requireTart(rt); err != nil {
-		return err
-	}
-	t := justcode.NewTart(justcode.LoadConfig(nil))
-	return t.Doctor(context.Background())
+	return 1
 }
 
 func usage() {
-	fmt.Println(`just-code — Go port (Tart runtime)
+	fmt.Println(`just-code — a single Go binary for the OpenCode sandbox
 
 Usage:
-  just-code start [--tart] [--wait]   start the backend, optionally wait for health
-  just-code stop                      stop every running just-code runtime
-  just-code check                     health + Albert provider of the running backend
-  just-code logs --tart               follow the backend log
-  just-code build --tart              pull or update the base image
-  just-code clean --tart              stop and delete the VM and its state
-  just-code doctor --tart             verify the Tart installation
+  just-code code [--docker|--microsandbox|--tart]   start a backend and attach the OpenCode TUI
+  just-code start [--docker|--microsandbox|--tart]  start a backend without attaching
+  just-code stop                                     stop every running runtime
+  just-code check                                    health + Albert provider of the running backend
+  just-code logs --docker|--microsandbox|--tart      follow the backend log
+  just-code shell --docker|--microsandbox|--tart     open a shell inside the runtime
+  just-code build --docker|--microsandbox|--tart     pull or update the runtime image
+  just-code restart --docker|--microsandbox|--tart   recreate the sandbox (destructive)
+  just-code clean --docker|--microsandbox|--tart     remove the sandbox and its state
+  just-code doctor --docker|--microsandbox|--tart    verify the runtime installation
 
-Runtime: pass --tart explicitly, or set RUNTIME=tart in the environment.
-Docker and Microsandbox are not ported to Go yet; use the justfile for them.`)
+Runtime: pass --docker, --microsandbox, or --tart explicitly, or set RUNTIME in
+.env to omit the flag. An explicit flag always takes precedence.`)
 }

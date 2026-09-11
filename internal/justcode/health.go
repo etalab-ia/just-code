@@ -105,3 +105,41 @@ func probeHealthy(ctx context.Context, client *http.Client, endpoint, username, 
 	}
 	return strings.Contains(body, "healthy"), nil
 }
+
+type providerList struct {
+	All []struct {
+		ID string `json:"id"`
+	} `json:"all"`
+	Default map[string]any `json:"default"`
+}
+
+// CheckBackend reports the health response and Albert provider status of a
+// backend endpoint, mirroring `just check`.
+func CheckBackend(ctx context.Context, client *http.Client, endpoint, username, password string) error {
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	body, err := FetchBody(ctx, client, endpoint, username, password, "/global/health")
+	if err != nil {
+		return err
+	}
+	fmt.Println(body)
+
+	var pl providerList
+	if err := FetchJSON(ctx, client, endpoint, username, password, "/provider", &pl); err != nil {
+		return err
+	}
+	registered := false
+	for _, p := range pl.All {
+		if p.ID == "albert" {
+			registered = true
+			break
+		}
+	}
+	if registered {
+		fmt.Printf("albert provider: registered, default %v\n", pl.Default["albert"])
+	} else {
+		fmt.Println("albert provider: MISSING")
+	}
+	return nil
+}
