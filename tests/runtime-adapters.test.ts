@@ -118,13 +118,18 @@ describe("Microsandbox discovery", () => {
 });
 
 describe("Microsandbox start branches", () => {
-  const baseConfig = loadConfig({ HOME: "/home/test", ALBERT_API_KEY: "secret" }, "/project");
+  // A writable temp HOME keeps `mkdir(projectDir)` working outside root-run sandboxes.
+  async function tempConfig() {
+    const home = await mkdtemp(join(tmpdir(), "just-code-msb-branch-"));
+    temporaryDirectories.push(home);
+    return loadConfig({ HOME: home, ALBERT_API_KEY: "secret" }, home);
+  }
 
   test("relaunches the backend inside a running VM whose backend is dead", async () => {
     const runner = new StubRunner();
     runner.responses["msb ls"] = { exitCode: 0, stdout: MSB_LS_RUNNING, stderr: "" };
     // Port 1 refuses connections, so the health probe fails fast.
-    const config = { ...baseConfig, port: 1 };
+    const config = { ...(await tempConfig()), port: 1 };
 
     await new MicrosandboxRuntime(runner).start(config);
 
@@ -153,7 +158,7 @@ describe("Microsandbox start branches", () => {
     runner.responses["msb ls"] = { exitCode: 0, stdout: MSB_LS_RUNNING, stderr: "" };
     const port = server.port;
     if (port === undefined) throw new Error("test server did not report a port");
-    const config = { ...baseConfig, port };
+    const config = { ...(await tempConfig()), port };
 
     await new MicrosandboxRuntime(runner).start(config);
 
@@ -166,7 +171,7 @@ describe("Microsandbox start branches", () => {
     const runner = new StubRunner();
     runner.responses["msb ls"] = { exitCode: 0, stdout: MSB_LS_STOPPED, stderr: "" };
 
-    await new MicrosandboxRuntime(runner).start(baseConfig);
+    await new MicrosandboxRuntime(runner).start(await tempConfig());
 
     expect(runner.calls.some((call) => call.args[0] === "modify")).toBe(true);
     expect(runner.calls.some((call) => call.args[0] === "start")).toBe(true);
@@ -177,7 +182,7 @@ describe("Microsandbox start branches", () => {
     const runner = new StubRunner();
     runner.responses["msb ls"] = { exitCode: 0, stdout: "NAME  IMAGE  STATUS  CREATED\n", stderr: "" };
 
-    await new MicrosandboxRuntime(runner).start(baseConfig);
+    await new MicrosandboxRuntime(runner).start(await tempConfig());
 
     expect(runner.calls.some((call) => call.args[0] === "run")).toBe(true);
     expect(runner.calls.some((call) => call.args[0] === "start")).toBe(false);
