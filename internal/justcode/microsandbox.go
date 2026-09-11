@@ -53,7 +53,11 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 		return err
 	}
 	if running {
-		fmt.Printf("%s is already running.\n", msbSandbox)
+		// Report the backend's real state rather than assuming that a running
+		// sandbox means a working backend.
+		if endpoint, err := m.Endpoint(ctx); err == nil {
+			ReportRunningHealth(ctx, m.ID(), endpoint, m.cfg.Username, m.cfg.Password)
+		}
 		return nil
 	}
 

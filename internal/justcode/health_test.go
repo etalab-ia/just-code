@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,103 @@ func TestWaitHealthyPerRequestTimeout(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 600*time.Millisecond {
 		t.Fatalf("hung request bypassed deadline: took %v", elapsed)
 	}
+}
+
+func TestProbeHealthReportsStatus(t *testing.T) {
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"healthy"}`))
+	}))
+	defer healthy.Close()
+	if p := ProbeHealth(context.Background(), nil, healthy.URL, "opencode", "pw"); !p.Healthy || p.Status != 200 {
+		t.Fatalf("probe = %+v, want healthy 200", p)
+	}
+
+	unauthorized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("unauthorized"))
+	}))
+	defer unauthorized.Close()
+	p := ProbeHealth(context.Background(), nil, unauthorized.URL, "opencode", "wrong")
+	if p.Healthy {
+		t.Fatal("401 must not be reported as healthy")
+	}
+	if p.Status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", p.Status)
+	}
+	if !strings.Contains(p.Summary(), "401") {
+		t.Fatalf("summary = %q, want it to mention 401", p.Summary())
+	}
+}
+
+func TestProbeHealthConnectionRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // nothing is listening now
+
+	p := ProbeHealth(context.Background(), &http.Client{Timeout: time.Second}, url, "opencode", "pw")
+	if p.Healthy || p.Err == nil {
+		t.Fatalf("probe = %+v, want a connection error", p)
+	}
+	if strings.TrimSpace(p.Summary()) == "" {
+		t.Fatal("summary should describe the connection failure")
+	}
+}
+
+// TestWaitHealthyErrorCarriesLastProbe is the regression guard for the reported
+// bug: a 401 (wrong password) used to look identical to a dead backend, with no
+// output for two minutes and no diagnosis at the end.
+func TestWaitHealthyErrorCarriesLastProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("unauthorized"))
+	}))
+	defer srv.Close()
+
+	cfg := HealthConfig{Deadline: 60 * time.Millisecond, PollInterval: 5 * time.Millisecond, RequestTimeout: time.Second}
+	err := WaitHealthy(context.Background(), srv.URL, "opencode", "wrong", cfg, nil)
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	for _, want := range []string{"401", "unauthorized", srv.URL} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q should mention %q", err, want)
+		}
+	}
+}
+
+func TestWaitHealthyReportsProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("starting"))
+	}))
+	defer srv.Close()
+
+	var progress bytes.Buffer
+	cfg := HealthConfig{
+		Deadline:         200 * time.Millisecond,
+		PollInterval:     5 * time.Millisecond,
+		RequestTimeout:   time.Second,
+		Progress:         &progress,
+		ProgressInterval: 20 * time.Millisecond,
+	}
+	if err := WaitHealthy(context.Background(), srv.URL, "opencode", "pw", cfg, nil); err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	out := progress.String()
+	if !strings.Contains(out, "still waiting for the backend") {
+		t.Fatalf("progress output = %q, want a waiting line", out)
+	}
+	if !strings.Contains(out, srv.URL) {
+		t.Fatalf("progress output = %q, want the endpoint", out)
+	}
+}
+
+func TestReportRunningHealthDoesNotClaimHealth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("starting"))
+	}))
+	defer srv.Close()
+	// Smoke check: this must not panic and must not hang.
+	ReportRunningHealth(context.Background(), RuntimeMicrosandbox, srv.URL, "opencode", "pw")
 }
 
 func TestWaitHealthyContextCancel(t *testing.T) {

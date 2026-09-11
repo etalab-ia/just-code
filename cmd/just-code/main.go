@@ -104,8 +104,11 @@ func codeCmd(d *justcode.Dispatcher, cfg justcode.Config, args []string) (int, e
 	if err != nil {
 		return 0, err
 	}
-	if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, justcode.DefaultHealthConfig(), nil); err != nil {
-		return 0, err
+	fmt.Fprintf(os.Stderr, "Waiting for the backend at %s to become healthy...\n", endpoint)
+	health := justcode.DefaultHealthConfig()
+	health.Progress = os.Stderr
+	if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, health, nil); err != nil {
+		return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
 	}
 
 	attachErr := justcode.RunInteractive("opencode", "attach", endpoint, "--username", cfg.Username, "--password", cfg.Password)

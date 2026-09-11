@@ -8,8 +8,23 @@ import (
 	"testing"
 )
 
+// defaultDockerRunner reports the container as NOT running, so Start takes the
+// compose path. Tests that exercise the already-running branch pass their own
+// runner.
+func defaultDockerRunner() *fakeRunner {
+	return &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if strings.Join(args, " ") == "container top albert-opencode-sandbox" {
+			return ExecResult{ExitCode: 1}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+}
+
 func newTestDocker(t *testing.T, runner Runner) *DockerRuntime {
 	t.Helper()
+	if runner == nil {
+		runner = defaultDockerRunner()
+	}
 	d := NewDockerRuntime(Config{
 		APIKey:     "key",
 		ProjectDir: t.TempDir(),
@@ -29,15 +44,15 @@ func TestDockerStartRequiresAPIKey(t *testing.T) {
 }
 
 func TestDockerStartCommand(t *testing.T) {
-	r := &fakeRunner{}
+	r := defaultDockerRunner()
 	d := newTestDocker(t, r)
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if len(r.calls) != 1 {
-		t.Fatalf("expected one call, got %v", r.calls)
+	if !r.hasCall("docker compose ") {
+		t.Fatalf("expected a docker compose invocation, got %v", r.calls)
 	}
-	call := r.calls[0]
+	call := r.calls[len(r.calls)-1] // the probe precedes the compose call
 	if !strings.HasPrefix(call, "docker compose ") {
 		t.Fatalf("call = %q, want a docker compose invocation", call)
 	}
@@ -53,7 +68,7 @@ func TestDockerStartCommand(t *testing.T) {
 }
 
 func TestDockerComposeEnv(t *testing.T) {
-	r := &fakeRunner{}
+	r := defaultDockerRunner()
 	d := newTestDocker(t, r)
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -72,7 +87,7 @@ func TestDockerComposeEnv(t *testing.T) {
 }
 
 func TestDockerComposePreservesEmptyPassword(t *testing.T) {
-	r := &fakeRunner{}
+	r := defaultDockerRunner()
 	d := NewDockerRuntime(Config{
 		APIKey:      "key",
 		ProjectDir:  t.TempDir(),
@@ -92,7 +107,7 @@ func TestDockerComposePreservesEmptyPassword(t *testing.T) {
 }
 
 func TestDockerMaterializesAssets(t *testing.T) {
-	d := newTestDocker(t, &fakeRunner{})
+	d := newTestDocker(t, nil)
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -125,6 +140,22 @@ func TestDockerIsNotRunning(t *testing.T) {
 	on, err := d.IsRunning(context.Background())
 	if err != nil || on {
 		t.Fatalf("IsRunning = %v, %v; want false", on, err)
+	}
+}
+
+// TestDockerStartAlreadyRunningSkipsCompose guards the reported bug class: a
+// running container must not be reported as a healthy backend, and Start must
+// not re-run compose for it.
+func TestDockerStartAlreadyRunningSkipsCompose(t *testing.T) {
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		return ExecResult{ExitCode: 0} // container top succeeds => running
+	}}
+	d := newTestDocker(t, r)
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if r.hasCall("compose") {
+		t.Fatalf("compose should be skipped when already running; calls: %v", r.calls)
 	}
 }
 
