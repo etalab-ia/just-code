@@ -24,7 +24,8 @@ jobs:
       - run: shellcheck -s sh src/embedded/tart-bootstrap.sh.txt
       - run: bun run build
       - name: Generate checksums
-        run: sha256sum dist/just-code-* > dist/SHA256SUMS
+        working-directory: dist
+        run: sha256sum just-code-* > SHA256SUMS
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

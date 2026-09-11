@@ -47,17 +47,20 @@ Les releases GitHub publient un exécutable autonome pour `darwin-arm64`, `darwi
 
 `curl` n'ajoute pas l'attribut `com.apple.quarantine` au fichier téléchargé, contrairement à un navigateur. macOS ne bloque donc pas le binaire au premier lancement, ce qui compte tant qu'il n'est pas notarié.
 
+Télécharge l'artefact sous son nom de release pour que la somme de contrôle corresponde, vérifie-la, puis installe le binaire sous le nom `just-code` :
+
 ```bash
-curl -fsSL https://github.com/etalab-ia/just-code/releases/latest/download/just-code-darwin-arm64 -o just-code
+curl -fsSL https://github.com/etalab-ia/just-code/releases/latest/download/just-code-darwin-arm64 -o just-code-darwin-arm64
 curl -fsSL https://github.com/etalab-ia/just-code/releases/latest/download/SHA256SUMS -o SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing
-chmod +x just-code
+
+chmod +x just-code-darwin-arm64
 mkdir -p ~/.local/bin
-mv just-code ~/.local/bin/just-code
+mv just-code-darwin-arm64 ~/.local/bin/just-code
 just-code --version
 ```
 
-Remplace `just-code-darwin-arm64` par l'artefact de ton hôte (`linux-arm64`, `linux-x64`, `darwin-x64`).
+Remplace `just-code-darwin-arm64` par l'artefact de ton hôte (`linux-arm64`, `linux-x64`, `darwin-x64`). `--ignore-missing` ignore les trois autres plateformes listées dans `SHA256SUMS`.
 
 Cette méthode contourne volontairement le contrôle de Gatekeeper : c'est le compromis assumé d'une distribution sans notarisation. Vérifie la somme de contrôle avant d'installer.
 
