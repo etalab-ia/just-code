@@ -11,9 +11,9 @@
 
 # just code
 
-**Un backend OpenCode isolé avec Docker ou Microsandbox, piloté par le TUI OpenCode natif de ta machine.**
+**Un backend OpenCode isolé avec Docker, Microsandbox ou une VM macOS Tart, piloté par le TUI OpenCode natif de ta machine.**
 
-Première brique d'expérimentation pour la piste « exécution distante » d'[Albert Code](https://github.com/etalab-ia/albert-code) : l'agent tourne dans un environnement Linux avec les modèles souverains d'[Albert API](https://albert.api.etalab.gouv.fr), pendant que tu gardes ton interface habituelle. Tu peux comparer un conteneur Docker avec une microVM Microsandbox sans changer de workflow.
+Première brique d'expérimentation pour la piste « exécution distante » d'[Albert Code](https://github.com/etalab-ia/albert-code) : l'agent tourne dans un environnement Linux (ou macOS via Tart) avec les modèles souverains d'[Albert API](https://albert.api.etalab.gouv.fr), pendant que tu gardes ton interface habituelle. Tu peux comparer un conteneur Docker, une microVM Microsandbox ou une VM macOS Tart sans changer de workflow.
 
 ```text
 terminal hôte (opencode attach) ──> sandbox sélectionné :4096 (opencode serve)
@@ -26,13 +26,20 @@ Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence
 
 ## Prérequis
 
-- [`just`](https://just.systems) (`brew install just`)
+- [Go](https://go.dev) >= 1.22 (pour compiler le CLI)
 - OpenCode CLI sur l'hôte (`npm install -g opencode-ai`)
 - Une **clé Albert API** dans l'environnement (ou dans `.env`, ignoré par git)
 - L'un des runtimes disponibles :
   - Docker ou [Colima](https://github.com/abiosoft/colima) ;
   - [Microsandbox](https://github.com/superradcompany/microsandbox) (`msb` >= 0.6.16) sur un Mac Apple Silicon ou un hôte Linux avec KVM ;
   - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
+
+Construction du CLI :
+
+```bash
+go build -o just-code ./cmd/just-code
+go test ./...
+```
 
 Installation de Microsandbox :
 
@@ -59,15 +66,15 @@ RUNTIME=microsandbox
 RUNTIME=tart
 ```
 
-Un flag explicite reste prioritaire sur `RUNTIME` : `just code --docker` utilise toujours Docker, même si `.env` préfère Microsandbox ou Tart. Il n'existe aucun runtime par défaut intégré.
+Un flag explicite reste prioritaire sur `RUNTIME` : `just-code code --docker` utilise toujours Docker, même si `.env` préfère Microsandbox ou Tart. Il n'existe aucun runtime par défaut intégré.
 
 ### Réseau Tart et VPN
 
 `TART_MTU=1280` est la valeur par défaut pour le réseau invité Tart. Elle limite les blocages TLS observés avec certains VPN sur le Mac hôte, sans garantir la compatibilité avec tous les VPN. Le bootstrap applique cette valeur à l'interface de route IPv4 par défaut avant toute installation de logiciel ; seul le réseau de la VM est modifié. Une MTU réduite peut légèrement diminuer les performances réseau.
 
-Dans `.env`, `TART_MTU` accepte un entier de **1280 à 1500**, ou **`auto`** pour ne pas modifier la MTU. `auto` ne restaure pas une valeur précédemment appliquée ; utiliser `1500` pour revenir à la valeur habituelle. L'application nécessite `sudo` sans mot de passe dans l'invité (disponible dans l'image de base utilisée). Les erreurs sont consignées dans `just logs --tart`.
+Dans `.env`, `TART_MTU` accepte un entier de **1280 à 1500**, ou **`auto`** pour ne pas modifier la MTU. `auto` ne restaure pas une valeur précédemment appliquée ; utiliser `1500` pour revenir à la valeur habituelle. L'application nécessite `sudo` sans mot de passe dans l'invité (disponible dans l'image de base utilisée). Les erreurs sont consignées dans `just-code logs --tart`.
 
-Après modification, exécuter **`just stop` puis `just code --tart`** pour réappliquer le réglage tout en conservant les logiciels installés. Un backend déjà sain n'est pas reconfiguré par `just start`. Ne pas utiliser `just restart` pour cela : cette commande recrée la VM.
+Après modification, exécuter **`just-code stop` puis `just-code code --tart`** pour réappliquer le réglage tout en conservant les logiciels installés. Un backend déjà sain n'est pas reconfiguré par `just-code start`. Ne pas utiliser `just-code restart` pour cela : cette commande recrée la VM.
 
 Sur macOS, autoriser également le terminal utilisé dans **Réglages Système > Confidentialité et sécurité > Réseau local**. Cette permission couvre l'accès à l'adresse privée de la VM, même si elle tourne sur le même Mac. Sans elle, le TUI peut rester en attente ou signaler une erreur trompeuse d'URL/port.
 
@@ -86,7 +93,7 @@ Le nom de la VM dérive du nom de fichier de la référence image (`:` et `@sha2
 
 Deux images partageant le même nom de fichier (par exemple issues de registres différents) produiraient le même nom de VM. Les images Cirrus Labs de Tahoe et Sonoma ont des noms de fichier distincts et constituent le cas pris en charge.
 
-Le préfixe `opencode-` identifie les VM gérées par just-code : `just stop` arrête toutes les VM Tart locales portant ce préfixe. Ne pas le réutiliser pour des VM créées en dehors de just-code.
+Le préfixe `opencode-` identifie les VM gérées par just-code : `just-code stop` arrête toutes les VM Tart locales portant ce préfixe. Ne pas le réutiliser pour des VM créées en dehors de just-code.
 
 Pour basculer vers Sonoma :
 
@@ -101,30 +108,37 @@ Les VM Tahoe et Sonoma coexistent ; changer `TART_IMAGE` cible l'autre VM sans s
 ## Utilisation
 
 ```bash
-just          # liste les commandes
-just code --docker                # démarre Docker et attache le TUI
-just code --microsandbox          # démarre Microsandbox et attache le TUI
-just code --tart                  # démarre Tart (VM macOS) et attache le TUI
-just code                         # utilise RUNTIME défini dans .env
-just start --tart                  # démarre un backend sans attacher le TUI
-just stop                         # arrête tout runtime just-code actif
-just check                        # santé du backend actif + provider Albert
-just logs --tart                  # logs d'un runtime explicite
-just shell --tart                 # shell dans un runtime explicite
-just build --tart                 # télécharge ou met à jour l'image de base
-just restart --tart               # recrée le sandbox (destructif)
-just clean --tart                 # supprime le sandbox et son état local
-just doctor --tart                # vérifie l'installation du runtime
+just-code                        # démarre (RUNTIME) et attache le TUI
+just-code --tart                 # démarre Tart et attache le TUI
+just-code --microsandbox         # démarre Microsandbox et attache le TUI
+just-code --docker               # démarre Docker et attache le TUI
+just-code start --tart           # démarre un backend sans attacher le TUI
+just-code stop                   # arrête tout runtime just-code actif
+just-code check                  # santé du backend actif + provider Albert
+just-code logs --tart            # logs d'un runtime explicite
+just-code shell --tart           # shell dans un runtime explicite
+just-code build --tart           # télécharge ou met à jour l'image de base
+just-code restart --tart         # recrée le sandbox (destructif)
+just-code clean --tart           # supprime le sandbox et son état local
+just-code doctor --tart          # vérifie l'installation du runtime
+just-code version                # identifie le binaire (version, commit, plateforme)
+just-code help                   # liste les commandes
 ```
 
-Les deux runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si l'autre runtime est déjà actif, `just code` et `just start` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just stop` détecte l'état réel et ignore volontairement `RUNTIME`.
+Lancer `just-code` sans commande démarre le backend sélectionné et attache le TUI natif OpenCode. Les commandes et les flags de runtime peuvent être donnés dans n'importe quel ordre (`just-code --docker start` et `just-code start --docker` sont équivalents). La commande `code` n'existe pas : la taper renvoie une erreur explicite.
+
+Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code stop` détecte l'état réel et ignore volontairement `RUNTIME`.
 
 Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
 
 ```bash
-export PROJECT_DIR="$HOME/Code/mon-projet"
-just code --microsandbox
+export WORKSPACE_DIR="$HOME/Code/mon-projet"
+just-code code --microsandbox
 ```
+
+`PROJECT_DIR` reste accepté mais est déprécié (un avertissement le signale).
+
+**Les montages sont figés à la création.** Docker recrée le conteneur quand la configuration change, mais Microsandbox et Tart fixent le volume au moment de la création du sandbox ou de la VM. Changer `WORKSPACE_DIR` sur un sandbox Microsandbox existant n'a donc aucun effet : `just-code` détecte l'écart et prévient. Pour l'appliquer, il faut recréer avec `just-code restart --microsandbox` (destructif). Tart ne permet pas cette détection ; le changement de répertoire y est donc uniquement documenté.
 
 Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte : `http://localhost:3000`, etc. pour Docker et Microsandbox. Avec Tart, la VM macOS est une machine à part entière sur le réseau NAT : les previews et le TUI OpenCode utilisent l'adresse de la VM, par exemple `open "http://$(tart ip opencode-tahoe-base-latest):3000"`.
 
@@ -137,15 +151,92 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 3. **« Code un petit jeu snake servi par un serveur Node sur le port 3000, puis lance-le. »** — écriture de fichiers + serveur de dev ; ouvre `http://localhost:3000` pour vérifier la preview.
 4. **« Écris un script python qui affiche la suite de Fibonacci et exécute-le. »** — toolchain polyglotte dans le sandbox.
 5. **« Modifie un fichier, puis annule ta modification. »** — outils d'édition et revue de diff.
-6. **Détache-toi (Ctrl+C / quitte), conserve le runtime, puis relance `just code --docker` ou `just code --microsandbox`** — continuité de session et reconnexion.
+6. **Détache-toi (Ctrl+C / quitte), conserve le runtime, puis relance `just-code code --docker` ou `just-code code --microsandbox`** — continuité de session et reconnexion.
 7. **« Envoie les logs de ton serveur de dev dans /tmp/server.log et montre-moi les dernières lignes. »** — comportement du scratch space hors du répertoire projet.
+
+## Dépannage
+
+### Le backend ne devient jamais healthy
+
+Une VM Microsandbox survit à un redémarrage, mais son entrée de conteneur (`/.msb/scripts/start`, qui lance `opencode serve`) ne s'exécute qu'à la **création**. Une VM qui revient au démarrage est donc `running` sans aucun processus OpenCode : « VM démarrée » n'est pas « backend prêt ». C'est la cause la plus fréquente d'un backend qui ne devient jamais healthy.
+
+`just-code` en tient compte et se répare : si le sandbox tourne mais que le backend ne répond pas, l'entrée est relancée dans la microVM ; s'il est arrêté, il est démarré puis l'entrée est relancée (un simple `msb start` ne rejoue pas l'entrée). Le même correctif s'applique à Tart, où le processus OpenCode obsolète est tué avant relance.
+
+Si malgré cela le backend ne répond pas, `just-code code` attend en affichant l'avancement (300 s par défaut, réglable via `JUST_CODE_START_TIMEOUT` en secondes). À l'expiration, l'erreur précise le dernier résultat observé, ce qui distingue les causes :
+
+- `HTTP 401: unauthorized` — le mot de passe attendu par le backend diffère de `OPENCODE_SERVER_PASSWORD`. Un sandbox créé lors d'un run précédent conserve l'ancien mot de passe. Utiliser `just-code restart --<runtime>` (destructif) ou `just-code stop` puis `just-code code --<runtime>`.
+- `connection refused` — le backend n'écoute pas ; `just-code logs --<runtime>` montre la sortie du bootstrap invité.
+- `HTTP 200: ...` sans `healthy` — l'application démarre encore ; attendre quelques secondes.
+
+Le premier démarrage d'un sandbox Microsandbox installe ~384 Mio de paquets dans la microVM et peut dépasser largement une minute ; les démarrages suivants sont rapides (l'installation est marquée dans `/var/lib/just-code/toolchain-ready`).
+
+Le réflexe le plus simple reste `just-code stop` suivi d'un relancement de `just-code code --<runtime>`.
+
+## Portage Go
+
+Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les trois runtimes via une bibliothèque testée (`internal/justcode`), sans dépendance externe.
+
+**Binaire autonome.** Les ressources de runtime (`Dockerfile`, `docker-compose.yml`, `microsandbox.yaml`) vivent dans `assets/` et sont embarquées dans le binaire via `go:embed`. Au premier lancement d'une commande qui en a besoin, le CLI les matérialise sous `~/.local/state/just-code/assets/` (écriture atomique). Le binaire peut donc être exécuté depuis n'importe quel répertoire, sans le dépôt.
+
+**Pas de script shell.** Le bootstrap invité Tart (clampage MTU, installation d'OpenCode, `exec opencode serve`) est du code Go dans le même binaire, exposé sous la sous-commande interne `__guest-bootstrap`. La VM macOS étant elle aussi en arm64, le CLI copie son propre binaire dans le partage en lecture seule, puis le copie sur le disque local de l'invité (l'exécution directe depuis le partage virtiofs n'est pas fiable) avant de l'exécuter. Il n'y a donc plus aucun `.sh` dans le projet.
+
+Les trois régressions shell de l'ancien `justfile` sont corrigées et couvertes par `go test` :
+
+- **Délai de santé à horloge murale** : la boucle attend une échéance mesurée en temps réel (300 s par défaut, `JUST_CODE_START_TIMEOUT` en secondes), avec un timeout de 5 s par requête (une connexion bloquée ne contourne plus la limite).
+- **Mot de passe vide préservé** : `OPENCODE_SERVER_PASSWORD=""` signifie « pas d'authentification », au lieu de retomber silencieusement sur `albert-dev-pass` (le défaut de `docker-compose.yml` est corrigé de la même manière).
+- **Surface des flags** : `--docker`, `--microsandbox` et `--tart` sont reconnus (flag explicite prioritaire sur `RUNTIME`), et les messages d'erreur reflètent exactement cette surface.
+
+Défauts découverts ensuite et corrigés dans le même esprit :
+
+- **Auto-réparation du backend Microsandbox** : découverte via `msb ls` (les codes de sortie de `msb inspect` ne sont pas fiables), relance de l'entrée de conteneur quand la VM tourne sans backend, avec nouvelle tentative bornée pendant que l'agent invité démarre.
+- **Clé API transmise explicitement à `msb`** : `msb` résout le secret `ALBERT_API_KEY` depuis l'environnement de l'hôte ; la variable est donc passée explicitement aux commandes `msb`.
+- **Montages figés à la création** : `WORKSPACE_DIR` remplace `PROJECT_DIR` (déprécié, encore honoré), et Microsandbox avertit quand le montage détecté diffère de la configuration.
+- **Pré-vol `opencode`** : le CLI de l'hôte est vérifié avant de démarrer un runtime, avec la commande d'installation.
+- **Validation différée de `JUST_CODE_START_TIMEOUT`** : une valeur malformée bloque la commande d'attachement, pas `stop`, `clean`, `logs`, `doctor` ni `check`.
+
+Contrats comportementaux reproduits : secrets (`ALBERT_API_KEY` et mot de passe) transmis sur l'entrée standard, jamais dans les arguments ; isolation par préfixe `opencode-` ; endpoints de santé ; clampage de MTU (1280-1500 ou `auto`) validé sur l'hôte avant le boot de la VM ; relance du backend (SIGTERM puis SIGKILL après 10 sondes) ; détection des runtimes actifs et résolution de conflits.
+
+Binaires statiques ~7 Mo (Linux amd64, macOS arm64/amd64), sans runtime embarqué, contre ~60-80 Mo pour un binaire `bun build --compile` qui embarque JavaScriptCore.
+
+```bash
+go test -race ./...   # vert
+go vet ./...          # propre
+
+# Compilation croisée native (sans CGO)
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o just-code-darwin-arm64 ./cmd/just-code
+```
+
+## Intégration continue et publication
+
+Deux workflows GitHub Actions accompagnent le CLI :
+
+- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race` et compilation.
+- **`release.yml`** (sur un tag `v*`) : compilation des quatre binaires (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`), génération de `SHA256SUMS`, puis création ou mise à jour de la release GitHub avec les binaires bruts et les sommes de contrôle.
+
+Le tag est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=$GITHUB_REF_NAME"`, donc `just-code version` affiche exactement la version publiée.
+
+Pour publier :
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Vérification après téléchargement (les sommes sont générées depuis `dist/`, donc les chemins correspondent aux fichiers publiés) :
+
+```bash
+curl -fsSLO https://github.com/etalab-ia/just-code/releases/latest/download/just-code-darwin-arm64
+curl -fsSLO https://github.com/etalab-ia/just-code/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-hoc (requise pour exécuter un binaire non signé sur Apple Silicon). `curl` ne pose pas l'attribut `com.apple.quarantine`, donc Gatekeeper ne bloque pas ce chemin d'installation ; un téléchargement via navigateur reste à débloquer avec `xattr -d com.apple.quarantine <binaire>`. La notarisation complète exigerait une adhésion Apple Developer et un certificat Developer ID.
 
 ## Choix de conception
 
 - **Trois runtimes, aucun défaut intégré.** Les commandes ciblent `--docker`, `--microsandbox` ou `--tart`, avec une préférence `RUNTIME` facultative pour les usages répétés. Le flag explicite est toujours prioritaire. Le répertoire projet et le port OpenCode (4096) restent identiques.
 - **Docker et Microsandbox préservés.** Les environnements conteneurisés et microVM Linux d'origine restent inchangés. Ils exposent les previews sur `localhost` (ports 3000-3010).
-- **VM macOS avec Tart pour Xcode/iOS.** Tart permet d'exécuter l'agent OpenCode directement dans un système macOS invité, donnant accès aux outils de compilation Xcode (`xcodebuild`, `swift`, simulateurs). Par défaut, l'image `ghcr.io/cirruslabs/macos-tahoe-base:latest` est clonée dans une VM locale nommée `opencode-tahoe-base-latest` (surchargeable via `TART_IMAGE`). L'utilisateur ou le développeur peut ensuite y installer les outils Xcode nécessaires. La VM étant une machine invitée macOS sur le réseau NAT, le TUI et les previews sont joints par son adresse (`tart ip opencode-tahoe-base-latest`) plutôt que par `localhost`. `ALBERT_API_KEY` est transmise sur l'entrée standard du processus de bootstrap, jamais dans la liste des arguments ; seul `tart-bootstrap.sh` (copie dédiée en lecture seule) est partagé avec la VM, pas le dépôt ni `.env`.
-- **MicroVM nommée et persistante.** Avec Microsandbox et Tart, `just stop` conserve l'état inscriptible de la VM et les relances ultérieures évitent de repartir de zéro. `just restart` recrée la VM proprement.
+- **VM macOS avec Tart pour Xcode/iOS.** Tart permet d'exécuter l'agent OpenCode directement dans un système macOS invité, donnant accès aux outils de compilation Xcode (`xcodebuild`, `swift`, simulateurs). Par défaut, l'image `ghcr.io/cirruslabs/macos-tahoe-base:latest` est clonée dans une VM locale nommée `opencode-tahoe-base-latest` (surchargeable via `TART_IMAGE`). L'utilisateur ou le développeur peut ensuite y installer les outils Xcode nécessaires. La VM étant une machine invitée macOS sur le réseau NAT, le TUI et les previews sont joints par son adresse (`tart ip opencode-tahoe-base-latest`) plutôt que par `localhost`. `ALBERT_API_KEY` est transmise sur l'entrée standard du processus de bootstrap, jamais dans la liste des arguments ; seul le binaire du CLI (copie dédiée en lecture seule) est partagé avec la VM, pas le dépôt ni `.env`.
+- **MicroVM nommée et persistante.** Avec Microsandbox et Tart, `just-code stop` conserve l'état inscriptible de la VM et les relances ultérieures évitent de repartir de zéro. `just-code restart` recrée la VM proprement.
 - **Pas de démon Docker pour Microsandbox.** La microVM démarre à la demande depuis l'image OCI officielle `ghcr.io/anomalyco/opencode:latest`.
 - **Pas de fichier de config OpenCode bind-mounté.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` dans le fichier du runtime. Le seul bind-mount est le répertoire projet.
 - **Éditions visibles sur l'hôte.** Les modifications de l'agent atterrissent directement dans ton checkout local. Le modèle « remote-authoritative » (clone dans le sandbox, livraison via branche/PR) reste une expérience ultérieure.
