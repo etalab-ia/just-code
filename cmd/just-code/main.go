@@ -53,6 +53,9 @@ func run(args []string) (int, error) {
 		return 0, d.Check(context.Background(), nil)
 	case "logs", "shell", "build", "restart", "clean", "doctor":
 		return lifecycleCmd(d, rest, cmd)
+	case "version", "-v", "--version":
+		printBuildInfo()
+		return 0, nil
 	case "help", "-h", "--help":
 		usage()
 		return 0, nil
@@ -69,7 +72,7 @@ func resolveCommand(args []string) (string, []string) {
 		return "code", nil
 	}
 	switch args[0] {
-	case "code", "start", "stop", "check", "logs", "shell", "build", "restart", "clean", "doctor", "help", "-h", "--help":
+	case "code", "start", "stop", "check", "logs", "shell", "build", "restart", "clean", "doctor", "version", "-v", "--version", "help", "-h", "--help":
 		return args[0], args[1:]
 	default:
 		return "code", args
@@ -230,6 +233,7 @@ Usage:
   just-code restart --docker|--microsandbox|--tart   recreate the sandbox (destructive)
   just-code clean --docker|--microsandbox|--tart     remove the sandbox and its state
   just-code doctor --docker|--microsandbox|--tart    verify the runtime installation
+  just-code version                                  print the build identity
   just-code help                                     show this help
 
 Runtime: pass --docker, --microsandbox, or --tart explicitly, or set RUNTIME in

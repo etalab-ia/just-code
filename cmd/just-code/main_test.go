@@ -21,6 +21,9 @@ func TestResolveCommand(t *testing.T) {
 		{"check", []string{"check"}, "check", nil},
 		{"logs", []string{"logs", "--tart"}, "logs", []string{"--tart"}},
 		{"help", []string{"help"}, "help", nil},
+		{"version", []string{"version"}, "version", nil},
+		{"version long flag", []string{"--version"}, "--version", nil},
+		{"version short flag", []string{"-v"}, "-v", nil},
 		{"unknown word is treated as code args", []string{"--podman"}, "code", []string{"--podman"}},
 	}
 	for _, c := range cases {
