@@ -10,19 +10,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/etalab-ia/just-code/assets"
 )
 
 // Tart orchestrates the OpenCode backend inside a Tart macOS VM. Runner and
 // Starter are injectable so the lifecycle logic is testable without a real
 // hypervisor.
 type Tart struct {
-	Config         Config
-	Runner         Runner
-	Starter        Starter
-	StateDir       string // host state dir; default ~/.local/state/just-code
-	GuestBootstrap string // bootstrap path inside the guest
+	Config   Config
+	Runner   Runner
+	Starter  Starter
+	StateDir string // host state dir; default ~/.local/state/just-code
+	// SelfBinary is the binary staged into the guest. Empty means the running
+	// executable (os.Executable), which is the production path.
+	SelfBinary string
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
@@ -35,7 +35,6 @@ func NewTart(cfg Config) *Tart {
 		Runner:           OSRunner{},
 		Starter:          OSStarter{},
 		StateDir:         DefaultStateDir(),
-		GuestBootstrap:   "/Volumes/My Shared Files/just-code/tart-bootstrap.sh",
 		KillPollInterval: time.Second,
 		KillMaxPolls:     10,
 	}
@@ -176,26 +175,43 @@ func (t *Tart) StopBackend(ctx context.Context) error {
 	return nil
 }
 
-// stageBootstrap writes the embedded tart-bootstrap.sh into a dedicated
-// read-only share so the guest never sees the checkout, its .env, or other
-// host-only files.
-func (t *Tart) stageBootstrap() error {
+// stageGuestBinary copies the running binary into the read-only share so the
+// guest can execute it as the in-VM bootstrap. The checkout, its .env, and
+// other host-only files are never shared.
+func (t *Tart) stageGuestBinary() error {
 	stageDir := TartStageDir(t.StateDir)
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return err
 	}
-	data, err := assets.Read("tart-bootstrap.sh")
+	src := t.SelfBinary
+	if src == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		src = exe
+	}
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(stageDir, "tart-bootstrap.sh"), data, 0o644)
+	return os.WriteFile(filepath.Join(stageDir, guestBinaryName), data, 0o755)
 }
 
-// BackendArgs returns the argv for
-// `tart exec -i <vm> /bin/sh <guest> <port> <username> <mtu>`.
+// guestBinaryName is the file name of the staged binary inside the share.
+const guestBinaryName = "just-code"
+
+// guestRun runs a command inside the VM synchronously.
+func (t *Tart) guestRun(ctx context.Context, args ...string) error {
+	full := append([]string{"exec", t.Config.TartVM}, args...)
+	return runOK(t.Runner, ctx, "tart", full...)
+}
+
+// BackendArgs returns the argv for the detached bootstrap invocation:
+// `tart exec -i <vm> <local binary> __guest-bootstrap <port> <username> <mtu>`.
 // Secrets are deliberately absent: they travel on stdin only.
-func BackendArgs(vm, guestBootstrap, port, username, mtu string) []string {
-	return []string{"exec", "-i", vm, "/bin/sh", guestBootstrap, port, username, mtu}
+func BackendArgs(vm, localBinary, port, username, mtu string) []string {
+	return []string{"exec", "-i", vm, localBinary, GuestBootstrapCommand, port, username, mtu}
 }
 
 // SecretsReader returns the bootstrap stdin payload: password on line 1, API
@@ -204,16 +220,29 @@ func SecretsReader(password, apiKey string) io.Reader {
 	return strings.NewReader(password + "\n" + apiKey + "\n")
 }
 
-// launchBackend streams the credentials over stdin and starts the OpenCode
-// server inside the guest in the background.
+// launchBackend stages the binary, copies it to the guest's local disk, and
+// starts the OpenCode server inside the guest in the background.
 func (t *Tart) launchBackend(ctx context.Context) error {
 	cfg := t.Config
 	fmt.Printf("Launching OpenCode server inside %s...\n", cfg.TartVM)
 	if err := os.MkdirAll(t.StateDir, 0o755); err != nil {
 		return err
 	}
+	if err := t.stageGuestBinary(); err != nil {
+		return err
+	}
+
+	// Executing straight from the virtiofs share is not reliably supported, so
+	// the payload is copied onto the guest's local disk first.
+	if err := t.guestRun(ctx, "/bin/cp", guestShareBinary, guestLocalBinary); err != nil {
+		return err
+	}
+	if err := t.guestRun(ctx, "/bin/chmod", "755", guestLocalBinary); err != nil {
+		return err
+	}
+
 	stdin := SecretsReader(cfg.Password, cfg.APIKey)
-	args := BackendArgs(cfg.TartVM, t.GuestBootstrap, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU)
+	args := BackendArgs(cfg.TartVM, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU)
 	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
 }
 
@@ -289,9 +318,6 @@ func (t *Tart) Start(ctx context.Context) error {
 		if err := t.StopBackend(ctx); err != nil {
 			return err
 		}
-		if err := t.stageBootstrap(); err != nil {
-			return err
-		}
 		return t.launchBackend(ctx)
 	}
 
@@ -306,7 +332,8 @@ func (t *Tart) Start(ctx context.Context) error {
 		}
 	}
 
-	if err := t.stageBootstrap(); err != nil {
+	// Stage before booting so the share already holds the binary.
+	if err := t.stageGuestBinary(); err != nil {
 		return err
 	}
 	fmt.Printf("Starting %s with Tart...\n", cfg.TartVM)

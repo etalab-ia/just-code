@@ -45,18 +45,6 @@ func TestMaterializeIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestEmbeddedBootstrapLooksReal(t *testing.T) {
-	data, err := Read("tart-bootstrap.sh")
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	for _, want := range []string{"OPENCODE_SERVER_PASSWORD", "TART_MTU", "opencode serve"} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("bootstrap missing %q", want)
-		}
-	}
-}
-
 func TestEmbeddedComposePreservesEmptyPassword(t *testing.T) {
 	data, err := Read("docker-compose.yml")
 	if err != nil {
