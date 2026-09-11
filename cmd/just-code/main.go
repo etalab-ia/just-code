@@ -26,6 +26,17 @@ func main() {
 }
 
 func run(args []string) (int, error) {
+	// The in-VM bootstrap is a hidden subcommand of this same binary. It runs
+	// inside the Tart guest and must not touch host config or load .env.
+	if len(args) > 0 && args[0] == justcode.GuestBootstrapCommand {
+		cfg := justcode.GuestConfig{
+			Port:     argOr(args, 1, ""),
+			Username: argOr(args, 2, ""),
+			MTU:      argOr(args, 3, ""),
+		}
+		return 0, justcode.RunGuestBootstrap(context.Background(), cfg)
+	}
+
 	cfg := justcode.LoadConfigEnv()
 	d := justcode.NewDispatcher(cfg)
 
@@ -63,6 +74,14 @@ func resolveCommand(args []string) (string, []string) {
 	default:
 		return "code", args
 	}
+}
+
+// argOr returns args[i], or def when it is absent or empty.
+func argOr(args []string, i int, def string) string {
+	if i < len(args) && args[i] != "" {
+		return args[i]
+	}
+	return def
 }
 
 func codeCmd(d *justcode.Dispatcher, cfg justcode.Config, args []string) (int, error) {

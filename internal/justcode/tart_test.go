@@ -76,31 +76,49 @@ func newTestTart(t *testing.T, runner Runner) *Tart {
 		Runner:           runner,
 		Starter:          &fakeStarter{},
 		StateDir:         t.TempDir(),
-		GuestBootstrap:   "/Volumes/My Shared Files/just-code/tart-bootstrap.sh",
+		SelfBinary:       writeFakeSelf(t),
 		KillPollInterval: time.Millisecond,
 		KillMaxPolls:     3,
 	}
 }
 
-func TestStageBootstrapWritesEmbeddedScript(t *testing.T) {
-	tt := newTestTart(t, &fakeRunner{})
-	if err := tt.stageBootstrap(); err != nil {
-		t.Fatalf("stageBootstrap: %v", err)
+// writeFakeSelf stands in for os.Executable in tests, so staging does not copy
+// the (large) test binary.
+func writeFakeSelf(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "self")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho just-code\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	staged := filepath.Join(TartStageDir(tt.StateDir), "tart-bootstrap.sh")
+	return path
+}
+
+func TestStageGuestBinaryCopiesSelf(t *testing.T) {
+	tt := newTestTart(t, &fakeRunner{})
+	// Stand in for os.Executable with a known file.
+	src := filepath.Join(t.TempDir(), "self")
+	if err := os.WriteFile(src, []byte("#!/bin/sh\necho just-code\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tt.SelfBinary = src
+
+	if err := tt.stageGuestBinary(); err != nil {
+		t.Fatalf("stageGuestBinary: %v", err)
+	}
+	staged := filepath.Join(TartStageDir(tt.StateDir), guestBinaryName)
 	data, err := os.ReadFile(staged)
 	if err != nil {
-		t.Fatalf("staged bootstrap missing: %v", err)
+		t.Fatalf("staged binary missing: %v", err)
 	}
-	if !strings.Contains(string(data), "OPENCODE_SERVER_PASSWORD") {
-		t.Fatalf("staged bootstrap does not look like the real script (%d bytes)", len(data))
+	if string(data) != "#!/bin/sh\necho just-code\n" {
+		t.Fatalf("staged binary content = %q", data)
 	}
 	info, err := os.Stat(staged)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o644 {
-		t.Fatalf("staged bootstrap mode = %o, want 644", perm)
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("staged binary is not executable: %o", info.Mode().Perm())
 	}
 }
 
@@ -180,13 +198,13 @@ func TestStopBackendRefusesWhenStillRunning(t *testing.T) {
 
 func TestBackendArgsExcludeSecrets(t *testing.T) {
 	args := BackendArgs("opencode-tahoe-base-latest",
-		"/Volumes/My Shared Files/just-code/tart-bootstrap.sh", "4096", "opencode", "1280")
+		"/tmp/just-code-guest", "4096", "opencode", "1280")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
 		t.Fatalf("secrets leaked into argv: %v", args)
 	}
-	want := []string{"exec", "-i", "opencode-tahoe-base-latest", "/bin/sh",
-		"/Volumes/My Shared Files/just-code/tart-bootstrap.sh", "4096", "opencode", "1280"}
+	want := []string{"exec", "-i", "opencode-tahoe-base-latest",
+		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280"}
 	if len(args) != len(want) {
 		t.Fatalf("BackendArgs = %v, want %v", args, want)
 	}
@@ -207,14 +225,32 @@ func TestSecretsReader(t *testing.T) {
 	}
 }
 
-func TestLaunchBackendStreamsSecrets(t *testing.T) {
-	tt := newTestTart(t, &fakeRunner{})
+func TestLaunchBackendCopiesGuestBinaryAndStreamsSecrets(t *testing.T) {
+	r := &fakeRunner{}
+	tt := newTestTart(t, r)
 	if err := tt.launchBackend(context.Background()); err != nil {
 		t.Fatalf("launchBackend: %v", err)
 	}
+
+	// The payload must be copied to guest-local disk and made executable before
+	// it is run: the share itself is not reliably executable.
+	if !r.hasCall("/bin/cp " + guestShareBinary + " " + guestLocalBinary) {
+		t.Fatalf("expected a guest cp from the share to local disk; calls: %v", r.calls)
+	}
+	if !r.hasCall("/bin/chmod 755 " + guestLocalBinary) {
+		t.Fatalf("expected a guest chmod 755; calls: %v", r.calls)
+	}
+	staged := filepath.Join(TartStageDir(tt.StateDir), guestBinaryName)
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("binary was not staged into the share: %v", err)
+	}
+
 	fs := tt.Starter.(*fakeStarter)
 	if got := string(fs.lastStdin); got != "pw\nkey\n" {
 		t.Fatalf("stdin = %q, want password and key on stdin", got)
+	}
+	if !strings.HasPrefix(strings.Join(fs.lastArgs, " "), "exec -i opencode-tahoe-base-latest "+guestLocalBinary+" "+GuestBootstrapCommand) {
+		t.Fatalf("unexpected bootstrap argv: %v", fs.lastArgs)
 	}
 	if strings.Contains(strings.Join(fs.lastArgs, " "), "pw") ||
 		strings.Contains(strings.Join(fs.lastArgs, " "), "key") {

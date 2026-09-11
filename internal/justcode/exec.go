@@ -49,7 +49,7 @@ func (OSRunner) RunEnv(ctx context.Context, env []string, name string, args ...s
 func osRun(ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = withEnv(os.Environ(), env...)
 	}
 	out, err := cmd.CombinedOutput()
 	res := ExecResult{Stdout: string(out), Stderr: string(out)}
@@ -120,12 +120,36 @@ func RunInteractive(name string, args ...string) error {
 func RunInteractiveEnv(env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = withEnv(os.Environ(), env...)
 	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// withEnv returns base with the given KEY=VALUE pairs applied, replacing any
+// existing entry for the same key. Appending instead would leave duplicates,
+// and env lookup returns the first match, so the inherited value would win.
+func withEnv(base []string, kv ...string) []string {
+	replaced := make(map[string]bool, len(kv))
+	for _, pair := range kv {
+		if i := strings.IndexByte(pair, '='); i >= 0 {
+			replaced[pair[:i]] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(kv))
+	for _, entry := range base {
+		key := entry
+		if i := strings.IndexByte(entry, '='); i >= 0 {
+			key = entry[:i]
+		}
+		if replaced[key] {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, kv...)
 }
 
 // commandNotFound reports whether err means the command binary is missing.

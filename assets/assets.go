@@ -1,7 +1,10 @@
 // Package assets holds the runtime resources embedded into the just-code
-// binary: the Dockerfile, the Compose and Microsandbox configs, and the Tart
-// guest bootstrap. The CLI materializes them under its state directory so a
-// built binary is self-contained and does not depend on the checkout.
+// binary: the Dockerfile and the Compose and Microsandbox configs. The CLI
+// materializes them under its state directory so a built binary is
+// self-contained and does not depend on the checkout.
+//
+// The Tart guest bootstrap is not here: it is Go code in the binary itself
+// (see internal/justcode/guest.go).
 package assets
 
 import (
@@ -10,7 +13,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed Dockerfile docker-compose.yml microsandbox.yaml tart-bootstrap.sh
+//go:embed Dockerfile docker-compose.yml microsandbox.yaml
 var FS embed.FS
 
 // Files lists every embedded asset, in a stable order.
@@ -18,7 +21,6 @@ var Files = []string{
 	"Dockerfile",
 	"docker-compose.yml",
 	"microsandbox.yaml",
-	"tart-bootstrap.sh",
 }
 
 // Read returns an embedded asset by name.
