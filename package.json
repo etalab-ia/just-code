@@ -1,0 +1,26 @@
+{
+  "name": "just-code",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Run an isolated OpenCode backend with Docker, Microsandbox, or Tart",
+  "type": "module",
+  "bin": {
+    "just-code": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun run scripts/build.ts",
+    "build:local": "bun build --compile --compile-autoload-dotenv --outfile=bin/just-code src/cli.ts",
+    "check": "bun run typecheck && bun test && bun run build:local"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "license": "MIT"
+}
