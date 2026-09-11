@@ -63,23 +63,63 @@ func osRun(ctx context.Context, env []string, name string, args ...string) (Exec
 	return res, nil
 }
 
+// maxStdinPayload bounds the detached child's stdin payload. os/exec only
+// passes a descriptor straight through when Stdin is an *os.File; anything else
+// gets a copying goroutine, which a detached child can outlive. Writing
+// synchronously into a pipe avoids that, and keeping the payload well under any
+// platform pipe buffer guarantees the write cannot block before the child
+// starts. Passwords and API keys are far smaller than this.
+const maxStdinPayload = 4096
+
 // OSStarter is the real Starter. It detaches the child (new session) so the
 // long-running process survives the CLI exiting, matching `nohup ... &`.
 type OSStarter struct{}
 
 func (OSStarter) Start(stdin io.Reader, logPath string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	cmd.Stdin = stdin
+
+	var stdinPipe *os.File
+	if stdin != nil {
+		payload, err := io.ReadAll(io.LimitReader(stdin, maxStdinPayload+1))
+		if err != nil {
+			return err
+		}
+		if len(payload) > maxStdinPayload {
+			return fmt.Errorf("stdin payload exceeds %d bytes", maxStdinPayload)
+		}
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		if _, err := pw.Write(payload); err != nil {
+			pw.Close()
+			pr.Close()
+			return err
+		}
+		pw.Close() // the child sees EOF once it drains the buffer
+		stdinPipe = pr
+		cmd.Stdin = pr
+	}
+
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
+		if stdinPipe != nil {
+			stdinPipe.Close()
+		}
 		return err
 	}
 	cmd.Stdout = log
 	cmd.Stderr = log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		if stdinPipe != nil {
+			stdinPipe.Close()
+		}
 		log.Close()
 		return err
+	}
+	if stdinPipe != nil {
+		stdinPipe.Close() // the child keeps its own copy of the descriptor
 	}
 	log.Close() // the child keeps its own copy of the descriptor
 	return cmd.Process.Release()

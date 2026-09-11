@@ -91,6 +91,29 @@ func TestParseDotenv(t *testing.T) {
 	}
 }
 
+func TestDotenvDirsSearchesCwdThenExecutable(t *testing.T) {
+	dirs := dotenvDirs()
+	if len(dirs) == 0 || dirs[0] != "." {
+		t.Fatalf("dotenvDirs = %v, want the working directory first", dirs)
+	}
+	// The executable's directory must be searched too, so a standalone binary
+	// finds a .env shipped beside it.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip("no executable path available")
+	}
+	want := filepath.Dir(exe)
+	found := false
+	for _, d := range dirs {
+		if d == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("dotenvDirs = %v, want it to include %q", dirs, want)
+	}
+}
+
 func TestApplyDotenvDoesNotOverrideExisting(t *testing.T) {
 	t.Setenv("EXISTING", "os-wins")
 	path := filepath.Join(t.TempDir(), ".env")

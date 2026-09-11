@@ -35,12 +35,29 @@ const (
 	DefaultTartMTU   = "1280"
 )
 
-// LoadConfigEnv applies .env (if present) and resolves configuration from the
-// process environment. It mirrors just's `set dotenv-load` + env_var_or_default
-// behavior.
+// LoadConfigEnv applies .env and resolves configuration from the process
+// environment. It mirrors just's `set dotenv-load` + env_var_or_default
+// behavior, but for a standalone binary: it looks for .env in the working
+// directory first, then next to the executable, so a binary placed anywhere
+// still finds the configuration shipped beside it. Already-exported variables
+// win over both.
 func LoadConfigEnv() Config {
-	_ = ApplyDotenv(".env")
+	for _, dir := range dotenvDirs() {
+		_ = ApplyDotenv(filepath.Join(dir, ".env"))
+	}
 	return LoadConfig(os.LookupEnv)
+}
+
+// dotenvDirs lists the directories searched for a .env file, most specific
+// first.
+func dotenvDirs() []string {
+	dirs := []string{"."}
+	if exe, err := os.Executable(); err == nil {
+		if dir := filepath.Dir(exe); dir != "." {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 // LoadConfig resolves configuration from the environment. lookup defaults to
