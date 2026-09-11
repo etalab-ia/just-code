@@ -151,7 +151,9 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 ## Portage Go
 
-Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les trois runtimes via une bibliothèque testée (`internal/justcode`), sans dépendance externe. Les fichiers `Dockerfile`, `docker-compose.yml`, `microsandbox.yaml` et `tart-bootstrap.sh` restent les ressources que le CLI orchestre.
+Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les trois runtimes via une bibliothèque testée (`internal/justcode`), sans dépendance externe.
+
+**Binaire autonome.** Les ressources de runtime (`Dockerfile`, `docker-compose.yml`, `microsandbox.yaml`, `tart-bootstrap.sh`) vivent dans `assets/` et sont embarquées dans le binaire via `go:embed`. Au premier lancement d'une commande qui en a besoin, le CLI les matérialise sous `~/.local/state/just-code/assets/` (écriture atomique). Le binaire peut donc être exécuté depuis n'importe quel répertoire, sans le dépôt.
 
 Les trois régressions shell de l'ancien `justfile` sont corrigées et couvertes par `go test` :
 

@@ -4,30 +4,41 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/etalab-ia/just-code/assets"
 )
 
 const (
-	msbConfigFile = "microsandbox.yaml"
-	msbImage      = "ghcr.io/anomalyco/opencode:latest"
-	msbSandbox    = "albert-opencode-sandbox"
+	msbImage   = "ghcr.io/anomalyco/opencode:latest"
+	msbSandbox = "albert-opencode-sandbox"
 )
 
 // MicrosandboxRuntime runs the OpenCode backend in a named Microsandbox
 // microVM, delegating to the `msb` CLI. The real ALBERT_API_KEY stays on the
-// host: only the secret-proxy substitution enters the microVM.
+// host: only the secret-proxy substitution enters the microVM. The sandbox
+// config is embedded in the binary and materialized under the state directory.
 type MicrosandboxRuntime struct {
-	cfg    Config
-	Runner Runner
+	cfg       Config
+	Runner    Runner
+	AssetsDir string
 }
 
 // NewMicrosandboxRuntime builds a Microsandbox backend with production defaults.
 func NewMicrosandboxRuntime(cfg Config) *MicrosandboxRuntime {
-	return &MicrosandboxRuntime{cfg: cfg, Runner: OSRunner{}}
+	return &MicrosandboxRuntime{cfg: cfg, Runner: OSRunner{}, AssetsDir: DefaultAssetsDir()}
 }
 
 func (m *MicrosandboxRuntime) ID() Runtime { return RuntimeMicrosandbox }
+
+func (m *MicrosandboxRuntime) ensureAssets() (string, error) {
+	if m.AssetsDir == "" {
+		m.AssetsDir = DefaultAssetsDir()
+	}
+	return assets.Materialize(m.AssetsDir)
+}
 
 func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if m.cfg.APIKey == "" {
@@ -46,6 +57,11 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 		return nil
 	}
 
+	dir, err := m.ensureAssets()
+	if err != nil {
+		return err
+	}
+
 	if res, err := m.Runner.Run(ctx, "msb", "inspect", msbSandbox); err == nil && res.ExitCode == 0 {
 		if err := runOK(m.Runner, ctx, "msb", "modify", msbSandbox,
 			"--env", "OPENCODE_SERVER_PASSWORD="+m.cfg.Password,
@@ -59,7 +75,7 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	return runOK(m.Runner, ctx, "msb", "run",
 		"--name", msbSandbox,
 		"--detach",
-		"--conf", msbConfigFile,
+		"--conf", filepath.Join(dir, "microsandbox.yaml"),
 		"--root-disk", "8G",
 		"--volume", m.cfg.ProjectDir+":/workspace",
 		"--env", "OPENCODE_SERVER_PASSWORD="+m.cfg.Password,

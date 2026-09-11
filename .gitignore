@@ -5,3 +5,6 @@ workspace/
 # Go build artifacts
 /just-code
 /just-code-*
+
+# Python
+__pycache__/

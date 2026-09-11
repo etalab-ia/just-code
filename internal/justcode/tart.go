@@ -6,21 +6,23 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/etalab-ia/just-code/assets"
 )
 
 // Tart orchestrates the OpenCode backend inside a Tart macOS VM. Runner and
 // Starter are injectable so the lifecycle logic is testable without a real
 // hypervisor.
 type Tart struct {
-	Config          Config
-	Runner          Runner
-	Starter         Starter
-	StateDir        string // host state dir; default ~/.local/state/just-code
-	GuestBootstrap  string // bootstrap path inside the guest
-	BootstrapSource string // host path to tart-bootstrap.sh
+	Config         Config
+	Runner         Runner
+	Starter        Starter
+	StateDir       string // host state dir; default ~/.local/state/just-code
+	GuestBootstrap string // bootstrap path inside the guest
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
@@ -32,24 +34,16 @@ func NewTart(cfg Config) *Tart {
 		Config:           cfg,
 		Runner:           OSRunner{},
 		Starter:          OSStarter{},
-		StateDir:         defaultStateDir(),
+		StateDir:         DefaultStateDir(),
 		GuestBootstrap:   "/Volumes/My Shared Files/just-code/tart-bootstrap.sh",
-		BootstrapSource:  "tart-bootstrap.sh",
 		KillPollInterval: time.Second,
 		KillMaxPolls:     10,
 	}
 }
 
-func defaultStateDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		return home + "/.local/state/just-code"
-	}
-	return ".local/state/just-code"
-}
-
 // LogPath returns the host path of the Tart backend log.
 func (t *Tart) LogPath() string {
-	return t.StateDir + "/tart.log"
+	return TartLogPath(t.StateDir)
 }
 
 // ParseTartList extracts local, running VMs under prefix from `tart list`
@@ -182,18 +176,19 @@ func (t *Tart) StopBackend(ctx context.Context) error {
 	return nil
 }
 
-// stageBootstrap copies tart-bootstrap.sh into a dedicated read-only share so
-// the guest never sees the checkout, its .env, or other host-only files.
+// stageBootstrap writes the embedded tart-bootstrap.sh into a dedicated
+// read-only share so the guest never sees the checkout, its .env, or other
+// host-only files.
 func (t *Tart) stageBootstrap() error {
-	stageDir := t.StateDir + "/tart"
+	stageDir := TartStageDir(t.StateDir)
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(t.BootstrapSource)
+	data, err := assets.Read("tart-bootstrap.sh")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(stageDir+"/tart-bootstrap.sh", data, 0o644)
+	return os.WriteFile(filepath.Join(stageDir, "tart-bootstrap.sh"), data, 0o644)
 }
 
 // BackendArgs returns the argv for
@@ -250,7 +245,7 @@ func (t *Tart) startVM(ctx context.Context) error {
 	args := []string{
 		"run", "--no-graphics",
 		"--dir=workspace:" + t.Config.ProjectDir,
-		"--dir=just-code:" + t.StateDir + "/tart:ro",
+		"--dir=just-code:" + TartStageDir(t.StateDir) + ":ro",
 		t.Config.TartVM,
 	}
 	return t.Starter.Start(nil, t.LogPath(), "tart", args...)

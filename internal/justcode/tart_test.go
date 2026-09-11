@@ -3,6 +3,8 @@ package justcode
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,16 +12,36 @@ import (
 
 // fakeRunner scripts host-command results via an optional callback.
 type fakeRunner struct {
-	onRun func(name string, args []string) ExecResult
-	calls []string
+	onRun   func(name string, args []string) ExecResult
+	calls   []string
+	lastEnv []string
 }
 
-func (f *fakeRunner) Run(_ context.Context, name string, args ...string) (ExecResult, error) {
+func (f *fakeRunner) run(name string, args ...string) (ExecResult, error) {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
 	if f.onRun != nil {
 		return f.onRun(name, args), nil
 	}
 	return ExecResult{ExitCode: 0}, nil
+}
+
+func (f *fakeRunner) Run(_ context.Context, name string, args ...string) (ExecResult, error) {
+	return f.run(name, args...)
+}
+
+func (f *fakeRunner) RunEnv(_ context.Context, env []string, name string, args ...string) (ExecResult, error) {
+	f.lastEnv = env
+	return f.run(name, args...)
+}
+
+// hasCall reports whether any recorded call contains the given substring.
+func (f *fakeRunner) hasCall(substr string) bool {
+	for _, c := range f.calls {
+		if strings.Contains(c, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // fakeStarter records the last started command and its stdin.
@@ -55,9 +77,30 @@ func newTestTart(t *testing.T, runner Runner) *Tart {
 		Starter:          &fakeStarter{},
 		StateDir:         t.TempDir(),
 		GuestBootstrap:   "/Volumes/My Shared Files/just-code/tart-bootstrap.sh",
-		BootstrapSource:  "tart-bootstrap.sh",
 		KillPollInterval: time.Millisecond,
 		KillMaxPolls:     3,
+	}
+}
+
+func TestStageBootstrapWritesEmbeddedScript(t *testing.T) {
+	tt := newTestTart(t, &fakeRunner{})
+	if err := tt.stageBootstrap(); err != nil {
+		t.Fatalf("stageBootstrap: %v", err)
+	}
+	staged := filepath.Join(TartStageDir(tt.StateDir), "tart-bootstrap.sh")
+	data, err := os.ReadFile(staged)
+	if err != nil {
+		t.Fatalf("staged bootstrap missing: %v", err)
+	}
+	if !strings.Contains(string(data), "OPENCODE_SERVER_PASSWORD") {
+		t.Fatalf("staged bootstrap does not look like the real script (%d bytes)", len(data))
+	}
+	info, err := os.Stat(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("staged bootstrap mode = %o, want 644", perm)
 	}
 }
 
