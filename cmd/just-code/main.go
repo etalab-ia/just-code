@@ -107,8 +107,18 @@ func codeCmd(d *justcode.Dispatcher, cfg justcode.Config, args []string) (int, e
 	if err != nil {
 		return 0, err
 	}
+	// A typo in JUST_CODE_START_TIMEOUT must not block commands that never start
+	// a runtime, so it is validated only here, where it is actually read.
+	if cfg.StartTimeoutErr != nil {
+		return 0, cfg.StartTimeoutErr
+	}
+	// Fail before starting a runtime rather than after, when the TUI cannot open.
+	if _, err := exec.LookPath("opencode"); err != nil {
+		return 0, fmt.Errorf("the 'opencode' CLI is required to attach the TUI but was not found on PATH; install it with 'npm install -g opencode-ai'")
+	}
 	fmt.Fprintf(os.Stderr, "Waiting for the backend at %s to become healthy...\n", endpoint)
 	health := justcode.DefaultHealthConfig()
+	health.Deadline = cfg.StartTimeout
 	health.Progress = os.Stderr
 	if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, health, nil); err != nil {
 		return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)

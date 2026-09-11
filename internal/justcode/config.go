@@ -2,16 +2,21 @@ package justcode
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds the settings resolved from the environment for a run. Field
-// semantics match the justfile and .env.example contract.
+// semantics match the .env.example contract.
 type Config struct {
-	ProjectDir string
-	Username   string
+	// WorkspaceDir is the host directory mounted at the guest's /workspace.
+	// It replaces the legacy PROJECT_DIR, which is still honoured.
+	WorkspaceDir string
+	Username     string
 	// Password is the HTTP basic-auth password. It is empty when
 	// OPENCODE_SERVER_PASSWORD was explicitly set to an empty value, which
 	// means "no auth". PasswordSet records whether the variable was present,
@@ -22,6 +27,12 @@ type Config struct {
 	TartVM      string
 	TartMTU     string
 	APIKey      string
+	// StartTimeout bounds the backend health wait for the attach flow.
+	// StartTimeoutErr records an invalid JUST_CODE_START_TIMEOUT so that
+	// commands which never start a runtime (stop, clean, logs, doctor, check)
+	// are not blocked by a typo in a variable they do not read.
+	StartTimeout    time.Duration
+	StartTimeoutErr error
 }
 
 // EnvLookup is an injectable subset of os.LookupEnv, for tests.
@@ -33,6 +44,9 @@ const (
 	DefaultPort      = 4096
 	DefaultTartImage = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
 	DefaultTartMTU   = "1280"
+	// DefaultStartTimeout is deliberately generous: a first Microsandbox boot
+	// installs ~384 MiB of packages inside the microVM before OpenCode starts.
+	DefaultStartTimeout = 300 * time.Second
 )
 
 // LoadConfigEnv applies .env and resolves configuration from the process
@@ -45,7 +59,32 @@ func LoadConfigEnv() Config {
 	for _, dir := range dotenvDirs() {
 		_ = ApplyDotenv(filepath.Join(dir, ".env"))
 	}
+	if _, ok := os.LookupEnv("WORKSPACE_DIR"); !ok {
+		if _, legacy := os.LookupEnv("PROJECT_DIR"); legacy {
+			fmt.Fprintln(os.Stderr, "Warning: PROJECT_DIR is deprecated; use WORKSPACE_DIR instead.")
+		}
+	}
 	return LoadConfig(os.LookupEnv)
+}
+
+// parseStartTimeout parses JUST_CODE_START_TIMEOUT, a whole number of seconds.
+func parseStartTimeout(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, fmt.Errorf("JUST_CODE_START_TIMEOUT must be a whole number of seconds")
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("JUST_CODE_START_TIMEOUT must be a whole number of seconds")
+		}
+	}
+	seconds, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("JUST_CODE_START_TIMEOUT must be a whole number of seconds")
+	}
+	if seconds < 1 {
+		return 0, fmt.Errorf("JUST_CODE_START_TIMEOUT must be at least 1 second")
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 // dotenvDirs lists the directories searched for a .env file, most specific
@@ -69,10 +108,18 @@ func LoadConfig(lookup EnvLookup) Config {
 		lookup = os.LookupEnv
 	}
 	cfg := Config{
-		Username:   envDefault(lookup, "OPENCODE_SERVER_USERNAME", DefaultUsername),
-		TartImage:  envDefault(lookup, "TART_IMAGE", DefaultTartImage),
-		TartMTU:    envDefault(lookup, "TART_MTU", DefaultTartMTU),
-		ProjectDir: envDefault(lookup, "PROJECT_DIR", "./workspace"),
+		Username:     envDefault(lookup, "OPENCODE_SERVER_USERNAME", DefaultUsername),
+		TartImage:    envDefault(lookup, "TART_IMAGE", DefaultTartImage),
+		TartMTU:      envDefault(lookup, "TART_MTU", DefaultTartMTU),
+		WorkspaceDir: envDefault(lookup, "WORKSPACE_DIR", envDefault(lookup, "PROJECT_DIR", "./workspace")),
+		StartTimeout: DefaultStartTimeout,
+	}
+	if v, ok := lookup("JUST_CODE_START_TIMEOUT"); ok && v != "" {
+		if d, err := parseStartTimeout(v); err != nil {
+			cfg.StartTimeoutErr = err
+		} else {
+			cfg.StartTimeout = d
+		}
 	}
 	if v, ok := lookup("OPENCODE_SERVER_PASSWORD"); ok {
 		cfg.Password = v
@@ -81,8 +128,8 @@ func LoadConfig(lookup EnvLookup) Config {
 		cfg.Password = DefaultPassword
 	}
 	cfg.APIKey, _ = lookup("ALBERT_API_KEY")
-	if abs, err := filepath.Abs(cfg.ProjectDir); err == nil {
-		cfg.ProjectDir = abs
+	if abs, err := filepath.Abs(cfg.WorkspaceDir); err == nil {
+		cfg.WorkspaceDir = abs
 	}
 	cfg.TartVM = VMName(cfg.TartImage)
 	return cfg

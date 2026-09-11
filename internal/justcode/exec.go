@@ -138,6 +138,11 @@ func runOK(r Runner, ctx context.Context, name string, args ...string) error {
 	return nil
 }
 
+// runEnv is Run with additional environment variables.
+func runEnv(r Runner, ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
+	return r.RunEnv(ctx, env, name, args...)
+}
+
 // runEnvOK is runOK with additional environment variables.
 func runEnvOK(r Runner, ctx context.Context, env []string, name string, args ...string) error {
 	res, err := r.RunEnv(ctx, env, name, args...)
