@@ -2,9 +2,12 @@ package justcode
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -66,4 +69,32 @@ func (OSStarter) Start(stdin io.Reader, logPath string, name string, args ...str
 	}
 	log.Close() // the child keeps its own copy of the descriptor
 	return cmd.Process.Release()
+}
+
+// runOK runs a command and treats a nonzero exit as an error. It is used for
+// lifecycle commands where success is required (docker compose up, msb run).
+func runOK(r Runner, ctx context.Context, name string, args ...string) error {
+	res, err := r.Run(ctx, name, args...)
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("%s %s failed (exit %d)", name, strings.Join(args, " "), res.ExitCode)
+	}
+	return nil
+}
+
+// RunInteractive runs a command attached to the current terminal's stdio. It is
+// used for `logs --follow` and interactive `shell`/`attach` commands.
+func RunInteractive(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// commandNotFound reports whether err means the command binary is missing.
+func commandNotFound(err error) bool {
+	return errors.Is(err, exec.ErrNotFound)
 }

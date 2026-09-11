@@ -117,9 +117,9 @@ func (t *Tart) vmExists(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// StopAll stops every local managed VM (not just the current one), mirroring
-// `just stop`.
-func (t *Tart) StopAll(ctx context.Context) error {
+// Stop stops every local managed VM (not just the current one), mirroring
+// `just stop --tart`.
+func (t *Tart) Stop(ctx context.Context) error {
 	vms, err := t.RunningVMs(ctx)
 	if err != nil {
 		return err
@@ -378,56 +378,43 @@ func (t *Tart) Doctor(ctx context.Context) error {
 	return nil
 }
 
-type providerList struct {
-	All []struct {
-		ID string `json:"id"`
-	} `json:"all"`
-	Default map[string]any `json:"default"`
+func (t *Tart) ID() Runtime { return RuntimeTart }
+
+// Restart recreates the VM from scratch, mirroring `just restart --tart`.
+func (t *Tart) Restart(ctx context.Context) error {
+	if err := t.Clean(ctx); err != nil {
+		return err
+	}
+	return t.Start(ctx)
 }
 
-// Check verifies the single running backend and reports its Albert provider
-// status, mirroring `just check`.
-func (t *Tart) Check(ctx context.Context, client *http.Client) error {
+// Logs follows the backend log, mirroring `just logs --tart`.
+func (t *Tart) Logs() error {
+	return RunInteractive("tail", "-f", t.LogPath())
+}
+
+// Shell opens an interactive shell in the VM, mirroring `just shell --tart`.
+func (t *Tart) Shell() error {
+	return RunInteractive("tart", "exec", "-it", t.Config.TartVM, "/bin/zsh")
+}
+
+// IsRunning reports whether any managed Tart VM is running.
+func (t *Tart) IsRunning(ctx context.Context) (bool, error) {
 	vms, err := t.RunningVMs(ctx)
 	if err != nil {
-		return err
-	}
-	switch len(vms) {
-	case 0:
-		return fmt.Errorf("no just-code Tart VM is running")
-	case 1:
-	default:
-		return fmt.Errorf("multiple Tart VMs are running; run `just-code stop` first")
-	}
-	ip, err := t.IP(ctx, vms[0])
-	if err != nil {
-		return err
-	}
-	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
-	}
-	endpoint := "http://" + ip + ":" + strconv.Itoa(DefaultPort)
-	body, err := FetchBody(ctx, client, endpoint, t.Config.Username, t.Config.Password, "/global/health")
-	if err != nil {
-		return err
-	}
-	fmt.Println(body)
-
-	var pl providerList
-	if err := FetchJSON(ctx, client, endpoint, t.Config.Username, t.Config.Password, "/provider", &pl); err != nil {
-		return err
-	}
-	registered := false
-	for _, p := range pl.All {
-		if p.ID == "albert" {
-			registered = true
-			break
+		if commandNotFound(err) {
+			return false, nil
 		}
+		return false, err
 	}
-	if registered {
-		fmt.Printf("albert provider: registered, default %v\n", pl.Default["albert"])
-	} else {
-		fmt.Println("albert provider: MISSING")
+	return len(vms) > 0, nil
+}
+
+// Endpoint returns the backend URL for the managed VM.
+func (t *Tart) Endpoint(ctx context.Context) (string, error) {
+	ip, err := t.IP(ctx, t.Config.TartVM)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	return "http://" + ip + ":" + strconv.Itoa(DefaultPort), nil
 }
