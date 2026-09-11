@@ -123,6 +123,7 @@ just-code build --tart           # télécharge ou met à jour l'image de base
 just-code restart --tart         # recrée le sandbox (destructif)
 just-code clean --tart           # supprime le sandbox et son état local
 just-code doctor --tart          # vérifie l'installation du runtime
+just-code version                # identifie le binaire (version, commit, plateforme)
 just-code help                   # liste les commandes
 ```
 
