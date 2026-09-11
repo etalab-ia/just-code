@@ -7,7 +7,7 @@ import { materializeAssets } from "../src/assets.ts";
 import { loadConfig } from "../src/config.ts";
 import type { CommandOptions, CommandResult, CommandRunner } from "../src/process.ts";
 import { DockerRuntime } from "../src/runtimes/docker.ts";
-import { MicrosandboxRuntime, parseMsbLs } from "../src/runtimes/microsandbox.ts";
+import { MicrosandboxRuntime, parseMsbLs, parseMsbWorkspaceMount } from "../src/runtimes/microsandbox.ts";
 import { TartRuntime } from "../src/runtimes/tart.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
@@ -117,8 +117,54 @@ describe("Microsandbox discovery", () => {
   });
 });
 
+describe("Microsandbox workspace mount detection", () => {
+  const inspectOutput = `Name:           albert-opencode-sandbox
+Status:         running
+
+Mounts
+  /tmp            → tmpfs (512 MiB) (rw)
+  /workspace      → /Users/luis/Code/etalab-ia/just-code/workspace (rw)
+`;
+
+  test("reads the host directory mounted at /workspace", () => {
+    expect(parseMsbWorkspaceMount(inspectOutput)).toBe(
+      "/Users/luis/Code/etalab-ia/just-code/workspace",
+    );
+    expect(parseMsbWorkspaceMount("Mounts\n")).toBeUndefined();
+  });
+
+  test("accepts an ASCII arrow too", () => {
+    expect(parseMsbWorkspaceMount("  /workspace -> /srv/project (rw)\n")).toBe("/srv/project");
+  });
+
+  test("warns when the running sandbox is mounted from a different directory", async () => {
+    const home = await mkdtemp(join(tmpdir(), "just-code-msb-mount-"));
+    temporaryDirectories.push(home);
+    const config = loadConfig({ HOME: home, ALBERT_API_KEY: "secret" }, home);
+    const runner = new StubRunner();
+    runner.responses["msb ls"] = { exitCode: 0, stdout: MSB_LS_RUNNING, stderr: "" };
+    runner.responses["msb inspect albert-opencode-sandbox"] = {
+      exitCode: 0,
+      stdout: inspectOutput,
+      stderr: "",
+    };
+
+    const stderr: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void stderr.push(String(args[0]));
+    try {
+      await new MicrosandboxRuntime(runner).start({ ...config, port: 1 });
+    } finally {
+      console.error = original;
+    }
+
+    expect(stderr.join("\n")).toContain("WORKSPACE_DIR is now");
+    expect(stderr.join("\n")).toContain("just-code restart --microsandbox");
+  });
+});
+
 describe("Microsandbox start branches", () => {
-  // A writable temp HOME keeps `mkdir(projectDir)` working outside root-run sandboxes.
+  // A writable temp HOME keeps `mkdir(workspaceDir)` working outside root-run sandboxes.
   async function tempConfig() {
     const home = await mkdtemp(join(tmpdir(), "just-code-msb-branch-"));
     temporaryDirectories.push(home);

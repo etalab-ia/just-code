@@ -6,7 +6,7 @@ import { CliError } from "../src/errors.ts";
 describe("configuration", () => {
   test("loads defaults and resolves workspace from the current directory", () => {
     const config = loadConfig({ HOME: "/home/test" }, "/project");
-    expect(config.projectDir).toBe("/project/workspace");
+    expect(config.workspaceDir).toBe("/project/workspace");
     expect(config.stateDir).toBe("/home/test/.local/state/just-code");
     expect(config.opencodePassword).toBe("albert-dev-pass");
     expect(config.tartMtu).toBe("1280");
@@ -19,9 +19,22 @@ describe("configuration", () => {
   });
 
   test("expands home paths and accepts a valid runtime", () => {
-    const config = loadConfig({ HOME: "/home/test", PROJECT_DIR: "~/code", RUNTIME: "tart" }, "/project");
-    expect(config.projectDir).toBe("/home/test/code");
+    const config = loadConfig({ HOME: "/home/test", WORKSPACE_DIR: "~/code", RUNTIME: "tart" }, "/project");
+    expect(config.workspaceDir).toBe("/home/test/code");
     expect(config.runtime).toBe("tart");
+  });
+
+  test("still honours the deprecated PROJECT_DIR", () => {
+    const config = loadConfig({ HOME: "/home/test", PROJECT_DIR: "~/legacy" }, "/project");
+    expect(config.workspaceDir).toBe("/home/test/legacy");
+  });
+
+  test("prefers WORKSPACE_DIR over the deprecated PROJECT_DIR", () => {
+    const config = loadConfig(
+      { HOME: "/home/test", WORKSPACE_DIR: "~/new", PROJECT_DIR: "~/old" },
+      "/project",
+    );
+    expect(config.workspaceDir).toBe("/home/test/new");
   });
 
   test("rejects unknown runtimes", () => {

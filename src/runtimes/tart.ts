@@ -39,7 +39,7 @@ export class TartRuntime implements RuntimeAdapter {
     requireAlbertApiKey(config);
     validateTartMtu(config.tartMtu);
     await Promise.all([
-      mkdir(config.projectDir, { recursive: true }),
+      mkdir(config.workspaceDir, { recursive: true }),
       mkdir(config.stateDir, { recursive: true }),
     ]);
     const assets = await materializeAssets(config);
@@ -68,7 +68,7 @@ export class TartRuntime implements RuntimeAdapter {
     await this.runner.detached("tart", [
       "run",
       "--no-graphics",
-      `--dir=workspace:${config.projectDir}`,
+      `--dir=workspace:${config.workspaceDir}`,
       `--dir=just-code:${assets.tartDirectory}:ro`,
       config.tartVm,
     ], this.logFile(config));

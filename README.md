@@ -154,12 +154,22 @@ just-code doctor --tart         # vérifie l'installation du runtime
 
 Les trois runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, l'invocation par défaut et `just-code start` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'invocation par défaut propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code stop` détecte l'état réel et ignore volontairement `RUNTIME`.
 
-Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
+Par défaut, `./workspace` est monté sur `/workspace` dans le sandbox. Pour pointer sur un vrai dépôt :
 
 ```bash
-export PROJECT_DIR="$HOME/Code/mon-projet"
+export WORKSPACE_DIR="$HOME/Code/mon-projet"
 just-code --microsandbox
 ```
+
+`PROJECT_DIR` reste accepté comme nom obsolète, mais `WORKSPACE_DIR` est prioritaire.
+
+Le montage est fixé à la **création** du sandbox ou de la VM : Docker, Microsandbox et Tart ne permettent pas de le changer ensuite. Modifier `WORKSPACE_DIR` n'a donc aucun effet sur un sandbox existant, qui continue de monter le répertoire d'origine. Pour le prendre en compte :
+
+```bash
+just-code restart --microsandbox   # recrée le sandbox et sa VM
+```
+
+`just-code restart` est destructif : les logiciels installés dans la VM sont perdus et le premier démarrage suivant sera de nouveau long. Microsandbox prévient lorsque le montage détecté ne correspond plus à `WORKSPACE_DIR`.
 
 Le CLI charge `.env` depuis le répertoire de travail courant. Les fichiers de runtime embarqués sont matérialisés sous `${XDG_STATE_HOME:-$HOME/.local/state}/just-code` et ne contiennent aucun secret.
 

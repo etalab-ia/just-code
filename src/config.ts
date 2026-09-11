@@ -73,11 +73,15 @@ export function loadConfig(
   }
 
   const tartImage = env.TART_IMAGE || DEFAULT_TART_IMAGE;
+  const workspaceDir = env.WORKSPACE_DIR ?? env.PROJECT_DIR;
+  if (env.PROJECT_DIR !== undefined && env.WORKSPACE_DIR === undefined) {
+    console.error("Warning: PROJECT_DIR is deprecated; use WORKSPACE_DIR instead.");
+  }
   const stateRoot = env.XDG_STATE_HOME
     ? expandPath(env.XDG_STATE_HOME, cwd, home)
     : join(home, ".local", "state");
   const config: Config = {
-    projectDir: expandPath(env.PROJECT_DIR || "workspace", cwd, home),
+    workspaceDir: expandPath(workspaceDir || "workspace", cwd, home),
     stateDir: join(stateRoot, "just-code"),
     opencodePassword: env.OPENCODE_SERVER_PASSWORD ?? "albert-dev-pass",
     opencodeUsername: env.OPENCODE_SERVER_USERNAME ?? "opencode",

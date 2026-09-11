@@ -14,5 +14,5 @@ services:
       - OPENCODE_CONFIG_CONTENT={"$$schema":"https://opencode.ai/config.json","provider":{"albert":{"npm":"@ai-sdk/openai-compatible","name":"Albert API (État)","options":{"baseURL":"https://albert.api.etalab.gouv.fr/v1","apiKey":"{env:ALBERT_API_KEY}"},"models":{"deepseek-v4-flash":{"name":"DeepSeek V4 Flash (Albert)","limit":{"context":131072,"output":65536}}}}},"model":"albert/deepseek-v4-flash","small_model":"albert/deepseek-v4-flash","permission":{"edit":"allow","external_directory":"allow","bash":{".*":"allow","git push.*(--force|-f | --force-with-lease)":"deny","sudo .*":"deny"},"webfetch":"allow","websearch":"allow","skill":"allow","task":"allow"}}
     volumes:
       # Mount the project directory to edit and run tools against
-      - ${PROJECT_DIR:-./workspace}:/workspace
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
     restart: unless-stopped

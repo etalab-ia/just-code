@@ -25,7 +25,7 @@ export type ExecuteAction = ActionName | typeof DEFAULT_ACTION;
 
 export interface Config {
   runtime?: RuntimeName;
-  projectDir: string;
+  workspaceDir: string;
   stateDir: string;
   albertApiKey?: string;
   opencodePassword: string;

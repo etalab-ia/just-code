@@ -22,7 +22,7 @@ export class DockerRuntime implements RuntimeAdapter {
 
   async start(config: Config): Promise<void> {
     const apiKey = requireAlbertApiKey(config);
-    await mkdir(config.projectDir, { recursive: true });
+    await mkdir(config.workspaceDir, { recursive: true });
     const assets = await materializeAssets(config);
     console.log("Starting the Docker sandbox (the first run builds the image)...");
     const result = await this.runner.checked("docker", [
@@ -130,7 +130,7 @@ export class DockerRuntime implements RuntimeAdapter {
       ALBERT_API_KEY: apiKey ?? "",
       OPENCODE_SERVER_PASSWORD: config.opencodePassword,
       OPENCODE_SERVER_USERNAME: config.opencodeUsername,
-      PROJECT_DIR: config.projectDir,
+      WORKSPACE_DIR: config.workspaceDir,
     };
   }
 }

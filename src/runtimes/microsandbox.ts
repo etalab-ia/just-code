@@ -32,6 +32,19 @@ export function parseMsbLs(output: string): MsbSandbox[] {
 }
 
 /**
+ * Read the host directory currently mounted at the guest's `/workspace` from
+ * `msb inspect`. Mounts are fixed when a sandbox is created — `msb modify`
+ * explicitly does not cover storage — so this is how a stale mount is detected.
+ */
+export function parseMsbWorkspaceMount(output: string): string | undefined {
+  for (const line of output.split("\n")) {
+    const match = line.match(/^\s*\/workspace\s+(?:→|->)\s+(\S+)/);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
+/**
  * Microsandbox keeps the VM across restarts but only runs the container
  * entrypoint (`scripts.start`, which is what launches `opencode serve`) at
  * creation. After a VM restart the sandbox reports `running` with no backend
@@ -52,10 +65,11 @@ export class MicrosandboxRuntime implements RuntimeAdapter {
 
   async start(config: Config): Promise<void> {
     const apiKey = requireAlbertApiKey(config);
-    await mkdir(config.projectDir, { recursive: true });
+    await mkdir(config.workspaceDir, { recursive: true });
     const env = { ALBERT_API_KEY: apiKey };
 
     const sandbox = await this.findSandbox(config);
+    if (sandbox) await this.warnIfWorkspaceMountIsStale(config);
 
     if (sandbox?.status === "running") {
       if (await isHealthy(this.endpoint(config), config)) {
@@ -106,7 +120,7 @@ export class MicrosandboxRuntime implements RuntimeAdapter {
       "--root-disk",
       "8G",
       "--volume",
-      `${config.projectDir}:/workspace`,
+      `${config.workspaceDir}:/workspace`,
       "--env",
       `OPENCODE_SERVER_PASSWORD=${config.opencodePassword}`,
       "--env",
@@ -196,5 +210,23 @@ export class MicrosandboxRuntime implements RuntimeAdapter {
     const result = await this.runner.run("msb", ["ls"]);
     if (result.exitCode !== 0) return undefined;
     return parseMsbLs(result.stdout).find((sandbox) => sandbox.name === config.msbSandbox);
+  }
+
+  /**
+   * `msb modify` cannot change mounts, so a sandbox keeps the host directory it
+   * was created with. Warn instead of letting the user wonder why /workspace is
+   * empty or stale.
+   */
+  private async warnIfWorkspaceMountIsStale(config: Config): Promise<void> {
+    const inspect = await this.runner.run("msb", ["inspect", config.msbSandbox]);
+    if (inspect.exitCode !== 0) return;
+    const mounted = parseMsbWorkspaceMount(inspect.stdout);
+    if (!mounted || mounted === config.workspaceDir) return;
+    console.error(
+      `Warning: ${config.msbSandbox} was created with /workspace mounted from ${mounted}, ` +
+        `but WORKSPACE_DIR is now ${config.workspaceDir}. Mounts are fixed when a sandbox ` +
+        `is created, so /workspace will not reflect the new directory. ` +
+        `Run 'just-code restart --microsandbox' to recreate it.`,
+    );
   }
 }
