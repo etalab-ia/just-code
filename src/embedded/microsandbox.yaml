@@ -1,5 +1,5 @@
 # Runtime settings for the persistent OpenCode microVM.
-# The image, workspace mount, and credentials are supplied by the justfile.
+# The image, workspace mount, and credentials are supplied by the TypeScript CLI.
 cpus: 2
 memory: "4G"
 workdir: "/workspace"
