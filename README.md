@@ -140,6 +140,28 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 6. **Détache-toi (Ctrl+C / quitte), conserve le runtime, puis relance `just code --docker` ou `just code --microsandbox`** — continuité de session et reconnexion.
 7. **« Envoie les logs de ton serveur de dev dans /tmp/server.log et montre-moi les dernières lignes. »** — comportement du scratch space hors du répertoire projet.
 
+## Portage Go (banc d'essai)
+
+Le cycle de vie du runtime Tart est également porté en Go dans `internal/justcode`, avec un CLI autonome `cmd/just-code`. C'est un banc d'essai pour comparer Go à une implémentation Bun/TypeScript sur le durcissement : le code shell inline du `justfile` est remplacé par une bibliothèque testée, sans dépendance externe.
+
+```bash
+go build -o just-code ./cmd/just-code
+go test ./...
+
+# Compilation croisée native (sans CGO)
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o just-code-darwin-arm64 ./cmd/just-code
+```
+
+Les binaires statiques font ~7 Mo (Linux amd64 et macOS arm64/amd64), sans runtime embarqué, contre ~60-80 Mo pour un binaire `bun build --compile` qui embarque JavaScriptCore.
+
+Ce premier port couvre uniquement le runtime Tart. Les trois régressions shell du `justfile` y sont corrigées et testées :
+
+- **Délai de santé à horloge murale** : la boucle attend une échéance de 120 s mesurée en temps réel, avec un `--max-time` de 5 s par requête (une connexion bloquée ne contourne plus la limite).
+- **Mot de passe vide préservé** : `OPENCODE_SERVER_PASSWORD=""` signifie « pas d'authentification », au lieu de retomber silencieusement sur `albert-dev-pass`.
+- **Surface des flags** : `--docker`, `--microsandbox` et `--tart` sont reconnus (flag explicite prioritaire sur `RUNTIME`), et les messages d'erreur reflètent exactement cette surface.
+
+Les contrats comportementaux du runtime Tart sont reproduits : secrets (`ALBERT_API_KEY` et mot de passe) transmis sur l'entrée standard, jamais dans les arguments ; isolation par préfixe `opencode-` ; endpoints de santé ; clampage de MTU (1280-1500 ou `auto`), validé sur l'hôte avant le boot de la VM ; et relance du backend (SIGTERM puis SIGKILL après 10 sondes). Docker et Microsandbox restent dans le `justfile` pour l'instant.
+
 ## Choix de conception
 
 - **Trois runtimes, aucun défaut intégré.** Les commandes ciblent `--docker`, `--microsandbox` ou `--tart`, avec une préférence `RUNTIME` facultative pour les usages répétés. Le flag explicite est toujours prioritaire. Le répertoire projet et le port OpenCode (4096) restent identiques.
