@@ -29,11 +29,8 @@ func run(args []string) (int, error) {
 	cfg := justcode.LoadConfigEnv()
 	d := justcode.NewDispatcher(cfg)
 
-	if len(args) == 0 {
-		usage()
-		return 0, nil
-	}
-	cmd, rest := args[0], args[1:]
+	cmd, rest := resolveCommand(args)
+
 	switch cmd {
 	case "code":
 		return codeCmd(d, cfg, rest)
@@ -50,6 +47,21 @@ func run(args []string) (int, error) {
 		return 0, nil
 	default:
 		return 0, fmt.Errorf("unknown command %q", cmd)
+	}
+}
+
+// resolveCommand maps an invocation to a command and its remaining arguments.
+// A bare invocation (or one leading with a flag) runs `code`, matching the old
+// `just code` default; a known command name dispatches to its handler.
+func resolveCommand(args []string) (string, []string) {
+	if len(args) == 0 {
+		return "code", nil
+	}
+	switch args[0] {
+	case "code", "start", "stop", "check", "logs", "shell", "build", "restart", "clean", "doctor", "help", "-h", "--help":
+		return args[0], args[1:]
+	default:
+		return "code", args
 	}
 }
 
@@ -182,11 +194,12 @@ func exitCodeOf(err error) int {
 }
 
 func usage() {
-	fmt.Println(`just-code — a single Go binary for the OpenCode sandbox
+	fmt.Println(`just-code - a single Go binary for the OpenCode sandbox
 
 Usage:
-  just-code code [--docker|--microsandbox|--tart]   start a backend and attach the OpenCode TUI
-  just-code start [--docker|--microsandbox|--tart]  start a backend without attaching
+  just-code [--docker|--microsandbox|--tart]         start a backend and attach the OpenCode TUI
+  just-code code [--docker|--microsandbox|--tart]    alias for the bare command
+  just-code start [--docker|--microsandbox|--tart]   start a backend without attaching
   just-code stop                                     stop every running runtime
   just-code check                                    health + Albert provider of the running backend
   just-code logs --docker|--microsandbox|--tart      follow the backend log
@@ -195,6 +208,7 @@ Usage:
   just-code restart --docker|--microsandbox|--tart   recreate the sandbox (destructive)
   just-code clean --docker|--microsandbox|--tart     remove the sandbox and its state
   just-code doctor --docker|--microsandbox|--tart    verify the runtime installation
+  just-code help                                     show this help
 
 Runtime: pass --docker, --microsandbox, or --tart explicitly, or set RUNTIME in
 .env to omit the flag. An explicit flag always takes precedence.`)

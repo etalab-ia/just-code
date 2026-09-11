@@ -108,8 +108,9 @@ Les VM Tahoe et Sonoma coexistent ; changer `TART_IMAGE` cible l'autre VM sans s
 ## Utilisation
 
 ```bash
-just-code                        # liste les commandes
-just-code code --docker          # démarre Docker et attache le TUI
+just-code                        # démarre (RUNTIME) et attache le TUI
+just-code --tart                 # démarre Tart et attache le TUI
+just-code code --docker          # alias explicite de la commande par défaut
 just-code code --microsandbox    # démarre Microsandbox et attache le TUI
 just-code code --tart            # démarre Tart (VM macOS) et attache le TUI
 just-code code                   # utilise RUNTIME défini dans .env
@@ -122,6 +123,7 @@ just-code build --tart           # télécharge ou met à jour l'image de base
 just-code restart --tart         # recrée le sandbox (destructif)
 just-code clean --tart           # supprime le sandbox et son état local
 just-code doctor --tart          # vérifie l'installation du runtime
+just-code help                   # liste les commandes
 ```
 
 Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code code`, `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, `just-code code` propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code stop` détecte l'état réel et ignore volontairement `RUNTIME`.
