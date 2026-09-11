@@ -30,30 +30,48 @@ Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence
 - Une **clé Albert API** dans l'environnement (ou dans `.env`, ignoré par git)
 - L'un des runtimes disponibles :
   - Docker ou [Colima](https://github.com/abiosoft/colima) ;
-  - [Microsandbox](https://github.com/superradcompany/microsandbox) (`msb` >= 0.6.16) sur un Mac Apple Silicon ou un hôte Linux avec KVM ;
+  - [Microsandbox](https://github.com/superradcompany/microsandbox) (`msb` >= 0.6.16) sur un Mac Apple Silicon ou un hôte Linux avec KVM :
+
+    ```bash
+    curl -fsSL https://install.microsandbox.dev | sh
+    msb doctor
+    ```
+
   - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
 
 ## Installation
 
 Les releases GitHub publient un exécutable autonome pour `darwin-arm64`, `darwin-x64`, `linux-arm64` et `linux-x64`. Le binaire embarque le runtime Bun et les fichiers nécessaires aux trois adaptateurs ; Node et Bun ne sont pas requis à l'exécution.
 
-Télécharge l'artefact correspondant à l'hôte depuis la [page des releases](https://github.com/etalab-ia/just-code/releases), vérifie-le avec `SHA256SUMS`, puis installe-le sur le `PATH` :
+### Installation par `curl` (recommandée)
+
+`curl` n'ajoute pas l'attribut `com.apple.quarantine` au fichier téléchargé, contrairement à un navigateur. macOS ne bloque donc pas le binaire au premier lancement, ce qui compte tant qu'il n'est pas notarié.
 
 ```bash
-chmod +x just-code-darwin-arm64
+curl -fsSL https://github.com/etalab-ia/just-code/releases/latest/download/just-code-darwin-arm64 -o just-code
+curl -fsSL https://github.com/etalab-ia/just-code/releases/latest/download/SHA256SUMS -o SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+chmod +x just-code
 mkdir -p ~/.local/bin
-install -m 755 just-code-darwin-arm64 ~/.local/bin/just-code
+mv just-code ~/.local/bin/just-code
 just-code --version
 ```
 
-Les binaires macOS ne sont pas encore signés ni notariés. Ce point devra être traité avant de présenter l'installation comme prête pour un usage largement distribué.
+Remplace `just-code-darwin-arm64` par l'artefact de ton hôte (`linux-arm64`, `linux-x64`, `darwin-x64`).
 
-Installation de Microsandbox :
+Cette méthode contourne volontairement le contrôle de Gatekeeper : c'est le compromis assumé d'une distribution sans notarisation. Vérifie la somme de contrôle avant d'installer.
+
+### Si le binaire vient d'un navigateur
+
+Le navigateur ajoute `com.apple.quarantine` et Gatekeeper refuse alors le binaire :
 
 ```bash
-curl -fsSL https://install.microsandbox.dev | sh
-msb doctor
+xattr -d com.apple.quarantine ~/.local/bin/just-code
 ```
+
+### Signature
+
+Les binaires sont signés ad hoc par Bun, ce qui est nécessaire pour s'exécuter sur Apple Silicon, mais ils ne portent ni signature Developer ID ni ticket de notarisation. Une distribution large demanderait les deux.
 
 ## Configuration
 
