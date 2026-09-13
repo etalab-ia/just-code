@@ -211,15 +211,11 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ju
 Deux workflows GitHub Actions accompagnent le CLI :
 
 - **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race` et compilation.
-- **`release.yml`** (sur un tag `v*`) : compilation des quatre binaires (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`), génération de `SHA256SUMS`, puis création ou mise à jour de la release GitHub avec les binaires bruts et les sommes de contrôle.
+- **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les quatre binaires (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`), génère `SHA256SUMS` et les attache à la release — dans le même job, car les événements créés avec `GITHUB_TOKEN` ne déclenchent pas d'autres workflows.
 
-Le tag est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=$GITHUB_REF_NAME"`, donc `just-code version` affiche exactement la version publiée.
+Le tag de release est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=<tag>"`, donc `just-code version` affiche exactement la version publiée.
 
-Pour publier :
-
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
+Pour publier : fusionner la PR de release-please. C'est tout. Le pipeline d'artefacts peut aussi être exercé sans couper une release : `workflow_dispatch` avec un tag existant reconstruit et réattache les assets.
 
 Vérification après téléchargement (les sommes sont générées depuis `dist/`, donc les chemins correspondent aux fichiers publiés) :
 
