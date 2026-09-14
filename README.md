@@ -179,6 +179,10 @@ Le premier démarrage d'un sandbox Microsandbox installe ~384 Mio de paquets dan
 
 Le réflexe le plus simple reste `just-code stop` suivi d'un relancement de `just-code code --<runtime>`.
 
+### Conteneur Docker d'une version précédente
+
+Les versions antérieures à la suppression du runtime Docker laissaient un conteneur `albert-opencode-sandbox` (`restart: unless-stopped`) qui publiait les ports 4096 et 3000-3010, les mêmes que les runtimes actuels. Au premier `start` / `attach`, et sur `just-code stop`, just-code détecte ce conteneur et le supprime automatiquement en l'annonçant ; s'il ne peut pas le supprimer, il s'arrête en le signalant plutôt que de laisser un conflit de ports inexpliqué. Aucun `docker` installé n'est nécessaire : l'absence de Docker est ignorée.
+
 ## Portage Go
 
 Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les deux runtimes via une bibliothèque testée (`internal/justcode`), sans dépendance externe.
