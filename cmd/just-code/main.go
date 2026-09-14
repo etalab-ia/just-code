@@ -1,5 +1,5 @@
 // Command just-code is a single Go binary that replaces the original justfile.
-// It manages an OpenCode backend in Docker, Microsandbox, or a Tart macOS VM.
+// It manages an OpenCode backend in a Microsandbox microVM or a Tart macOS VM.
 package main
 
 import (
@@ -84,7 +84,7 @@ func run(args []string) (int, error) {
 type parsedArgs struct {
 	// action is "attach" (the default) or one of the named commands.
 	action string
-	// runtime is the raw --docker/--microsandbox/--tart flag, or "".
+	// runtime is the raw --microsandbox/--tart flag, or "".
 	runtime string
 	version bool
 }
@@ -100,7 +100,7 @@ var actionNames = map[string]bool{
 }
 
 func runtimeFlag(a string) bool {
-	return a == "--docker" || a == "--microsandbox" || a == "--tart"
+	return a == "--microsandbox" || a == "--tart"
 }
 
 // parseArgs mirrors the TypeScript CLI's parser: a single pass that accepts the
@@ -259,7 +259,7 @@ func usage() {
 	fmt.Println(`just-code - manage the OpenCode sandbox
 
 Usage:
-  just-code [command] [--docker | --microsandbox | --tart]
+  just-code [command] [--microsandbox | --tart]
 
 Run just-code with no command to start the selected backend and attach the
 native OpenCode TUI.
@@ -277,7 +277,7 @@ Commands:
   help       Show this help
 
 Runtime selection:
-  Pass --docker, --microsandbox, or --tart. RUNTIME in .env is used when no
-  flag is provided; an explicit flag always takes precedence. On Windows,
+  Pass --microsandbox or --tart. RUNTIME in .env is used when no flag is
+  provided; an explicit flag always takes precedence. On Windows,
   --microsandbox is the default and the only supported runtime.`)
 }

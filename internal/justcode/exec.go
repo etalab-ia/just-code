@@ -21,7 +21,7 @@ type ExecResult struct {
 	Stderr   string
 }
 
-// Runner executes host-side commands (the `tart`, `docker`, and `msb` CLIs).
+// Runner executes host-side commands (the `tart` and `msb` CLIs).
 type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (ExecResult, error)
 	// RunEnv runs a command with extra environment variables appended to the
@@ -127,7 +127,7 @@ func (OSStarter) Start(stdin io.Reader, logPath string, name string, args ...str
 }
 
 // runOK runs a command and treats a nonzero exit as an error. It is used for
-// lifecycle commands where success is required (docker compose up, msb run).
+// lifecycle commands where success is required (msb run, tart exec).
 func runOK(r Runner, ctx context.Context, name string, args ...string) error {
 	res, err := r.Run(ctx, name, args...)
 	if err != nil {

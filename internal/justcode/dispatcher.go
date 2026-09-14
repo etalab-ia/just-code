@@ -9,17 +9,19 @@ import (
 	"strings"
 )
 
-// Dispatcher wires the three runtimes together and implements the cross-runtime
+// Dispatcher wires the runtimes together and implements the cross-runtime
 // commands: stop (all), check (single), and runtime-conflict resolution.
 type Dispatcher struct {
 	cfg      Config
 	backends map[Runtime]Backend
+	// Runner is used only by the migration cleanup for the removed Docker
+	// runtime; each backend carries its own.
+	Runner Runner
 }
 
-// NewDispatcher builds a dispatcher over the three runtimes for a config.
+// NewDispatcher builds a dispatcher over the runtimes for a config.
 func NewDispatcher(cfg Config) *Dispatcher {
 	return NewDispatcherWith(cfg, map[Runtime]Backend{
-		RuntimeDocker:       NewDockerRuntime(cfg),
 		RuntimeMicrosandbox: NewMicrosandboxRuntime(cfg),
 		RuntimeTart:         NewTart(cfg),
 	})
@@ -28,7 +30,7 @@ func NewDispatcher(cfg Config) *Dispatcher {
 // NewDispatcherWith builds a dispatcher over an explicit set of backends,
 // primarily for tests.
 func NewDispatcherWith(cfg Config, backends map[Runtime]Backend) *Dispatcher {
-	return &Dispatcher{cfg: cfg, backends: backends}
+	return &Dispatcher{cfg: cfg, backends: backends, Runner: OSRunner{}}
 }
 
 // Backend returns the backend for a runtime.
@@ -75,6 +77,9 @@ func (d *Dispatcher) SingleRunning(ctx context.Context) (Runtime, error) {
 
 // StopAll stops every active runtime, mirroring `just stop`.
 func (d *Dispatcher) StopAll(ctx context.Context) error {
+	if err := d.clearLegacyDocker(ctx); err != nil {
+		return err
+	}
 	running, err := d.Running(ctx)
 	if err != nil {
 		return err
@@ -92,9 +97,13 @@ func (d *Dispatcher) StopAll(ctx context.Context) error {
 	return firstErr
 }
 
-// Prepare resolves conflicts before starting a runtime: if a different runtime
-// is already active, it prompts to stop it (interactive) or refuses.
+// Prepare resolves conflicts before starting a runtime: it migrates a host
+// still carrying the removed Docker runtime's container, then, if a different
+// runtime is already active, prompts to stop it (interactive) or refuses.
 func (d *Dispatcher) Prepare(ctx context.Context, requested Runtime) error {
+	if err := d.clearLegacyDocker(ctx); err != nil {
+		return err
+	}
 	running, err := d.Running(ctx)
 	if err != nil {
 		return err

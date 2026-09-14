@@ -1,6 +1,6 @@
 // Package justcode implements the just-code CLI as a tested Go library — a
-// single binary replacing the original justfile across the Docker,
-// Microsandbox, and Tart runtimes.
+// single binary replacing the original justfile across the Microsandbox and
+// Tart runtimes.
 package justcode
 
 import (
@@ -14,14 +14,13 @@ import (
 type Runtime string
 
 const (
-	RuntimeDocker       Runtime = "docker"
 	RuntimeMicrosandbox Runtime = "microsandbox"
 	RuntimeTart         Runtime = "tart"
 )
 
 // allRuntimes is the deterministic ordering used by `stop` and `check`, matching
 // the justfile's _running-runtimes.
-var allRuntimes = []Runtime{RuntimeDocker, RuntimeMicrosandbox, RuntimeTart}
+var allRuntimes = []Runtime{RuntimeMicrosandbox, RuntimeTart}
 
 // currentGOOS is the platform indirection for tests: the fake-backends in
 // dispatcher_test need to steer which runtimes get probed without rebuilding
@@ -29,9 +28,9 @@ var allRuntimes = []Runtime{RuntimeDocker, RuntimeMicrosandbox, RuntimeTart}
 var currentGOOS = runtime.GOOS
 
 // supportedRuntimes is the subset of allRuntimes that exists on this platform.
-// Windows runs only the microsandbox runtime (via WHP): Docker Desktop is not a
-// target there and Tart is macOS-only, so probing them would only surface raw
-// "executable file not found" errors from `stop` and `check`.
+// Windows runs only the microsandbox runtime (via WHP): Tart is macOS-only, so
+// probing it would only surface a raw "executable file not found" error from
+// `stop` and `check`.
 func supportedRuntimes() []Runtime {
 	return supportedRuntimesOn(currentGOOS)
 }
@@ -43,8 +42,8 @@ func supportedRuntimesOn(goos string) []Runtime {
 	return allRuntimes
 }
 
-// Backend is the lifecycle of a single sandbox backend. Docker, Microsandbox,
-// and Tart each implement it.
+// Backend is the lifecycle of a single sandbox backend. Microsandbox and Tart
+// each implement it.
 type Backend interface {
 	ID() Runtime
 	Start(ctx context.Context) error
@@ -80,10 +79,10 @@ func resolveRuntimeOn(flag, preference, goos string) (Runtime, error) {
 	if goos == "windows" {
 		return RuntimeMicrosandbox, nil
 	}
-	return "", fmt.Errorf("select --docker, --microsandbox, or --tart, or set RUNTIME in .env")
+	return "", fmt.Errorf("select --microsandbox or --tart, or set RUNTIME in .env")
 }
 
-// parseRuntimeFlag accepts --docker, --microsandbox, or --tart.
+// parseRuntimeFlag accepts --microsandbox or --tart.
 func parseRuntimeFlag(flag string) (Runtime, error) {
 	return parseRuntimeFlagOn(flag, runtime.GOOS)
 }
@@ -92,21 +91,16 @@ func parseRuntimeFlagOn(flag, goos string) (Runtime, error) {
 	return parseRuntimeNameOn(strings.TrimPrefix(flag, "--"), goos)
 }
 
-// parseRuntimeName accepts docker, microsandbox, or tart (the RUNTIME env
-// spelling) and rejects anything else with a message matching the accepted
-// flag surface. Docker and Tart are macOS/Linux only; on Windows they are
-// rejected with a pointer at the one runtime that does work there.
+// parseRuntimeName accepts microsandbox or tart (the RUNTIME env spelling) and
+// rejects anything else with a message matching the accepted flag surface. Tart
+// is macOS-only; on Windows it is rejected with a pointer at the runtime that
+// does work there.
 func parseRuntimeName(name string) (Runtime, error) {
 	return parseRuntimeNameOn(name, runtime.GOOS)
 }
 
 func parseRuntimeNameOn(name, goos string) (Runtime, error) {
 	switch name {
-	case string(RuntimeDocker):
-		if goos == "windows" {
-			return "", fmt.Errorf("docker is not supported on Windows; use --microsandbox")
-		}
-		return RuntimeDocker, nil
 	case string(RuntimeMicrosandbox):
 		return RuntimeMicrosandbox, nil
 	case string(RuntimeTart):
@@ -115,6 +109,6 @@ func parseRuntimeNameOn(name, goos string) (Runtime, error) {
 		}
 		return RuntimeTart, nil
 	default:
-		return "", fmt.Errorf("expected --docker, --microsandbox, or --tart (RUNTIME must be docker, microsandbox, or tart)")
+		return "", fmt.Errorf("expected --microsandbox or --tart (RUNTIME must be microsandbox or tart)")
 	}
 }

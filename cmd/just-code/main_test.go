@@ -15,8 +15,8 @@ func TestParseArgs(t *testing.T) {
 	}{
 		{"bare attaches", nil, "attach", "", false},
 		{"leading runtime flag attaches", []string{"--tart"}, "attach", "--tart", false},
-		{"runtime flag then command", []string{"--docker", "start"}, "start", "--docker", false},
-		{"command then runtime flag", []string{"start", "--docker"}, "start", "--docker", false},
+		{"runtime flag then command", []string{"--microsandbox", "start"}, "start", "--microsandbox", false},
+		{"command then runtime flag", []string{"start", "--microsandbox"}, "start", "--microsandbox", false},
 		{"explicit start", []string{"start", "--microsandbox"}, "start", "--microsandbox", false},
 		{"stop", []string{"stop"}, "stop", "", false},
 		{"check", []string{"check"}, "check", "", false},
@@ -67,8 +67,17 @@ func TestParseArgsRejectsUnknown(t *testing.T) {
 	}
 }
 
+// TestParseArgsRejectsDocker covers the removal of the Docker runtime: --docker
+// is no longer a known flag and must be reported as such.
+func TestParseArgsRejectsDocker(t *testing.T) {
+	_, err := parseArgs([]string{"--docker"})
+	if err == nil || !strings.Contains(err.Error(), "Unknown argument: --docker") {
+		t.Fatalf("error = %v, want an unknown-argument error for --docker", err)
+	}
+}
+
 func TestParseArgsConflictingRuntimes(t *testing.T) {
-	_, err := parseArgs([]string{"--docker", "--tart"})
+	_, err := parseArgs([]string{"--microsandbox", "--tart"})
 	if err == nil || !strings.Contains(err.Error(), "Select exactly one runtime") {
 		t.Fatalf("error = %v, want the runtime conflict message", err)
 	}
@@ -76,7 +85,7 @@ func TestParseArgsConflictingRuntimes(t *testing.T) {
 
 // TestRunNeedsNoRuntimeForLocalActions guards a regression where the dispatch
 // resolved a runtime before handling actions that do not need one: `just-code
-// version` used to fail with "select --docker, ...".
+// version` used to fail with "select --microsandbox or --tart, ...".
 func TestRunNeedsNoRuntimeForLocalActions(t *testing.T) {
 	t.Setenv("RUNTIME", "")
 	for _, args := range [][]string{{"version"}, {"help"}, {"-V"}} {
