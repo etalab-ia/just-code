@@ -278,5 +278,6 @@ Commands:
 
 Runtime selection:
   Pass --docker, --microsandbox, or --tart. RUNTIME in .env is used when no
-  flag is provided; an explicit flag always takes precedence.`)
+  flag is provided; an explicit flag always takes precedence. On Windows,
+  --microsandbox is the default and the only supported runtime.`)
 }

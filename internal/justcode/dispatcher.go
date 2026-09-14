@@ -40,10 +40,11 @@ func (d *Dispatcher) Backend(rt Runtime) (Backend, error) {
 	return b, nil
 }
 
-// Running returns the active runtimes in deterministic order.
+// Running returns the active runtimes in deterministic order. Only runtimes
+// supported on this platform are probed (see supportedRuntimes).
 func (d *Dispatcher) Running(ctx context.Context) ([]Runtime, error) {
 	var out []Runtime
-	for _, rt := range allRuntimes {
+	for _, rt := range supportedRuntimes() {
 		on, err := d.backends[rt].IsRunning(ctx)
 		if err != nil {
 			return nil, err

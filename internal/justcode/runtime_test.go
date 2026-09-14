@@ -1,6 +1,9 @@
 package justcode
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestResolveRuntimeFlag(t *testing.T) {
 	cases := []struct {
@@ -38,7 +41,6 @@ func TestResolveRuntimePreference(t *testing.T) {
 
 func TestResolveRuntimeErrors(t *testing.T) {
 	cases := []struct{ flag, pref string }{
-		{"", ""},
 		{"--podman", ""},
 		{"", "podman"},
 		{"--", ""},
@@ -47,5 +49,20 @@ func TestResolveRuntimeErrors(t *testing.T) {
 		if _, err := ResolveRuntime(c.flag, c.pref); err == nil {
 			t.Errorf("ResolveRuntime(%q, %q): expected error", c.flag, c.pref)
 		}
+	}
+	// The empty-selection error only exists off Windows; there the default
+	// is microsandbox (covered by runtime_windows_test.go).
+	if _, err := ResolveRuntime("", ""); runtime.GOOS != "windows" && err == nil {
+		t.Errorf("ResolveRuntime(\"\", \"\") off Windows: expected error")
+	}
+}
+
+func TestSupportedRuntimesOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows behavior covered by runtime_windows_test.go")
+	}
+	got := supportedRuntimes()
+	if len(got) != 3 {
+		t.Errorf("supportedRuntimes() = %v, want all three runtimes", got)
 	}
 }
