@@ -228,13 +228,13 @@ Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-
 
 ## Développement
 
-Le dépôt embarque des hooks pre-commit. Après un clone :
+Le dépôt embarque des hooks pre-commit. Prérequis : [pre-commit](https://pre-commit.com/#install) et [Go](https://go.dev/dl/) sur le `PATH` (pre-commit compile gitleaks depuis la version épinglée au premier commit ; gitleaks lui-même n'a pas besoin d'être installé). Après un clone :
 
 ```bash
 pre-commit install
 ```
 
-Le hook [gitleaks](https://github.com/gitleaks/gitleaks) scanne les changements stagés à chaque commit et bloque l'ajout de secrets (clés API, mots de passe). La version est épinglée dans `.pre-commit-config.yaml`. Pour le passer ponctuellement : `SKIP=gitleaks git commit ...` (les hooks locaux restent contournables ; ne le fais que si tu sais pourquoi).
+Le hook [gitleaks](https://github.com/gitleaks/gitleaks) scanne les changements stagés à chaque commit et bloque l'ajout de secrets (clés API, mots de passe). La version est épinglée dans `.pre-commit-config.yaml`. Le premier commit après l'installation est lent (compilation de gitleaks) ; les suivants sont quasi instantanés. Pour le passer ponctuellement : `SKIP=gitleaks git commit ...` (les hooks locaux restent contournables ; ne le fais que si tu sais pourquoi).
 
 ## Choix de conception
 
