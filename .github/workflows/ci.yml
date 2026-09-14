@@ -72,15 +72,14 @@ jobs:
           - runner: windows-11-arm
             os: windows
             arch: arm64
-            # The runner's gcc is an x86_64 MinGW cross compiler, which cannot
-            # assemble arm64. CGO needs a GNU-ABI aarch64 compiler, so the
-            # pinned LLVM-MinGW toolchain is installed below.
-            llvm_mingw: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      # The runner's gcc is an x86_64 MinGW cross compiler, which cannot
+      # assemble arm64. CGO needs a GNU-ABI aarch64 compiler, so the pinned
+      # LLVM-MinGW toolchain is installed for the Windows arm64 leg.
       - name: Install the Windows arm64 C toolchain
-        if: matrix.llvm_mingw
+        if: matrix.os == 'windows' && matrix.arch == 'arm64'
         shell: pwsh
         env:
           LLVM_MINGW_VERSION: "20260616"
@@ -110,7 +109,7 @@ jobs:
         run: |
           test "$(go env GOOS)" = "${{ matrix.os }}"
           test "$(go env GOARCH)" = "${{ matrix.arch }}"
-          if [ -n "${{ matrix.llvm_mingw }}" ]; then
+          if [ "${{ matrix.os }}" = "windows" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
             go env CC | grep -q aarch64-w64-mingw32-clang
           fi
       - run: go test ./...
