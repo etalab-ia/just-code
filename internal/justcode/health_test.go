@@ -3,6 +3,7 @@ package justcode
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -196,5 +197,40 @@ func TestWaitHealthyContextCancel(t *testing.T) {
 	cfg := HealthConfig{Deadline: 0, PollInterval: 5 * time.Millisecond, RequestTimeout: time.Second}
 	if err := WaitHealthy(ctx, srv.URL, "opencode", "pw", cfg, nil); err == nil {
 		t.Fatal("expected context cancellation error")
+	}
+}
+
+// TestCheckBackendLargeProviderPayload is the regression test for the reported
+// bug: the /provider response embeds the full models.dev catalog and exceeded
+// the 4 MiB read cap, so the JSON was truncated mid-value and check failed with
+// a bare "unexpected EOF" after printing the health line.
+func TestCheckBackendLargeProviderPayload(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"all":[{"id":"albert","name":"Albert","models":[`)
+	for j := 0; j < 400; j++ {
+		if j > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":"model-%d","name":"model-with-a-reasonably-long-name-%d","limit":{"context":131072,"output":65536}}`, j, j)
+	}
+	b.WriteString(`]}],"default":{"albert":"model-0"}}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/global/health":
+			_, _ = w.Write([]byte(`{"healthy":true}`))
+		case "/provider":
+			_, _ = w.Write([]byte(b.String()))
+		}
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if err := CheckBackend(context.Background(), nil, srv.URL, "opencode", "pw"); err != nil {
+			t.Fatalf("CheckBackend: %v", err)
+		}
+	})
+	if !strings.Contains(out, "albert provider: registered") {
+		t.Fatalf("provider line missing from check output: %q", out)
 	}
 }

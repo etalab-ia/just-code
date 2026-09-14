@@ -44,6 +44,26 @@ func FetchBody(ctx context.Context, client *http.Client, endpoint, username, pas
 	return body, err
 }
 
+// maxHTTPBody bounds response reads. The /provider response embeds the full
+// models.dev catalog (every provider with its model list), which can exceed
+// 4 MiB — the original 4 MiB cap truncated it mid-JSON and surfaced as a bare
+// "unexpected EOF" from the decoder. Hitting the cap must produce an explicit
+// message, not a truncated stream.
+const maxHTTPBody = 64 << 20 // 64 MiB
+
+// readBodyCapped reads up to maxHTTPBody and reports an explicit error rather
+// than silently truncating.
+func readBodyCapped(r io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxHTTPBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxHTTPBody {
+		return nil, fmt.Errorf("response exceeds %d MiB limit", maxHTTPBody>>20)
+	}
+	return b, nil
+}
+
 // fetch returns the body and the HTTP status code.
 func fetch(ctx context.Context, client *http.Client, endpoint, username, password, path string) (string, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+path, nil)
@@ -56,7 +76,7 @@ func fetch(ctx context.Context, client *http.Client, endpoint, username, passwor
 		return "", 0, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	b, err := readBodyCapped(resp.Body)
 	if err != nil {
 		return "", resp.StatusCode, err
 	}
@@ -79,7 +99,11 @@ func FetchJSON(ctx context.Context, client *http.Client, endpoint, username, pas
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s%s returned %s", endpoint, path, resp.Status)
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(v)
+	b, err := readBodyCapped(resp.Body)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
 }
 
 // HealthProbe is the outcome of a single health request.
