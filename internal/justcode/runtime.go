@@ -23,12 +23,21 @@ const (
 // the justfile's _running-runtimes.
 var allRuntimes = []Runtime{RuntimeDocker, RuntimeMicrosandbox, RuntimeTart}
 
+// currentGOOS is the platform indirection for tests: the fake-backends in
+// dispatcher_test need to steer which runtimes get probed without rebuilding
+// for Windows. It is not a knob; production callers read runtime.GOOS.
+var currentGOOS = runtime.GOOS
+
 // supportedRuntimes is the subset of allRuntimes that exists on this platform.
 // Windows runs only the microsandbox runtime (via WHP): Docker Desktop is not a
 // target there and Tart is macOS-only, so probing them would only surface raw
 // "executable file not found" errors from `stop` and `check`.
 func supportedRuntimes() []Runtime {
-	if runtime.GOOS == "windows" {
+	return supportedRuntimesOn(currentGOOS)
+}
+
+func supportedRuntimesOn(goos string) []Runtime {
+	if goos == "windows" {
 		return []Runtime{RuntimeMicrosandbox}
 	}
 	return allRuntimes
@@ -56,13 +65,19 @@ type Backend interface {
 // justfile contract. On Windows the microsandbox runtime is the default and the
 // only supported choice; elsewhere there is deliberately no built-in default.
 func ResolveRuntime(flag, preference string) (Runtime, error) {
+	return resolveRuntimeOn(flag, preference, runtime.GOOS)
+}
+
+// resolveRuntimeOn is ResolveRuntime with the platform as an argument so the
+// Windows contract can be exercised from any OS.
+func resolveRuntimeOn(flag, preference, goos string) (Runtime, error) {
 	if flag != "" {
-		return parseRuntimeFlag(flag)
+		return parseRuntimeFlagOn(flag, goos)
 	}
 	if preference != "" {
-		return parseRuntimeName(preference)
+		return parseRuntimeNameOn(preference, goos)
 	}
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		return RuntimeMicrosandbox, nil
 	}
 	return "", fmt.Errorf("select --docker, --microsandbox, or --tart, or set RUNTIME in .env")
@@ -70,7 +85,11 @@ func ResolveRuntime(flag, preference string) (Runtime, error) {
 
 // parseRuntimeFlag accepts --docker, --microsandbox, or --tart.
 func parseRuntimeFlag(flag string) (Runtime, error) {
-	return parseRuntimeName(strings.TrimPrefix(flag, "--"))
+	return parseRuntimeFlagOn(flag, runtime.GOOS)
+}
+
+func parseRuntimeFlagOn(flag, goos string) (Runtime, error) {
+	return parseRuntimeNameOn(strings.TrimPrefix(flag, "--"), goos)
 }
 
 // parseRuntimeName accepts docker, microsandbox, or tart (the RUNTIME env
@@ -78,16 +97,20 @@ func parseRuntimeFlag(flag string) (Runtime, error) {
 // flag surface. Docker and Tart are macOS/Linux only; on Windows they are
 // rejected with a pointer at the one runtime that does work there.
 func parseRuntimeName(name string) (Runtime, error) {
+	return parseRuntimeNameOn(name, runtime.GOOS)
+}
+
+func parseRuntimeNameOn(name, goos string) (Runtime, error) {
 	switch name {
 	case string(RuntimeDocker):
-		if runtime.GOOS == "windows" {
+		if goos == "windows" {
 			return "", fmt.Errorf("docker is not supported on Windows; use --microsandbox")
 		}
 		return RuntimeDocker, nil
 	case string(RuntimeMicrosandbox):
 		return RuntimeMicrosandbox, nil
 	case string(RuntimeTart):
-		if runtime.GOOS == "windows" {
+		if goos == "windows" {
 			return "", fmt.Errorf("tart is macOS only; use --microsandbox")
 		}
 		return RuntimeTart, nil

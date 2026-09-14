@@ -3,6 +3,7 @@ package justcode
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -72,5 +73,31 @@ func TestStartHandlesNilStdin(t *testing.T) {
 			t.Fatal("child did not run")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestIsBatchFile(t *testing.T) {
+	cases := map[string]bool{
+		`C:\tools\opencode.cmd`:   true,
+		`C:\tools\opencode.bat`:   true,
+		`C:\tools\OPENCODE.CMD`:   true,
+		`C:\tools\opencode.exe`:   false,
+		`C:\tools\opencode`:       false,
+		"/usr/local/bin/opencode": false,
+	}
+	for path, want := range cases {
+		if got := isBatchFile(path); got != want {
+			t.Errorf("isBatchFile(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+func TestInteractiveCommandNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows behavior")
+	}
+	cmd := interactiveCommand("opencode", "attach", "http://localhost:4096")
+	if cmd.Args[0] != "opencode" {
+		t.Errorf("off Windows, interactiveCommand should not wrap through cmd.exe; args[0] = %q", cmd.Args[0])
 	}
 }
