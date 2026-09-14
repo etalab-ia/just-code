@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/etalab-ia/just-code/assets"
 )
 
 const (
@@ -30,108 +28,85 @@ const (
 	// a freshly started VM.
 	msbLaunchAttempts   = 10
 	msbLaunchRetryDelay = 2 * time.Second
+	msbDoctorTimeout    = 5 * time.Minute
+
+	// msbAllowHosts restricts where the ALBERT_API_KEY secret may be
+	// substituted: only the Albert API host ever sees the real value.
+	msbAllowHost = "albert.api.etalab.gouv.fr"
 )
 
 // MicrosandboxRuntime runs the OpenCode backend in a named Microsandbox
-// microVM, delegating to the `msb` CLI. The real ALBERT_API_KEY stays on the
-// host: only the secret-proxy substitution enters the microVM. The sandbox
-// config is embedded in the binary and materialized under the state directory.
+// microVM through the embedded Microsandbox Go SDK. No `msb` CLI install is
+// required: the runtime downloads to ~/.microsandbox/ on first use. The real
+// ALBERT_API_KEY stays on the host; only the secret-proxy substitution enters
+// the microVM, and only for the Albert API host.
 type MicrosandboxRuntime struct {
-	cfg       Config
-	Runner    Runner
-	AssetsDir string
+	cfg Config
+	// Client is the Microsandbox seam. Tests inject a fake; production uses the
+	// SDK adapter (see microsandbox_sdk.go).
+	Client msbClient
 	// Probe overrides the health probe. It exists so tests can decide the
 	// outcome of the "VM running, is the backend alive?" check without binding
 	// a real port.
 	Probe func(ctx context.Context, endpoint, username, password string) HealthProbe
+	// launchRetryDelay is configurable for tests; production uses two seconds.
+	launchRetryDelay time.Duration
 }
 
-// msbSandboxInfo is one row of `msb ls`.
+// NewMicrosandboxRuntime builds a Microsandbox backend with production defaults.
+func NewMicrosandboxRuntime(cfg Config) *MicrosandboxRuntime {
+	return &MicrosandboxRuntime{
+		cfg:              cfg,
+		Client:           sdkMSBClient{},
+		launchRetryDelay: msbLaunchRetryDelay,
+	}
+}
+
+func (m *MicrosandboxRuntime) ID() Runtime { return RuntimeMicrosandbox }
+
+// msbClient is the Microsandbox surface just-code uses, narrowed from the SDK
+// so tests can fake it without a real microVM runtime.
+type msbClient interface {
+	// EnsureInstalled downloads the microsandbox runtime if missing.
+	EnsureInstalled(ctx context.Context) error
+	// Doctor runs the diagnostic command from the SDK-managed runtime.
+	Doctor(ctx context.Context) (string, error)
+	// Lookup returns the managed sandbox's status, or false if it does not exist.
+	Lookup(ctx context.Context, name string) (msbSandboxInfo, bool, error)
+	// Create creates and boots the sandbox with the given spec.
+	Create(ctx context.Context, spec msbSandboxSpec) error
+	// Start boots a stopped sandbox.
+	Start(ctx context.Context, name string) error
+	// ModifyNextStart persists env changes for the next boot.
+	ModifyNextStart(ctx context.Context, name string, env map[string]string, apiKey string) error
+	// Exec runs a shell command in the sandbox, returning its exit code and stderr.
+	Exec(ctx context.Context, name, command string) (int, string, error)
+	// Stop gracefully stops a running sandbox.
+	Stop(ctx context.Context, name string) error
+	// Remove deletes the sandbox and its local state.
+	Remove(ctx context.Context, name string) error
+	// WorkspaceMount returns the host path mounted at the guest /workspace.
+	WorkspaceMount(ctx context.Context, name string) (string, error)
+	// Logs streams sandbox logs to the terminal until interrupted.
+	Logs() error
+	// Shell opens an interactive shell in the sandbox.
+	Shell() error
+}
+
+// msbSandboxInfo is the status snapshot of the managed sandbox.
 type msbSandboxInfo struct {
 	Name   string
 	Status string
 }
 
-// NewMicrosandboxRuntime builds a Microsandbox backend with production defaults.
-func NewMicrosandboxRuntime(cfg Config) *MicrosandboxRuntime {
-	return &MicrosandboxRuntime{cfg: cfg, Runner: OSRunner{}, AssetsDir: DefaultAssetsDir()}
-}
-
-func (m *MicrosandboxRuntime) ID() Runtime { return RuntimeMicrosandbox }
-
-func (m *MicrosandboxRuntime) ensureAssets() (string, error) {
-	if m.AssetsDir == "" {
-		m.AssetsDir = DefaultAssetsDir()
-	}
-	return assets.Materialize(m.AssetsDir)
-}
-
-// env returns the child environment for `msb` commands. Microsandbox resolves
-// the `ALBERT_API_KEY` secret from the host environment, so it must be passed
-// explicitly rather than relying on inheritance.
-func (m *MicrosandboxRuntime) env() []string {
-	if m.cfg.APIKey == "" {
-		return nil
-	}
-	return []string{"ALBERT_API_KEY=" + m.cfg.APIKey}
-}
-
-func (m *MicrosandboxRuntime) run(ctx context.Context, name string, args ...string) (ExecResult, error) {
-	return runEnv(m.Runner, ctx, m.env(), name, args...)
-}
-
-func (m *MicrosandboxRuntime) runOK(ctx context.Context, name string, args ...string) error {
-	return runEnvOK(m.Runner, ctx, m.env(), name, args...)
-}
-
-// findSandbox looks the sandbox up in `msb ls`. Exit codes from `msb inspect`
-// are unreliable for existence checks, and `msb ls` also yields the status,
-// which decides whether the backend needs relaunching.
-func (m *MicrosandboxRuntime) findSandbox(ctx context.Context) (msbSandboxInfo, bool) {
-	res, err := m.run(ctx, "msb", "ls")
-	if err != nil || res.ExitCode != 0 {
-		return msbSandboxInfo{}, false
-	}
-	return parseMsbLs(res.Stdout)
-}
-
-// parseMsbLs finds the managed sandbox row in `msb ls` output. Columns are
-// space-padded; only the CREATED column contains a space, so a whitespace split
-// keeps name and status in the first three fields.
-func parseMsbLs(output string) (msbSandboxInfo, bool) {
-	for _, line := range strings.Split(output, "\n") {
-		columns := strings.Fields(strings.TrimSpace(line))
-		if len(columns) < 3 {
-			continue
-		}
-		name, status := columns[0], columns[2]
-		if name == "NAME" {
-			continue
-		}
-		if name == msbSandbox {
-			return msbSandboxInfo{Name: name, Status: status}, true
-		}
-	}
-	return msbSandboxInfo{}, false
-}
-
-// parseMsbWorkspaceMount reads the host directory currently mounted at the
-// guest's /workspace from `msb inspect`.
-func parseMsbWorkspaceMount(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		trimmed := strings.TrimSpace(line)
-		rest, ok := strings.CutPrefix(trimmed, "/workspace")
-		if !ok {
-			continue
-		}
-		rest = strings.TrimSpace(rest)
-		rest = strings.TrimPrefix(rest, "\u2192") // →
-		rest = strings.TrimPrefix(rest, "->")
-		if fields := strings.Fields(rest); len(fields) > 0 {
-			return fields[0]
-		}
-	}
-	return ""
+// msbSandboxSpec is the full sandbox configuration passed to the SDK.
+type msbSandboxSpec struct {
+	Image       string
+	Env         map[string]string
+	Workspace   string   // host path bind-mounted at /workspace
+	APIKey      string   // host-side secret value, never a guest environment entry
+	AllowHosts  []string // hosts allowed to see the real secret value
+	StartScript string   // guest start script body
 }
 
 func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
@@ -141,8 +116,14 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
+	if err := m.Client.EnsureInstalled(ctx); err != nil {
+		return err
+	}
 
-	sandbox, exists := m.findSandbox(ctx)
+	sandbox, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	if err != nil {
+		return err
+	}
 	if exists {
 		m.warnIfWorkspaceMountIsStale(ctx)
 	}
@@ -158,13 +139,13 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	if exists {
 		fmt.Printf("Starting %s...\n", msbSandbox)
-		if err := m.runOK(ctx, "msb", "modify", msbSandbox,
-			"--env", "OPENCODE_SERVER_PASSWORD="+m.cfg.Password,
-			"--env", "OPENCODE_SERVER_USERNAME="+m.cfg.Username,
-			"--next-start"); err != nil {
+		if err := m.Client.ModifyNextStart(ctx, msbSandbox, map[string]string{
+			"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
+			"OPENCODE_SERVER_USERNAME": m.cfg.Username,
+		}, m.cfg.APIKey); err != nil {
 			return err
 		}
-		if err := m.runOK(ctx, "msb", "start", msbSandbox); err != nil {
+		if err := m.Client.Start(ctx, msbSandbox); err != nil {
 			return err
 		}
 		// Booting a stopped VM does not re-run the container entrypoint, so the
@@ -173,44 +154,57 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 		return m.launchBackend(ctx)
 	}
 
-	dir, err := m.ensureAssets()
-	if err != nil {
-		return err
-	}
 	fmt.Printf("Creating %s microVM...\n", msbSandbox)
 	fmt.Println("First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.")
-	return m.runOK(ctx, "msb", "run",
-		"--name", msbSandbox,
-		"--detach",
-		"--conf", filepath.Join(dir, "microsandbox.yaml"),
-		"--root-disk", "8G",
-		"--volume", m.cfg.WorkspaceDir+":/workspace",
-		"--env", "OPENCODE_SERVER_PASSWORD="+m.cfg.Password,
-		"--env", "OPENCODE_SERVER_USERNAME="+m.cfg.Username,
-		msbImage,
-	)
+	return m.Client.Create(ctx, m.sandboxSpec())
+}
+
+// sandboxSpec builds the full sandbox configuration from the config and the
+// embedded OpenCode config and start script.
+func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
+	return msbSandboxSpec{
+		Image:       msbImage,
+		Env:         m.sandboxEnv(),
+		Workspace:   m.cfg.WorkspaceDir,
+		APIKey:      m.cfg.APIKey,
+		AllowHosts:  []string{msbAllowHost},
+		StartScript: startScript,
+	}
+}
+
+// sandboxEnv builds the guest environment for the sandbox.
+func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
+	return map[string]string{
+		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
+		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
+		"OPENCODE_CONFIG_CONTENT":  opencodeConfigContent,
+	}
 }
 
 // launchBackend runs the container entrypoint inside a live VM. Recreating the
 // sandbox runs it automatically; booting an existing one does not. The guest
 // agent can lag the VM by a moment after start, hence the bounded retry.
 func (m *MicrosandboxRuntime) launchBackend(ctx context.Context) error {
+	delay := m.launchRetryDelay
+	if delay == 0 {
+		delay = msbLaunchRetryDelay
+	}
 	var last error
 	for attempt := 1; attempt <= msbLaunchAttempts; attempt++ {
-		res, err := m.run(ctx, "msb", "exec", msbSandbox, "--", "sh", "-c", msbRelaunchCommand)
-		if err == nil && res.ExitCode == 0 {
+		code, stderr, err := m.Client.Exec(ctx, msbSandbox, msbRelaunchCommand)
+		if err == nil && code == 0 {
 			return nil
 		}
 		if err != nil {
 			last = err
 		} else {
-			last = fmt.Errorf("msb exec exited %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+			last = fmt.Errorf("sandbox exec exited %d: %s", code, strings.TrimSpace(stderr))
 		}
 		if attempt == msbLaunchAttempts {
 			break
 		}
 		select {
-		case <-time.After(msbLaunchRetryDelay):
+		case <-time.After(delay):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -234,15 +228,11 @@ func (m *MicrosandboxRuntime) backendHealthy(ctx context.Context) bool {
 }
 
 // warnIfWorkspaceMountIsStale compares the VM's /workspace mount with the
-// configured workspace. `msb modify` cannot change mounts, so a sandbox keeps
-// whichever host directory it was created with.
+// configured workspace. Mounts are fixed when a sandbox is created, so a
+// sandbox keeps whichever host directory it was created with.
 func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
-	res, err := m.run(ctx, "msb", "inspect", msbSandbox)
-	if err != nil || res.ExitCode != 0 {
-		return
-	}
-	mounted := parseMsbWorkspaceMount(res.Stdout)
-	if mounted == "" {
+	mounted, err := m.Client.WorkspaceMount(ctx, msbSandbox)
+	if err != nil || mounted == "" {
 		return
 	}
 	mountedClean := filepath.Clean(mounted)
@@ -265,7 +255,7 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 		return nil
 	}
 	fmt.Printf("Stopping %s...\n", msbSandbox)
-	return m.runOK(ctx, "msb", "stop", "--timeout", "3", msbSandbox)
+	return m.Client.Stop(ctx, msbSandbox)
 }
 
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
@@ -276,39 +266,43 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 }
 
 func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {
-	if _, exists := m.findSandbox(ctx); !exists {
+	_, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		fmt.Printf("%s does not exist.\n", msbSandbox)
 		return nil
 	}
 	// Disposing is destructive: say so before and after, so a silent success
 	// can never be mistaken for "nothing happened".
 	fmt.Printf("Removing %s (sandbox and local state)...\n", msbSandbox)
-	if err := m.runOK(ctx, "msb", "rm", "--force", msbSandbox); err != nil {
+	if err := m.Client.Remove(ctx, msbSandbox); err != nil {
 		return err
 	}
 	fmt.Printf("%s removed.\n", msbSandbox)
 	return nil
 }
 
-// Doctor verifies the msb installation. Unlike lifecycle commands, its output
+// Doctor verifies the embedded runtime. Unlike lifecycle commands, its output
 // must reach the user even on success — a doctor that prints nothing is
-// indistinguishable from one that did not run. A context bounds the run so a
-// daemon that never answers cannot hang the check.
+// indistinguishable from one that did not run. A context bounds the check so a
+// hung runtime download cannot stall the command.
 func (m *MicrosandboxRuntime) Doctor(ctx context.Context) error {
-	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	dctx, cancel := context.WithTimeout(ctx, msbDoctorTimeout)
 	defer cancel()
-	res, err := m.run(dctx, "msb", "doctor")
-	if err != nil {
+	if err := m.Client.EnsureInstalled(dctx); err != nil {
 		if dctx.Err() != nil {
-			return fmt.Errorf("msb doctor timed out after 30s — the Microsandbox daemon is probably not running; start it and retry")
+			return fmt.Errorf("runtime installation timed out after %s", msbDoctorTimeout)
 		}
 		return err
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("msb doctor failed (exit %d):\n%s", res.ExitCode, res.Stdout)
+	output, err := m.Client.Doctor(dctx)
+	if err != nil {
+		return err
 	}
-	fmt.Print(res.Stdout)
-	if !strings.HasSuffix(res.Stdout, "\n") {
+	fmt.Print(output)
+	if !strings.HasSuffix(output, "\n") {
 		fmt.Println()
 	}
 	fmt.Println("Microsandbox runtime is ready.")
@@ -316,15 +310,18 @@ func (m *MicrosandboxRuntime) Doctor(ctx context.Context) error {
 }
 
 func (m *MicrosandboxRuntime) Logs() error {
-	return RunInteractive("msb", "logs", "--follow", msbSandbox)
+	return m.Client.Logs()
 }
 
 func (m *MicrosandboxRuntime) Shell() error {
-	return RunInteractive("msb", "exec", msbSandbox, "--", "/bin/bash")
+	return m.Client.Shell()
 }
 
 func (m *MicrosandboxRuntime) IsRunning(ctx context.Context) (bool, error) {
-	sandbox, exists := m.findSandbox(ctx)
+	sandbox, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	if err != nil {
+		return false, err
+	}
 	return exists && sandbox.Status == "running", nil
 }
 

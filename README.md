@@ -33,11 +33,11 @@ Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence
 
 ## Prérequis
 
-- [Go](https://go.dev) >= 1.22 (pour compiler le CLI)
+- [Go](https://go.dev) >= 1.22 et une chaîne C native (`gcc`, Xcode Command Line Tools ou MinGW) pour compiler le CLI
 - OpenCode CLI sur l'hôte (`npm install -g opencode-ai`)
 - Une **clé Albert API** dans l'environnement (ou dans `.env`, ignoré par git)
 - L'un des runtimes disponibles :
-  - [Microsandbox](https://github.com/superradcompany/microsandbox) (`msb` >= 0.6.16) sur un Mac Apple Silicon, Linux (KVM) ou Windows (Windows Hypervisor Platform / WHP) ;
+  - [Microsandbox](https://github.com/superradcompany/microsandbox) sur un Mac Apple Silicon, Linux (KVM) ou Windows arm64/x64 (Windows Hypervisor Platform / WHP) ; l'exécutable `msb` n'a pas besoin d'être installé ;
   - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
 
 Construction du CLI :
@@ -47,17 +47,13 @@ go build -o just-code ./cmd/just-code
 go test ./...
 ```
 
-Installation de Microsandbox :
+`just-code` embarque le SDK Go Microsandbox. Au premier `start` ou `doctor`, il télécharge automatiquement la version correspondante du runtime sous `$MSB_HOME` si cette variable est définie, sinon sous `~/.microsandbox/`. Ce chemin est géré directement par le SDK : il n'a pas besoin d'être ajouté au `PATH`.
 
 ```bash
-# macOS / Linux
-curl -fsSL https://install.microsandbox.dev | sh
-msb doctor
-
-# Windows (PowerShell en tant qu'administrateur pour activer WHP si besoin)
-irm https://install.microsandbox.dev/windows | iex
-msb doctor --fix
+just-code doctor --microsandbox
 ```
+
+Le téléchargement ne modifie pas la configuration de l'hôte. Sous Linux, KVM doit être accessible. Sous Windows, active **Windows Hypervisor Platform** dans les fonctionnalités Windows puis redémarre si elle ne l'est pas déjà.
 
 ## Configuration
 
@@ -167,7 +163,7 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 Une VM Microsandbox survit à un redémarrage, mais son entrée de conteneur (`/.msb/scripts/start`, qui lance `opencode serve`) ne s'exécute qu'à la **création**. Une VM qui revient au démarrage est donc `running` sans aucun processus OpenCode : « VM démarrée » n'est pas « backend prêt ». C'est la cause la plus fréquente d'un backend qui ne devient jamais healthy.
 
-`just-code` en tient compte et se répare : si le sandbox tourne mais que le backend ne répond pas, l'entrée est relancée dans la microVM ; s'il est arrêté, il est démarré puis l'entrée est relancée (un simple `msb start` ne rejoue pas l'entrée). Le même correctif s'applique à Tart, où le processus OpenCode obsolète est tué avant relance.
+`just-code` en tient compte et se répare : si le sandbox tourne mais que le backend ne répond pas, l'entrée est relancée dans la microVM ; s'il est arrêté, il est démarré puis l'entrée est relancée (un simple redémarrage de la VM ne rejoue pas l'entrée). Le même correctif s'applique à Tart, où le processus OpenCode obsolète est tué avant relance.
 
 Si malgré cela le backend ne répond pas, `just-code code` attend en affichant l'avancement (300 s par défaut, réglable via `JUST_CODE_START_TIMEOUT` en secondes). À l'expiration, l'erreur précise le dernier résultat observé, ce qui distingue les causes :
 
@@ -185,11 +181,11 @@ Les versions antérieures à la suppression du runtime Docker laissaient un cont
 
 ## Portage Go
 
-Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les deux runtimes via une bibliothèque testée (`internal/justcode`), sans dépendance externe.
+Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les deux runtimes via une bibliothèque testée (`internal/justcode`) et le SDK Go Microsandbox, sans dépendre d'une commande `msb` externe.
 
-**Binaire autonome.** Les ressources de runtime (`microsandbox.yaml`) vivent dans `assets/` et sont embarquées dans le binaire via `go:embed`. Au premier lancement d'une commande qui en a besoin, le CLI les matérialise sous `~/.local/state/just-code/assets/` (écriture atomique). Le binaire peut donc être exécuté depuis n'importe quel répertoire, sans le dépôt.
+**Binaire autonome.** La configuration OpenCode et le script de démarrage Microsandbox vivent dans `assets/` et sont embarqués dans le binaire via `go:embed`. Ils sont transmis directement au SDK sans fichier de configuration temporaire. Le runtime natif téléchargé reste séparé sous `~/.microsandbox/` (ou `$MSB_HOME`).
 
-**Pas de script shell.** Le bootstrap invité Tart (clampage MTU, installation d'OpenCode, `exec opencode serve`) est du code Go dans le même binaire, exposé sous la sous-commande interne `__guest-bootstrap`. La VM macOS étant elle aussi en arm64, le CLI copie son propre binaire dans le partage en lecture seule, puis le copie sur le disque local de l'invité (l'exécution directe depuis le partage virtiofs n'est pas fiable) avant de l'exécuter. Il n'y a donc plus aucun `.sh` dans le projet.
+**Bootstrap Tart en Go.** Le bootstrap invité Tart (clampage MTU, installation d'OpenCode, `exec opencode serve`) est du code Go dans le même binaire, exposé sous la sous-commande interne `__guest-bootstrap`. La VM macOS étant elle aussi en arm64, le CLI copie son propre binaire dans le partage en lecture seule, puis le copie sur le disque local de l'invité (l'exécution directe depuis le partage virtiofs n'est pas fiable) avant de l'exécuter.
 
 Les trois régressions shell de l'ancien `justfile` sont corrigées et couvertes par `go test` :
 
@@ -199,30 +195,30 @@ Les trois régressions shell de l'ancien `justfile` sont corrigées et couvertes
 
 Défauts découverts ensuite et corrigés dans le même esprit :
 
-- **Auto-réparation du backend Microsandbox** : découverte via `msb ls` (les codes de sortie de `msb inspect` ne sont pas fiables), relance de l'entrée de conteneur quand la VM tourne sans backend, avec nouvelle tentative bornée pendant que l'agent invité démarre.
-- **Clé API transmise explicitement à `msb`** : `msb` résout le secret `ALBERT_API_KEY` depuis l'environnement de l'hôte ; la variable est donc passée explicitement aux commandes `msb`.
+- **Auto-réparation du backend Microsandbox** : découverte et cycle de vie via le SDK, relance de l'entrée de conteneur quand la VM tourne sans backend, avec nouvelle tentative bornée pendant que l'agent invité démarre.
+- **Clé API confinée sur l'hôte** : la valeur est remise directement au SDK et n'entre jamais dans l'environnement invité ; le proxy ne la substitue que pour `albert.api.etalab.gouv.fr`. Elle est rafraîchie lors du redémarrage d'un sandbox existant.
 - **Montages figés à la création** : `WORKSPACE_DIR` remplace `PROJECT_DIR` (déprécié, encore honoré), et Microsandbox avertit quand le montage détecté diffère de la configuration.
 - **Pré-vol `opencode`** : le CLI de l'hôte est vérifié avant de démarrer un runtime, avec la commande d'installation.
 - **Validation différée de `JUST_CODE_START_TIMEOUT`** : une valeur malformée bloque la commande d'attachement, pas `stop`, `clean`, `logs`, `doctor` ni `check`.
 
-Contrats comportementaux reproduits : secrets (`ALBERT_API_KEY` et mot de passe) transmis sur l'entrée standard, jamais dans les arguments ; isolation par préfixe `opencode-` ; endpoints de santé ; clampage de MTU (1280-1500 ou `auto`) validé sur l'hôte avant le boot de la VM ; relance du backend (SIGTERM puis SIGKILL après 10 sondes) ; détection des runtimes actifs et résolution de conflits.
+Contrats comportementaux reproduits : secrets absents des arguments de processus ; isolation par préfixe `opencode-` ; endpoints de santé ; clampage de MTU (1280-1500 ou `auto`) validé sur l'hôte avant le boot de la VM ; relance du backend (SIGTERM puis SIGKILL après 10 sondes) ; détection des runtimes actifs et résolution de conflits.
 
-Binaires statiques ~7 Mo (Linux amd64, macOS arm64/amd64), sans runtime embarqué, contre ~60-80 Mo pour un binaire `bun build --compile` qui embarque JavaScriptCore.
+Le SDK embarque une bibliothèque FFI propre à chaque plateforme et nécessite CGO. Les binaires de publication sont donc construits sur des runners natifs pour macOS arm64, Linux amd64/arm64 et Windows amd64/arm64. macOS Intel n'est pas publié : le SDK Microsandbox 0.6.18 ne fournit pas de bibliothèque FFI pour `darwin/amd64`.
 
 ```bash
 go test -race ./...   # vert
 go vet ./...          # propre
 
-# Compilation croisée native (sans CGO)
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o just-code-darwin-arm64 ./cmd/just-code
+# Compilation sur la plateforme cible (CGO activé)
+CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o just-code ./cmd/just-code
 ```
 
 ## Intégration continue et publication
 
 Deux workflows GitHub Actions accompagnent le CLI :
 
-- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race` et compilation.
-- **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les six binaires (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`), génère `SHA256SUMS` et les attache à la release — dans le même job, car les événements créés avec `GITHUB_TOKEN` ne déclenchent pas d'autres workflows.
+- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race`, puis tests et compilation CGO sur chaque plateforme native prise en charge.
+- **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les cinq binaires (`darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`) sur leurs runners natifs, génère `SHA256SUMS` et les attache à la release.
 
 Le tag de release est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=<tag>"`, donc `just-code version` affiche exactement la version publiée.
 
@@ -255,7 +251,7 @@ Le hook [gitleaks](https://github.com/gitleaks/gitleaks) scanne les changements 
 - **VM macOS avec Tart pour Xcode/iOS.** Tart permet d'exécuter l'agent OpenCode directement dans un système macOS invité, donnant accès aux outils de compilation Xcode (`xcodebuild`, `swift`, simulateurs). Par défaut, l'image `ghcr.io/cirruslabs/macos-tahoe-base:latest` est clonée dans une VM locale nommée `opencode-tahoe-base-latest` (surchargeable via `TART_IMAGE`). L'utilisateur ou le développeur peut ensuite y installer les outils Xcode nécessaires. La VM étant une machine invitée macOS sur le réseau NAT, le TUI et les previews sont joints par son adresse (`tart ip opencode-tahoe-base-latest`) plutôt que par `localhost`. `ALBERT_API_KEY` est transmise sur l'entrée standard du processus de bootstrap, jamais dans la liste des arguments ; seul le binaire du CLI (copie dédiée en lecture seule) est partagé avec la VM, pas le dépôt ni `.env`.
 - **MicroVM nommée et persistante.** Avec Microsandbox et Tart, `just-code stop` conserve l'état inscriptible de la VM et les relances ultérieures évitent de repartir de zéro. `just-code restart` recrée la VM proprement.
 - **Pas de démon ni de runtime conteneur.** La microVM démarre à la demande depuis l'image OCI officielle `ghcr.io/anomalyco/opencode:latest`.
-- **Pas de fichier de config OpenCode bind-mounté.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` dans le fichier du runtime. Le seul bind-mount est le répertoire projet.
+- **Pas de fichier de config OpenCode bind-mounté.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` par le SDK. Le seul bind-mount est le répertoire projet.
 - **Éditions visibles sur l'hôte.** Les modifications de l'agent atterrissent directement dans ton checkout local. Le modèle « remote-authoritative » (clone dans le sandbox, livraison via branche/PR) reste une expérience ultérieure.
 - **Permissions permissives dans le sandbox.** Le runtime sélectionné est la frontière de confinement : `edit`, `bash` et `external_directory` sont autorisés à l'intérieur.
 - **Secrets.** `.env` est ignoré par git. Avec Microsandbox, la vraie valeur reste sur l'hôte : seule une valeur de substitution entre dans la microVM et le proxy réseau ne la remplace que pour `albert.api.etalab.gouv.fr`.

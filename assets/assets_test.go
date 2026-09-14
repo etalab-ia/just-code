@@ -1,24 +1,14 @@
 package assets
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-func TestMaterializeWritesEveryAsset(t *testing.T) {
-	dir := t.TempDir()
-	got, err := Materialize(dir)
-	if err != nil {
-		t.Fatalf("Materialize: %v", err)
-	}
-	if got != dir {
-		t.Fatalf("Materialize returned %q, want %q", got, dir)
-	}
+func TestReadEveryAsset(t *testing.T) {
 	for _, name := range Files {
-		data, err := os.ReadFile(filepath.Join(dir, name))
+		data, err := Read(name)
 		if err != nil {
-			t.Fatalf("asset %s not written: %v", name, err)
+			t.Fatalf("Read(%q): %v", name, err)
 		}
 		if len(data) == 0 {
 			t.Fatalf("asset %s is empty", name)
@@ -26,20 +16,8 @@ func TestMaterializeWritesEveryAsset(t *testing.T) {
 	}
 }
 
-func TestMaterializeIsIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := Materialize(dir); err != nil {
-		t.Fatal(err)
-	}
-	// A second call must refresh the files without leaving temp files behind.
-	if _, err := Materialize(dir); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != len(Files) {
-		t.Fatalf("expected %d files, got %d (%v)", len(Files), len(entries), entries)
+func TestReadRejectsUnknownAsset(t *testing.T) {
+	if _, err := Read("unknown"); err == nil {
+		t.Fatal("expected an error for an unknown asset")
 	}
 }
