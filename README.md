@@ -31,7 +31,7 @@ Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence
 - Une **clé Albert API** dans l'environnement (ou dans `.env`, ignoré par git)
 - L'un des runtimes disponibles :
   - Docker ou [Colima](https://github.com/abiosoft/colima) ;
-  - [Microsandbox](https://github.com/superradcompany/microsandbox) (`msb` >= 0.6.16) sur un Mac Apple Silicon ou un hôte Linux avec KVM ;
+  - [Microsandbox](https://github.com/superradcompany/microsandbox) (`msb` >= 0.6.16) sur un Mac Apple Silicon, Linux (KVM) ou Windows (Windows Hypervisor Platform / WHP) ;
   - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
 
 Construction du CLI :
@@ -44,8 +44,13 @@ go test ./...
 Installation de Microsandbox :
 
 ```bash
+# macOS / Linux
 curl -fsSL https://install.microsandbox.dev | sh
 msb doctor
+
+# Windows (PowerShell en tant qu'administrateur pour activer WHP si besoin)
+irm https://install.microsandbox.dev/windows | iex
+msb doctor --fix
 ```
 
 ## Configuration
@@ -210,7 +215,7 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ju
 Deux workflows GitHub Actions accompagnent le CLI :
 
 - **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race` et compilation.
-- **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les quatre binaires (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`), génère `SHA256SUMS` et les attache à la release — dans le même job, car les événements créés avec `GITHUB_TOKEN` ne déclenchent pas d'autres workflows.
+- **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les six binaires (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`), génère `SHA256SUMS` et les attache à la release — dans le même job, car les événements créés avec `GITHUB_TOKEN` ne déclenchent pas d'autres workflows.
 
 Le tag de release est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=<tag>"`, donc `just-code version` affiche exactement la version publiée.
 

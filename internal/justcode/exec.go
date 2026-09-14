@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 )
 
 // ExecResult is the outcome of a host command. A nonzero ExitCode is a normal
@@ -110,7 +109,7 @@ func (OSStarter) Start(stdin io.Reader, logPath string, name string, args ...str
 	}
 	cmd.Stdout = log
 	cmd.Stderr = log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		if stdinPipe != nil {
 			stdinPipe.Close()

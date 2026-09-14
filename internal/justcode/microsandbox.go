@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -241,7 +242,12 @@ func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
 		return
 	}
 	mounted := parseMsbWorkspaceMount(res.Stdout)
-	if mounted == "" || mounted == m.cfg.WorkspaceDir {
+	if mounted == "" {
+		return
+	}
+	mountedClean := filepath.Clean(mounted)
+	workspaceClean := filepath.Clean(m.cfg.WorkspaceDir)
+	if mountedClean == workspaceClean || (runtime.GOOS == "windows" && strings.EqualFold(mountedClean, workspaceClean)) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Warning: %s was created with /workspace mounted from %s, but the workspace is now %s. "+
