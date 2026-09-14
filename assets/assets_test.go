@@ -3,7 +3,6 @@ package assets
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -42,18 +41,5 @@ func TestMaterializeIsIdempotent(t *testing.T) {
 	}
 	if len(entries) != len(Files) {
 		t.Fatalf("expected %d files, got %d (%v)", len(Files), len(entries), entries)
-	}
-}
-
-func TestEmbeddedComposePreservesEmptyPassword(t *testing.T) {
-	data, err := Read("docker-compose.yml")
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if !strings.Contains(string(data), "${OPENCODE_SERVER_PASSWORD-albert-dev-pass}") {
-		t.Fatalf("compose should use the `-` default so an empty password is preserved:\n%s", data)
-	}
-	if strings.Contains(string(data), "${OPENCODE_SERVER_PASSWORD:-albert-dev-pass}") {
-		t.Fatalf("compose still uses `:-`, which overrides an explicitly empty password")
 	}
 }

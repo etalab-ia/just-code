@@ -9,17 +9,16 @@ import (
 	"strings"
 )
 
-// Dispatcher wires the three runtimes together and implements the cross-runtime
+// Dispatcher wires the runtimes together and implements the cross-runtime
 // commands: stop (all), check (single), and runtime-conflict resolution.
 type Dispatcher struct {
 	cfg      Config
 	backends map[Runtime]Backend
 }
 
-// NewDispatcher builds a dispatcher over the three runtimes for a config.
+// NewDispatcher builds a dispatcher over the runtimes for a config.
 func NewDispatcher(cfg Config) *Dispatcher {
 	return NewDispatcherWith(cfg, map[Runtime]Backend{
-		RuntimeDocker:       NewDockerRuntime(cfg),
 		RuntimeMicrosandbox: NewMicrosandboxRuntime(cfg),
 		RuntimeTart:         NewTart(cfg),
 	})

@@ -36,7 +36,6 @@ func (f *fakeBackend) Endpoint(context.Context) (string, error) { return "http:/
 
 func TestDispatcherRunningAndMultiple(t *testing.T) {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
-		RuntimeDocker:       &fakeBackend{id: RuntimeDocker},
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: true},
 	})
@@ -61,16 +60,15 @@ func TestDispatcherRunningAndMultiple(t *testing.T) {
 }
 
 func TestDispatcherSingle(t *testing.T) {
-	// Docker is the "running" backend here only where it can actually run; on
+	// Tart is the "running" backend here only where it can actually run; on
 	// Windows the sweep is platform-gated, so the same intent uses microsandbox.
-	running := RuntimeDocker
+	running := RuntimeTart
 	if runtime.GOOS == "windows" {
 		running = RuntimeMicrosandbox
 	}
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
-		RuntimeDocker:       &fakeBackend{id: RuntimeDocker, running: running == RuntimeDocker},
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: running == RuntimeMicrosandbox},
-		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: running == RuntimeTart},
 	})
 	rt, err := d.SingleRunning(context.Background())
 	if err != nil || rt != running {
@@ -79,12 +77,11 @@ func TestDispatcherSingle(t *testing.T) {
 }
 
 // TestDispatcherSingleOnWindows exercises the platform-gated sweep without
-// rebuilding for Windows: with only microsandbox running and tart/docker also
-// present in the map, the Windows sweep must report exactly one runtime.
+// rebuilding for Windows: with only microsandbox running and tart also present
+// in the map, the Windows sweep must report exactly one runtime.
 func TestDispatcherSingleOnWindows(t *testing.T) {
 	withGOOS(t, "windows")
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
-		RuntimeDocker:       &fakeBackend{id: RuntimeDocker},
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: true},
 	})
@@ -102,13 +99,11 @@ func TestDispatcherSingleOnWindows(t *testing.T) {
 }
 
 func TestDispatcherStopAll(t *testing.T) {
-	// The set of runtimes actually swept is platform-gated: on Windows tart and
-	// docker are invisible to stop, so they must not be marked stopped there.
-	docker := &fakeBackend{id: RuntimeDocker}
+	// The set of runtimes actually swept is platform-gated: on Windows tart is
+	// invisible to stop, so it must not be marked stopped there.
 	msb := &fakeBackend{id: RuntimeMicrosandbox, running: true}
 	tart := &fakeBackend{id: RuntimeTart, running: true}
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
-		RuntimeDocker:       docker,
 		RuntimeMicrosandbox: msb,
 		RuntimeTart:         tart,
 	})
@@ -116,8 +111,8 @@ func TestDispatcherStopAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	if runtime.GOOS == "windows" {
-		if !msb.stopped || tart.stopped || docker.stopped {
-			t.Fatalf("windows: msb=%v tart=%v docker=%v (want msb stopped, tart/docker untouched)", msb.stopped, tart.stopped, docker.stopped)
+		if !msb.stopped || tart.stopped {
+			t.Fatalf("windows: msb=%v tart=%v (want msb stopped, tart untouched)", msb.stopped, tart.stopped)
 		}
 		return
 	}
@@ -128,15 +123,14 @@ func TestDispatcherStopAll(t *testing.T) {
 
 func TestDispatcherPrepareNoConflict(t *testing.T) {
 	// Use the running backend that is actually visible to the sweep: on Windows
-	// docker is not probed, so the "no conflict" intent is exercised with msb.
-	running := RuntimeDocker
+	// tart is not probed, so the "no conflict" intent is exercised with msb.
+	running := RuntimeTart
 	if runtime.GOOS == "windows" {
 		running = RuntimeMicrosandbox
 	}
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
-		RuntimeDocker:       &fakeBackend{id: RuntimeDocker, running: running == RuntimeDocker},
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: running == RuntimeMicrosandbox},
-		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: running == RuntimeTart},
 	})
 	if err := d.Prepare(context.Background(), running); err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -147,15 +141,14 @@ func TestDispatcherPrepareRefusesConflict(t *testing.T) {
 	if isTerminal(os.Stdin) {
 		t.Skip("stdin is a TTY; the non-interactive refusal path is not testable here")
 	}
-	// On Windows docker is invisible to the sweep, so there is no conflict to
+	// On Windows tart is invisible to the sweep, so there is no conflict to
 	// refuse; that platform-gated behavior is covered by the windows-specific
 	// test above. Here we want the conflict path, which only exists off Windows.
 	if runtime.GOOS == "windows" {
 		t.Skip("windows sweep only probes microsandbox; covered by TestDispatcherSingleOnWindows")
 	}
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
-		RuntimeDocker:       &fakeBackend{id: RuntimeDocker, running: true},
-		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox},
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart},
 	})
 	err := d.Prepare(context.Background(), RuntimeTart)

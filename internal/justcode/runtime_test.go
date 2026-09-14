@@ -1,6 +1,9 @@
 package justcode
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The runtime-selection contract differs by platform: Windows defaults to and
 // only supports microsandbox, so the cases are exercised per-platform rather
@@ -14,14 +17,18 @@ func TestResolveRuntimeOnWindows(t *testing.T) {
 	if got != RuntimeMicrosandbox {
 		t.Errorf("resolveRuntimeOn(\"\", \"\", windows) = %q, want microsandbox", got)
 	}
+	// Tart is macOS-only: on Windows it must fail with a platform message that
+	// points at the runtime that does work there, not a raw exec lookup error.
 	for _, arg := range []struct{ flag, pref string }{
-		{"--docker", ""},
 		{"--tart", ""},
-		{"", "docker"},
 		{"", "tart"},
 	} {
-		if _, err := resolveRuntimeOn(arg.flag, arg.pref, "windows"); err == nil {
-			t.Errorf("resolveRuntimeOn(%q, %q, windows): expected error", arg.flag, arg.pref)
+		_, err := resolveRuntimeOn(arg.flag, arg.pref, "windows")
+		if err == nil {
+			t.Fatalf("resolveRuntimeOn(%q, %q, windows): expected error", arg.flag, arg.pref)
+		}
+		if !strings.Contains(err.Error(), "microsandbox") {
+			t.Errorf("resolveRuntimeOn(%q, %q, windows) = %v, want a message pointing at --microsandbox", arg.flag, arg.pref, err)
 		}
 	}
 	if got, err := resolveRuntimeOn("--microsandbox", "", "windows"); err != nil || got != RuntimeMicrosandbox {
@@ -35,10 +42,9 @@ func TestResolveRuntimeFlag(t *testing.T) {
 		want       Runtime
 	}{
 		{"--tart", "", RuntimeTart},
-		{"--docker", "", RuntimeDocker},
 		{"--microsandbox", "", RuntimeMicrosandbox},
-		{"--tart", "docker", RuntimeTart}, // explicit flag wins
-		{"--docker", "tart", RuntimeDocker},
+		{"--tart", "microsandbox", RuntimeTart}, // explicit flag wins
+		{"--microsandbox", "tart", RuntimeMicrosandbox},
 	}
 	for _, c := range cases {
 		got, err := resolveRuntimeOn(c.flag, c.pref, "linux")
@@ -52,7 +58,7 @@ func TestResolveRuntimeFlag(t *testing.T) {
 }
 
 func TestResolveRuntimePreference(t *testing.T) {
-	for _, name := range []string{"docker", "microsandbox", "tart"} {
+	for _, name := range []string{"microsandbox", "tart"} {
 		got, err := resolveRuntimeOn("", name, "linux")
 		if err != nil {
 			t.Fatalf("resolveRuntimeOn(\"\", %q, linux): %v", name, err)
@@ -60,6 +66,11 @@ func TestResolveRuntimePreference(t *testing.T) {
 		if string(got) != name {
 			t.Errorf("resolveRuntimeOn(\"\", %q, linux) = %q", name, got)
 		}
+	}
+	// Docker was removed: RUNTIME=docker must be rejected like any other
+	// unknown runtime, on every platform.
+	if _, err := resolveRuntimeOn("", "docker", "linux"); err == nil {
+		t.Errorf("resolveRuntimeOn(\"\", \"docker\", linux): expected error")
 	}
 }
 
@@ -85,10 +96,10 @@ func TestSupportedRuntimesOn(t *testing.T) {
 	if got := supportedRuntimesOn("windows"); len(got) != 1 || got[0] != RuntimeMicrosandbox {
 		t.Errorf("supportedRuntimesOn(windows) = %v, want [microsandbox]", got)
 	}
-	if got := supportedRuntimesOn("linux"); len(got) != 3 {
-		t.Errorf("supportedRuntimesOn(linux) = %v, want all three runtimes", got)
+	if got := supportedRuntimesOn("linux"); len(got) != 2 || got[0] != RuntimeMicrosandbox || got[1] != RuntimeTart {
+		t.Errorf("supportedRuntimesOn(linux) = %v, want [microsandbox tart]", got)
 	}
-	if got := supportedRuntimesOn("darwin"); len(got) != 3 {
-		t.Errorf("supportedRuntimesOn(darwin) = %v, want all three runtimes", got)
+	if got := supportedRuntimesOn("darwin"); len(got) != 2 || got[0] != RuntimeMicrosandbox || got[1] != RuntimeTart {
+		t.Errorf("supportedRuntimesOn(darwin) = %v, want [microsandbox tart]", got)
 	}
 }
