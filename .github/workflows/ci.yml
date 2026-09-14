@@ -39,6 +39,11 @@ jobs:
       - name: Install build tools
         run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates gcc git
       - uses: actions/checkout@v4
+      - name: Trust the mounted workspace
+        # VCS stamping shells out to git, and the container user does not own the
+        # mounted checkout. Writing the exception to the system config makes it
+        # visible to every later step regardless of HOME.
+        run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
@@ -67,9 +72,35 @@ jobs:
           - runner: windows-11-arm
             os: windows
             arch: arm64
+            # The runner's gcc is an x86_64 MinGW cross compiler, which cannot
+            # assemble arm64. CGO needs a GNU-ABI aarch64 compiler, so the
+            # pinned LLVM-MinGW toolchain is installed below.
+            llvm_mingw: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install the Windows arm64 C toolchain
+        if: matrix.llvm_mingw
+        shell: pwsh
+        env:
+          LLVM_MINGW_VERSION: "20260616"
+          LLVM_MINGW_SHA256: "312593669435bd0bfc1a43ac3fba23c8b27e0610bade88b2738e5a01702a99ba"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $version = $env:LLVM_MINGW_VERSION
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          $dest = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$version/llvm-mingw-$version-ucrt-aarch64.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+          if ($actual -ne $env:LLVM_MINGW_SHA256) {
+            throw "LLVM-MinGW checksum mismatch: got $actual"
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "llvm-mingw-$version-ucrt-aarch64\bin")
+          Add-Content -Path $env:GITHUB_ENV -Value 'CC=aarch64-w64-mingw32-clang'
+          Add-Content -Path $env:GITHUB_ENV -Value 'CXX=aarch64-w64-mingw32-clang++'
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
@@ -79,5 +110,8 @@ jobs:
         run: |
           test "$(go env GOOS)" = "${{ matrix.os }}"
           test "$(go env GOARCH)" = "${{ matrix.arch }}"
+          if [ -n "${{ matrix.llvm_mingw }}" ]; then
+            go env CC | grep -q aarch64-w64-mingw32-clang
+          fi
       - run: go test ./...
       - run: go build ./cmd/just-code
