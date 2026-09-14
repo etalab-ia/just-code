@@ -98,6 +98,9 @@ func (d *DockerRuntime) Restart(ctx context.Context) error {
 }
 
 func (d *DockerRuntime) Clean(ctx context.Context) error {
+	// Disposing is destructive: say so before running, so a silent success
+	// can never be mistaken for "nothing happened".
+	fmt.Println("Removing containers and local images (docker compose down)...")
 	return d.compose(ctx, "down", "--timeout", "3", "--rmi", "local")
 }
 

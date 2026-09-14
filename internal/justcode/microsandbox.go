@@ -274,7 +274,14 @@ func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {
 		fmt.Printf("%s does not exist.\n", msbSandbox)
 		return nil
 	}
-	return m.runOK(ctx, "msb", "rm", "--force", msbSandbox)
+	// Disposing is destructive: say so before and after, so a silent success
+	// can never be mistaken for "nothing happened".
+	fmt.Printf("Removing %s (sandbox and local state)...\n", msbSandbox)
+	if err := m.runOK(ctx, "msb", "rm", "--force", msbSandbox); err != nil {
+		return err
+	}
+	fmt.Printf("%s removed.\n", msbSandbox)
+	return nil
 }
 
 // Doctor verifies the msb installation. Unlike lifecycle commands, its output

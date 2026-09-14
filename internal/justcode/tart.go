@@ -367,6 +367,9 @@ func (t *Tart) Clean(ctx context.Context) error {
 		fmt.Printf("%s does not exist.\n", vm)
 		return nil
 	}
+	// Disposing is destructive: say so before and after, so a silent success
+	// can never be mistaken for "nothing happened".
+	fmt.Printf("Deleting %s (VM and local state)...\n", vm)
 	res, err := t.Runner.Run(ctx, "tart", "delete", vm)
 	if err != nil {
 		return err
@@ -374,6 +377,7 @@ func (t *Tart) Clean(ctx context.Context) error {
 	if res.ExitCode != 0 {
 		return fmt.Errorf("tart delete failed (exit %d)", res.ExitCode)
 	}
+	fmt.Printf("%s deleted.\n", vm)
 	return nil
 }
 
