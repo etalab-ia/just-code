@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,17 @@ type fakeExecer struct {
 	path   string
 	argv   []string
 	env    []string
+}
+
+// skipUnixGuest skips a guest-bootstrap test on Windows. These tests simulate
+// the OpenCode bootstrap that runs inside a macOS/Linux guest VM; the guest
+// resolver looks executables up by POSIX mode bit (0o111), which has no meaning
+// on a Windows host, so the hermetic stubs are never "found" there.
+func skipUnixGuest(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("guest bootstrap runs in a macOS/Linux VM and is Unix-coupled (execute-bit lookup); not a Windows behavior")
+	}
 }
 
 func (f *fakeExecer) Exec(path string, argv []string, env []string) error {
@@ -81,6 +93,7 @@ func TestParseDefaultInterface(t *testing.T) {
 }
 
 func TestGuestMTUApplied(t *testing.T) {
+	skipUnixGuest(t)
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
 		if name == "route" {
 			return ExecResult{ExitCode: 0, Stdout: "  interface: en7\n"}
@@ -102,6 +115,7 @@ func TestGuestMTUApplied(t *testing.T) {
 }
 
 func TestGuestMTUAutoSkipsNetworkChanges(t *testing.T) {
+	skipUnixGuest(t)
 	// A route failure would surface if the MTU logic ran; "auto" must skip it.
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
 		if name == "route" {
@@ -179,6 +193,7 @@ func TestGuestSudoFailure(t *testing.T) {
 }
 
 func TestGuestEmptyPasswordPreserved(t *testing.T) {
+	skipUnixGuest(t)
 	cfg, execer := guestTest(t, &fakeRunner{}, "\nkey\n", "opencode")
 	if err := RunGuestBootstrap(context.Background(), cfg); err != nil {
 		t.Fatalf("RunGuestBootstrap: %v", err)
@@ -192,6 +207,7 @@ func TestGuestEmptyPasswordPreserved(t *testing.T) {
 }
 
 func TestGuestDefaultPasswordWhenStdinEmpty(t *testing.T) {
+	skipUnixGuest(t)
 	cfg, execer := guestTest(t, &fakeRunner{}, "", "opencode")
 	if err := RunGuestBootstrap(context.Background(), cfg); err != nil {
 		t.Fatalf("RunGuestBootstrap: %v", err)
@@ -202,6 +218,7 @@ func TestGuestDefaultPasswordWhenStdinEmpty(t *testing.T) {
 }
 
 func TestGuestExecArgvAndEnv(t *testing.T) {
+	skipUnixGuest(t)
 	cfg, execer := guestTest(t, &fakeRunner{}, "pw\nkey\n", "opencode")
 	cfg.Port = "5000"
 	cfg.Username = "albert"
@@ -225,6 +242,7 @@ func TestGuestExecArgvAndEnv(t *testing.T) {
 }
 
 func TestGuestInstallsOpencodeViaBrew(t *testing.T) {
+	skipUnixGuest(t)
 	// brew present, opencode absent; a successful brew install drops it on PATH.
 	var binDir string
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
@@ -248,6 +266,7 @@ func TestGuestInstallsOpencodeViaBrew(t *testing.T) {
 }
 
 func TestGuestInstallFallsBackToInstallerScript(t *testing.T) {
+	skipUnixGuest(t)
 	var binDir string
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
 		if name == "brew" || name == "npm" {

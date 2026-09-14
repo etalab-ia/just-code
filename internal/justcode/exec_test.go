@@ -14,6 +14,9 @@ import (
 // goroutine, and releasing the process let the CLI exit before that goroutine
 // finished, so the guest fell back to the default password and an empty key.
 func TestStartDeliversStdinToDetachedChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("OSStarter exercises Unix detached-process semantics via /bin/sh; the detach path is Tart-only (macOS), so this is not a Windows behavior")
+	}
 	dir := t.TempDir()
 	out := filepath.Join(dir, "received")
 	script := filepath.Join(dir, "read-stdin.sh")
@@ -54,6 +57,9 @@ func TestStartRejectsOversizedStdin(t *testing.T) {
 }
 
 func TestStartHandlesNilStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("OSStarter exercises Unix detached-process semantics via /bin/sh; the detach path is Tart-only (macOS), so this is not a Windows behavior")
+	}
 	dir := t.TempDir()
 	out := filepath.Join(dir, "out")
 	// With no stdin, `true` should still start and exit 0; just assert no error
