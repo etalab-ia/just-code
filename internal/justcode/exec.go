@@ -7,8 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 )
 
 // ExecResult is the outcome of a host command. A nonzero ExitCode is a normal
@@ -110,7 +111,7 @@ func (OSStarter) Start(stdin io.Reader, logPath string, name string, args ...str
 	}
 	cmd.Stdout = log
 	cmd.Stderr = log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		if stdinPipe != nil {
 			stdinPipe.Close()
@@ -163,7 +164,7 @@ func RunInteractive(name string, args ...string) error {
 
 // RunInteractiveEnv is RunInteractive with additional environment variables.
 func RunInteractiveEnv(env []string, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := interactiveCommand(name, args...)
 	if len(env) > 0 {
 		cmd.Env = withEnv(os.Environ(), env...)
 	}
@@ -171,6 +172,25 @@ func RunInteractiveEnv(env []string, name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// interactiveCommand builds the *exec.Cmd for an interactive command. On
+// Windows, when the resolved program is a batch shim (.cmd/.bat, as produced by
+// `npm install -g opencode-ai`), it is invoked through the command processor
+// (cmd.exe /c) because CreateProcess cannot execute a batch file directly.
+func interactiveCommand(name string, args ...string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		if resolved, err := exec.LookPath(name); err == nil && isBatchFile(resolved) {
+			return exec.Command("cmd.exe", append([]string{"/c", resolved}, args...)...)
+		}
+	}
+	return exec.Command(name, args...)
+}
+
+// isBatchFile reports whether path names a Windows batch file.
+func isBatchFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".cmd" || ext == ".bat"
 }
 
 // withEnv returns base with the given KEY=VALUE pairs applied, replacing any

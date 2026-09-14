@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -117,7 +118,10 @@ func TestStageGuestBinaryCopiesSelf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	// Windows has no POSIX execute bit; the staged guest binary runs in the
+	// macOS guest, not on the host, so this assertion is only meaningful where
+	// the permission bit exists.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("staged binary is not executable: %o", info.Mode().Perm())
 	}
 }

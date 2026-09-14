@@ -2,6 +2,33 @@ package justcode
 
 import "testing"
 
+// The runtime-selection contract differs by platform: Windows defaults to and
+// only supports microsandbox, so the cases are exercised per-platform rather
+// than asserting behavior that cannot hold everywhere. resolveRuntimeOn takes
+// the platform explicitly so the Windows cases run in normal (non-Windows) CI.
+func TestResolveRuntimeOnWindows(t *testing.T) {
+	got, err := resolveRuntimeOn("", "", "windows")
+	if err != nil {
+		t.Fatalf("resolveRuntimeOn(\"\", \"\", windows): %v", err)
+	}
+	if got != RuntimeMicrosandbox {
+		t.Errorf("resolveRuntimeOn(\"\", \"\", windows) = %q, want microsandbox", got)
+	}
+	for _, arg := range []struct{ flag, pref string }{
+		{"--docker", ""},
+		{"--tart", ""},
+		{"", "docker"},
+		{"", "tart"},
+	} {
+		if _, err := resolveRuntimeOn(arg.flag, arg.pref, "windows"); err == nil {
+			t.Errorf("resolveRuntimeOn(%q, %q, windows): expected error", arg.flag, arg.pref)
+		}
+	}
+	if got, err := resolveRuntimeOn("--microsandbox", "", "windows"); err != nil || got != RuntimeMicrosandbox {
+		t.Errorf("resolveRuntimeOn(--microsandbox, \"\", windows) = %q, %v", got, err)
+	}
+}
+
 func TestResolveRuntimeFlag(t *testing.T) {
 	cases := []struct {
 		flag, pref string
@@ -14,38 +41,54 @@ func TestResolveRuntimeFlag(t *testing.T) {
 		{"--docker", "tart", RuntimeDocker},
 	}
 	for _, c := range cases {
-		got, err := ResolveRuntime(c.flag, c.pref)
+		got, err := resolveRuntimeOn(c.flag, c.pref, "linux")
 		if err != nil {
-			t.Fatalf("ResolveRuntime(%q, %q): %v", c.flag, c.pref, err)
+			t.Fatalf("resolveRuntimeOn(%q, %q, linux): %v", c.flag, c.pref, err)
 		}
 		if got != c.want {
-			t.Errorf("ResolveRuntime(%q, %q) = %q, want %q", c.flag, c.pref, got, c.want)
+			t.Errorf("resolveRuntimeOn(%q, %q, linux) = %q, want %q", c.flag, c.pref, got, c.want)
 		}
 	}
 }
 
 func TestResolveRuntimePreference(t *testing.T) {
 	for _, name := range []string{"docker", "microsandbox", "tart"} {
-		got, err := ResolveRuntime("", name)
+		got, err := resolveRuntimeOn("", name, "linux")
 		if err != nil {
-			t.Fatalf("ResolveRuntime(\"\", %q): %v", name, err)
+			t.Fatalf("resolveRuntimeOn(\"\", %q, linux): %v", name, err)
 		}
 		if string(got) != name {
-			t.Errorf("ResolveRuntime(\"\", %q) = %q", name, got)
+			t.Errorf("resolveRuntimeOn(\"\", %q, linux) = %q", name, got)
 		}
 	}
 }
 
 func TestResolveRuntimeErrors(t *testing.T) {
 	cases := []struct{ flag, pref string }{
-		{"", ""},
 		{"--podman", ""},
 		{"", "podman"},
 		{"--", ""},
 	}
 	for _, c := range cases {
-		if _, err := ResolveRuntime(c.flag, c.pref); err == nil {
-			t.Errorf("ResolveRuntime(%q, %q): expected error", c.flag, c.pref)
+		if _, err := resolveRuntimeOn(c.flag, c.pref, "linux"); err == nil {
+			t.Errorf("resolveRuntimeOn(%q, %q, linux): expected error", c.flag, c.pref)
 		}
+	}
+	// The empty-selection error only exists off Windows; there the default is
+	// microsandbox (covered by TestResolveRuntimeOnWindows).
+	if _, err := resolveRuntimeOn("", "", "linux"); err == nil {
+		t.Errorf("resolveRuntimeOn(\"\", \"\", linux): expected error")
+	}
+}
+
+func TestSupportedRuntimesOn(t *testing.T) {
+	if got := supportedRuntimesOn("windows"); len(got) != 1 || got[0] != RuntimeMicrosandbox {
+		t.Errorf("supportedRuntimesOn(windows) = %v, want [microsandbox]", got)
+	}
+	if got := supportedRuntimesOn("linux"); len(got) != 3 {
+		t.Errorf("supportedRuntimesOn(linux) = %v, want all three runtimes", got)
+	}
+	if got := supportedRuntimesOn("darwin"); len(got) != 3 {
+		t.Errorf("supportedRuntimesOn(darwin) = %v, want all three runtimes", got)
 	}
 }

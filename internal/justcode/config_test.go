@@ -68,7 +68,10 @@ func TestLoadConfigCustom(t *testing.T) {
 	if cfg.TartVM != "opencode-sonoma-base-latest" {
 		t.Errorf("TartVM = %q", cfg.TartVM)
 	}
-	if cfg.TartMTU != "1400" || cfg.WorkspaceDir != "/tmp/proj" || cfg.APIKey != "key123" {
+	// WorkspaceDir is normalized to an absolute path; compare against the
+	// platform's own absolutization of the input so the test holds on Windows.
+	wantWorkspace, _ := filepath.Abs("/tmp/proj")
+	if cfg.TartMTU != "1400" || cfg.WorkspaceDir != wantWorkspace || cfg.APIKey != "key123" {
 		t.Errorf("custom values wrong: %+v", cfg)
 	}
 }
@@ -76,8 +79,9 @@ func TestLoadConfigCustom(t *testing.T) {
 // TestLoadConfigLegacyProjectDir covers the deprecated PROJECT_DIR fallback.
 func TestLoadConfigLegacyProjectDir(t *testing.T) {
 	cfg := LoadConfig(lookupFrom(map[string]string{"PROJECT_DIR": "/tmp/legacy"}))
-	if cfg.WorkspaceDir != "/tmp/legacy" {
-		t.Errorf("WorkspaceDir = %q, want the legacy PROJECT_DIR value", cfg.WorkspaceDir)
+	want, _ := filepath.Abs("/tmp/legacy")
+	if cfg.WorkspaceDir != want {
+		t.Errorf("WorkspaceDir = %q, want the legacy PROJECT_DIR value %q", cfg.WorkspaceDir, want)
 	}
 }
 
@@ -87,8 +91,9 @@ func TestLoadConfigWorkspaceDirWins(t *testing.T) {
 		"PROJECT_DIR":   "/tmp/legacy",
 		"WORKSPACE_DIR": "/tmp/current",
 	}))
-	if cfg.WorkspaceDir != "/tmp/current" {
-		t.Errorf("WorkspaceDir = %q, want WORKSPACE_DIR to win", cfg.WorkspaceDir)
+	want, _ := filepath.Abs("/tmp/current")
+	if cfg.WorkspaceDir != want {
+		t.Errorf("WorkspaceDir = %q, want WORKSPACE_DIR to win (%q)", cfg.WorkspaceDir, want)
 	}
 }
 
