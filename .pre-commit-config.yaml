@@ -1,0 +1,7 @@
+# Hooks pre-commit du projet.
+# Installation : pre-commit install (voir README, section Développement).
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
