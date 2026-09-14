@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.0](https://github.com/etalab-ia/just-code/compare/v1.0.0...v1.1.0) (2026-09-14)
+
+
+### Features
+
+* default to microsandbox and reject docker/tart on Windows ([b5a3467](https://github.com/etalab-ia/just-code/commit/b5a346789f9b1ed2d99791835c78b61f797a1734))
+* supporter Windows via le runtime Microsandbox (msb) ([b2a9d6d](https://github.com/etalab-ia/just-code/commit/b2a9d6d93d71598f510d47a9d72b81183840e273))
+* supporter Windows via le runtime Microsandbox (msb) ([46a6ceb](https://github.com/etalab-ia/just-code/commit/46a6ceb8ba5411ab06526f5849b6752a5c7804d3))
+
+
+### Bug Fixes
+
+* address Codex review on Windows attach and test portability ([b9b64cc](https://github.com/etalab-ia/just-code/commit/b9b64cc14f810ba7bd6e619fe1daa4661a8939cf))
+* align Windows process detachment with Setsid semantics ([b81f4f1](https://github.com/etalab-ia/just-code/commit/b81f4f133c42c4576b7e0612e6f4585d411ad58d))
+
 ## 1.0.0 (2026-09-14)
 
 
