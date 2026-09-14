@@ -37,6 +37,32 @@ func DefaultHealthConfig() HealthConfig {
 	}
 }
 
+// DefaultHTTPClient returns the default HTTP client with a 5-second timeout.
+func DefaultHTTPClient() *http.Client {
+	return &http.Client{Timeout: 5 * time.Second}
+}
+
+// NewGetRequest builds a basic-authenticated GET request for the given URL.
+// An empty password means "no auth".
+func NewGetRequest(ctx context.Context, url, username, password string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if password != "" {
+		req.SetBasicAuth(username, password)
+	}
+	return req, nil
+}
+
+// PasswordHint returns a non-empty password as "***" and an empty password as "(none)".
+func PasswordHint(password string) string {
+	if password == "" {
+		return "(none)"
+	}
+	return "***"
+}
+
 // FetchBody performs a basic-authenticated GET to <endpoint><path> and returns
 // the response body as a string. An empty password means "no auth".
 func FetchBody(ctx context.Context, client *http.Client, endpoint, username, password, path string) (string, error) {

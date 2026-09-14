@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -72,6 +73,8 @@ func run(args []string) (int, error) {
 	switch parsed.action {
 	case "attach":
 		return attachCmd(d, cfg, rt)
+	case "web":
+		return webCmd(d, cfg, rt, parsed.printOnly)
 	case "start", "logs", "shell", "restart", "clean", "doctor":
 		return lifecycleCmd(d, rt, parsed.action)
 	default:
@@ -86,7 +89,9 @@ type parsedArgs struct {
 	action string
 	// runtime is the raw --docker/--microsandbox/--tart flag, or "".
 	runtime string
-	version bool
+	// printOnly is true when --print is passed to the web command.
+	printOnly bool
+	version   bool
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -95,7 +100,7 @@ type parsedArgs struct {
 // TypeScript CLI, which exposes only -V/--version.
 var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
-	"restart": true, "clean": true, "doctor": true,
+	"restart": true, "clean": true, "doctor": true, "web": true,
 	"help": true, "version": true,
 }
 
@@ -121,6 +126,8 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 		case a == "-V" || a == "--version" || a == "-v":
 			p.version = true
+		case a == "--print":
+			p.printOnly = true
 		case actionNames[a] && !actionSet:
 			p.action = a
 			actionSet = true
@@ -181,6 +188,65 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	code := exitCodeOf(attachErr)
 	askToStop(ctx, d, rt)
 	return code, attachErr
+}
+
+func webCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime, printOnly bool) (int, error) {
+	b, err := d.Backend(rt)
+	if err != nil {
+		return 0, err
+	}
+	ctx := context.Background()
+	if err := d.Prepare(ctx, rt); err != nil {
+		return 0, err
+	}
+	if err := b.Start(ctx); err != nil {
+		return 0, err
+	}
+	endpoint, err := b.Endpoint(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if cfg.StartTimeoutErr != nil {
+		return 0, cfg.StartTimeoutErr
+	}
+	fmt.Fprintf(os.Stderr, "Waiting for the backend at %s to become healthy...\n", endpoint)
+	health := justcode.DefaultHealthConfig()
+	health.Deadline = cfg.StartTimeout
+	health.Progress = os.Stderr
+	if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, health, nil); err != nil {
+		return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
+	}
+
+	// Verify the backend serves the web UI (GET / should return HTML, not JSON).
+	uiURL := endpoint + "/"
+	req, err := justcode.NewGetRequest(ctx, uiURL, cfg.Username, cfg.Password)
+	if err != nil {
+		return 0, fmt.Errorf("failed to build UI probe request: %w", err)
+	}
+	resp, err := justcode.DefaultHTTPClient().Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to probe web UI at %s: %w", uiURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("web UI not available at %s (status %d); update the OpenCode image", uiURL, resp.StatusCode)
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "text/html") {
+		return 0, fmt.Errorf("web UI not available at %s (Content-Type: %s); update the OpenCode image", uiURL, contentType)
+	}
+
+	if printOnly {
+		fmt.Println(uiURL)
+		return 0, nil
+	}
+
+	fmt.Printf("Opening web interface: %s\n", uiURL)
+	fmt.Printf("Username: %s | Password: %s\n", cfg.Username, justcode.PasswordHint(cfg.Password))
+	if err := justcode.RunInteractive("open", uiURL); err != nil {
+		return 0, fmt.Errorf("failed to open browser: %w", err)
+	}
+	return 0, nil
 }
 
 func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (int, error) {
@@ -268,6 +334,7 @@ Commands:
   start      Start a backend without attaching the TUI
   stop       Stop every running just-code runtime
   check      Check the active backend and Albert provider
+  web        Open the OpenCode web interface in your browser
   restart    Recreate the selected sandbox (destructive)
   logs       Follow logs for the selected runtime
   shell      Open a shell inside the selected runtime
