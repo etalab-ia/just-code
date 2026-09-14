@@ -281,8 +281,29 @@ func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {
 	return m.runOK(ctx, "msb", "rm", "--force", msbSandbox)
 }
 
+// Doctor verifies the msb installation. Unlike lifecycle commands, its output
+// must reach the user even on success — a doctor that prints nothing is
+// indistinguishable from one that did not run. A context bounds the run so a
+// daemon that never answers cannot hang the check.
 func (m *MicrosandboxRuntime) Doctor(ctx context.Context) error {
-	return m.runOK(ctx, "msb", "doctor")
+	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := m.run(dctx, "msb", "doctor")
+	if err != nil {
+		if dctx.Err() != nil {
+			return fmt.Errorf("msb doctor timed out after 30s — the Microsandbox daemon is probably not running; start it and retry")
+		}
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("msb doctor failed (exit %d):\n%s", res.ExitCode, res.Stdout)
+	}
+	fmt.Print(res.Stdout)
+	if !strings.HasSuffix(res.Stdout, "\n") {
+		fmt.Println()
+	}
+	fmt.Println("Microsandbox runtime is ready.")
+	return nil
 }
 
 func (m *MicrosandboxRuntime) Logs() error {

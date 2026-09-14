@@ -59,6 +59,30 @@ func (r *fakeRunner) hasPrefixCall(prefix string) bool {
 	return false
 }
 
+// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stdout
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = write
+	defer func() { os.Stdout = original }()
+
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(read)
+		done <- string(data)
+	}()
+
+	fn()
+	write.Close()
+	out := <-done
+	read.Close()
+	return out
+}
+
 // captureStderr runs fn with os.Stderr redirected and returns what it wrote.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
@@ -197,6 +221,49 @@ func TestMicrosandboxLaunchBackendRetries(t *testing.T) {
 	}
 	if attempts != 3 {
 		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+// TestMicrosandboxDoctorReportsOutput guards the reported bug: doctor printed
+// nothing on success because runOK captured and discarded the output. A doctor
+// command must always say what it found.
+func TestMicrosandboxDoctorReportsOutput(t *testing.T) {
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if strings.Join(args, " ") == "doctor" {
+			return ExecResult{ExitCode: 0, Stdout: "✔ microsandbox: healthy\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	m := newTestMicrosandbox(t, r)
+	out := captureStdout(t, func() {
+		if err := m.Doctor(context.Background()); err != nil {
+			t.Fatalf("Doctor: %v", err)
+		}
+	})
+	if !strings.Contains(out, "microsandbox: healthy") {
+		t.Fatalf("doctor output was swallowed: %q", out)
+	}
+	if !strings.Contains(out, "Microsandbox runtime is ready.") {
+		t.Fatalf("missing ready line: %q", out)
+	}
+}
+
+// TestMicrosandboxDoctorSurfacesFailureOutput guards the companion case: a
+// failing msb doctor must show its output, not just an exit code.
+func TestMicrosandboxDoctorSurfacesFailureOutput(t *testing.T) {
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if strings.Join(args, " ") == "doctor" {
+			return ExecResult{ExitCode: 1, Stdout: "✖ daemon: unreachable\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	m := newTestMicrosandbox(t, r)
+	err := m.Doctor(context.Background())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "daemon: unreachable") {
+		t.Fatalf("failure output was swallowed: %v", err)
 	}
 }
 

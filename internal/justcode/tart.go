@@ -395,6 +395,9 @@ func (t *Tart) Doctor(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("tart is not installed")
+	}
 	fmt.Print(res.Stdout)
 	fmt.Println("Tart runtime is ready.")
 	return nil
