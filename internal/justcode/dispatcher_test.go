@@ -16,7 +16,6 @@ type fakeBackend struct {
 func (f *fakeBackend) ID() Runtime                              { return f.id }
 func (f *fakeBackend) Start(context.Context) error              { return nil }
 func (f *fakeBackend) Stop(context.Context) error               { f.stopped = true; return nil }
-func (f *fakeBackend) Build(context.Context) error              { return nil }
 func (f *fakeBackend) Restart(context.Context) error            { return nil }
 func (f *fakeBackend) Clean(context.Context) error              { return nil }
 func (f *fakeBackend) Doctor(context.Context) error             { return nil }

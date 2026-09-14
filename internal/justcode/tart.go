@@ -346,18 +346,6 @@ func (t *Tart) Start(ctx context.Context) error {
 	return t.launchBackend(ctx)
 }
 
-// Build pulls or updates the base image, mirroring `just build --tart`.
-func (t *Tart) Build(ctx context.Context) error {
-	res, err := t.Runner.Run(ctx, "tart", "pull", t.Config.TartImage)
-	if err != nil {
-		return err
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("tart pull failed (exit %d)", res.ExitCode)
-	}
-	return nil
-}
-
 // Clean stops and deletes the VM and its writable state, mirroring
 // `just clean --tart`.
 func (t *Tart) Clean(ctx context.Context) error {

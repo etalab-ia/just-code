@@ -62,7 +62,7 @@ func TestDockerStartCommand(t *testing.T) {
 	if !strings.Contains(call, "--project-directory "+d.AssetsDir) {
 		t.Fatalf("call = %q, want the assets dir as project directory", call)
 	}
-	if !strings.HasSuffix(call, " up -d --quiet-pull") {
+	if !strings.HasSuffix(call, " up -d --build --quiet-pull") {
 		t.Fatalf("call = %q, want the up subcommand", call)
 	}
 }

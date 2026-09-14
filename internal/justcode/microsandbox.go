@@ -262,10 +262,6 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 	return m.runOK(ctx, "msb", "stop", "--timeout", "3", msbSandbox)
 }
 
-func (m *MicrosandboxRuntime) Build(ctx context.Context) error {
-	return m.runOK(ctx, "msb", "pull", msbImage)
-}
-
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	if err := m.Clean(ctx); err != nil {
 		return err

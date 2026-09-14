@@ -83,22 +83,15 @@ func (d *DockerRuntime) Start(ctx context.Context) error {
 		}
 		return nil
 	}
-	return d.compose(ctx, "up", "-d", "--quiet-pull")
+	return d.compose(ctx, "up", "-d", "--build", "--quiet-pull")
 }
 
 func (d *DockerRuntime) Stop(ctx context.Context) error {
 	return d.compose(ctx, "down", "--timeout", "3")
 }
 
-func (d *DockerRuntime) Build(ctx context.Context) error {
-	return d.compose(ctx, "build", "--quiet")
-}
-
 func (d *DockerRuntime) Restart(ctx context.Context) error {
 	if err := d.Stop(ctx); err != nil {
-		return err
-	}
-	if err := d.Build(ctx); err != nil {
 		return err
 	}
 	return d.Start(ctx)

@@ -72,7 +72,7 @@ func run(args []string) (int, error) {
 	switch parsed.action {
 	case "attach":
 		return attachCmd(d, cfg, rt)
-	case "start", "logs", "shell", "build", "restart", "clean", "doctor":
+	case "start", "logs", "shell", "restart", "clean", "doctor":
 		return lifecycleCmd(d, rt, parsed.action)
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
@@ -95,7 +95,7 @@ type parsedArgs struct {
 // TypeScript CLI, which exposes only -V/--version.
 var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
-	"build": true, "restart": true, "clean": true, "doctor": true,
+	"restart": true, "clean": true, "doctor": true,
 	"help": true, "version": true,
 }
 
@@ -200,8 +200,6 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 	switch action {
 	case "start":
 		err = b.Start(ctx)
-	case "build":
-		err = b.Build(ctx)
 	case "restart":
 		err = b.Restart(ctx)
 	case "clean":
@@ -258,7 +256,7 @@ func exitCodeOf(err error) int {
 }
 
 func usage() {
-	fmt.Println(`just-code - a single Go binary for the OpenCode sandbox
+	fmt.Println(`just-code - manage the OpenCode sandbox
 
 Usage:
   just-code [command] [--docker | --microsandbox | --tart]
@@ -270,7 +268,6 @@ Commands:
   start      Start a backend without attaching the TUI
   stop       Stop every running just-code runtime
   check      Check the active backend and Albert provider
-  build      Build or pull the selected runtime image
   restart    Recreate the selected sandbox (destructive)
   logs       Follow logs for the selected runtime
   shell      Open a shell inside the selected runtime

@@ -117,7 +117,6 @@ just-code stop                   # arrête tout runtime just-code actif
 just-code check                  # santé du backend actif + provider Albert
 just-code logs --tart            # logs d'un runtime explicite
 just-code shell --tart           # shell dans un runtime explicite
-just-code build --tart           # télécharge ou met à jour l'image de base
 just-code restart --tart         # recrée le sandbox (destructif)
 just-code clean --tart           # supprime le sandbox et son état local
 just-code doctor --tart          # vérifie l'installation du runtime

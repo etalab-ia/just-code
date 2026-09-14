@@ -28,7 +28,6 @@ type Backend interface {
 	ID() Runtime
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
-	Build(ctx context.Context) error
 	Restart(ctx context.Context) error
 	Clean(ctx context.Context) error
 	Doctor(ctx context.Context) error
