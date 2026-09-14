@@ -101,3 +101,25 @@ func TestInteractiveCommandNonWindows(t *testing.T) {
 		t.Errorf("off Windows, interactiveCommand should not wrap through cmd.exe; args[0] = %q", cmd.Args[0])
 	}
 }
+
+// TestInteractiveCommandWindowsBatch exercises the batch-shim path on real
+// Windows: a program whose resolved PATH entry is a .cmd must be invoked
+// through the command processor, not passed to CreateProcess directly.
+func TestInteractiveCommandWindowsBatch(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only batch shim behavior")
+	}
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "opencode.cmd")
+	if err := os.WriteFile(shim, []byte("@echo off\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd := interactiveCommand("opencode", "attach", "http://localhost:4096")
+	if filepath.Base(cmd.Args[0]) != "cmd.exe" {
+		t.Fatalf("expected cmd.exe wrapper for a .cmd shim; args[0] = %q", cmd.Args[0])
+	}
+	if len(cmd.Args) < 3 || cmd.Args[1] != "/c" || !strings.EqualFold(cmd.Args[2], shim) {
+		t.Errorf("expected `cmd.exe /c <shim>`; args = %v", cmd.Args)
+	}
+}
