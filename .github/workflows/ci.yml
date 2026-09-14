@@ -45,6 +45,8 @@ jobs:
           cache: true
       - name: Check formatting
         shell: pwsh
-        run: if (gofmt -l .) { throw "gofmt: files are not formatted" }
+        run: |
+          $bad = gofmt -l .
+          if ($bad) { Write-Error "gofmt: not formatted: $bad" }
       - run: go vet ./...
       - run: go test ./...
