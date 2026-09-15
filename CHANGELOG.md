@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/etalab-ia/just-code/compare/v0.1.0...v0.2.0) (2026-09-15)
+
+
+### Features
+
+* intégrer le SDK Go Microsandbox ([d59bc44](https://github.com/etalab-ia/just-code/commit/d59bc44e5550c5239d13d33f635794a9716555ef))
+
+
+### Bug Fixes
+
+* address codex review on release assets and docs ([83c3916](https://github.com/etalab-ia/just-code/commit/83c39161a6994e91adf7d8962db9f220d3e084cf))
+
 ## 0.1.0 (2026-09-14)
 
 
