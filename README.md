@@ -82,14 +82,23 @@ go test ./...
 
 ## Démarrage rapide
 
-Pour un premier lancement, exporte la clé Albert API dans ton terminal :
+Pour un premier lancement, exporte la clé Albert API dans ton terminal.
+
+macOS / Linux :
 
 ```bash
 export ALBERT_API_KEY="ta-clé"
 just-code --microsandbox
 ```
 
-Sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox` ou `--tart`. La première commande démarre le backend, attend qu'il soit prêt, puis attache le TUI OpenCode natif.
+Windows (PowerShell) :
+
+```powershell
+$env:ALBERT_API_KEY = "ta-clé"
+just-code --microsandbox
+```
+
+Sur macOS et Linux, sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox` ou `--tart`. Sur Windows, Microsandbox est le seul runtime pris en charge et il est sélectionné par défaut. La commande `just-code` démarre le backend, attend qu'il soit prêt, puis attache le TUI OpenCode natif.
 
 Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la section [Configuration](#configuration).
 
