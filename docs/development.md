@@ -2,6 +2,16 @@
 
 Ce document décrit l'architecture interne du CLI, l'outillage de développement et le pipeline de publication. Pour l'installation et l'utilisation, voir le [README](../README.md).
 
+## Configuration locale
+
+Depuis un checkout des sources, pars du modèle commenté puis renseigne au minimum `ALBERT_API_KEY` :
+
+```bash
+cp .env.example .env
+```
+
+La référence complète des variables et de leurs règles de priorité se trouve dans la section [Configuration du README](../README.md#configuration).
+
 ## Portage Go
 
 Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les deux runtimes via une bibliothèque testée (`internal/justcode`) et le SDK Go Microsandbox, sans dépendre d'une commande `msb` externe.
