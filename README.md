@@ -53,7 +53,6 @@ Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-
 
 ### Dépendances de l'hôte
 
-- [Go](https://go.dev) >= 1.22 et une chaîne C native : Xcode Command Line Tools (macOS), `gcc` (Linux), MinGW-w64 x64 ou LLVM-MinGW (Windows). Sous Windows arm64, la chaîne doit cibler `aarch64-w64-mingw32`.
 - OpenCode CLI sur l'hôte (`npm install -g opencode-ai`)
 - Une **clé Albert API** dans l'environnement (ou dans `.env`, ignoré par git)
 - L'un des runtimes disponibles :

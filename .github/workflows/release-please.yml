@@ -192,6 +192,19 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum just-code-* > SHA256SUMS
+      - name: Remove retired assets
+        # --clobber only replaces same-named assets, so a manual rebuild of a
+        # release published before a platform change would keep the retired
+        # binary live without a matching checksum. Retired: darwin-x64 (SDK
+        # v0.6.18 ships no darwin/amd64 FFI library).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          if gh release view "$TAG" --json assets --jq '.[].name' | grep -qx 'just-code-darwin-x64'; then
+            gh release delete-asset "$TAG" just-code-darwin-x64 --yes
+          fi
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
