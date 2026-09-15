@@ -26,6 +26,13 @@ func main() {
 }
 
 func run(args []string) (int, error) {
+	// Hidden flag for CI (msb-runtime-watch workflow): prints the Microsandbox
+	// SDK version the binary embeds, without touching config or runtimes.
+	if len(args) == 1 && args[0] == "-print-msb-sdk-version" {
+		fmt.Println(justcode.MSBSDKVersion())
+		return 0, nil
+	}
+
 	// The in-VM bootstrap is a hidden subcommand of this same binary. It runs
 	// inside the Tart guest and must not touch host config or load .env.
 	if len(args) > 0 && args[0] == justcode.GuestBootstrapCommand {
