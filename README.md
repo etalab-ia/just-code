@@ -97,7 +97,7 @@ cp .env.example .env
 just-code --microsandbox
 ```
 
-Sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox` ou `--tart`. La première commande démarre le backend, attend sa santé, puis attache le TUI OpenCode natif.
+Sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox` ou `--tart`. La première commande démarre le backend, attend qu'il soit prêt, puis attache le TUI OpenCode natif.
 
 Le premier démarrage d'un sandbox Microsandbox installe ~384 Mio de paquets dans la microVM et peut dépasser largement une minute ; les démarrages suivants sont rapides.
 
