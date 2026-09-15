@@ -82,6 +82,15 @@ go test ./...
 
 ## Démarrage rapide
 
+Le CLI lit un fichier `.env` dans le répertoire de travail (puis à côté de l'exécutable). Seule `ALBERT_API_KEY` est requise ; tous les autres réglages ont une valeur par défaut.
+
+```bash
+echo "ALBERT_API_KEY=ta-clé" > .env
+just-code --microsandbox
+```
+
+Depuis un checkout des sources, tu peux partir du modèle complet à la place :
+
 ```bash
 cp .env.example .env
 # Renseigne ALBERT_API_KEY dans .env
@@ -108,13 +117,13 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 ## Configuration
 
-Crée ta configuration locale depuis l'exemple :
+Le CLI lit un fichier `.env` dans le répertoire de travail (puis à côté de l'exécutable) ; les variables déjà exportées dans l'environnement priment sur le fichier. Seule `ALBERT_API_KEY` est requise. Depuis un checkout des sources, le modèle complet est disponible :
 
 ```bash
 cp .env.example .env
 ```
 
-Renseigne `ALBERT_API_KEY` dans `.env`. Pour conserver une préférence de runtime locale, décommente aussi l'une de ces lignes :
+Pour conserver une préférence de runtime locale, ajoute aussi l'une de ces lignes dans `.env` :
 
 ```dotenv
 RUNTIME=microsandbox
