@@ -16,7 +16,7 @@ La référence complète des variables et de leurs règles de priorité se trouv
 
 Le CLI est un binaire Go unique (`cmd/just-code`) qui remplace entièrement le `justfile`. Il orchestre les deux runtimes via une bibliothèque testée (`internal/justcode`) et le SDK Go Microsandbox, sans dépendre d'une commande `msb` externe.
 
-**Binaire autonome.** La configuration OpenCode et le script de démarrage Microsandbox vivent dans `assets/` et sont embarqués dans le binaire via `go:embed`. Ils sont transmis directement au SDK sans fichier de configuration temporaire. Le runtime natif téléchargé reste séparé sous `~/.microsandbox/` (ou `$MSB_HOME`).
+**Binaire autonome.** La configuration OpenCode et le script de démarrage Microsandbox vivent dans `assets/` et sont embarqués dans le binaire via `go:embed`. Ils sont transmis directement au SDK sans fichier de configuration temporaire. Le runtime natif téléchargé reste séparé sous `~/.microsandbox/` (ou `$MSB_HOME`). Il provient d'une release autonome `msb-runtime-v<version>` du dépôt : son URL et ses empreintes SHA-256 sont compilées dans `just-code`, l'archive est vérifiée avant décompression, puis le SDK est appelé avec `WithSkipDownload()`.
 
 **Pas de script shell.** Le bootstrap invité Tart (clampage MTU, installation d'OpenCode, `exec opencode serve`) est du code Go dans le même binaire, exposé sous la sous-commande interne `__guest-bootstrap`. La VM macOS étant elle aussi en arm64, le CLI copie son propre binaire dans le partage en lecture seule, puis le copie sur le disque local de l'invité (l'exécution directe depuis le partage virtiofs n'est pas fiable) avant de l'exécuter.
 
@@ -33,6 +33,7 @@ Défauts découverts ensuite et corrigés dans le même esprit :
 - **Montages figés à la création** : `WORKSPACE_DIR` remplace `PROJECT_DIR` (déprécié, encore honoré), et Microsandbox avertit quand le montage détecté diffère de la configuration.
 - **Pré-vol `opencode`** : le CLI de l'hôte est vérifié avant de démarrer un runtime, avec la commande d'installation.
 - **Validation différée de `JUST_CODE_START_TIMEOUT`** : une valeur malformée bloque la commande d'attachement, pas `stop`, `clean`, `logs`, `doctor` ni `check`.
+- **Runtime Microsandbox vérifié** : un runtime déjà présent n'est accepté comme installation gérée que si son marqueur de provenance correspond à l'empreinte compilée. Les installations antérieures sans marqueur sont remplacées depuis la release du projet avant toute exécution de `msb`. `MSB_PATH` et `MSB_LIBKRUNFW_PATH` restent une alternative explicite pour un provisionnement administré.
 
 Contrats comportementaux reproduits : secrets absents des arguments de processus ; isolation par préfixe `opencode-` ; endpoints de santé ; clampage de MTU (1280-1500 ou `auto`) validé sur l'hôte avant le boot de la VM ; relance du backend (SIGTERM puis SIGKILL après 10 sondes) ; détection des runtimes actifs et résolution de conflits.
 
@@ -66,3 +67,14 @@ Deux workflows GitHub Actions accompagnent le CLI :
 Le tag de release est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=<tag>"`, donc `just-code version` affiche exactement la version publiée.
 
 Pour publier : fusionner la PR de release-please. C'est tout. Le pipeline d'artefacts peut aussi être exercé sans couper une release : `workflow_dispatch` avec un tag existant reconstruit et réattache les assets.
+
+### Mise à jour du runtime Microsandbox
+
+Le runtime évolue indépendamment du CLI. Lors d'une montée de version de `github.com/superradcompany/microsandbox/sdk/go` :
+
+1. Mettre à jour la dépendance dans `go.mod` et confirmer la valeur renvoyée par `msb.SDKVersion()`.
+2. Télécharger depuis la release amont correspondante les cinq archives `microsandbox-{darwin-aarch64,linux-aarch64,linux-x86_64,windows-aarch64,windows-x86_64}.tar.gz` et son `checksums.sha256`.
+3. Vérifier localement chaque archive contre ce fichier amont avant de l'héberger (`sha256sum -c checksums.sha256 --ignore-missing`, ou `shasum -a 256 -c` sur macOS).
+4. Créer la release autonome `msb-runtime-v<version>` dans ce dépôt, y joindre les cinq archives vérifiées et un `SHA256SUMS`, et la publier avec `--latest=false`. Une release runtime ne doit jamais remplacer la release applicative comme « Latest », car les URL d'installation du CLI utilisent `/releases/latest/download/`.
+5. Mettre à jour ensemble `msbRuntimeVersion`, `msbRuntimeReleaseURL` et les cinq empreintes dans `internal/justcode/msb_runtime_install.go`. Le test `TestMSBRuntimeVersionMatchesSDK` bloque un décalage entre le SDK et le runtime hébergé.
+6. Tester au minimum `go test -race ./...`, puis exécuter `just-code doctor --microsandbox` avec un `$MSB_HOME` vide sur une plateforme réelle pour valider le téléchargement, l'empreinte, l'extraction et `msb --version` de bout en bout.

@@ -59,11 +59,21 @@ Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-
   - [Microsandbox](https://github.com/superradcompany/microsandbox) sur un Mac Apple Silicon, Linux (KVM) ou Windows arm64/x64 (Windows Hypervisor Platform / WHP) ; l'exécutable `msb` n'a pas besoin d'être installé ;
   - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
 
-`just-code` embarque le SDK Go Microsandbox. Au premier `start` ou `doctor`, il télécharge automatiquement la version correspondante du runtime sous `$MSB_HOME` si cette variable est définie, sinon sous `~/.microsandbox/`. Ce chemin est géré directement par le SDK : il n'a pas besoin d'être ajouté au `PATH`.
+`just-code` embarque le SDK Go Microsandbox. Au premier `start` ou `doctor`, il télécharge automatiquement la version correspondante du runtime depuis une [release autonome du projet](https://github.com/etalab-ia/just-code/releases/tag/msb-runtime-v0.6.18), sous `$MSB_HOME` si cette variable est définie, sinon sous `~/.microsandbox/`. L'URL et l'empreinte SHA-256 attendue pour chaque plateforme sont gravées dans le binaire : l'archive est vérifiée avant toute décompression, puis le SDK contrôle encore la présence des fichiers et la version de `msb`. Le chemin géré n'a pas besoin d'être ajouté au `PATH`.
 
 ```bash
 just-code doctor --microsandbox
 ```
+
+Pour fournir un runtime installé et vérifié par un autre mécanisme (poste administré, cache interne ou environnement sans accès à GitHub), renseigne ensemble les deux chemins directs :
+
+```bash
+MSB_PATH=/chemin/vers/msb \
+MSB_LIBKRUNFW_PATH=/chemin/vers/libkrunfw \
+just-code doctor --microsandbox
+```
+
+`MSB_PATH` doit rapporter exactement `msb 0.6.18`. Dans ce mode manuel, `just-code` ne télécharge aucun artefact et la confiance dans les deux fichiers relève de leur mécanisme de provisionnement.
 
 Le téléchargement ne modifie pas la configuration de l'hôte. Sous Linux, KVM doit être accessible. Sous Windows, active **Windows Hypervisor Platform** dans les fonctionnalités Windows puis redémarre si elle ne l'est pas déjà.
 
@@ -141,6 +151,9 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 | `OPENCODE_SERVER_USERNAME` | non | `opencode` | Nom d'utilisateur de l'authentification HTTP du backend. |
 | `OPENCODE_SERVER_PASSWORD` | non | `albert-dev-pass` | Mot de passe HTTP du backend. Une valeur explicitement vide (`OPENCODE_SERVER_PASSWORD=`) désactive l'authentification. |
 | `JUST_CODE_START_TIMEOUT` | non | `300` | Délai maximal, en secondes entières positives, pour attendre que le backend soit prêt avant d'attacher le TUI. |
+| `MSB_HOME` | non | `~/.microsandbox` | Racine du runtime et de l'état Microsandbox gérés. |
+| `MSB_PATH` | non | runtime géré | Chemin direct vers un binaire `msb` fourni manuellement. À définir avec `MSB_LIBKRUNFW_PATH`. |
+| `MSB_LIBKRUNFW_PATH` | non | runtime géré | Chemin direct vers la bibliothèque `libkrunfw` fournie manuellement. À définir avec `MSB_PATH`. |
 | `TART_IMAGE` | non | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Image utilisée pour créer la VM Tart. Sans effet sur Microsandbox. |
 | `TART_MTU` | non | `1280` | MTU de l'invité Tart : entier de `1280` à `1500`, ou `auto` pour ne pas la modifier. Sans effet sur Microsandbox. |
 

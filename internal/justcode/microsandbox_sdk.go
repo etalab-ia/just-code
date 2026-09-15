@@ -43,10 +43,7 @@ type sdkMSBClient struct{}
 var _ msbClient = sdkMSBClient{}
 
 func (sdkMSBClient) EnsureInstalled(ctx context.Context) error {
-	if !msb.IsInstalled() {
-		fmt.Println("Downloading the Microsandbox runtime (first use or SDK upgrade)...")
-	}
-	return msb.EnsureInstalled(ctx)
+	return ensureMSBRuntime(ctx, nil)
 }
 
 func (sdkMSBClient) Doctor(ctx context.Context) (string, error) {
@@ -68,17 +65,16 @@ func (sdkMSBClient) Doctor(ctx context.Context) (string, error) {
 	return string(output), fmt.Errorf("microsandbox doctor: %w: %s", err, detail)
 }
 
-// EnsureInstalled and this resolver intentionally share the SDK's documented
-// MSB_HOME layout. The CLI is invoked by absolute path solely because the SDK
-// does not expose the host diagnostics API; users never need it on PATH.
+// Managed installs use the SDK's documented MSB_HOME layout; manual installs
+// keep the SDK's MSB_PATH override. The CLI is invoked by absolute path solely
+// because the SDK does not expose the host diagnostics API.
 func msbRuntimeBinary() (string, error) {
-	home := os.Getenv("MSB_HOME")
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		home = filepath.Join(userHome, ".microsandbox")
+	if path := os.Getenv("MSB_PATH"); path != "" {
+		return path, nil
+	}
+	home, err := msbRuntimeHome()
+	if err != nil {
+		return "", err
 	}
 	name := "msb"
 	if runtime.GOOS == "windows" {
