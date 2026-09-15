@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/etalab-ia/just-code/compare/v0.2.0...v0.3.0) (2026-09-15)
+
+
+### Features
+
+* héberger et vérifier le runtime Microsandbox ([2d10395](https://github.com/etalab-ia/just-code/commit/2d10395555f70c7c102977cb649d761821f18058))
+* vérifier le runtime Microsandbox hébergé ([0907d4d](https://github.com/etalab-ia/just-code/commit/0907d4dfc51f022a25d3da9c5d0b1ff290205b32))
+
 ## [0.2.0](https://github.com/etalab-ia/just-code/compare/v0.1.0...v0.2.0) (2026-09-15)
 
 
