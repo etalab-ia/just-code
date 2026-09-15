@@ -94,6 +94,13 @@ func msbRuntimeArtifactFor(goos, goarch string) (msbRuntimeArtifact, error) {
 	return artifact, nil
 }
 
+// MSBSDKVersion returns the Microsandbox SDK version this build embeds. It
+// backs the hidden -print-msb-sdk-version CLI flag used by CI to compare the
+// embedded SDK against the latest upstream release.
+func MSBSDKVersion() string {
+	return msb.SDKVersion()
+}
+
 func ensureMSBRuntime(ctx context.Context, client *http.Client) error {
 	if msb.SDKVersion() != msbRuntimeVersion {
 		return fmt.Errorf("Microsandbox SDK/runtime version mismatch: SDK %s, hosted runtime %s", msb.SDKVersion(), msbRuntimeVersion)
