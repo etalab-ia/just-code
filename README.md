@@ -82,22 +82,16 @@ go test ./...
 
 ## Démarrage rapide
 
-Le CLI lit un fichier `.env` dans le répertoire de travail (puis à côté de l'exécutable). Seule `ALBERT_API_KEY` est requise ; tous les autres réglages ont une valeur par défaut.
+Pour un premier lancement, exporte la clé Albert API dans ton terminal :
 
 ```bash
-echo "ALBERT_API_KEY=ta-clé" > .env
-just-code --microsandbox
-```
-
-Depuis un checkout des sources, tu peux partir du modèle complet à la place :
-
-```bash
-cp .env.example .env
-# Renseigne ALBERT_API_KEY dans .env
+export ALBERT_API_KEY="ta-clé"
 just-code --microsandbox
 ```
 
 Sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox` ou `--tart`. La première commande démarre le backend, attend qu'il soit prêt, puis attache le TUI OpenCode natif.
+
+Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la section [Configuration](#configuration).
 
 Le premier démarrage d'un sandbox Microsandbox installe ~384 Mio de paquets dans la microVM et peut dépasser largement une minute ; les démarrages suivants sont rapides.
 
@@ -117,21 +111,45 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 ## Configuration
 
-Le CLI lit un fichier `.env` dans le répertoire de travail (puis à côté de l'exécutable) ; les variables déjà exportées dans l'environnement priment sur le fichier. Seule `ALBERT_API_KEY` est requise. Depuis un checkout des sources, le modèle complet est disponible :
+Place le fichier `.env` dans le répertoire depuis lequel tu lances `just-code`. Le CLI cherche d'abord à cet endroit, puis à côté de l'exécutable ; pour un binaire installé globalement, utilise le répertoire de lancement plutôt que `/usr/local/bin` ou équivalent.
 
-```bash
-cp .env.example .env
-```
-
-Pour conserver une préférence de runtime locale, ajoute aussi l'une de ces lignes dans `.env` :
+Configuration courante :
 
 ```dotenv
+ALBERT_API_KEY=ta-clé
 RUNTIME=microsandbox
-# ou
-RUNTIME=tart
+WORKSPACE_DIR=/chemin/absolu/vers/ton-projet
 ```
 
-Un flag explicite reste prioritaire sur `RUNTIME` : `just-code --microsandbox` utilise toujours Microsandbox, même si `.env` préfère Tart. Il n'existe aucun runtime par défaut intégré.
+Tu peux omettre tous les réglages sauf `ALBERT_API_KEY` et continuer à choisir le runtime avec `--microsandbox` ou `--tart`.
+
+Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton projet possède déjà son propre `.env`, tu peux conserver les réglages just-code dans les variables exportées par ton shell afin de ne pas mélanger les deux configurations.
+
+### Variables disponibles
+
+| Variable | Requise | Valeur par défaut | Rôle |
+| --- | --- | --- | --- |
+| `ALBERT_API_KEY` | oui | aucune | Clé utilisée par le provider Albert API. Ne la commite jamais. |
+| `RUNTIME` | non | aucun sur macOS/Linux ; `microsandbox` sur Windows | Runtime préféré : `microsandbox` ou `tart`. Un flag explicite reste prioritaire. |
+| `WORKSPACE_DIR` | non | `./workspace` | Répertoire hôte monté sur `/workspace` dans l'invité. Un chemin relatif est résolu depuis le répertoire de lancement. |
+| `PROJECT_DIR` | non | — | Ancien nom de `WORKSPACE_DIR`, encore accepté avec un avertissement. Ne pas utiliser dans une nouvelle configuration. |
+| `OPENCODE_SERVER_USERNAME` | non | `opencode` | Nom d'utilisateur de l'authentification HTTP du backend. |
+| `OPENCODE_SERVER_PASSWORD` | non | `albert-dev-pass` | Mot de passe HTTP du backend. Une valeur explicitement vide (`OPENCODE_SERVER_PASSWORD=`) désactive l'authentification. |
+| `JUST_CODE_START_TIMEOUT` | non | `300` | Délai maximal, en secondes entières positives, pour attendre que le backend soit prêt avant d'attacher le TUI. |
+| `TART_IMAGE` | non | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Image utilisée pour créer la VM Tart. Sans effet sur Microsandbox. |
+| `TART_MTU` | non | `1280` | MTU de l'invité Tart : entier de `1280` à `1500`, ou `auto` pour ne pas la modifier. Sans effet sur Microsandbox. |
+
+### Priorité et prise d'effet
+
+- Une variable déjà exportée dans l'environnement prime sur toute valeur du fichier `.env`.
+- Le `.env` du répertoire de lancement prime sur un éventuel `.env` placé à côté de l'exécutable.
+- `--microsandbox` ou `--tart` prime sur `RUNTIME`.
+- Le montage `WORKSPACE_DIR` est figé à la création du sandbox ou de la VM. Le modifier impose `just-code restart --<runtime>`, qui recrée l'environnement.
+- Une modification des identifiants HTTP nécessite `just-code stop`, puis un nouveau lancement pour redémarrer le backend avec les nouvelles valeurs.
+- Une modification de `TART_MTU` nécessite `just-code stop`, puis `just-code --tart`. Elle ne nécessite pas de recréer la VM.
+- Changer `TART_IMAGE` cible une autre VM Tart ; les VM créées depuis des images différentes peuvent coexister.
+
+Les sections suivantes détaillent les réglages propres à Tart. Les montages de workspace et leur recréation sont également expliqués dans [Utilisation](#utilisation).
 
 ### Réseau Tart et VPN
 
