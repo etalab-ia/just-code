@@ -32,11 +32,6 @@ const (
 
 	guestWorkspaceDir  = "/Volumes/My Shared Files/workspace"
 	opencodeInstallURL = "https://opencode.ai/install"
-
-	// opencodeConfigContent configures the Albert provider inside the guest. It
-	// is embedded here (Tart) and mirrors the Microsandbox config for the other
-	// runtime.
-	opencodeConfigContent = `{"$schema":"https://opencode.ai/config.json","provider":{"albert":{"npm":"@ai-sdk/openai-compatible","name":"Albert API (État)","options":{"baseURL":"https://albert.api.etalab.gouv.fr/v1","apiKey":"{env:ALBERT_API_KEY}"},"models":{"deepseek-v4-flash":{"name":"DeepSeek V4 Flash (Albert)","limit":{"context":131072,"output":65536}}}}},"model":"albert/deepseek-v4-flash","small_model":"albert/deepseek-v4-flash","permission":{"edit":"allow","external_directory":"allow","bash":{".*":"allow","git push.*(--force|-f | --force-with-lease)":"deny","sudo .*":"deny"},"webfetch":"allow","websearch":"allow","skill":"allow","task":"allow"}}`
 )
 
 // Execer replaces the current process image, so the server inherits the

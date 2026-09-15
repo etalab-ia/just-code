@@ -46,68 +46,168 @@ jobs:
           fi
           echo "release_created=true" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
-      - name: Checkout release tag
-        if: steps.release.outputs.release_created == 'true' || steps.dispatch.outputs.release_created == 'true'
-        uses: actions/checkout@v4
-        with:
-          # The exact release tag, not whatever HEAD of main is at run time.
-          ref: ${{ steps.release.outputs.tag_name || steps.dispatch.outputs.tag_name }}
-          fetch-depth: 0
 
+  build-linux:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            asset: linux-x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            asset: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:20.04
+    steps:
+      - name: Install build tools
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates gcc git
+      - uses: actions/checkout@v4
+        with:
+          # Build the exact release tag, not HEAD of main at job start time.
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          fetch-depth: 0
+      - name: Trust the mounted workspace
+        # VCS stamping shells out to git, and the container user does not own the
+        # mounted checkout. Writing the exception to the system config makes it
+        # visible to every later step regardless of HOME.
+        run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/setup-go@v5
-        if: steps.release.outputs.release_created == 'true' || steps.dispatch.outputs.release_created == 'true'
         with:
           go-version: "1.22"
           cache: true
-
-      - name: Check formatting
-        if: steps.release.outputs.release_created == 'true' || steps.dispatch.outputs.release_created == 'true'
-        run: test -z "$(gofmt -l .)"
-
-      - name: Vet and test
-        if: steps.release.outputs.release_created == 'true' || steps.dispatch.outputs.release_created == 'true'
+      - name: Verify native target
         run: |
-          go vet ./...
-          go test -race ./...
-
-      - name: Build release binaries
-        if: steps.release.outputs.release_created == 'true' || steps.dispatch.outputs.release_created == 'true'
+          test "$(go env GOOS)" = "linux"
+          test "$(go env GOARCH)" = "${{ matrix.arch }}"
+      - run: go test ./...
+      - name: Build release binary
         env:
-          # The release tag is the version source of truth; it is stamped into
-          # the binary so `just-code version` reports it.
-          VERSION: ${{ steps.release.outputs.tag_name || steps.dispatch.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
         run: |
           mkdir -p dist
-          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/amd64 windows/arm64; do
-            os=${target%/*}
-            arch=${target#*/}
-            ext=""
-            if [ "$os" = "windows" ]; then
-              ext=".exe"
-            fi
-            case "$os-$arch" in
-              darwin-arm64)  name=darwin-arm64 ;;
-              darwin-amd64)  name=darwin-x64 ;;
-              linux-arm64)   name=linux-arm64 ;;
-              linux-amd64)   name=linux-x64 ;;
-              windows-amd64) name=windows-x64 ;;
-              windows-arm64) name=windows-arm64 ;;
-            esac
-            echo "Building dist/just-code-$name$ext"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags="-s -w -X main.version=$VERSION" \
-              -o "dist/just-code-$name$ext" ./cmd/just-code
-          done
+          go build -trimpath -ldflags="-s -w -X main.version=$VERSION" \
+            -o "dist/just-code-${{ matrix.asset }}" ./cmd/just-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
 
+  build-desktop:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            asset: darwin-arm64
+            ext: ""
+          - runner: windows-2025
+            os: windows
+            arch: amd64
+            asset: windows-x64
+            ext: .exe
+          - runner: windows-11-arm
+            os: windows
+            arch: arm64
+            asset: windows-arm64
+            ext: .exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the exact release tag, not HEAD of main at job start time.
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          fetch-depth: 0
+      # The runner's gcc is an x86_64 MinGW cross compiler, which cannot
+      # assemble arm64. CGO needs a GNU-ABI aarch64 compiler, so the pinned
+      # LLVM-MinGW toolchain is installed for the Windows arm64 leg.
+      - name: Install the Windows arm64 C toolchain
+        if: matrix.os == 'windows' && matrix.arch == 'arm64'
+        shell: pwsh
+        env:
+          LLVM_MINGW_VERSION: "20260616"
+          LLVM_MINGW_SHA256: "312593669435bd0bfc1a43ac3fba23c8b27e0610bade88b2738e5a01702a99ba"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $version = $env:LLVM_MINGW_VERSION
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          $dest = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$version/llvm-mingw-$version-ucrt-aarch64.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+          if ($actual -ne $env:LLVM_MINGW_SHA256) {
+            throw "LLVM-MinGW checksum mismatch: got $actual"
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "llvm-mingw-$version-ucrt-aarch64\bin")
+          Add-Content -Path $env:GITHUB_ENV -Value 'CC=aarch64-w64-mingw32-clang'
+          Add-Content -Path $env:GITHUB_ENV -Value 'CXX=aarch64-w64-mingw32-clang++'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Verify native target
+        shell: bash
+        run: |
+          test "$(go env GOOS)" = "${{ matrix.os }}"
+          test "$(go env GOARCH)" = "${{ matrix.arch }}"
+          if [ "${{ matrix.os }}" = "windows" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
+            go env CC | grep -q aarch64-w64-mingw32-clang
+          fi
+      - run: go test ./...
+      - name: Build release binary
+        shell: bash
+        env:
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w -X main.version=$VERSION" \
+            -o "dist/just-code-${{ matrix.asset }}${{ matrix.ext }}" ./cmd/just-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [release-please, build-linux, build-desktop]
+    if: needs.release-please.outputs.release_created == 'true' && needs.build-linux.result == 'success' && needs.build-desktop.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: Generate checksums
-        # From inside dist/ so the entries match the flattened asset names.
-        if: steps.release.outputs.release_created == 'true' || steps.dispatch.outputs.release_created == 'true'
         working-directory: dist
         run: sha256sum just-code-* > SHA256SUMS
-
-      - name: Upload release assets
-        if: steps.release.outputs.release_created == 'true' || steps.dispatch.outputs.release_created == 'true'
+      - name: Remove retired assets
+        # --clobber only replaces same-named assets, so a manual rebuild of a
+        # release published before a platform change would keep the retired
+        # binary live without a matching checksum. Retired: darwin-x64 (SDK
+        # v0.6.18 ships no darwin/amd64 FFI library).
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag_name || steps.dispatch.outputs.tag_name }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          if gh release view "$TAG" --json assets --jq '.[].name' | grep -qx 'just-code-darwin-x64'; then
+            gh release delete-asset "$TAG" just-code-darwin-x64 --yes
+          fi
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG" dist/just-code-* dist/SHA256SUMS --clobber

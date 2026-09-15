@@ -14,11 +14,6 @@ func DefaultStateDir() string {
 	return filepath.Join(".local", "state", "just-code")
 }
 
-// DefaultAssetsDir is where the embedded runtime assets are materialized.
-func DefaultAssetsDir() string {
-	return filepath.Join(DefaultStateDir(), "assets")
-}
-
 // TartStageDir is the read-only share handed to the Tart guest. It holds only
 // the bootstrap script, never the checkout or its .env.
 func TartStageDir(stateDir string) string {
