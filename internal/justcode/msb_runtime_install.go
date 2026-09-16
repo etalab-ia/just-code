@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	msbRuntimeVersion     = "0.6.18"
-	msbRuntimeReleaseURL  = "https://github.com/etalab-ia/just-code/releases/download/msb-runtime-v0.6.18"
+	msbRuntimeVersion     = "0.7.0"
+	msbRuntimeReleaseURL  = "https://github.com/etalab-ia/just-code/releases/download/msb-runtime-v0.7.0"
 	msbRuntimeHTTPTimeout = 5 * time.Minute
 	msbRuntimeMaxArchive  = 128 << 20
 	msbRuntimeMaxFile     = 64 << 20
@@ -50,14 +50,14 @@ func msbRuntimeArtifactFor(goos, goarch string) (msbRuntimeArtifact, error) {
 	switch goos + "/" + goarch {
 	case "darwin/arm64":
 		artifact = msbRuntimeArtifact{
-			sha256:     "1e8c40859142cd38fb99b301bdb1fb4095a985a4065d080f99b3a3e7cb9a6305",
+			sha256:     "00d61b1ce488c2575e3450ebf2e03f28eb21653e43f4ecbefdaa4cf0508b53b7",
 			msbName:    "msb",
 			libName:    "libkrunfw.5.dylib",
 			libSymlink: [][2]string{{"libkrunfw.dylib", "libkrunfw.5.dylib"}},
 		}
 	case "linux/arm64":
 		artifact = msbRuntimeArtifact{
-			sha256:  "e53098e7601fddd85af7e943d4af3d4370ace276d9e863a89456338f2d076d1b",
+			sha256:  "aa845611a4cdeb3422b2e2fcc6a290f93f629381de9ba43d4945693ccb120ff9",
 			msbName: "msb",
 			libName: "libkrunfw.so.5.6.1",
 			libSymlink: [][2]string{
@@ -67,7 +67,7 @@ func msbRuntimeArtifactFor(goos, goarch string) (msbRuntimeArtifact, error) {
 		}
 	case "linux/amd64":
 		artifact = msbRuntimeArtifact{
-			sha256:  "b001b3c6b980ab1ffcceb817496648c1520dba36b9e0caac37ea8d2f4acd9bdd",
+			sha256:  "dd4bf2690d02ba319f326191d5ef97554af61fdef56b8d1e178e34eab2da2c98",
 			msbName: "msb",
 			libName: "libkrunfw.so.5.6.1",
 			libSymlink: [][2]string{
@@ -77,13 +77,13 @@ func msbRuntimeArtifactFor(goos, goarch string) (msbRuntimeArtifact, error) {
 		}
 	case "windows/arm64":
 		artifact = msbRuntimeArtifact{
-			sha256:  "074b14aea8b17f4b9cb08822d3086b1e99954224259337223b7c3c2f1e15f3be",
+			sha256:  "26deda0adfc40a2477516b655749d305440ac1498948d82849741ab5af4e4f3f",
 			msbName: "msb.exe",
 			libName: "libkrunfw.dll",
 		}
 	case "windows/amd64":
 		artifact = msbRuntimeArtifact{
-			sha256:  "ed0c8bf651ce76a2cb673ca7103b12e1da0a0ea2999a9d4e95cdd98e67ee6710",
+			sha256:  "d7e57b786191dae62403d0f4e6bdf3163e7298956bc2414b7ce9e54aacb340a5",
 			msbName: "msb.exe",
 			libName: "libkrunfw.dll",
 		}
@@ -119,7 +119,7 @@ func ensureMSBRuntime(ctx context.Context, client *http.Client) error {
 	}
 
 	if managedMSBRuntimeTrusted(home, artifact) {
-		if err := msb.EnsureInstalled(ctx, msb.WithSkipDownload()); err == nil {
+		if _, err := msb.ResolveRuntime(msb.RuntimeConfig{}); err == nil {
 			return nil
 		}
 		_ = os.Remove(msbRuntimeMarker(home))
@@ -132,7 +132,7 @@ func ensureMSBRuntime(ctx context.Context, client *http.Client) error {
 	if err := downloadAndInstallMSBRuntime(ctx, client, home, artifact); err != nil {
 		return err
 	}
-	if err := msb.EnsureInstalled(ctx, msb.WithSkipDownload()); err != nil {
+	if _, err := msb.ResolveRuntime(msb.RuntimeConfig{}); err != nil {
 		_ = os.Remove(msbRuntimeMarker(home))
 		return fmt.Errorf("validate installed Microsandbox runtime: %w", err)
 	}
