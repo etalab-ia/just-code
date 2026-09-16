@@ -11,11 +11,16 @@
 #     --latest=false. Runtime releases must never become the repo's "Latest"
 #     release: CLI install URLs use /releases/latest/download/.
 #
-# The trust boundary stays human: the upstream checksums file is downloaded
-# from the same place as the archives, so it is treated as detection
-# information, not as authorization. Baked digests in
-# internal/justcode/msb_runtime_install.go are only updated by a reviewed code
-# PR that bumps the SDK version, release URL, and the five digests together.
+# Trust boundary: upstream releases are immutable, so GitHub issues a
+# Sigstore-signed release attestation (predicate
+# https://in-toto.io/attestation/release/v0.2, signer
+# https://dotcom.releases.github.com) covering every release asset. Both jobs
+# verify that attestation with `gh release verify` and source digests from the
+# verified subjects, not from the upstream checksums file (which is uploaded
+# alongside the archives and could be swapped together with them). Baked
+# digests in internal/justcode/msb_runtime_install.go are only updated by a
+# reviewed code PR that bumps the SDK version, release URL, and the five
+# digests together.
 
 name: msb-runtime-watch
 
@@ -115,19 +120,32 @@ jobs:
             echo "A tracking issue for v$UPSTREAM_VERSION is already open (#$existing)."
             exit 0
           fi
-          curl -fsSL -o checksums.sha256 \
-            "https://github.com/$UPSTREAM_REPO/releases/download/v$UPSTREAM_VERSION/checksums.sha256"
-          digests="$(grep -E 'microsandbox-(darwin-aarch64|linux-aarch64|linux-x86_64|windows-aarch64|windows-x86_64)\.tar\.gz' checksums.sha256)"
+          # Verify the upstream release attestation cryptographically and
+          # source the published digests from its verified subjects. Fails
+          # closed when the attestation is absent or invalid.
+          gh release verify "v$UPSTREAM_VERSION" --repo "$UPSTREAM_REPO" \
+            --format json > attestation.json
+          signer="$(jq -r '.verificationResult.signature.certificate.subjectAlternativeName' attestation.json)"
+          echo "Attestation verified; signer: $signer"
+          digests=""
+          for asset in $EXPECTED_ASSETS; do
+            digest="$(jq -r --arg a "$asset" '.verificationResult.statement.subject[] | select(.name == $a) | .digest.sha256' attestation.json)"
+            if [ -z "$digest" ] || [ "$digest" = "null" ]; then
+              echo "::error::$asset is not covered by the upstream release attestation"
+              exit 1
+            fi
+            digests="${digests}${digest}  ${asset}"$'\n'
+          done
           {
             echo "Une nouvelle release amont du runtime Microsandbox est disponible."
             echo ""
             echo "- Version SDK embarquée : \`v$SDK_VERSION\`"
             echo "- Version amont détectée : \`v$UPSTREAM_VERSION\`"
             echo ""
-            echo "Empreintes SHA-256 amont des cinq archives (à revue humaine avant gravage) :"
+            echo "Empreintes SHA-256 amont des cinq archives, issues de l'attestation de release GitHub vérifiée cryptographiquement (signataire : \`$signer\`) :"
             echo ""
             echo '```'
-            printf '%s\n' "$digests"
+            printf '%s' "$digests"
             echo '```'
             echo ""
             echo "Procédure :"
@@ -154,6 +172,31 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
 
+      - name: Verify the upstream release attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # Cryptographically verify GitHub's release attestation for the
+          # upstream immutable release. The attested subjects are the trust
+          # anchor for every digest check below; the upstream checksums file
+          # only serves as a cross-check because it is uploaded alongside the
+          # archives and could be swapped together with them.
+          gh release verify "v$VERSION" --repo "$UPSTREAM_REPO" \
+            --format json > attestation.json
+          signer="$(jq -r '.verificationResult.signature.certificate.subjectAlternativeName' attestation.json)"
+          echo "Attestation verified for v$VERSION; signer: $signer"
+          : > attested.sha256
+          for asset in $EXPECTED_ASSETS; do
+            digest="$(jq -r --arg a "$asset" '.verificationResult.statement.subject[] | select(.name == $a) | .digest.sha256' attestation.json)"
+            if [ -z "$digest" ] || [ "$digest" = "null" ]; then
+              echo "::error::$asset is not covered by the upstream release attestation"
+              exit 1
+            fi
+            echo "$digest  $asset" >> attested.sha256
+          done
+
       - name: Download and verify the upstream archives
         env:
           VERSION: ${{ inputs.version }}
@@ -166,22 +209,32 @@ jobs:
             echo "Downloading $asset"
             curl -fsSL -o "dist/$asset" "$base/$asset"
           done
-          # The upstream checksums file is detection information, not the trust
-          # boundary: it comes from the same release as the archives. Human
-          # review of the digests that get baked into just-code is the actual
-          # boundary. This check still refuses corrupted downloads.
+          # Primary check: every downloaded archive must match the digest from
+          # the cryptographically verified attestation. The published
+          # SHA256SUMS is built from these attested digests.
           for asset in $EXPECTED_ASSETS; do
-            expected="$(grep "  $asset" checksums.sha256 | cut -d' ' -f1)"
-            if [ -z "$expected" ]; then
+            expected="$(grep "  $asset" attested.sha256 | cut -d' ' -f1)"
+            actual="$(sha256sum "dist/$asset" | cut -d' ' -f1)"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::SHA-256 mismatch for $asset: got $actual, attestation says $expected"
+              exit 1
+            fi
+          done
+          # Cross-check: the upstream checksums file must agree with the
+          # attestation. Disagreement signals upstream tampering or corruption
+          # and must be investigated by a human before mirroring.
+          for asset in $EXPECTED_ASSETS; do
+            attested="$(grep "  $asset" attested.sha256 | cut -d' ' -f1)"
+            upstream="$(grep "  $asset" checksums.sha256 | cut -d' ' -f1)"
+            if [ -z "$upstream" ]; then
               echo "::error::$asset has no entry in the upstream checksums file"
               exit 1
             fi
-            actual="$(sha256sum "dist/$asset" | cut -d' ' -f1)"
-            if [ "$actual" != "$expected" ]; then
-              echo "::error::SHA-256 mismatch for $asset: got $actual, upstream says $expected"
+            if [ "$upstream" != "$attested" ]; then
+              echo "::error::Upstream checksums file disagrees with the attestation for $asset: file says $upstream, attestation says $attested"
               exit 1
             fi
-            echo "$actual  $asset" >> dist/SHA256SUMS
+            echo "$attested  $asset" >> dist/SHA256SUMS
           done
           # Refuse partial releases: all five platforms must be present.
           missing=0
@@ -217,6 +270,6 @@ jobs:
           gh release create "$tag" \
             --target "$(git rev-parse HEAD)" \
             --title "Microsandbox runtime v$VERSION (hosted + verified)" \
-            --notes "Miroir vérifié des archives du runtime Microsandbox \`v$VERSION\` (release amont \`$UPSTREAM_REPO\`). Empreintes SHA-256 revues et gravées dans \`internal/justcode/msb_runtime_install.go\` par la PR de mise à jour du SDK associée." \
+            --notes "Miroir vérifié des archives du runtime Microsandbox \`v$VERSION\` (release amont \`$UPSTREAM_REPO\`). Empreintes SHA-256 issues de l'attestation de release GitHub vérifiée cryptographiquement, et gravées dans \`internal/justcode/msb_runtime_install.go\` par la PR de mise à jour du SDK associée." \
             --latest=false \
             dist/microsandbox-*.tar.gz dist/SHA256SUMS
