@@ -138,7 +138,17 @@ func (a *AgentVM) createVM(ctx context.Context) error {
 		return err
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("limactl edit (mounts) failed (exit %d): %s", res.ExitCode, res.Stderr)
+		// Roll back the incomplete clone: a registered VM without the
+		// workspace mount is unusable, and Start would treat it as a valid
+		// existing instance instead of re-creating it.
+		fmt.Printf("limactl edit (mounts) failed (exit %d): %s\n", res.ExitCode, res.Stderr)
+		fmt.Printf("Removing the incomplete clone %s...\n", a.Config.AgentVMVM)
+		if _, delErr := a.Runner.Run(ctx, "limactl", "delete", a.Config.AgentVMVM, "--force"); delErr != nil {
+			return fmt.Errorf("limactl edit (mounts) failed (exit %d): %s; cleanup also failed: %v (run 'limactl delete %s --force' manually)",
+				res.ExitCode, res.Stderr, delErr, a.Config.AgentVMVM)
+		}
+		return fmt.Errorf("limactl edit (mounts) failed (exit %d): %s (the incomplete clone was removed; retry the start)",
+			res.ExitCode, res.Stderr)
 	}
 	return nil
 }
@@ -210,12 +220,22 @@ func (a *AgentVM) writeSecretsEnv(dir string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, "opencode.env")
+	// The file is sourced by /bin/sh in the guest, so every value must be
+	// single-quoted: raw values containing spaces, $(), backticks or
+	// semicolons would break parsing or be evaluated.
 	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\n",
-		a.Config.Password, a.Config.Username, a.Config.APIKey)
+		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(a.Config.APIKey))
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// shellQuote makes s safe for a POSIX shell to parse as a single-quoted
+// word: wrap in single quotes, replacing embedded single quotes with the
+// '\” idiom. This is the standard safe representation for arbitrary data.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // launchBackend pushes the secrets env file into the guest and starts the
@@ -350,6 +370,9 @@ func (a *AgentVM) Clean(ctx context.Context) error {
 	}
 	if !exists {
 		fmt.Printf("%s does not exist.\n", vm)
+		// The staged secrets env (Albert API key, HTTP password) is host-side
+		// state and must go even when the VM was already deleted manually.
+		_ = os.RemoveAll(AgentVMStageDir(a.StateDir))
 		return nil
 	}
 	// Deleting is destructive: say so before and after, so a silent success

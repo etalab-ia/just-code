@@ -104,6 +104,56 @@ func TestAgentVMStartCreatesClonesEditsAndLaunches(t *testing.T) {
 	}
 }
 
+func TestAgentVMCreateVMRollsBackOnEditFailure(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		switch {
+		case name == "limactl" && args[0] == "list":
+			return ExecResult{ExitCode: 0, Stdout: DefaultAgentVMTemplate + "|Stopped\n"}
+		case name == "limactl" && args[0] == "edit":
+			return ExecResult{ExitCode: 1, Stderr: "edit failed"}
+		default:
+			return ExecResult{ExitCode: 0}
+		}
+	}}
+	a := newTestAgentVM(t, runner)
+	err := a.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected Start to fail when the mount edit fails")
+	}
+	// The incomplete clone must be deleted so a retry can create it again.
+	if !runner.hasCall("limactl delete " + DefaultAgentVMVM + " --force") {
+		t.Errorf("expected rollback delete after edit failure, calls: %v", runner.calls)
+	}
+	if !strings.Contains(err.Error(), "removed") {
+		t.Errorf("error should mention the rollback: %v", err)
+	}
+}
+
+func TestAgentVMCleanRemovesStagingWithoutVM(t *testing.T) {
+	// The VM was deleted manually: clean must still remove the staged
+	// secrets env (Albert API key, HTTP password) from the host.
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: ""}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	a := newTestAgentVM(t, runner)
+	stage := AgentVMStageDir(a.StateDir)
+	if err := os.MkdirAll(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, "opencode.env"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Clean(context.Background()); err != nil {
+		t.Fatalf("Clean: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stage, "opencode.env")); !os.IsNotExist(err) {
+		t.Errorf("staged secrets env must be removed even without a VM, stat err: %v", err)
+	}
+}
+
 func TestAgentVMStartMissingTemplate(t *testing.T) {
 	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
 		if name == "limactl" && args[0] == "list" {
@@ -237,11 +287,11 @@ func TestAgentVMWriteSecretsEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "OPENCODE_SERVER_PASSWORD=pw") {
-		t.Errorf("env file must carry the password: %q", content)
+	if !strings.Contains(content, "OPENCODE_SERVER_PASSWORD='pw'") {
+		t.Errorf("env file must carry the quoted password: %q", content)
 	}
-	if !strings.Contains(content, "ALBERT_API_KEY=key") {
-		t.Errorf("env file must carry the API key: %q", content)
+	if !strings.Contains(content, "ALBERT_API_KEY='key'") {
+		t.Errorf("env file must carry the quoted API key: %q", content)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -252,6 +302,42 @@ func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	// where the runtime exists.
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("env file must be 0600, got %v", info.Mode().Perm())
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain", "'plain'"},
+		{"two words", "'two words'"},
+		{"it's", `'it'\''s'`},
+		{"a$(rm -rf)b", `'a$(rm -rf)b'`},
+		{"back`tick`", "'back`tick`'"},
+		{"semi;colon", "'semi;colon'"},
+	}
+	for _, c := range cases {
+		if got := shellQuote(c.in); got != c.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestAgentVMWriteSecretsEnvShellSafe(t *testing.T) {
+	// A password with shell syntax must survive the round trip: the env file
+	// is sourced by sh in the guest, so values must be single-quoted.
+	a := newTestAgentVM(t, &fakeRunner{})
+	a.Config.Password = "two words$(dangerous)"
+	dir := t.TempDir()
+	path, err := a.writeSecretsEnv(dir)
+	if err != nil {
+		t.Fatalf("writeSecretsEnv: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "OPENCODE_SERVER_PASSWORD='two words$(dangerous)'") {
+		t.Errorf("password must be single-quoted: %q", content)
 	}
 }
 
