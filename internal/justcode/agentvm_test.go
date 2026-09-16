@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -246,7 +247,10 @@ func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits (Go reports 0666 there); agent-vm
+	// itself is rejected on Windows, so the 0600 guarantee is only asserted
+	// where the runtime exists.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("env file must be 0600, got %v", info.Mode().Perm())
 	}
 }
