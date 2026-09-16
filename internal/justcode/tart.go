@@ -293,6 +293,9 @@ func (t *Tart) Start(ctx context.Context) error {
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
+	if err := CheckWorkspaceGate(ctx, cfg.WorkspaceDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(t.StateDir, 0o755); err != nil {
 		return err
 	}

@@ -116,6 +116,9 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
+	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
+		return err
+	}
 	if err := m.Client.EnsureInstalled(ctx); err != nil {
 		return err
 	}

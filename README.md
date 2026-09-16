@@ -237,6 +237,19 @@ just-code --microsandbox
 
 `PROJECT_DIR` reste accepté mais est déprécié (un avertissement le signale).
 
+### Sécurité du workspace
+
+Le workspace est bind-mounté dans le sandbox : **tout ce qui est lisible dans le workspace est lisible par l'agent**, y compris via des commandes shell (`cat`, `grep`, scripts de build...). Les règles de permission `read` d'OpenCode (qui refusent `*.env` par défaut) ne couvrent que l'outil de lecture, pas le shell.
+
+Avant chaque démarrage, `just-code` scanne donc le workspace et **refuse de démarrer** s'il contient :
+
+- un fichier `.env` ou `.env.*` (hors `.env.example` / `.env.sample`) ;
+- un secret détecté par [gitleaks](https://github.com/gitleaks/gitleaks), si l'outil est installé sur l'hôte (sinon un avertissement signale que ce scan n'a pas pu s'exécuter).
+
+Le scan ne suit pas les symlinks : un lien nommé `.env` est bloqué, un lien vers un répertoire hors du workspace n'est pas traversé. La règle : les vrais secrets restent hors du workspace ; un `.env.example` vidé sert de gabarit.
+
+**Limite connue :** le bind-mount est dynamique. Un fichier copié dans le workspace **pendant** que le backend tourne devient immédiatement lisible côté invité, sans qu'un scan au démarrage puisse l'intercepter. Ne copie jamais de secrets dans un workspace exposé à un agent en cours d'exécution ; si cela arrive, `just-code stop`, retire le fichier, puis relance.
+
 **Les montages sont figés à la création.** Microsandbox et Tart fixent le volume au moment de la création du sandbox ou de la VM. Changer `WORKSPACE_DIR` sur un sandbox Microsandbox existant n'a donc aucun effet : `just-code` détecte l'écart et prévient. Pour l'appliquer, il faut recréer avec `just-code restart --microsandbox` (destructif). Tart ne permet pas cette détection ; le changement de répertoire y est donc uniquement documenté.
 
 Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte : `http://localhost:3000`, etc. pour Microsandbox. Avec Tart, la VM macOS est une machine à part entière sur le réseau NAT : les previews et le TUI OpenCode utilisent l'adresse de la VM, par exemple `open "http://$(tart ip opencode-tahoe-base-latest):3000"`.
@@ -274,6 +287,7 @@ Les versions antérieures à la suppression du runtime Docker laissaient un cont
 - **Éditions visibles sur l'hôte.** Les modifications de l'agent atterrissent directement dans ton checkout local. Le modèle « remote-authoritative » (clone dans le sandbox, livraison via branche/PR) reste une expérience ultérieure.
 - **Permissions permissives dans le sandbox.** Le runtime sélectionné est la frontière de confinement : `edit`, `bash` et `external_directory` sont autorisés à l'intérieur.
 - **Secrets.** `.env` est ignoré par git. Avec Microsandbox, la vraie valeur reste sur l'hôte : seule une valeur de substitution entre dans la microVM et le proxy réseau ne la remplace que pour `albert.api.etalab.gouv.fr`.
+- **Scan du workspace au démarrage.** Le workspace étant intégralement lisible par l'agent, le démarrage est refusé si des fichiers `.env` ou des secrets gitleaks y sont détectés. C'est une frontière au démarrage, pas une garantie continue : un fichier ajouté pendant l'exécution reste lisible via le bind-mount (documenté dans « Sécurité du workspace »).
 
 ## Contribuer
 
