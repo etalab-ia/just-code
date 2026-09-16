@@ -59,10 +59,11 @@ Le hook [gitleaks](https://github.com/gitleaks) scanne les changements stagés �
 
 ## Intégration continue et publication
 
-Deux workflows GitHub Actions accompagnent le CLI :
+Trois workflows GitHub Actions accompagnent le CLI :
 
 - **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race`, puis tests et compilation CGO sur chaque plateforme native prise en charge.
 - **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les cinq binaires (`darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`) sur leurs runners natifs, génère `SHA256SUMS` et les attache à la release une fois toutes les plateformes réussies.
+- **`msb-runtime-watch.yml`** (cron hebdomadaire, lundi 09:00 UTC) : surveille les releases amont du runtime Microsandbox ; voir « Mise à jour du runtime Microsandbox » ci-dessous.
 
 Le tag de release est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=<tag>"`, donc `just-code version` affiche exactement la version publiée.
 
@@ -70,11 +71,15 @@ Pour publier : fusionner la PR de release-please. C'est tout. Le pipeline d'arte
 
 ### Mise à jour du runtime Microsandbox
 
-Le runtime évolue indépendamment du CLI. Lors d'une montée de version de `github.com/superradcompany/microsandbox/sdk/go` :
+Le runtime évolue indépendamment du CLI. Le workflow `msb-runtime-watch.yml` automatise la détection et la mise en miroir, mais **jamais la gravure des empreintes** : le `checksums.sha256` amont provient de la même release que les archives, donc le considérer comme une autorisation affaiblirait le modèle. La frontière de confiance reste la revue humaine des empreintes gravées dans le binaire.
+
+**Détection (automatique, cron hebdomadaire).** Le workflow compare la dernière release amont `superradcompany/microsandbox` à la version du SDK embarquée (via le flag caché `just-code -print-msb-sdk-version`). S'il existe un `vX.Y.Z` amont plus récent sans release `msb-runtime-vX.Y.Z` en miroir, une issue de suivi est ouverte avec les empreintes SHA-256 amont des cinq archives. Il ne publie rien et ne touche pas au code.
+
+**Mise en miroir (dispatch manuel, après revue).** Workflow_dispatch de `msb-runtime-watch` avec `version=<X.Y.Z>` : télécharge les cinq archives amont, vérifie chacune contre le `checksums.sha256` amont (contrôle d'intégrité du transfert, pas une autorisation), refuse toute release partielle (les cinq plateformes doivent être présentes), puis publie la release `msb-runtime-v<version>` avec `--latest=false` et un `SHA256SUMS`. Une release runtime ne doit jamais remplacer la release applicative comme « Latest », car les URL d'installation du CLI utilisent `/releases/latest/download/`. Le tag pointe vers un SHA de `main`, jamais vers un tag amont. `dry_run=true` exécute le chemin complet sans publier.
+
+**Montée de version du SDK (PR revue).** Lors d'une montée de version de `github.com/superradcompany/microsandbox/sdk/go` :
 
 1. Mettre à jour la dépendance dans `go.mod` et confirmer la valeur renvoyée par `msb.SDKVersion()`.
-2. Télécharger depuis la release amont correspondante les cinq archives `microsandbox-{darwin-aarch64,linux-aarch64,linux-x86_64,windows-aarch64,windows-x86_64}.tar.gz` et son `checksums.sha256`.
-3. Vérifier localement chaque archive contre ce fichier amont avant de l'héberger (`sha256sum -c checksums.sha256 --ignore-missing`, ou `shasum -a 256 -c` sur macOS).
-4. Créer la release autonome `msb-runtime-v<version>` dans ce dépôt, y joindre les cinq archives vérifiées et un `SHA256SUMS`, et la publier avec `--latest=false`. Une release runtime ne doit jamais remplacer la release applicative comme « Latest », car les URL d'installation du CLI utilisent `/releases/latest/download/`.
-5. Mettre à jour ensemble `msbRuntimeVersion`, `msbRuntimeReleaseURL` et les cinq empreintes dans `internal/justcode/msb_runtime_install.go`. Le test `TestMSBRuntimeVersionMatchesSDK` bloque un décalage entre le SDK et le runtime hébergé.
-6. Tester au minimum `go test -race ./...`, puis exécuter `just-code doctor --microsandbox` avec un `$MSB_HOME` vide sur une plateforme réelle pour valider le téléchargement, l'empreinte, l'extraction et `msb --version` de bout en bout.
+2. Mettre en miroir la release amont correspondante via le dispatch décrit ci-dessus (ou manuellement : télécharger les cinq archives et le `checksums.sha256`, vérifier localement, créer la release `msb-runtime-v<version>` avec `--latest=false`).
+3. Mettre à jour ensemble `msbRuntimeVersion`, `msbRuntimeReleaseURL` et les cinq empreintes dans `internal/justcode/msb_runtime_install.go`. Le test `TestMSBRuntimeVersionMatchesSDK` bloque un décalage entre le SDK et le runtime hébergé.
+4. Tester au minimum `go test -race ./...`, puis exécuter `just-code doctor --microsandbox` avec un `$MSB_HOME` vide sur une plateforme réelle pour valider le téléchargement, l'empreinte, l'extraction et `msb --version` de bout en bout.

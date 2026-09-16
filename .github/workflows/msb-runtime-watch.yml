@@ -1,0 +1,222 @@
+# Detects upstream Microsandbox runtime releases and mirrors them into a
+# dedicated msb-runtime-v<version> release after human review.
+#
+# Two deliberately separated paths:
+#   - detect (scheduled): compares the latest upstream release with the SDK
+#     version embedded in just-code and opens/updates a tracking issue with
+#     the upstream SHA-256 digests. It never publishes anything.
+#   - mirror (manual workflow_dispatch only): downloads the five upstream
+#     archives, verifies them against the upstream checksums file, checks all
+#     expected platforms are present, and publishes the runtime release with
+#     --latest=false. Runtime releases must never become the repo's "Latest"
+#     release: CLI install URLs use /releases/latest/download/.
+#
+# The trust boundary stays human: the upstream checksums file is downloaded
+# from the same place as the archives, so it is treated as detection
+# information, not as authorization. Baked digests in
+# internal/justcode/msb_runtime_install.go are only updated by a reviewed code
+# PR that bumps the SDK version, release URL, and the five digests together.
+
+name: msb-runtime-watch
+
+on:
+  schedule:
+    # Mondays 09:00 UTC, same cadence as the dependency sweep.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream Microsandbox version to mirror (e.g. 0.6.19), without the leading v"
+        required: false
+        type: string
+      dry_run:
+        description: "Run the mirror path without publishing the release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: msb-runtime-watch
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: superradcompany/microsandbox
+  # Must stay in sync with the platform set of msbRuntimeArtifactFor() in
+  # internal/justcode/msb_runtime_install.go.
+  EXPECTED_ASSETS: >-
+    microsandbox-darwin-aarch64.tar.gz
+    microsandbox-linux-aarch64.tar.gz
+    microsandbox-linux-x86_64.tar.gz
+    microsandbox-windows-aarch64.tar.gz
+    microsandbox-windows-x86_64.tar.gz
+
+jobs:
+  detect:
+    # Detection only: scheduled runs and dispatches without a mirror version.
+    # A mirror dispatch (inputs.version set) must not open tracking issues.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.version == '')
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_version: ${{ steps.versions.outputs.upstream_version }}
+      sdk_version: ${{ steps.versions.outputs.sdk_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Resolve SDK and upstream versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sdk_version="$(go run ./cmd/just-code -print-msb-sdk-version)"
+          upstream="$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)"
+          upstream_version="${upstream#v}"
+          echo "sdk_version=$sdk_version" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"
+          echo "SDK=$sdk_version upstream=$upstream_version"
+
+      - name: Check whether the runtime release already exists
+        id: mirrored
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.versions.outputs.upstream_version }}
+        run: |
+          set -euo pipefail
+          if gh release view "msb-runtime-v$VERSION" >/dev/null 2>&1; then
+            echo "mirrored=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mirrored=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the tracking issue
+        if: steps.versions.outputs.upstream_version != steps.versions.outputs.sdk_version && steps.mirrored.outputs.mirrored == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
+          UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
+        run: |
+          set -euo pipefail
+          title="Mise à jour du runtime Microsandbox : v$UPSTREAM_VERSION disponible"
+          # A newer upstream release must update an existing tracking issue,
+          # not be silenced by it: match the version-specific title, and edit
+          # the issue when the detected version has moved on.
+          existing="$(gh issue list --state open --search "Mise à jour du runtime Microsandbox in:title" --json number,title --jq '.[] | select(.title == "Mise à jour du runtime Microsandbox : v'"$UPSTREAM_VERSION"' disponible") | .number')"
+          if [ -n "$existing" ]; then
+            echo "A tracking issue for v$UPSTREAM_VERSION is already open (#$existing)."
+            exit 0
+          fi
+          curl -fsSL -o checksums.sha256 \
+            "https://github.com/$UPSTREAM_REPO/releases/download/v$UPSTREAM_VERSION/checksums.sha256"
+          digests="$(grep -E 'microsandbox-(darwin-aarch64|linux-aarch64|linux-x86_64|windows-aarch64|windows-x86_64)\.tar\.gz' checksums.sha256)"
+          {
+            echo "Une nouvelle release amont du runtime Microsandbox est disponible."
+            echo ""
+            echo "- Version SDK embarquée : \`v$SDK_VERSION\`"
+            echo "- Version amont détectée : \`v$UPSTREAM_VERSION\`"
+            echo ""
+            echo "Empreintes SHA-256 amont des cinq archives (à revue humaine avant gravage) :"
+            echo ""
+            echo '```'
+            printf '%s\n' "$digests"
+            echo '```'
+            echo ""
+            echo "Procédure :"
+            echo "1. Bump du SDK \`github.com/superradcompany/microsandbox/sdk/go\` vers \`v$UPSTREAM_VERSION\` dans \`go.mod\`."
+            echo "2. Mise en miroir : workflow_dispatch de \`msb-runtime-watch\` avec \`version=$UPSTREAM_VERSION\` (vérifie les empreintes amont, publie \`msb-runtime-v$UPSTREAM_VERSION\` avec \`--latest=false\`)."
+            echo "3. PR de code mettant à jour ensemble \`msbRuntimeVersion\`, \`msbRuntimeReleaseURL\` et les cinq empreintes dans \`internal/justcode/msb_runtime_install.go\` (\`TestMSBRuntimeVersionMatchesSDK\` bloque un décalage)."
+            echo ""
+            echo "👾 Generated with [Letta Code](https://letta.com)"
+          } > issue-body.md
+          gh issue create \
+            --title "$title" \
+            --label enhancement \
+            --body-file issue-body.md
+
+  mirror:
+    # Manual dispatch only. The scheduled path never enters this job.
+    if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      # Always check out the default branch: a dispatch can be run from any
+      # ref, and the release tag must point at a main SHA, not at whatever
+      # branch the dispatch happened to select.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Download and verify the upstream archives
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/$UPSTREAM_REPO/releases/download/v$VERSION"
+          curl -fsSL -o checksums.sha256 "$base/checksums.sha256"
+          mkdir -p dist
+          for asset in $EXPECTED_ASSETS; do
+            echo "Downloading $asset"
+            curl -fsSL -o "dist/$asset" "$base/$asset"
+          done
+          # The upstream checksums file is detection information, not the trust
+          # boundary: it comes from the same release as the archives. Human
+          # review of the digests that get baked into just-code is the actual
+          # boundary. This check still refuses corrupted downloads.
+          for asset in $EXPECTED_ASSETS; do
+            expected="$(grep "  $asset" checksums.sha256 | cut -d' ' -f1)"
+            if [ -z "$expected" ]; then
+              echo "::error::$asset has no entry in the upstream checksums file"
+              exit 1
+            fi
+            actual="$(sha256sum "dist/$asset" | cut -d' ' -f1)"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::SHA-256 mismatch for $asset: got $actual, upstream says $expected"
+              exit 1
+            fi
+            echo "$actual  $asset" >> dist/SHA256SUMS
+          done
+          # Refuse partial releases: all five platforms must be present.
+          missing=0
+          for asset in $EXPECTED_ASSETS; do
+            if [ ! -s "dist/$asset" ]; then
+              echo "::error::$asset is missing or empty"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Publish the runtime release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tag="msb-runtime-v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists; refusing to overwrite it"
+            exit 1
+          fi
+          # --latest=false: a runtime release must never become the repo's
+          # "Latest" release, because CLI install URLs use
+          # /releases/latest/download/ and must keep pointing at the
+          # application release. --target pins the tag to the default branch
+          # head (the checkout above is pinned to it), never to an upstream
+          # tag or a non-main branch.
+          gh release create "$tag" \
+            --target "$(git rev-parse HEAD)" \
+            --title "Microsandbox runtime v$VERSION (hosted + verified)" \
+            --notes "Miroir vérifié des archives du runtime Microsandbox \`v$VERSION\` (release amont \`$UPSTREAM_REPO\`). Empreintes SHA-256 revues et gravées dans \`internal/justcode/msb_runtime_install.go\` par la PR de mise à jour du SDK associée." \
+            --latest=false \
+            dist/microsandbox-*.tar.gz dist/SHA256SUMS
