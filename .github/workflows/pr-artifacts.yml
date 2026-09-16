@@ -1,0 +1,34 @@
+name: PR artifacts
+
+# Builds downloadable binaries from PR branches so a runtime change can be
+# tried locally before merge. The Microsandbox SDK uses CGO, so macOS builds
+# must happen on a native macOS runner; they cannot be cross-compiled.
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - ".env.example"
+
+permissions:
+  contents: read
+
+jobs:
+  macos-build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Verify native target
+        run: |
+          test "$(go env GOOS)" = "darwin"
+          test "$(go env GOARCH)" = "arm64"
+      - run: go build -o just-code-darwin-arm64 ./cmd/just-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: just-code-darwin-arm64
+          path: just-code-darwin-arm64
+          retention-days: 14
+          if-no-files-found: error
