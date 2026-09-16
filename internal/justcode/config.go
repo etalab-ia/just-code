@@ -26,7 +26,13 @@ type Config struct {
 	TartImage   string
 	TartVM      string
 	TartMTU     string
-	APIKey      string
+	// AgentVMTemplate is the Lima base template the managed VM is cloned from,
+	// built by `agent-vm setup` (agent-vm-base by default).
+	AgentVMTemplate string
+	// AgentVMVM is the managed Lima instance name, always under the opencode-
+	// prefix so `stop`/`check` find it and agent-vm's own VMs stay untouched.
+	AgentVMVM string
+	APIKey    string
 	// StartTimeout bounds the backend health wait for the attach flow.
 	// StartTimeoutErr records an invalid JUST_CODE_START_TIMEOUT so that
 	// commands which never start a runtime (stop, clean, logs, doctor, check)
@@ -44,6 +50,11 @@ const (
 	DefaultPort      = 4096
 	DefaultTartImage = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
 	DefaultTartMTU   = "1280"
+	// DefaultAgentVMTemplate matches the template name agent-vm itself uses
+	// (AGENT_VM_TEMPLATE in agent-vm.sh), so a template built by `agent-vm
+	// setup` is found without configuration.
+	DefaultAgentVMTemplate = "agent-vm-base"
+	DefaultAgentVMVM       = "opencode-agent-vm"
 	// DefaultStartTimeout is deliberately generous: a first Microsandbox boot
 	// installs ~384 MiB of packages inside the microVM before OpenCode starts.
 	DefaultStartTimeout = 300 * time.Second
@@ -114,6 +125,8 @@ func LoadConfig(lookup EnvLookup) Config {
 		WorkspaceDir: envDefault(lookup, "WORKSPACE_DIR", envDefault(lookup, "PROJECT_DIR", "./workspace")),
 		StartTimeout: DefaultStartTimeout,
 	}
+	cfg.AgentVMTemplate = envDefault(lookup, "AGENT_VM_TEMPLATE", DefaultAgentVMTemplate)
+	cfg.AgentVMVM = envDefault(lookup, "AGENT_VM_VM", DefaultAgentVMVM)
 	if v, ok := lookup("JUST_CODE_START_TIMEOUT"); ok && v != "" {
 		if d, err := parseStartTimeout(v); err != nil {
 			cfg.StartTimeoutErr = err

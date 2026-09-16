@@ -24,6 +24,7 @@ func NewDispatcher(cfg Config) *Dispatcher {
 	return NewDispatcherWith(cfg, map[Runtime]Backend{
 		RuntimeMicrosandbox: NewMicrosandboxRuntime(cfg),
 		RuntimeTart:         NewTart(cfg),
+		RuntimeAgentVM:      NewAgentVM(cfg),
 	})
 }
 

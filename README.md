@@ -57,7 +57,8 @@ Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-
 - Une **clé Albert API** dans l'environnement (ou dans `.env`, ignoré par git)
 - L'un des runtimes disponibles :
   - [Microsandbox](https://github.com/superradcompany/microsandbox) sur un Mac Apple Silicon, Linux (KVM) ou Windows arm64/x64 (Windows Hypervisor Platform / WHP) ; l'exécutable `msb` n'a pas besoin d'être installé ;
-  - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS).
+  - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS) ;
+  - [agent-vm](https://github.com/sylvinus/agent-vm) ([Lima](https://lima-vm.io) requis) sur macOS ou Linux : une VM Debian persistante par workspace, clonée depuis un template de base construit par `agent-vm setup`.
 
 `just-code` embarque le SDK Go Microsandbox. Au premier `start` ou `doctor`, il télécharge automatiquement la version correspondante du runtime depuis une [release autonome du projet](https://github.com/etalab-ia/just-code/releases/tag/msb-runtime-v0.6.18), sous `$MSB_HOME` si cette variable est définie, sinon sous `~/.microsandbox/`. L'URL et l'empreinte SHA-256 attendue pour chaque plateforme sont gravées dans le binaire : l'archive est vérifiée avant toute décompression, puis le SDK contrôle encore la présence des fichiers et la version de `msb`. Le chemin géré n'a pas besoin d'être ajouté au `PATH`.
 
@@ -104,7 +105,7 @@ $env:ALBERT_API_KEY = "ta-clé"
 just-code --microsandbox
 ```
 
-Sur macOS et Linux, sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox` ou `--tart`. Sur Windows, Microsandbox est le seul runtime pris en charge et il est sélectionné par défaut. La commande `just-code` démarre le backend, attend qu'il soit prêt, puis attache le TUI OpenCode natif.
+Sur macOS et Linux, sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox`, `--tart` ou `--agent-vm`. Sur Windows, Microsandbox est le seul runtime pris en charge et il est sélectionné par défaut. La commande `just-code` démarre le backend, attend qu'il soit prêt, puis attache le TUI OpenCode natif.
 
 Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la section [Configuration](#configuration).
 
@@ -136,7 +137,7 @@ RUNTIME=microsandbox
 WORKSPACE_DIR=/chemin/absolu/vers/ton-projet
 ```
 
-Tu peux omettre tous les réglages sauf `ALBERT_API_KEY` et continuer à choisir le runtime avec `--microsandbox` ou `--tart`.
+Tu peux omettre tous les réglages sauf `ALBERT_API_KEY` et continuer à choisir le runtime avec `--microsandbox`, `--tart` ou `--agent-vm`.
 
 Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton projet possède déjà son propre `.env`, tu peux conserver les réglages just-code dans les variables exportées par ton shell afin de ne pas mélanger les deux configurations.
 
@@ -145,7 +146,7 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 | Variable | Requise | Valeur par défaut | Rôle |
 | --- | --- | --- | --- |
 | `ALBERT_API_KEY` | oui | aucune | Clé utilisée par le provider Albert API. Ne la commite jamais. |
-| `RUNTIME` | non | aucun sur macOS/Linux ; `microsandbox` sur Windows | Runtime préféré : `microsandbox` ou `tart`. Un flag explicite reste prioritaire. |
+| `RUNTIME` | non | aucun sur macOS/Linux ; `microsandbox` sur Windows | Runtime préféré : `microsandbox`, `tart` ou `agent-vm`. Un flag explicite reste prioritaire. |
 | `WORKSPACE_DIR` | non | `./workspace` | Répertoire hôte monté sur `/workspace` dans l'invité. Un chemin relatif est résolu depuis le répertoire de lancement. |
 | `PROJECT_DIR` | non | — | Ancien nom de `WORKSPACE_DIR`, encore accepté avec un avertissement. Ne pas utiliser dans une nouvelle configuration. |
 | `OPENCODE_SERVER_USERNAME` | non | `opencode` | Nom d'utilisateur de l'authentification HTTP du backend. |
@@ -156,12 +157,14 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 | `MSB_LIBKRUNFW_PATH` | non | runtime géré | Chemin direct vers la bibliothèque `libkrunfw` fournie manuellement. À définir avec `MSB_PATH`. |
 | `TART_IMAGE` | non | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Image utilisée pour créer la VM Tart. Sans effet sur Microsandbox. |
 | `TART_MTU` | non | `1280` | MTU de l'invité Tart : entier de `1280` à `1500`, ou `auto` pour ne pas la modifier. Sans effet sur Microsandbox. |
+| `AGENT_VM_TEMPLATE` | non | `agent-vm-base` | Template Lima servant de base à la VM agent-vm, construit par `agent-vm setup`. Sans effet sur les autres runtimes. |
+| `AGENT_VM_VM` | non | `opencode-agent-vm` | Nom de la VM Lima gérée par just-code. Sans effet sur les autres runtimes. |
 
 ### Priorité et prise d'effet
 
 - Une variable déjà exportée dans l'environnement prime sur toute valeur du fichier `.env`.
 - Le `.env` du répertoire de lancement prime sur un éventuel `.env` placé à côté de l'exécutable.
-- `--microsandbox` ou `--tart` prime sur `RUNTIME`.
+- `--microsandbox`, `--tart` ou `--agent-vm` prime sur `RUNTIME`.
 - Le montage `WORKSPACE_DIR` est figé à la création du sandbox ou de la VM. Le modifier impose `just-code restart --<runtime>`, qui recrée l'environnement.
 - Une modification des identifiants HTTP nécessite `just-code stop`, puis un nouveau lancement pour redémarrer le backend avec les nouvelles valeurs.
 - Une modification de `TART_MTU` nécessite `just-code stop`, puis `just-code --tart`. Elle ne nécessite pas de recréer la VM.
@@ -206,12 +209,33 @@ Les VM Tahoe et Sonoma coexistent ; changer `TART_IMAGE` cible l'autre VM sans s
 
 **Note** : Tahoe est nécessaire pour Xcode 26.3+. Sonoma ne supporte que Xcode 16.2 et versions antérieures.
 
+### Runtime agent-vm
+
+Le runtime `agent-vm` exécute le backend OpenCode dans une VM Linux Debian persistante pilotée par [Lima](https://lima-vm.io), clonée depuis le template de base de [agent-vm](https://github.com/sylvinus/agent-vm). Contrairement à Microsandbox (microVM éphémère par sandbox), la VM est persistante : les logiciels installés dans l'invité survivent aux arrêts.
+
+Prérequis :
+
+1. [Lima](https://lima-vm.io) (`brew install lima` sur macOS).
+2. Le template de base, construit une fois par l'outil agent-vm : `agent-vm setup`. Il préinstalle les outils de dev, Docker, Chromium et OpenCode dans `~/.opencode/bin`.
+
+```bash
+just-code doctor --agent-vm    # vérifie limactl et le template
+just-code --agent-vm           # démarre la VM et attache le TUI
+```
+
+Au premier `start`, just-code clone le template en une VM nommée `opencode-agent-vm`, monte `WORKSPACE_DIR` à l'identique dans l'invité, démarre la VM puis lance `opencode serve` dedans. Le port 4096 est publié sur `127.0.0.1` côté hôte via le transfert de ports Lima ; les serveurs de dev lancés par l'agent sur les ports 3000-3010 sont également accessibles depuis l'hôte (transfert dynamique Lima). Les secrets (clé Albert, authentification HTTP) transitent par un fichier d'environnement poussé dans l'invité, jamais en ligne de commande.
+
+Le template est le point de personnalisation : une équipe peut maintenir son propre template (outils préinstallés, paquets durables) et le désigner via `AGENT_VM_TEMPLATE`. Le clonage depuis ce template reste identique.
+
+`just-code stop` arrête la VM (l'état est conservé), `just-code restart --agent-vm` la recrée depuis le template (destructif), `just-code clean --agent-vm` la supprime avec son état local.
+
 ## Utilisation
 
 ```bash
 just-code                        # démarre (RUNTIME) et attache le TUI
 just-code --tart                 # démarre Tart et attache le TUI
 just-code --microsandbox         # démarre Microsandbox et attache le TUI
+just-code --agent-vm             # démarre agent-vm et attache le TUI
 just-code start --tart           # démarre un backend sans attacher le TUI
 just-code stop                   # arrête tout runtime just-code actif
 just-code check                  # santé du backend actif + provider Albert

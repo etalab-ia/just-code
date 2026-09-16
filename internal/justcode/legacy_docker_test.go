@@ -84,6 +84,7 @@ func legacyDispatcher(r Runner) *Dispatcher {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
 	})
 	d.Runner = r
 	return d

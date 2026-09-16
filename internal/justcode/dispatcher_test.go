@@ -38,20 +38,22 @@ func TestDispatcherRunningAndMultiple(t *testing.T) {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: true},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM, running: true},
 	})
 	running, err := d.Running(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// On Windows only microsandbox is probed, so the tart backend is invisible
-	// and SingleRunning would succeed. That case is exercised separately below.
+	// On Windows only microsandbox is probed, so the other backends are
+	// invisible and SingleRunning would succeed. That case is exercised
+	// separately below.
 	if runtime.GOOS == "windows" {
 		if len(running) != 1 || running[0] != RuntimeMicrosandbox {
 			t.Fatalf("Running (windows) = %v", running)
 		}
 		return
 	}
-	if len(running) != 2 || running[0] != RuntimeMicrosandbox || running[1] != RuntimeTart {
+	if len(running) != 3 || running[0] != RuntimeMicrosandbox || running[1] != RuntimeTart || running[2] != RuntimeAgentVM {
 		t.Fatalf("Running = %v", running)
 	}
 	if _, err := d.SingleRunning(context.Background()); err == nil || !strings.Contains(err.Error(), "multiple") {
@@ -69,6 +71,7 @@ func TestDispatcherSingle(t *testing.T) {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: running == RuntimeMicrosandbox},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: running == RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
 	})
 	rt, err := d.SingleRunning(context.Background())
 	if err != nil || rt != running {
@@ -84,6 +87,7 @@ func TestDispatcherSingleOnWindows(t *testing.T) {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: true},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM, running: true},
 	})
 	running, err := d.Running(context.Background())
 	if err != nil {
@@ -103,21 +107,23 @@ func TestDispatcherStopAll(t *testing.T) {
 	// invisible to stop, so it must not be marked stopped there.
 	msb := &fakeBackend{id: RuntimeMicrosandbox, running: true}
 	tart := &fakeBackend{id: RuntimeTart, running: true}
+	avm := &fakeBackend{id: RuntimeAgentVM, running: true}
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
 		RuntimeMicrosandbox: msb,
 		RuntimeTart:         tart,
+		RuntimeAgentVM:      avm,
 	})
 	if err := d.StopAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS == "windows" {
-		if !msb.stopped || tart.stopped {
-			t.Fatalf("windows: msb=%v tart=%v (want msb stopped, tart untouched)", msb.stopped, tart.stopped)
+		if !msb.stopped || tart.stopped || avm.stopped {
+			t.Fatalf("windows: msb=%v tart=%v avm=%v (want msb stopped, others untouched)", msb.stopped, tart.stopped, avm.stopped)
 		}
 		return
 	}
-	if !msb.stopped || !tart.stopped {
-		t.Fatalf("expected both running backends to be stopped")
+	if !msb.stopped || !tart.stopped || !avm.stopped {
+		t.Fatalf("expected all running backends to be stopped")
 	}
 }
 
@@ -131,6 +137,7 @@ func TestDispatcherPrepareNoConflict(t *testing.T) {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: running == RuntimeMicrosandbox},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: running == RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
 	})
 	if err := d.Prepare(context.Background(), running); err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -150,6 +157,7 @@ func TestDispatcherPrepareRefusesConflict(t *testing.T) {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
 		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
 		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
 	})
 	err := d.Prepare(context.Background(), RuntimeTart)
 	if err == nil || !strings.Contains(err.Error(), "already running") {
