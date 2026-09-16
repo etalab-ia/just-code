@@ -52,6 +52,12 @@ func ScanWorkspace(ctx context.Context, dir string) (ScanResult, error) {
 	if err != nil {
 		return res, err
 	}
+	// A symlinked workspace root is common (WORKSPACE_DIR pointing at a link
+	// to the real project). WalkDir does not follow it, so resolve the root
+	// itself before walking; symlinks inside the workspace stay un-followed.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	if _, err := os.Stat(root); err != nil {
 		return res, err
 	}

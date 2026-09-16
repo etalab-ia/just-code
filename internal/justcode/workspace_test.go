@@ -108,6 +108,26 @@ func TestScanWorkspaceClean(t *testing.T) {
 	}
 }
 
+func TestScanWorkspaceSymlinkedRoot(t *testing.T) {
+	// WORKSPACE_DIR may itself be a symlink to the real project; the walk must
+	// resolve the root (while still not following symlinks inside it).
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, ".env"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlinks unavailable on this platform")
+	}
+	res, err := ScanWorkspace(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.DotenvFiles) != 1 || res.DotenvFiles[0] != ".env" {
+		t.Fatalf("DotenvFiles = %v, want [.env] resolved through the symlinked root", res.DotenvFiles)
+	}
+}
+
 func TestScanWorkspaceMissingDir(t *testing.T) {
 	_, err := ScanWorkspace(context.Background(), filepath.Join(t.TempDir(), "absent"))
 	if err == nil {

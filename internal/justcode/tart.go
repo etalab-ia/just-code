@@ -402,6 +402,11 @@ func (t *Tart) ID() Runtime { return RuntimeTart }
 
 // Restart recreates the VM from scratch, mirroring `just restart --tart`.
 func (t *Tart) Restart(ctx context.Context) error {
+	// Preflight the workspace before the destructive Clean: a rejected
+	// workspace must not cost the VM and its persistent state.
+	if err := CheckWorkspaceGate(ctx, t.Config.WorkspaceDir); err != nil {
+		return err
+	}
 	if err := t.Clean(ctx); err != nil {
 		return err
 	}

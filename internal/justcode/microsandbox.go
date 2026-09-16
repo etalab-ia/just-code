@@ -262,6 +262,11 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 }
 
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
+	// Preflight the workspace before the destructive Clean: a rejected
+	// workspace must not cost the sandbox and its persistent state.
+	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
+		return err
+	}
 	if err := m.Clean(ctx); err != nil {
 		return err
 	}

@@ -261,3 +261,36 @@ func TestLaunchBackendCopiesGuestBinaryAndStreamsSecrets(t *testing.T) {
 		t.Fatalf("secrets leaked into argv: %v", fs.lastArgs)
 	}
 }
+
+func TestTartRestartPreflightsWorkspace(t *testing.T) {
+	// A rejected workspace must abort restart before the destructive Clean,
+	// so the VM and its persistent state survive.
+	runner := &fakeRunner{}
+	tt := &Tart{
+		Config: Config{
+			APIKey:       "key",
+			WorkspaceDir: t.TempDir(),
+			Username:     "opencode",
+			Password:     "pw",
+			TartVM:       "opencode-test",
+		},
+		Runner:           runner,
+		Starter:          &fakeStarter{},
+		StateDir:         t.TempDir(),
+		KillPollInterval: time.Millisecond,
+		KillMaxPolls:     1,
+	}
+	if err := os.WriteFile(filepath.Join(tt.Config.WorkspaceDir, ".env"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := tt.Restart(context.Background())
+	if err == nil {
+		t.Fatal("Restart must refuse a workspace containing .env")
+	}
+	if !strings.Contains(err.Error(), "refusing to start") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.hasCall("tart delete") || runner.hasCall("tart stop") {
+		t.Fatalf("destructive command ran before the workspace gate: %v", runner.calls)
+	}
+}
