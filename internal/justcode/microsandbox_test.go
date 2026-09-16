@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -489,5 +490,27 @@ func TestMSBRuntimeBinaryUsesManagedHome(t *testing.T) {
 	}
 	if !strings.HasSuffix(path, string(os.PathSeparator)+"bin"+string(os.PathSeparator)+name) {
 		t.Fatalf("managed runtime path = %q", path)
+	}
+}
+
+func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
+	// A rejected workspace must abort restart before the destructive Clean,
+	// so the sandbox and its persistent state survive.
+	client := &fakeMSBClient{exists: true}
+	m := newTestMicrosandbox(t, client)
+	if err := os.WriteFile(filepath.Join(m.cfg.WorkspaceDir, ".env"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := m.Restart(context.Background())
+	if err == nil {
+		t.Fatal("Restart must refuse a workspace containing .env")
+	}
+	if !strings.Contains(err.Error(), "refusing to start") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, call := range client.calls {
+		if strings.HasPrefix(call, "remove") {
+			t.Fatalf("Remove ran before the workspace gate: %v", client.calls)
+		}
 	}
 }
