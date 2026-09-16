@@ -1,13 +1,11 @@
 name: PR artifacts
 
-# Builds downloadable binaries from PR branches so a runtime change can be
-# tried locally before merge. The Microsandbox SDK uses CGO, so macOS builds
-# must happen on a native macOS runner; they cannot be cross-compiled.
+# On-demand macOS build: triggered manually (workflow_dispatch) when a
+# downloadable darwin/arm64 binary is wanted for local testing. The
+# Microsandbox SDK uses CGO, so macOS builds must happen on a native macOS
+# runner; they cannot be cross-compiled from Linux.
 on:
-  pull_request:
-    paths-ignore:
-      - "**.md"
-      - ".env.example"
+  workflow_dispatch:
 
 permissions:
   contents: read
