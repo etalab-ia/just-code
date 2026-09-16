@@ -155,7 +155,9 @@ func relTo(root, path string) string {
 	if err != nil {
 		return path
 	}
-	return rel
+	// Normalize to forward slashes so reported paths are identical on every
+	// platform (Windows filepath.Rel yields backslash separators).
+	return filepath.ToSlash(rel)
 }
 
 // CheckWorkspaceGate is the startup gate shared by the runtimes: it scans the
