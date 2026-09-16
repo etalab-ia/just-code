@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0](https://github.com/etalab-ia/just-code/compare/v0.2.0...v0.3.0) (2026-09-16)
+
+
+### Features
+
+* add agent-vm runtime (Lima VM backend) ([3de7848](https://github.com/etalab-ia/just-code/commit/3de78483a6ee8bba2ecd50cfb8d370bf3fc6417e))
+* héberger et vérifier le runtime Microsandbox ([2d10395](https://github.com/etalab-ia/just-code/commit/2d10395555f70c7c102977cb649d761821f18058))
+* refuse startup when the workspace contains secrets ([05fc252](https://github.com/etalab-ia/just-code/commit/05fc252aa3f08af52f2f9abaf116a9073773b276))
+* runtime agent-vm (VM Lima persistante) ([a8449d5](https://github.com/etalab-ia/just-code/commit/a8449d59f7567f5a03a080f5480dbfbe9dfad20b))
+* vérifier le runtime Microsandbox hébergé ([0907d4d](https://github.com/etalab-ia/just-code/commit/0907d4dfc51f022a25d3da9c5d0b1ff290205b32))
+
+
+### Bug Fixes
+
+* address review findings on the agent-vm backend ([08f5c8d](https://github.com/etalab-ia/just-code/commit/08f5c8dda85370bee720c5484742d6b4d2ffbfe9))
+* address review findings on the workspace gate ([8476903](https://github.com/etalab-ia/just-code/commit/8476903068377c80dcaad81c8a1ed6915f67d3db))
+* normalize scanned workspace paths to forward slashes ([bb247bf](https://github.com/etalab-ia/just-code/commit/bb247bf40e73849febf16c1d826d42a309c5088a))
+* **test:** skip 0600 permission assert on Windows ([7d1ad98](https://github.com/etalab-ia/just-code/commit/7d1ad989225c8521c9d0f86d5aa88c3adaf569b7))
+
 ## [0.2.0](https://github.com/etalab-ia/just-code/compare/v0.1.0...v0.2.0) (2026-09-15)
 
 
