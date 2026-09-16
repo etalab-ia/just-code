@@ -14,12 +14,12 @@ func newTestAgentVM(t *testing.T, runner Runner) *AgentVM {
 	return &AgentVM{
 		Config: Config{
 			AgentVMTemplate: DefaultAgentVMTemplate,
-			AgentVMVM:      DefaultAgentVMVM,
-			Username:       "opencode",
-			Password:       "pw",
-			PasswordSet:    true,
-			WorkspaceDir:   t.TempDir(),
-			APIKey:         "key",
+			AgentVMVM:       DefaultAgentVMVM,
+			Username:        "opencode",
+			Password:        "pw",
+			PasswordSet:     true,
+			WorkspaceDir:    t.TempDir(),
+			APIKey:          "key",
 		},
 		Runner:           runner,
 		Starter:          &fakeStarter{},
