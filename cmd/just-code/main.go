@@ -107,7 +107,7 @@ var actionNames = map[string]bool{
 }
 
 func runtimeFlag(a string) bool {
-	return a == "--microsandbox" || a == "--tart"
+	return a == "--microsandbox" || a == "--tart" || a == "--agent-vm"
 }
 
 // parseArgs mirrors the TypeScript CLI's parser: a single pass that accepts the
@@ -266,7 +266,7 @@ func usage() {
 	fmt.Println(`just-code - manage the OpenCode sandbox
 
 Usage:
-  just-code [command] [--microsandbox | --tart]
+  just-code [command] [--microsandbox | --tart | --agent-vm]
 
 Run just-code with no command to start the selected backend and attach the
 native OpenCode TUI.
@@ -284,7 +284,7 @@ Commands:
   help       Show this help
 
 Runtime selection:
-  Pass --microsandbox or --tart. RUNTIME in .env is used when no flag is
-  provided; an explicit flag always takes precedence. On Windows,
+  Pass --microsandbox, --tart or --agent-vm. RUNTIME in .env is used when no
+  flag is provided; an explicit flag always takes precedence. On Windows,
   --microsandbox is the default and the only supported runtime.`)
 }

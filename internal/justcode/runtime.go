@@ -16,11 +16,12 @@ type Runtime string
 const (
 	RuntimeMicrosandbox Runtime = "microsandbox"
 	RuntimeTart         Runtime = "tart"
+	RuntimeAgentVM      Runtime = "agent-vm"
 )
 
 // allRuntimes is the deterministic ordering used by `stop` and `check`, matching
 // the justfile's _running-runtimes.
-var allRuntimes = []Runtime{RuntimeMicrosandbox, RuntimeTart}
+var allRuntimes = []Runtime{RuntimeMicrosandbox, RuntimeTart, RuntimeAgentVM}
 
 // currentGOOS is the platform indirection for tests: the fake-backends in
 // dispatcher_test need to steer which runtimes get probed without rebuilding
@@ -79,7 +80,7 @@ func resolveRuntimeOn(flag, preference, goos string) (Runtime, error) {
 	if goos == "windows" {
 		return RuntimeMicrosandbox, nil
 	}
-	return "", fmt.Errorf("select --microsandbox or --tart, or set RUNTIME in .env")
+	return "", fmt.Errorf("select --microsandbox, --tart or --agent-vm, or set RUNTIME in .env")
 }
 
 // parseRuntimeFlag accepts --microsandbox or --tart.
@@ -108,7 +109,12 @@ func parseRuntimeNameOn(name, goos string) (Runtime, error) {
 			return "", fmt.Errorf("tart is macOS only; use --microsandbox")
 		}
 		return RuntimeTart, nil
+	case string(RuntimeAgentVM):
+		if goos == "windows" {
+			return "", fmt.Errorf("agent-vm is macOS/Linux only; use --microsandbox")
+		}
+		return RuntimeAgentVM, nil
 	default:
-		return "", fmt.Errorf("expected --microsandbox or --tart (RUNTIME must be microsandbox or tart)")
+		return "", fmt.Errorf("expected --microsandbox, --tart or --agent-vm (RUNTIME must be microsandbox, tart or agent-vm)")
 	}
 }

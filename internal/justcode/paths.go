@@ -24,3 +24,14 @@ func TartStageDir(stateDir string) string {
 func TartLogPath(stateDir string) string {
 	return filepath.Join(stateDir, "tart.log")
 }
+
+// AgentVMStageDir holds the agent-vm backend's staged files (the secrets env
+// pushed into the guest). It never contains the checkout or its .env.
+func AgentVMStageDir(stateDir string) string {
+	return filepath.Join(stateDir, "agent-vm")
+}
+
+// AgentVMLogPath is the host log for the agent-vm backend.
+func AgentVMLogPath(stateDir string) string {
+	return filepath.Join(stateDir, "agent-vm.log")
+}

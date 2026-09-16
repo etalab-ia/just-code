@@ -15,7 +15,9 @@ func TestParseArgs(t *testing.T) {
 	}{
 		{"bare attaches", nil, "attach", "", false},
 		{"leading runtime flag attaches", []string{"--tart"}, "attach", "--tart", false},
+		{"agent-vm leading runtime flag", []string{"--agent-vm"}, "attach", "--agent-vm", false},
 		{"runtime flag then command", []string{"--microsandbox", "start"}, "start", "--microsandbox", false},
+		{"agent-vm command then runtime flag", []string{"start", "--agent-vm"}, "start", "--agent-vm", false},
 		{"command then runtime flag", []string{"start", "--microsandbox"}, "start", "--microsandbox", false},
 		{"explicit start", []string{"start", "--microsandbox"}, "start", "--microsandbox", false},
 		{"stop", []string{"stop"}, "stop", "", false},
@@ -77,9 +79,11 @@ func TestParseArgsRejectsDocker(t *testing.T) {
 }
 
 func TestParseArgsConflictingRuntimes(t *testing.T) {
-	_, err := parseArgs([]string{"--microsandbox", "--tart"})
-	if err == nil || !strings.Contains(err.Error(), "Select exactly one runtime") {
-		t.Fatalf("error = %v, want the runtime conflict message", err)
+	for _, args := range [][]string{{"--microsandbox", "--tart"}, {"--tart", "--agent-vm"}} {
+		_, err := parseArgs(args)
+		if err == nil || !strings.Contains(err.Error(), "Select exactly one runtime") {
+			t.Fatalf("parseArgs(%v) = %v, want the runtime conflict message", args, err)
+		}
 	}
 }
 

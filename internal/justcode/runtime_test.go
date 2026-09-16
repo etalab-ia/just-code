@@ -17,11 +17,14 @@ func TestResolveRuntimeOnWindows(t *testing.T) {
 	if got != RuntimeMicrosandbox {
 		t.Errorf("resolveRuntimeOn(\"\", \"\", windows) = %q, want microsandbox", got)
 	}
-	// Tart is macOS-only: on Windows it must fail with a platform message that
-	// points at the runtime that does work there, not a raw exec lookup error.
+	// Tart is macOS-only and agent-vm is macOS/Linux: on Windows both must
+	// fail with a platform message that points at the runtime that does work
+	// there, not a raw exec lookup error.
 	for _, arg := range []struct{ flag, pref string }{
 		{"--tart", ""},
 		{"", "tart"},
+		{"--agent-vm", ""},
+		{"", "agent-vm"},
 	} {
 		_, err := resolveRuntimeOn(arg.flag, arg.pref, "windows")
 		if err == nil {
@@ -43,8 +46,10 @@ func TestResolveRuntimeFlag(t *testing.T) {
 	}{
 		{"--tart", "", RuntimeTart},
 		{"--microsandbox", "", RuntimeMicrosandbox},
+		{"--agent-vm", "", RuntimeAgentVM},
 		{"--tart", "microsandbox", RuntimeTart}, // explicit flag wins
 		{"--microsandbox", "tart", RuntimeMicrosandbox},
+		{"--agent-vm", "tart", RuntimeAgentVM},
 	}
 	for _, c := range cases {
 		got, err := resolveRuntimeOn(c.flag, c.pref, "linux")
@@ -58,7 +63,7 @@ func TestResolveRuntimeFlag(t *testing.T) {
 }
 
 func TestResolveRuntimePreference(t *testing.T) {
-	for _, name := range []string{"microsandbox", "tart"} {
+	for _, name := range []string{"microsandbox", "tart", "agent-vm"} {
 		got, err := resolveRuntimeOn("", name, "linux")
 		if err != nil {
 			t.Fatalf("resolveRuntimeOn(\"\", %q, linux): %v", name, err)
@@ -96,10 +101,10 @@ func TestSupportedRuntimesOn(t *testing.T) {
 	if got := supportedRuntimesOn("windows"); len(got) != 1 || got[0] != RuntimeMicrosandbox {
 		t.Errorf("supportedRuntimesOn(windows) = %v, want [microsandbox]", got)
 	}
-	if got := supportedRuntimesOn("linux"); len(got) != 2 || got[0] != RuntimeMicrosandbox || got[1] != RuntimeTart {
-		t.Errorf("supportedRuntimesOn(linux) = %v, want [microsandbox tart]", got)
+	if got := supportedRuntimesOn("linux"); len(got) != 3 || got[0] != RuntimeMicrosandbox || got[1] != RuntimeTart || got[2] != RuntimeAgentVM {
+		t.Errorf("supportedRuntimesOn(linux) = %v, want [microsandbox tart agent-vm]", got)
 	}
-	if got := supportedRuntimesOn("darwin"); len(got) != 2 || got[0] != RuntimeMicrosandbox || got[1] != RuntimeTart {
-		t.Errorf("supportedRuntimesOn(darwin) = %v, want [microsandbox tart]", got)
+	if got := supportedRuntimesOn("darwin"); len(got) != 3 || got[0] != RuntimeMicrosandbox || got[1] != RuntimeTart || got[2] != RuntimeAgentVM {
+		t.Errorf("supportedRuntimesOn(darwin) = %v, want [microsandbox tart agent-vm]", got)
 	}
 }
