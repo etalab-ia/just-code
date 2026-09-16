@@ -56,6 +56,9 @@ env:
 
 jobs:
   detect:
+    # Detection only: scheduled runs and dispatches without a mirror version.
+    # A mirror dispatch (inputs.version set) must not open tracking issues.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.version == '')
     runs-on: ubuntu-latest
     outputs:
       upstream_version: ${{ steps.versions.outputs.upstream_version }}
@@ -104,9 +107,12 @@ jobs:
         run: |
           set -euo pipefail
           title="Mise à jour du runtime Microsandbox : v$UPSTREAM_VERSION disponible"
-          existing="$(gh issue list --state open --search "Mise à jour du runtime Microsandbox in:title" --json number --jq 'length')"
-          if [ "$existing" -gt 0 ]; then
-            echo "A tracking issue is already open; not opening a duplicate."
+          # A newer upstream release must update an existing tracking issue,
+          # not be silenced by it: match the version-specific title, and edit
+          # the issue when the detected version has moved on.
+          existing="$(gh issue list --state open --search "Mise à jour du runtime Microsandbox in:title" --json number,title --jq '.[] | select(.title == "Mise à jour du runtime Microsandbox : v'"$UPSTREAM_VERSION"' disponible") | .number')"
+          if [ -n "$existing" ]; then
+            echo "A tracking issue for v$UPSTREAM_VERSION is already open (#$existing)."
             exit 0
           fi
           curl -fsSL -o checksums.sha256 \
@@ -141,7 +147,12 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.version != ''
     runs-on: ubuntu-latest
     steps:
+      # Always check out the default branch: a dispatch can be run from any
+      # ref, and the release tag must point at a main SHA, not at whatever
+      # branch the dispatch happened to select.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Download and verify the upstream archives
         env:
@@ -200,7 +211,9 @@ jobs:
           # --latest=false: a runtime release must never become the repo's
           # "Latest" release, because CLI install URLs use
           # /releases/latest/download/ and must keep pointing at the
-          # application release.
+          # application release. --target pins the tag to the default branch
+          # head (the checkout above is pinned to it), never to an upstream
+          # tag or a non-main branch.
           gh release create "$tag" \
             --target "$(git rev-parse HEAD)" \
             --title "Microsandbox runtime v$VERSION (hosted + verified)" \
