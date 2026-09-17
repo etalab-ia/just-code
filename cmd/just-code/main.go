@@ -57,7 +57,6 @@ func run(args []string) (int, error) {
 	}
 
 	cfg := justcode.LoadConfigEnv()
-	d := justcode.NewDispatcher(cfg)
 
 	parsed, err := parseArgs(args)
 	if err != nil {
@@ -68,8 +67,17 @@ func run(args []string) (int, error) {
 		return 0, nil
 	}
 
+	// Resolve the isolation level before any backend is constructed: the
+	// backends read cfg.Isolation at construction time, so applying the flag
+	// afterwards would leave them in the wrong mode.
+	cfg, isoErr := applyIsolation(cfg, parsed.isolation)
+
+	// The dispatcher and its backends are built from the resolved config.
+	d := justcode.NewDispatcher(cfg)
+
 	// These actions resolve their own target (or need none), so they must not be
-	// gated on a configured runtime.
+	// gated on a configured runtime. check consumes the isolation level, so it
+	// is the one action here that must surface a deferred isolation error.
 	switch parsed.action {
 	case "help":
 		usage()
@@ -80,8 +88,8 @@ func run(args []string) (int, error) {
 	case "stop":
 		return 0, d.StopAll(context.Background())
 	case "check":
-		if cfg.IsolationErr != nil {
-			return 2, cfg.IsolationErr
+		if isoErr != nil {
+			return 2, isoErr
 		}
 		return 0, d.Check(context.Background(), nil)
 	}
@@ -90,16 +98,11 @@ func run(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	iso, err := justcode.ResolveIsolation(parsed.isolation, string(cfg.Isolation))
-	if err != nil {
-		return 2, err
-	}
 	// A typo in ISOLATION must not block commands that never read it, so it is
 	// validated only here, where the level is actually consumed.
-	if cfg.IsolationErr != nil {
-		return 2, cfg.IsolationErr
+	if isoErr != nil {
+		return 2, isoErr
 	}
-	cfg.Isolation = iso
 
 	switch parsed.action {
 	case "attach":
@@ -109,6 +112,21 @@ func run(args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
 	}
+}
+
+// applyIsolation returns cfg with the effective isolation level applied, plus
+// any deferred error. It exists as a separate step because the backends read
+// cfg.Isolation when they are constructed: resolving the level after building
+// the dispatcher would leave them in the wrong mode.
+func applyIsolation(cfg justcode.Config, flag string) (justcode.Config, error) {
+	iso, err := justcode.ResolveIsolationLevel(flag, cfg.Isolation, cfg.IsolationErr)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Isolation = iso
+	// The level is resolved now, so a deferred env error would be stale.
+	cfg.IsolationErr = nil
+	return cfg, nil
 }
 
 // parsedArgs is the result of a single pass over argv. Commands, runtime flags,

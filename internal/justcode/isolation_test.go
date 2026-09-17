@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,39 @@ func TestLoadConfigIsolation(t *testing.T) {
 	}
 	if cfg.IsolationErr != nil {
 		t.Fatalf("unexpected IsolationErr: %v", cfg.IsolationErr)
+	}
+}
+
+// TestResolveIsolationLevelPrecedence pins the flag-over-environment
+// contract: an explicit flag always wins, including over an invalid ISOLATION
+// value, and an invalid preference is surfaced only when no flag was given.
+func TestResolveIsolationLevelPrecedence(t *testing.T) {
+	badEnv := fmt.Errorf("ISOLATION must be backend or full, got \"sometimes\"")
+
+	got, err := ResolveIsolationLevel("", IsolationBackend, nil)
+	if err != nil || got != IsolationBackend {
+		t.Fatalf("no flag, valid env: got (%q, %v)", got, err)
+	}
+	got, err = ResolveIsolationLevel("full", IsolationBackend, nil)
+	if err != nil || got != IsolationFull {
+		t.Fatalf("flag over env preference: got (%q, %v)", got, err)
+	}
+	// The recovery path: a typo in .env must not block an explicit flag.
+	got, err = ResolveIsolationLevel("backend", "", badEnv)
+	if err != nil || got != IsolationBackend {
+		t.Fatalf("explicit flag must beat an invalid environment value: got (%q, %v)", got, err)
+	}
+	got, err = ResolveIsolationLevel("full", "", badEnv)
+	if err != nil || got != IsolationFull {
+		t.Fatalf("explicit flag must beat an invalid environment value: got (%q, %v)", got, err)
+	}
+	// Without a flag, the invalid preference is reported rather than ignored.
+	if _, err := ResolveIsolationLevel("", "", badEnv); err == nil {
+		t.Fatal("an invalid ISOLATION must be surfaced when no flag is given")
+	}
+	// An invalid flag value is always an error, even with a valid preference.
+	if _, err := ResolveIsolationLevel("sometimes", IsolationFull, nil); err == nil {
+		t.Fatal("an invalid --isolation value must be rejected")
 	}
 }
 

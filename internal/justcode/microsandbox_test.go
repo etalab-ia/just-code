@@ -24,6 +24,7 @@ type fakeMSBClient struct {
 	doctorErr    error
 	mount        string
 	mountErr     error
+	startScript  string
 	createErr    error
 	startErr     error
 	modifyErr    error
@@ -107,6 +108,13 @@ func (f *fakeMSBClient) Remove(_ context.Context, name string) error {
 func (f *fakeMSBClient) WorkspaceMount(_ context.Context, name string) (string, error) {
 	f.record("mount " + name)
 	return f.mount, f.mountErr
+}
+
+func (f *fakeMSBClient) StartScript(_ context.Context, name string) (string, error) {
+	// Recorded as "readconfig", not "start*": hasCall prefix-matches, so a
+	// "start" prefix would be indistinguishable from a Start() call.
+	f.record("readconfig " + name)
+	return f.startScript, nil
 }
 
 func (f *fakeMSBClient) Logs() error {
@@ -582,6 +590,80 @@ func TestMicrosandboxFullModeNextStartCarriesRealKey(t *testing.T) {
 	}
 	if hasCall(client, "exec "+msbSandbox) {
 		t.Fatalf("full mode must not relaunch the backend: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxStartRejectsIsolationSwitch pins the mode-switch guard: the
+// start script is persisted at creation and cannot be rewritten, so switching
+// isolation on an existing sandbox must fail with guidance instead of booting
+// the wrong process.
+func TestMicrosandboxStartRejectsIsolationSwitch(t *testing.T) {
+	// A sandbox created in full mode, now requested in backend mode.
+	client := &fakeMSBClient{exists: true, status: "stopped", startScript: msbStartScript(IsolationFull)}
+	m := newTestMicrosandbox(t, client)
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("switching an existing full-mode sandbox to backend must fail")
+	}
+	if !strings.Contains(err.Error(), "restart") {
+		t.Errorf("error must point at the recovery command: %v", err)
+	}
+	if hasCall(client, "start "+msbSandbox) || hasCall(client, "exec "+msbSandbox) {
+		t.Fatalf("a mismatched sandbox must not be booted: %v", client.calls)
+	}
+
+	// The reverse direction: a backend-mode sandbox requested in full mode.
+	client = &fakeMSBClient{exists: true, status: "stopped", startScript: msbStartScript(IsolationBackend)}
+	m = newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("switching an existing backend-mode sandbox to full must fail")
+	}
+	if hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a mismatched sandbox must not be booted: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxFullModeRunningSandboxIsReady records that a running
+// full-mode sandbox needs no health probe: no backend endpoint exists in that
+// mode, so probing would always fail and relaunch into the wrong process.
+func TestMicrosandboxFullModeRunningSandboxIsReady(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "running", startScript: msbStartScript(IsolationFull)}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if hasCall(client, "exec "+msbSandbox) {
+		t.Fatalf("a running full-mode sandbox must not be relaunched: %v", client.calls)
+	}
+	if hasCall(client, "create") || hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a running full-mode sandbox must be left as-is: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxStartMatchingIsolationProceeds records that the guard is
+// mode-equality, not "always refuse": an existing sandbox whose script matches
+// the requested mode still starts normally.
+func TestMicrosandboxStartMatchingIsolationProceeds(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "stopped", startScript: msbStartScript(IsolationFull)}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a matching sandbox must start; calls: %v", client.calls)
+	}
+
+	// An unreadable script must not block the start either.
+	client = &fakeMSBClient{exists: true, status: "stopped"}
+	m = newTestMicrosandbox(t, client)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start with an unknown script: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("an undetectable mode must not block the start; calls: %v", client.calls)
 	}
 }
 

@@ -39,3 +39,19 @@ func ResolveIsolation(flag, preference string) (Isolation, error) {
 		return "", fmt.Errorf("expected --isolation backend or --isolation full (ISOLATION must be backend or full), got %q", value)
 	}
 }
+
+// ResolveIsolationLevel resolves the effective isolation level from the
+// explicit --isolation flag plus the ISOLATION preference and the deferred
+// error LoadConfig recorded for it. An explicit flag always wins, including
+// over an invalid ISOLATION value, so a typo in .env can always be recovered
+// from at the command line. Without a flag, an invalid preference is surfaced
+// rather than silently replaced by the default.
+func ResolveIsolationLevel(flag string, preference Isolation, preferenceErr error) (Isolation, error) {
+	if flag != "" {
+		return ResolveIsolation(flag, "")
+	}
+	if preferenceErr != nil {
+		return "", preferenceErr
+	}
+	return ResolveIsolation("", string(preference))
+}

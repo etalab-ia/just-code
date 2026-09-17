@@ -237,6 +237,18 @@ func (sdkMSBClient) WorkspaceMount(ctx context.Context, name string) (string, er
 	return cfg.Volumes["/workspace"].Bind, nil
 }
 
+func (sdkMSBClient) StartScript(ctx context.Context, name string) (string, error) {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	cfg, err := h.Config()
+	if err != nil {
+		return "", err
+	}
+	return cfg.Scripts["start"], nil
+}
+
 func (sdkMSBClient) Logs() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

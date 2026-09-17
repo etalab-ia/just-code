@@ -341,6 +341,23 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	}
 }
 
+// TestTartAgentLaunchQuotesPaths pins the fix for the workspace share path:
+// it contains spaces, and the line runs under `zsh -lc`, so an unquoted `cd`
+// would receive multiple arguments and never reach `exec opencode`.
+func TestTartAgentLaunchQuotesPaths(t *testing.T) {
+	line := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir)
+	if !strings.Contains(line, "cd '"+guestWorkspaceDir+"'") {
+		t.Fatalf("workspace path must be shell-quoted for the spaced share path: %q", line)
+	}
+	if !strings.Contains(line, ". '"+guestSecretsEnvPath+"'") {
+		t.Fatalf("secrets path must be shell-quoted: %q", line)
+	}
+	// The share path really does contain spaces; guard the premise.
+	if !strings.Contains(guestWorkspaceDir, " ") {
+		t.Fatalf("guestWorkspaceDir no longer contains a space (%q); the quoting test is moot", guestWorkspaceDir)
+	}
+}
+
 func TestTartStartFullModeSkipsServerLaunch(t *testing.T) {
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
 		joined := strings.Join(args, " ")

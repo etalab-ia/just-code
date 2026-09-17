@@ -225,9 +225,11 @@ func (a *AgentVM) writeSecretsEnv(dir string) (string, error) {
 	path := filepath.Join(dir, "opencode.env")
 	// The file is sourced by /bin/sh in the guest, so every value must be
 	// single-quoted: raw values containing spaces, $(), backticks or
-	// semicolons would break parsing or be evaluated.
-	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\n",
-		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(a.Config.APIKey))
+	// semicolons would break parsing or be evaluated. The provider config
+	// rides along so the full-mode TUI sees the same Albert provider/model
+	// definition as the backend-mode server.
+	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
+		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(a.Config.APIKey), shellQuote(opencodeConfigContent))
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", err
 	}
@@ -466,7 +468,7 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
 		return err
 	}
-	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode`, cfg.WorkspaceDir)
+	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode`, shellQuote(cfg.WorkspaceDir))
 	interactive := a.Interactive
 	if interactive == nil {
 		interactive = RunInteractive

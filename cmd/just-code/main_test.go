@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -96,5 +99,44 @@ func TestRunNeedsNoRuntimeForLocalActions(t *testing.T) {
 		if _, err := run(args); err != nil {
 			t.Errorf("run(%v) = %v, want no error", args, err)
 		}
+	}
+}
+
+// TestApplyIsolationPrecedence pins the flag-over-environment contract at the
+// entry point: an explicit --isolation value wins even when ISOLATION in .env
+// is invalid, so a typo is always recoverable from the command line. The
+// resolved value is applied to the returned config, which is what the backends
+// are constructed from.
+func TestApplyIsolationPrecedence(t *testing.T) {
+	brokenEnv := justcode.Config{
+		Isolation:    justcode.IsolationBackend,
+		IsolationErr: fmt.Errorf("ISOLATION must be backend or full, got %q", "sometimes"),
+	}
+
+	// No flag, broken env: the error surfaces and the config is untouched.
+	got, err := applyIsolation(brokenEnv, "")
+	if err == nil {
+		t.Fatal("an invalid ISOLATION must be surfaced when no flag is given")
+	}
+	if got.Isolation != justcode.IsolationBackend {
+		t.Errorf("failed resolution must not change the level, got %q", got.Isolation)
+	}
+
+	// Explicit flag, broken env: the flag wins and the level is applied.
+	got, err = applyIsolation(brokenEnv, "full")
+	if err != nil {
+		t.Fatalf("an explicit flag must override an invalid ISOLATION: %v", err)
+	}
+	if got.Isolation != justcode.IsolationFull {
+		t.Errorf("Isolation = %q, want full (the resolved flag value)", got.Isolation)
+	}
+	if got.IsolationErr != nil {
+		t.Errorf("IsolationErr must be cleared once the flag resolves the level: %v", got.IsolationErr)
+	}
+
+	// Explicit flag, valid env: the flag still wins.
+	got, err = applyIsolation(justcode.Config{Isolation: justcode.IsolationBackend}, "full")
+	if err != nil || got.Isolation != justcode.IsolationFull {
+		t.Errorf("applyIsolation(valid env, full) = (%q, %v)", got.Isolation, err)
 	}
 }

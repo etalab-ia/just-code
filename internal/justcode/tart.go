@@ -467,9 +467,11 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 }
 
 // tartAgentLaunch builds the in-guest launch line for isolation full: source
-// the 0600 secrets env file, cd into the workspace share, exec the TUI.
+// the 0600 secrets env file, cd into the workspace share, exec the TUI. Both
+// paths are shell-quoted: the workspace share contains spaces, and the line
+// runs under `zsh -lc`.
 func tartAgentLaunch(secretsPath, workspaceDir string) string {
-	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode", secretsPath, workspaceDir)
+	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode", shellQuote(secretsPath), shellQuote(workspaceDir))
 }
 
 // Status describes the managed VM's current state, for `check` in isolation

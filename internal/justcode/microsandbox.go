@@ -87,6 +87,10 @@ type msbClient interface {
 	Remove(ctx context.Context, name string) error
 	// WorkspaceMount returns the host path mounted at the guest /workspace.
 	WorkspaceMount(ctx context.Context, name string) (string, error)
+	// StartScript returns the persisted start script of an existing sandbox,
+	// or "" when it cannot be read. The script is fixed at creation, so it is
+	// how the sandbox's original isolation mode is detected.
+	StartScript(ctx context.Context, name string) (string, error)
 	// Logs streams sandbox logs to the terminal until interrupted.
 	Logs() error
 	// Shell opens an interactive shell in the sandbox.
@@ -133,9 +137,25 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	}
 	if exists {
 		m.warnIfWorkspaceMountIsStale(ctx)
+		// The mode-specific start script is persisted at creation and the SDK
+		// cannot rewrite it, so switching isolation on an existing sandbox
+		// would boot the wrong process (a full-mode sandbox would start
+		// `opencode serve`; a backend-mode one would only sleep). Fail with
+		// guidance instead of booting into the wrong mode.
+		if err := m.rejectIsolationMismatch(ctx, sandbox); err != nil {
+			return err
+		}
 	}
 
 	if exists && sandbox.Status == "running" {
+		if m.cfg.Isolation == IsolationFull {
+			// No health endpoint exists in full mode: the sandbox only keeps
+			// the VM alive and the TUI is attached afterwards, so a plain
+			// "running" VM is the ready state. Probing here would always
+			// report a dead backend and relaunch into the wrong mode.
+			fmt.Printf("%s is running (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
+			return nil
+		}
 		if m.backendHealthy(ctx) {
 			fmt.Printf("%s is running with a healthy OpenCode backend.\n", msbSandbox)
 			return nil
@@ -284,6 +304,35 @@ func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
 	fmt.Fprintf(os.Stderr, "Warning: %s was created with /workspace mounted from %s, but the workspace is now %s. "+
 		"Mounts are fixed when a sandbox is created, so /workspace will not reflect the new directory. "+
 		"Run 'just-code restart --microsandbox' to recreate it.\n", msbSandbox, mounted, m.cfg.WorkspaceDir)
+}
+
+// rejectIsolationMismatch compares the isolation mode the sandbox was
+// created in (inferred from its persisted start script) with the requested
+// mode. The script cannot be rewritten in place, so a mismatch is an error:
+// booting would run the wrong process for the requested mode.
+func (m *MicrosandboxRuntime) rejectIsolationMismatch(ctx context.Context, sandbox msbSandboxInfo) error {
+	script, err := m.Client.StartScript(ctx, sandbox.Name)
+	if err != nil || script == "" {
+		// Undetectable (older runtime, unreadable config): proceed as before
+		// rather than blocking every start on a best-effort check.
+		return nil
+	}
+	createdFull := strings.Contains(script, "sleep infinity")
+	if createdFull == (m.cfg.Isolation == IsolationFull) {
+		return nil
+	}
+	createdMode := IsolationBackend
+	requestedMode := m.cfg.Isolation
+	if createdFull {
+		createdMode = IsolationFull
+	}
+	if requestedMode == "" {
+		requestedMode = IsolationBackend
+	}
+	return fmt.Errorf("%s was created in isolation %s mode and cannot be switched to %s mode in place: "+
+		"the start script is fixed when the sandbox is created. "+
+		"Run 'just-code restart --microsandbox' (or 'just-code clean --microsandbox') to recreate it in %s mode",
+		sandbox.Name, createdMode, requestedMode, requestedMode)
 }
 
 func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {

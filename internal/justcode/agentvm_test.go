@@ -293,6 +293,14 @@ func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	if !strings.Contains(content, "ALBERT_API_KEY='key'") {
 		t.Errorf("env file must carry the quoted API key: %q", content)
 	}
+	// The TUI needs the provider definition too; in full mode this file is the
+	// only place it can come from, so the config must ride along.
+	if !strings.Contains(content, "OPENCODE_CONFIG_CONTENT='") {
+		t.Errorf("env file must carry the OpenCode provider config: %q", content)
+	}
+	if !strings.Contains(content, "albert.api.etalab.gouv.fr") {
+		t.Errorf("env file must carry the real provider config content: %q", content)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -390,6 +398,31 @@ func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 	}
 	if !strings.Contains(joined, "/tmp/just-code-opencode.env") || !strings.Contains(joined, a.Config.WorkspaceDir) || !strings.Contains(joined, "exec opencode") {
 		t.Fatalf("launch line must source the secrets file and exec opencode in the workspace: %q", joined)
+	}
+	// The workspace path is user-configurable and lands in a `sh -c` string,
+	// so it must be shell-quoted rather than interpolated raw.
+	if !strings.Contains(joined, "cd '"+a.Config.WorkspaceDir+"'") {
+		t.Fatalf("workspace path must be shell-quoted in the launch line: %q", joined)
+	}
+}
+
+// TestAgentVMRunAgentQuotesWorkspaceWithSpaces covers the quoted path where it
+// matters: a workspace directory containing spaces and shell metacharacters.
+func TestAgentVMRunAgentQuotesWorkspaceWithSpaces(t *testing.T) {
+	r := &fakeRunner{}
+	a := newTestAgentVM(t, r)
+	a.Config.WorkspaceDir = "/tmp/my project; rm -rf /"
+	var interactiveArgs []string
+	a.Interactive = func(name string, args ...string) error {
+		interactiveArgs = append([]string{name}, args...)
+		return nil
+	}
+	if err := a.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	joined := strings.Join(interactiveArgs, " ")
+	if !strings.Contains(joined, `cd '/tmp/my project; rm -rf /'`) {
+		t.Fatalf("a workspace path with spaces/metacharacters must be single-quoted: %q", joined)
 	}
 }
 

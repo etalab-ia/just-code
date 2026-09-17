@@ -396,10 +396,19 @@ func RunGuestSecrets(cfg GuestConfig) error {
 	if err != nil {
 		return err
 	}
-	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\n",
-		shellQuote(password), shellQuote(cfg.Username), shellQuote(apiKey))
+	content := guestSecretsEnv(password, cfg.Username, apiKey)
 	if err := os.WriteFile(guestSecretsEnvPath, []byte(content), 0o600); err != nil {
 		return err
 	}
 	return os.Chmod(guestSecretsEnvPath, 0o600)
+}
+
+// guestSecretsEnv builds the sourced env file body. Every value is
+// single-quoted because the file is sourced by a shell; the shell syntax in
+// the embedded provider config makes this non-optional.
+func guestSecretsEnv(password, username, apiKey string) string {
+	// The provider config travels the same way as in backend mode (env), so
+	// the full-mode TUI sees the same Albert provider/model definition.
+	return fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
+		shellQuote(password), shellQuote(username), shellQuote(apiKey), shellQuote(opencodeConfigContent))
 }

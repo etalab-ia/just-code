@@ -147,6 +147,7 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 | --- | --- | --- | --- |
 | `ALBERT_API_KEY` | oui | aucune | Clé utilisée par le provider Albert API. Ne la commite jamais. |
 | `RUNTIME` | non | aucun sur macOS/Linux ; `microsandbox` sur Windows | Runtime préféré : `microsandbox`, `tart` ou `agent-vm`. Un flag explicite reste prioritaire. |
+| `ISOLATION` | non | `backend` | Frontière d'exécution de l'agent : `backend` (le serveur tourne dans le sandbox, le TUI s'y attache depuis l'hôte) ou `full` (tout l'agent, TUI compris, tourne dans l'invité). Un flag explicite reste prioritaire. |
 | `WORKSPACE_DIR` | non | `./workspace` | Répertoire hôte monté sur `/workspace` dans l'invité. Un chemin relatif est résolu depuis le répertoire de lancement. |
 | `PROJECT_DIR` | non | — | Ancien nom de `WORKSPACE_DIR`, encore accepté avec un avertissement. Ne pas utiliser dans une nouvelle configuration. |
 | `OPENCODE_SERVER_USERNAME` | non | `opencode` | Nom d'utilisateur de l'authentification HTTP du backend. |
@@ -165,7 +166,9 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 - Une variable déjà exportée dans l'environnement prime sur toute valeur du fichier `.env`.
 - Le `.env` du répertoire de lancement prime sur un éventuel `.env` placé à côté de l'exécutable.
 - `--microsandbox`, `--tart` ou `--agent-vm` prime sur `RUNTIME`.
+- `--isolation backend|full` prime sur `ISOLATION` ; un flag explicite reste utilisable même si `ISOLATION` contient une valeur invalide.
 - Le montage `WORKSPACE_DIR` est figé à la création du sandbox ou de la VM. Le modifier impose `just-code restart --<runtime>`, qui recrée l'environnement.
+- Le niveau d'isolation est figé à la création du sandbox Microsandbox : ses scripts de démarrage sont persistés et ne peuvent pas être réécrits. Basculer `ISOLATION` sur un sandbox existant est refusé avec un message ; `just-code restart --microsandbox` le recrée dans le mode demandé.
 - Une modification des identifiants HTTP nécessite `just-code stop`, puis un nouveau lancement pour redémarrer le backend avec les nouvelles valeurs.
 - Une modification de `TART_MTU` nécessite `just-code stop`, puis `just-code --tart`. Elle ne nécessite pas de recréer la VM.
 - Changer `TART_IMAGE` cible une autre VM Tart ; les VM créées depuis des images différentes peuvent coexister.
@@ -251,6 +254,25 @@ just-code help                   # liste les commandes
 Lancer `just-code` sans commande démarre le backend sélectionné et attache le TUI natif OpenCode. Les commandes et les flags de runtime peuvent être donnés dans n'importe quel ordre (`just-code --microsandbox start` et `just-code start --microsandbox` sont équivalents). La commande `code` n'existe pas : la taper renvoie une erreur explicite.
 
 Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code stop` détecte l'état réel et ignore volontairement `RUNTIME`.
+
+### Niveaux d'isolation
+
+`--isolation backend|full` (ou `ISOLATION` dans `.env`) choisit où vit l'agent :
+
+```bash
+just-code --microsandbox --isolation full    # tout l'agent tourne dans la microVM
+just-code --tart --isolation backend         # comportement historique
+```
+
+En mode `backend` (défaut), `opencode serve` tourne dans le sandbox et le TUI s'y attache depuis l'hôte : seul le processus serveur est confiné, le TUI et les identifiants de connexion restent côté hôte. En mode `full`, le TUI lui-même tourne dans l'invité et l'hôte n'est qu'un passe-plat terminal ; `just-code check` rapporte alors l'état de la VM au lieu de sonder un endpoint de santé, qui n'existe pas dans ce mode.
+
+```bash
+just-code check --isolation full             # état de la VM, pas de health check
+```
+
+Les secrets ne passent jamais par la ligne de commande : en mode `full` ils sont transmis sur l'entrée standard (Tart) ou par un fichier `0600` copié dans l'invité (agent-vm), et le TUI les lit depuis ce fichier. Le fichier porte aussi la configuration du provider Albert, sans quoi le TUI n'aurait pas de modèle à utiliser.
+
+Le niveau d'isolation est fixé à la création du sandbox Microsandbox. Le demander différent sur un sandbox existant est refusé, avec la commande de recréation à lancer ; `just-code restart --<runtime>` recrée l'environnement dans le mode demandé.
 
 Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
 
