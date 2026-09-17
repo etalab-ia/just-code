@@ -21,7 +21,7 @@ import (
 
 const (
 	msbRuntimeVersion     = "0.7.0"
-	msbRuntimeReleaseURL  = "https://github.com/etalab-ia/just-code/releases/download/msb-runtime-v0.7.0"
+	msbRuntimeReleaseURL  = "https://github.com/etalab-ia/just-code/releases/download/microsandbox-v0.7.0"
 	msbRuntimeHTTPTimeout = 5 * time.Minute
 	msbRuntimeMaxArchive  = 128 << 20
 	msbRuntimeMaxFile     = 64 << 20
