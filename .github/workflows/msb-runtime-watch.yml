@@ -269,7 +269,7 @@ jobs:
           # tag or a non-main branch.
           gh release create "$tag" \
             --target "$(git rev-parse HEAD)" \
-            --title "Microsandbox runtime v$VERSION (hosted + verified)" \
+            --title "microsandbox-v$VERSION" \
             --notes "Miroir vérifié des archives du runtime Microsandbox \`v$VERSION\` (release amont \`$UPSTREAM_REPO\`). Empreintes SHA-256 issues de l'attestation de release GitHub vérifiée cryptographiquement, et gravées dans \`internal/justcode/msb_runtime_install.go\` par la PR de mise à jour du SDK associée." \
             --latest=false \
             dist/microsandbox-*.tar.gz dist/SHA256SUMS
