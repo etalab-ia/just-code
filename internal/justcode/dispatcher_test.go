@@ -33,6 +33,8 @@ func (f *fakeBackend) Logs() error                              { return nil }
 func (f *fakeBackend) Shell() error                             { return nil }
 func (f *fakeBackend) IsRunning(context.Context) (bool, error)  { return f.running, nil }
 func (f *fakeBackend) Endpoint(context.Context) (string, error) { return "http://localhost:4096", nil }
+func (f *fakeBackend) RunAgent(context.Context) error           { return nil }
+func (f *fakeBackend) Status(context.Context) (string, error)   { return "fake is running", nil }
 
 func TestDispatcherRunningAndMultiple(t *testing.T) {
 	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
@@ -162,5 +164,30 @@ func TestDispatcherPrepareRefusesConflict(t *testing.T) {
 	err := d.Prepare(context.Background(), RuntimeTart)
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("expected conflict error, got %v", err)
+	}
+}
+
+func TestDispatcherCheckBackendModeProbesHealth(t *testing.T) {
+	// The backend-mode check hits the endpoint; the fake's Endpoint is used,
+	// and CheckBackend fails against a non-listening localhost, which is the
+	// observable difference from the full-mode branch.
+	d := NewDispatcherWith(Config{}, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
+	})
+	if err := d.Check(context.Background(), nil); err == nil {
+		t.Fatal("backend-mode check must probe the health endpoint (unreachable here)")
+	}
+}
+
+func TestDispatcherCheckFullModeReportsVMState(t *testing.T) {
+	d := NewDispatcherWith(Config{Isolation: IsolationFull}, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
+	})
+	if err := d.Check(context.Background(), nil); err != nil {
+		t.Fatalf("full-mode check must not probe any endpoint: %v", err)
 	}
 }

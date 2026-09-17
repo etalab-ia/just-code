@@ -27,6 +27,9 @@ type AgentVM struct {
 	// KillPollInterval and KillMaxPolls bound the stale-backend kill loop.
 	KillPollInterval time.Duration
 	KillMaxPolls     int
+	// Interactive runs a foreground command attached to the terminal. It is a
+	// seam for tests; production uses RunInteractive.
+	Interactive func(name string, args ...string) error
 }
 
 // NewAgentVM builds an agent-vm orchestrator with production defaults.
@@ -287,6 +290,10 @@ func (a *AgentVM) Start(ctx context.Context) error {
 		if err := a.waitForAgent(ctx); err != nil {
 			return err
 		}
+		if cfg.Isolation == IsolationFull {
+			fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.AgentVMVM)
+			return nil
+		}
 		endpoint, err := a.Endpoint(ctx)
 		if err != nil {
 			return err
@@ -326,6 +333,10 @@ func (a *AgentVM) Start(ctx context.Context) error {
 	}
 	if err := a.waitForAgent(ctx); err != nil {
 		return err
+	}
+	if cfg.Isolation == IsolationFull {
+		fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.AgentVMVM)
+		return nil
 	}
 	return a.launchBackend(ctx)
 }
@@ -433,6 +444,54 @@ func (a *AgentVM) Logs() error {
 // Shell opens an interactive shell in the VM.
 func (a *AgentVM) Shell() error {
 	return RunInteractive("limactl", "shell", a.Config.AgentVMVM)
+}
+
+// RunAgent launches the OpenCode TUI in the foreground inside the VM
+// (isolation full). The secrets env file is pushed with limactl copy (same
+// channel as the backend flow), then the TUI runs under `limactl shell`,
+// sourcing the 0600 env file and execing opencode in the workspace mount,
+// which shares the host's absolute path.
+func (a *AgentVM) RunAgent(ctx context.Context) error {
+	cfg := a.Config
+	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
+		return err
+	}
+	secretsPath, err := a.writeSecretsEnv(AgentVMStageDir(a.StateDir))
+	if err != nil {
+		return err
+	}
+	if err := runOK(a.Runner, ctx, "limactl", "copy", secretsPath, cfg.AgentVMVM+":/tmp/just-code-opencode.env"); err != nil {
+		return err
+	}
+	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
+		return err
+	}
+	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode`, cfg.WorkspaceDir)
+	interactive := a.Interactive
+	if interactive == nil {
+		interactive = RunInteractive
+	}
+	return interactive("limactl", "shell", cfg.AgentVMVM, "sh", "-c", launch)
+}
+
+// Status describes the managed VM's current state, for `check` in isolation
+// full where there is no health endpoint to probe.
+func (a *AgentVM) Status(ctx context.Context) (string, error) {
+	running, err := a.vmRunning(ctx)
+	if err != nil {
+		return "", err
+	}
+	if running {
+		return fmt.Sprintf("%s is running", a.Config.AgentVMVM), nil
+	}
+	exists, err := a.vmExists(ctx)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return fmt.Sprintf("%s is stopped", a.Config.AgentVMVM), nil
+	}
+	return fmt.Sprintf("%s does not exist", a.Config.AgentVMVM), nil
 }
 
 // IsRunning reports whether the managed VM is running.

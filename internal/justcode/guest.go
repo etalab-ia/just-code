@@ -19,6 +19,15 @@ import (
 // user-facing command.
 const GuestBootstrapCommand = "__guest-bootstrap"
 
+// GuestPrepareCommand is the isolation-full counterpart of the bootstrap: it
+// installs OpenCode in the guest and sets the git identity, but launches no
+// server and reads no secrets. The TUI is launched afterwards via tart exec -it.
+const GuestPrepareCommand = "__guest-prepare"
+
+// GuestSecretsCommand writes the secrets env file (0600) from stdin, for the
+// isolation-full flow. Secrets travel on stdin only, never in argv.
+const GuestSecretsCommand = "__guest-secrets"
+
 const (
 	// guestShareDir is the read-only share mounted into the VM. It holds only
 	// the staged binary, never the checkout or its .env.
@@ -342,4 +351,55 @@ func httpGet(url string) ([]byte, error) {
 		return nil, fmt.Errorf("GET %s returned %s", url, resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+}
+
+// RunGuestPrepare is the isolation-full in-VM entry point: it installs
+// OpenCode if missing and sets the git identity, but launches nothing. It
+// reads no secrets; they are pushed separately via RunGuestSecrets so the
+// interactive TUI step needs no stdin plumbing.
+func RunGuestPrepare(ctx context.Context, cfg GuestConfig) error {
+	applyGuestDefaults(&cfg)
+
+	pathEnv := guestPath(cfg.Environ, cfg.Home)
+	env := withEnv(cfg.Environ, "PATH="+pathEnv)
+
+	g := &guest{cfg: cfg, pathEnv: pathEnv, env: env}
+	if _, err := g.resolve("opencode"); err != nil {
+		fmt.Fprintln(cfg.Stdout, "Installing OpenCode inside macOS VM...")
+		if err := g.installOpencode(ctx); err != nil {
+			return err
+		}
+	}
+	if _, err := g.resolve("opencode"); err != nil {
+		return fmt.Errorf("opencode is not available on PATH inside the VM")
+	}
+
+	// Best-effort git identity and safe.directory, matching the bootstrap.
+	_, _ = g.run(ctx, "git", "config", "--global", "user.name", "Albert Code Agent")
+	_, _ = g.run(ctx, "git", "config", "--global", "user.email", "albert-code@noreply.etalab.gouv.fr")
+	_, _ = g.run(ctx, "git", "config", "--global", "--add", "safe.directory", "*")
+	return nil
+}
+
+// guestSecretsEnvPath is where the isolation-full TUI step sources its
+// credentials from.
+const guestSecretsEnvPath = "/tmp/just-code-agent.env"
+
+// RunGuestSecrets writes the isolation-full secrets env file from stdin
+// (password line 1, API key line 2), with restrictive permissions. The file
+// is sourced by the interactive TUI launch; it is never written by a command
+// whose argv carries the values.
+func RunGuestSecrets(cfg GuestConfig) error {
+	applyGuestDefaults(&cfg)
+
+	password, apiKey, err := readSecrets(cfg.Stdin)
+	if err != nil {
+		return err
+	}
+	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\n",
+		shellQuote(password), shellQuote(cfg.Username), shellQuote(apiKey))
+	if err := os.WriteFile(guestSecretsEnvPath, []byte(content), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(guestSecretsEnvPath, 0o600)
 }

@@ -3,13 +3,13 @@ package assets
 
 import "embed"
 
-//go:embed opencode-config.json start-script.sh
+//go:embed opencode-config.json guest-prep.sh
 var FS embed.FS
 
 // Files lists every embedded asset, in a stable order.
 var Files = []string{
 	"opencode-config.json",
-	"start-script.sh",
+	"guest-prep.sh",
 }
 
 // Read returns an embedded asset by name.

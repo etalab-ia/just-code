@@ -7,4 +7,3 @@ fi
 git config --global user.name "Albert Code Agent"
 git config --global user.email "albert-code@noreply.etalab.gouv.fr"
 git config --global --add safe.directory '*'
-exec opencode serve --hostname 0.0.0.0 --port 4096

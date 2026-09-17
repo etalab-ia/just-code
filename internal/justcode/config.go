@@ -39,6 +39,11 @@ type Config struct {
 	// are not blocked by a typo in a variable they do not read.
 	StartTimeout    time.Duration
 	StartTimeoutErr error
+	// Isolation is the resolved execution model (see isolation.go). It
+	// defaults to backend. IsolationErr records an invalid ISOLATION value
+	// with the same deferred-validation contract as StartTimeoutErr.
+	Isolation    Isolation
+	IsolationErr error
 }
 
 // EnvLookup is an injectable subset of os.LookupEnv, for tests.
@@ -133,6 +138,13 @@ func LoadConfig(lookup EnvLookup) Config {
 		} else {
 			cfg.StartTimeout = d
 		}
+	}
+	if iso, err := ResolveIsolation("", envDefault(lookup, "ISOLATION", string(IsolationBackend))); err != nil {
+		// Keep the backend default so commands that never read Isolation
+		// still work; the error is surfaced where the value is consumed.
+		cfg.Isolation, cfg.IsolationErr = IsolationBackend, err
+	} else {
+		cfg.Isolation = iso
 	}
 	if v, ok := lookup("OPENCODE_SERVER_PASSWORD"); ok {
 		cfg.Password = v

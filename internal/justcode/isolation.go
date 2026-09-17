@@ -1,0 +1,41 @@
+package justcode
+
+import "fmt"
+
+// Isolation identifies where the OpenCode agent lives: only its backend
+// process inside the sandbox (backend), or the whole agent including the TUI
+// (full).
+type Isolation string
+
+const (
+	// IsolationBackend is the historical model: `opencode serve` inside the
+	// sandbox, `opencode attach` from the host.
+	IsolationBackend Isolation = "backend"
+	// IsolationFull runs the whole agent — process, TUI, sessions, config and
+	// provider credentials — inside the sandbox. The host is only a terminal
+	// passthrough.
+	IsolationFull Isolation = "full"
+)
+
+// allIsolations is the accepted --isolation / ISOLATION surface.
+var allIsolations = []Isolation{IsolationBackend, IsolationFull}
+
+// ResolveIsolation picks an isolation level from the explicit --isolation flag
+// and the ISOLATION environment preference, mirroring ResolveRuntime: the
+// flag wins, an empty preference defaults to backend, and any other value is
+// rejected with a message listing the accepted surface.
+func ResolveIsolation(flag, preference string) (Isolation, error) {
+	value := flag
+	if value == "" {
+		value = preference
+	}
+	if value == "" {
+		return IsolationBackend, nil
+	}
+	switch Isolation(value) {
+	case IsolationBackend, IsolationFull:
+		return Isolation(value), nil
+	default:
+		return "", fmt.Errorf("expected --isolation backend or --isolation full (ISOLATION must be backend or full), got %q", value)
+	}
+}
