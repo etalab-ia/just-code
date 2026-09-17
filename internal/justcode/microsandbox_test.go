@@ -24,6 +24,7 @@ type fakeMSBClient struct {
 	doctorErr    error
 	mount        string
 	mountErr     error
+	startScript  string
 	createErr    error
 	startErr     error
 	modifyErr    error
@@ -31,6 +32,7 @@ type fakeMSBClient struct {
 	removeErr    error
 	logsErr      error
 	shellErr     error
+	attachErr    error
 
 	calls       []string
 	created     *msbSandboxSpec
@@ -108,6 +110,13 @@ func (f *fakeMSBClient) WorkspaceMount(_ context.Context, name string) (string, 
 	return f.mount, f.mountErr
 }
 
+func (f *fakeMSBClient) StartScript(_ context.Context, name string) (string, error) {
+	// Recorded as "readconfig", not "start*": hasCall prefix-matches, so a
+	// "start" prefix would be indistinguishable from a Start() call.
+	f.record("readconfig " + name)
+	return f.startScript, nil
+}
+
 func (f *fakeMSBClient) Logs() error {
 	f.record("logs")
 	return f.logsErr
@@ -116,6 +125,11 @@ func (f *fakeMSBClient) Logs() error {
 func (f *fakeMSBClient) Shell() error {
 	f.record("shell")
 	return f.shellErr
+}
+
+func (f *fakeMSBClient) AttachInteractive(_ context.Context, cmd, cwd string) (int, error) {
+	f.record("attach " + cmd + " " + cwd)
+	return 0, f.attachErr
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
@@ -512,5 +526,173 @@ func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
 		if strings.HasPrefix(call, "remove") {
 			t.Fatalf("Remove ran before the workspace gate: %v", client.calls)
 		}
+	}
+}
+
+func TestMicrosandboxFullModeSpecCarriesRealKey(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	m.cfg.Isolation = IsolationFull
+	spec := m.sandboxSpec()
+	if spec.APIKey != "" {
+		t.Fatalf("full mode must not use the proxy secret: %+v", spec)
+	}
+	if spec.AllowHosts != nil {
+		t.Fatalf("full mode must not restrict proxy hosts: %v", spec.AllowHosts)
+	}
+	if spec.Env["ALBERT_API_KEY"] != "key" {
+		t.Fatalf("full mode guest env must carry the real key: %v", spec.Env)
+	}
+	if spec.Env["OPENCODE_CONFIG_CONTENT"] == "" {
+		t.Fatal("full mode guest env must carry the OpenCode config")
+	}
+	if !strings.Contains(spec.StartScript, "sleep infinity") || strings.Contains(spec.StartScript, "opencode serve") {
+		t.Fatalf("full mode start script must keep the VM alive, not serve: %q", spec.StartScript)
+	}
+	if !strings.Contains(spec.StartScript, "apk add") {
+		t.Fatalf("full mode start script must keep the shared toolchain prep: %q", spec.StartScript)
+	}
+}
+
+func TestMicrosandboxBackendModeSpecUnchanged(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	spec := m.sandboxSpec()
+	if spec.APIKey != "key" || len(spec.AllowHosts) != 1 {
+		t.Fatalf("backend mode must keep the proxy secret: %+v", spec)
+	}
+	if spec.Env["ALBERT_API_KEY"] != "" {
+		t.Fatalf("backend mode must not leak the real key into guest env: %v", spec.Env)
+	}
+	if !strings.Contains(spec.StartScript, "exec opencode serve") {
+		t.Fatalf("backend mode start script must serve: %q", spec.StartScript)
+	}
+}
+
+func TestMicrosandboxFullModeNextStartCarriesRealKey(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{exists: true, status: "stopped"})
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if m.cfg.Isolation != IsolationFull {
+		t.Fatal("config lost the isolation level")
+	}
+	client := m.Client.(*fakeMSBClient)
+	if client.modifiedEnv["ALBERT_API_KEY"] != "key" {
+		t.Fatalf("full mode next-start env must carry the real key: %v", client.modifiedEnv)
+	}
+	if client.modifiedKey != "" {
+		t.Fatalf("full mode must not pass a proxy secret to ModifyNextStart: %q", client.modifiedKey)
+	}
+	for _, prefix := range []string{"modify " + msbSandbox, "start " + msbSandbox} {
+		if !hasCall(client, prefix) {
+			t.Fatalf("missing %q; calls: %v", prefix, client.calls)
+		}
+	}
+	if hasCall(client, "exec "+msbSandbox) {
+		t.Fatalf("full mode must not relaunch the backend: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxStartRejectsIsolationSwitch pins the mode-switch guard: the
+// start script is persisted at creation and cannot be rewritten, so switching
+// isolation on an existing sandbox must fail with guidance instead of booting
+// the wrong process.
+func TestMicrosandboxStartRejectsIsolationSwitch(t *testing.T) {
+	// A sandbox created in full mode, now requested in backend mode.
+	client := &fakeMSBClient{exists: true, status: "stopped", startScript: msbStartScript(IsolationFull)}
+	m := newTestMicrosandbox(t, client)
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("switching an existing full-mode sandbox to backend must fail")
+	}
+	if !strings.Contains(err.Error(), "restart") {
+		t.Errorf("error must point at the recovery command: %v", err)
+	}
+	if hasCall(client, "start "+msbSandbox) || hasCall(client, "exec "+msbSandbox) {
+		t.Fatalf("a mismatched sandbox must not be booted: %v", client.calls)
+	}
+
+	// The reverse direction: a backend-mode sandbox requested in full mode.
+	client = &fakeMSBClient{exists: true, status: "stopped", startScript: msbStartScript(IsolationBackend)}
+	m = newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("switching an existing backend-mode sandbox to full must fail")
+	}
+	if hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a mismatched sandbox must not be booted: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxFullModeRunningSandboxIsReady records that a running
+// full-mode sandbox needs no health probe: no backend endpoint exists in that
+// mode, so probing would always fail and relaunch into the wrong process.
+func TestMicrosandboxFullModeRunningSandboxIsReady(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "running", startScript: msbStartScript(IsolationFull)}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if hasCall(client, "exec "+msbSandbox) {
+		t.Fatalf("a running full-mode sandbox must not be relaunched: %v", client.calls)
+	}
+	if hasCall(client, "create") || hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a running full-mode sandbox must be left as-is: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxStartMatchingIsolationProceeds records that the guard is
+// mode-equality, not "always refuse": an existing sandbox whose script matches
+// the requested mode still starts normally.
+func TestMicrosandboxStartMatchingIsolationProceeds(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "stopped", startScript: msbStartScript(IsolationFull)}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a matching sandbox must start; calls: %v", client.calls)
+	}
+
+	// An unreadable script must not block the start either.
+	client = &fakeMSBClient{exists: true, status: "stopped"}
+	m = newTestMicrosandbox(t, client)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start with an unknown script: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("an undetectable mode must not block the start; calls: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRunAgentAttachesTUI(t *testing.T) {
+	client := &fakeMSBClient{}
+	m := newTestMicrosandbox(t, client)
+	if err := m.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if !hasCall(client, "attach opencode /workspace") {
+		t.Fatalf("RunAgent must attach opencode at /workspace; calls: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRunAgentSurfacesExitCode(t *testing.T) {
+	client := &fakeMSBClient{attachErr: errors.New("attach stream closed")}
+	m := newTestMicrosandbox(t, client)
+	if err := m.RunAgent(context.Background()); err == nil {
+		t.Fatal("RunAgent must surface attach failures")
+	}
+}
+
+func TestMicrosandboxStatus(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{exists: true, status: "running"})
+	state, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !strings.Contains(state, "running") {
+		t.Fatalf("Status = %q", state)
 	}
 }

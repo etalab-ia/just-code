@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,21 @@ import (
 
 // Guest assets are read directly from the binary, without writing host files.
 var (
-	startScript           = mustAsset("start-script.sh")
+	guestPrepScript       = mustAsset("guest-prep.sh")
 	opencodeConfigContent = mustAsset("opencode-config.json")
 )
+
+// msbStartScript composes the guest start script: the shared prep (toolchain,
+// git identity) followed by a mode-specific tail. In backend mode the tail
+// execs `opencode serve`; in full mode the sandbox is only kept alive — the
+// TUI is launched interactively by RunAgent, not by the entrypoint.
+func msbStartScript(iso Isolation) string {
+	tail := "exec opencode serve --hostname 0.0.0.0 --port " + strconv.Itoa(DefaultPort)
+	if iso == IsolationFull {
+		tail = "exec sleep infinity"
+	}
+	return guestPrepScript + tail + "\n"
+}
 
 func mustAsset(name string) string {
 	data, err := assets.Read(name)
@@ -224,6 +237,18 @@ func (sdkMSBClient) WorkspaceMount(ctx context.Context, name string) (string, er
 	return cfg.Volumes["/workspace"].Bind, nil
 }
 
+func (sdkMSBClient) StartScript(ctx context.Context, name string) (string, error) {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	cfg, err := h.Config()
+	if err != nil {
+		return "", err
+	}
+	return cfg.Scripts["start"], nil
+}
+
 func (sdkMSBClient) Logs() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -268,4 +293,16 @@ func (sdkMSBClient) Shell() (err error) {
 		return fmt.Errorf("sandbox shell exited %d", code)
 	}
 	return nil
+}
+
+// AttachInteractive runs cmd interactively in the sandbox with cwd as the
+// working directory, blocking until it exits. It is the isolation-full TUI
+// channel; the host terminal is passed through by the SDK attach stream.
+func (sdkMSBClient) AttachInteractive(ctx context.Context, cmd, cwd string) (int, error) {
+	sb, err := connectMSBSandbox(ctx, msbSandbox)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = sb.Close() }()
+	return sb.AttachWith(ctx, cmd, nil, msb.WithAttachCwd(cwd))
 }

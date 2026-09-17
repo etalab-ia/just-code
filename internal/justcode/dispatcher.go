@@ -139,11 +139,22 @@ func (d *Dispatcher) Prepare(ctx context.Context, requested Runtime) error {
 }
 
 // Check verifies the single running backend and reports its Albert provider
-// status, mirroring `just check`.
+// status, mirroring `just check`. In isolation full there is no health
+// endpoint to probe: it reports the VM state and that the session runs
+// interactively inside the guest.
 func (d *Dispatcher) Check(ctx context.Context, client *http.Client) error {
 	rt, err := d.SingleRunning(ctx)
 	if err != nil {
 		return err
+	}
+	if d.cfg.Isolation == IsolationFull {
+		state, err := d.backends[rt].Status(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Println(state)
+		fmt.Println("isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).")
+		return nil
 	}
 	endpoint, err := d.backends[rt].Endpoint(ctx)
 	if err != nil {

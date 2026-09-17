@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"io"
 	"os/exec"
 	"testing"
 )
@@ -15,6 +16,10 @@ func (missingDockerRunner) Run(context.Context, string, ...string) (ExecResult, 
 }
 
 func (missingDockerRunner) RunEnv(context.Context, []string, string, ...string) (ExecResult, error) {
+	return ExecResult{}, exec.ErrNotFound
+}
+
+func (missingDockerRunner) RunStdin(context.Context, io.Reader, string, ...string) (ExecResult, error) {
 	return ExecResult{}, exec.ErrNotFound
 }
 

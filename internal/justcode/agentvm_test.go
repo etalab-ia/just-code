@@ -293,6 +293,14 @@ func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	if !strings.Contains(content, "ALBERT_API_KEY='key'") {
 		t.Errorf("env file must carry the quoted API key: %q", content)
 	}
+	// The TUI needs the provider definition too; in full mode this file is the
+	// only place it can come from, so the config must ride along.
+	if !strings.Contains(content, "OPENCODE_CONFIG_CONTENT='") {
+		t.Errorf("env file must carry the OpenCode provider config: %q", content)
+	}
+	if !strings.Contains(content, "albert.api.etalab.gouv.fr") {
+		t.Errorf("env file must carry the real provider config content: %q", content)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -355,5 +363,103 @@ func TestAgentVMEndpoint(t *testing.T) {
 func TestAgentVMLogPath(t *testing.T) {
 	if got := AgentVMLogPath("/state"); got != filepath.Join("/state", "agent-vm.log") {
 		t.Errorf("AgentVMLogPath = %q", got)
+	}
+}
+
+func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
+	r := &fakeRunner{}
+	a := newTestAgentVM(t, r)
+	var interactiveArgs []string
+	a.Interactive = func(name string, args ...string) error {
+		interactiveArgs = append([]string{name}, args...)
+		return nil
+	}
+	if err := a.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	// Secrets travel via limactl copy of the 0600 env file, never argv.
+	if !r.hasCall("copy") {
+		t.Fatalf("secrets env file was not pushed; calls: %v", r.calls)
+	}
+	if !r.hasCall("chmod 600 /tmp/just-code-opencode.env") {
+		t.Fatalf("guest env file must be chmod 600; calls: %v", r.calls)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "pw") || strings.Contains(c, "key") {
+			t.Fatalf("secret value leaked into argv: %v", r.calls)
+		}
+	}
+	if len(interactiveArgs) == 0 {
+		t.Fatal("interactive TUI step never ran")
+	}
+	joined := strings.Join(interactiveArgs, " ")
+	if !strings.HasPrefix(joined, "limactl shell "+DefaultAgentVMVM+" sh -c ") {
+		t.Fatalf("interactive argv = %q", joined)
+	}
+	if !strings.Contains(joined, "/tmp/just-code-opencode.env") || !strings.Contains(joined, a.Config.WorkspaceDir) || !strings.Contains(joined, "exec opencode") {
+		t.Fatalf("launch line must source the secrets file and exec opencode in the workspace: %q", joined)
+	}
+	// The workspace path is user-configurable and lands in a `sh -c` string,
+	// so it must be shell-quoted rather than interpolated raw.
+	if !strings.Contains(joined, "cd '"+a.Config.WorkspaceDir+"'") {
+		t.Fatalf("workspace path must be shell-quoted in the launch line: %q", joined)
+	}
+}
+
+// TestAgentVMRunAgentQuotesWorkspaceWithSpaces covers the quoted path where it
+// matters: a workspace directory containing spaces and shell metacharacters.
+func TestAgentVMRunAgentQuotesWorkspaceWithSpaces(t *testing.T) {
+	r := &fakeRunner{}
+	a := newTestAgentVM(t, r)
+	a.Config.WorkspaceDir = "/tmp/my project; rm -rf /"
+	var interactiveArgs []string
+	a.Interactive = func(name string, args ...string) error {
+		interactiveArgs = append([]string{name}, args...)
+		return nil
+	}
+	if err := a.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	joined := strings.Join(interactiveArgs, " ")
+	if !strings.Contains(joined, `cd '/tmp/my project; rm -rf /'`) {
+		t.Fatalf("a workspace path with spaces/metacharacters must be single-quoted: %q", joined)
+	}
+}
+
+func TestAgentVMStartFullModeSkipsServerLaunch(t *testing.T) {
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && len(args) > 0 && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: DefaultAgentVMVM + "|Running\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	a := newTestAgentVM(t, r)
+	a.Config.Isolation = IsolationFull
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fs := a.Starter.(*fakeStarter)
+	if fs.lastArgs != nil {
+		started := strings.Join(fs.lastArgs, " ")
+		if strings.Contains(started, "opencode serve") {
+			t.Fatalf("full mode must not launch the backend server: %v", started)
+		}
+	}
+}
+
+func TestAgentVMStatus(t *testing.T) {
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && len(args) > 0 && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: DefaultAgentVMVM + "|Running\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	a := newTestAgentVM(t, r)
+	state, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !strings.Contains(state, "running") {
+		t.Fatalf("Status = %q", state)
 	}
 }

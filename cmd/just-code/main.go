@@ -44,8 +44,19 @@ func run(args []string) (int, error) {
 		return 0, justcode.RunGuestBootstrap(context.Background(), cfg)
 	}
 
+	// Isolation-full in-VM helpers, same hidden-subcommand contract: no host
+	// config, no .env. __guest-prepare installs OpenCode; __guest-secrets
+	// writes the 0600 env file from stdin.
+	if len(args) > 0 && args[0] == justcode.GuestPrepareCommand {
+		cfg := justcode.GuestConfig{Username: argOr(args, 1, "")}
+		return exitCodeOf(nil), justcode.RunGuestPrepare(context.Background(), cfg)
+	}
+	if len(args) > 0 && args[0] == justcode.GuestSecretsCommand {
+		cfg := justcode.GuestConfig{Username: argOr(args, 1, "")}
+		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
+	}
+
 	cfg := justcode.LoadConfigEnv()
-	d := justcode.NewDispatcher(cfg)
 
 	parsed, err := parseArgs(args)
 	if err != nil {
@@ -56,8 +67,17 @@ func run(args []string) (int, error) {
 		return 0, nil
 	}
 
+	// Resolve the isolation level before any backend is constructed: the
+	// backends read cfg.Isolation at construction time, so applying the flag
+	// afterwards would leave them in the wrong mode.
+	cfg, isoErr := applyIsolation(cfg, parsed.isolation)
+
+	// The dispatcher and its backends are built from the resolved config.
+	d := justcode.NewDispatcher(cfg)
+
 	// These actions resolve their own target (or need none), so they must not be
-	// gated on a configured runtime.
+	// gated on a configured runtime. check consumes the isolation level, so it
+	// is the one action here that must surface a deferred isolation error.
 	switch parsed.action {
 	case "help":
 		usage()
@@ -68,12 +88,20 @@ func run(args []string) (int, error) {
 	case "stop":
 		return 0, d.StopAll(context.Background())
 	case "check":
+		if isoErr != nil {
+			return 2, isoErr
+		}
 		return 0, d.Check(context.Background(), nil)
 	}
 
 	rt, err := justcode.ResolveRuntime(parsed.runtime, os.Getenv("RUNTIME"))
 	if err != nil {
 		return 2, err
+	}
+	// A typo in ISOLATION must not block commands that never read it, so it is
+	// validated only here, where the level is actually consumed.
+	if isoErr != nil {
+		return 2, isoErr
 	}
 
 	switch parsed.action {
@@ -86,14 +114,31 @@ func run(args []string) (int, error) {
 	}
 }
 
+// applyIsolation returns cfg with the effective isolation level applied, plus
+// any deferred error. It exists as a separate step because the backends read
+// cfg.Isolation when they are constructed: resolving the level after building
+// the dispatcher would leave them in the wrong mode.
+func applyIsolation(cfg justcode.Config, flag string) (justcode.Config, error) {
+	iso, err := justcode.ResolveIsolationLevel(flag, cfg.Isolation, cfg.IsolationErr)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Isolation = iso
+	// The level is resolved now, so a deferred env error would be stale.
+	cfg.IsolationErr = nil
+	return cfg, nil
+}
+
 // parsedArgs is the result of a single pass over argv. Commands, runtime flags,
-// and the version flag may appear in any order.
+// the isolation flag, and the version flag may appear in any order.
 type parsedArgs struct {
 	// action is "attach" (the default) or one of the named commands.
 	action string
 	// runtime is the raw --microsandbox/--tart flag, or "".
 	runtime string
-	version bool
+	// isolation is the raw --isolation value (backend or full), or "".
+	isolation string
+	version   bool
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -112,17 +157,38 @@ func runtimeFlag(a string) bool {
 
 // parseArgs mirrors the TypeScript CLI's parser: a single pass that accepts the
 // action and runtime flags in any order, and rejects anything unrecognised
-// rather than silently ignoring it.
+// rather than silently ignoring it. The isolation flag takes a value, either
+// as the next token (--isolation full) or inline (--isolation=full), so the
+// pass is index-based to consume the value.
 func parseArgs(args []string) (parsedArgs, error) {
 	var p parsedArgs
 	actionSet := false
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case runtimeFlag(a):
 			if p.runtime != "" && p.runtime != a {
 				return p, fmt.Errorf("Select exactly one runtime.")
 			}
 			p.runtime = a
+		case a == "--isolation" || strings.HasPrefix(a, "--isolation="):
+			value := ""
+			if a == "--isolation" {
+				if i+1 >= len(args) {
+					return p, fmt.Errorf("--isolation requires a value: backend or full")
+				}
+				i++
+				value = args[i]
+			} else {
+				value = strings.TrimPrefix(a, "--isolation=")
+			}
+			if value == "" {
+				return p, fmt.Errorf("--isolation requires a value: backend or full")
+			}
+			if p.isolation != "" && p.isolation != value {
+				return p, fmt.Errorf("Select exactly one isolation level.")
+			}
+			p.isolation = value
 		case a == "-h" || a == "--help":
 			p.action = "help"
 			actionSet = true
@@ -162,6 +228,14 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	}
 	if err := b.Start(ctx); err != nil {
 		return 0, err
+	}
+	if cfg.Isolation == justcode.IsolationFull {
+		// The whole agent lives in the guest: no host opencode preflight, no
+		// health endpoint, no attach. The host is only a terminal passthrough.
+		agentErr := b.RunAgent(ctx)
+		code := exitCodeOf(agentErr)
+		askToStop(ctx, d, rt)
+		return code, agentErr
 	}
 	endpoint, err := b.Endpoint(ctx)
 	if err != nil {
@@ -266,7 +340,7 @@ func usage() {
 	fmt.Println(`just-code - manage the OpenCode sandbox
 
 Usage:
-  just-code [command] [--microsandbox | --tart | --agent-vm]
+  just-code [command] [--microsandbox | --tart | --agent-vm] [--isolation backend | full]
 
 Run just-code with no command to start the selected backend and attach the
 native OpenCode TUI.
@@ -286,5 +360,12 @@ Commands:
 Runtime selection:
   Pass --microsandbox, --tart or --agent-vm. RUNTIME in .env is used when no
   flag is provided; an explicit flag always takes precedence. On Windows,
-  --microsandbox is the default and the only supported runtime.`)
+  --microsandbox is the default and the only supported runtime.
+
+Isolation:
+  --isolation backend (default): the agent runs as a server inside the
+  sandbox and the TUI attaches from the host.
+  --isolation full: the whole agent, TUI included, runs inside the sandbox;
+  the host is only a terminal passthrough. ISOLATION in .env is used when no
+  flag is provided; the flag always takes precedence.`)
 }

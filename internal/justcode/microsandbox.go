@@ -87,10 +87,18 @@ type msbClient interface {
 	Remove(ctx context.Context, name string) error
 	// WorkspaceMount returns the host path mounted at the guest /workspace.
 	WorkspaceMount(ctx context.Context, name string) (string, error)
+	// StartScript returns the persisted start script of an existing sandbox,
+	// or "" when it cannot be read. The script is fixed at creation, so it is
+	// how the sandbox's original isolation mode is detected.
+	StartScript(ctx context.Context, name string) (string, error)
 	// Logs streams sandbox logs to the terminal until interrupted.
 	Logs() error
 	// Shell opens an interactive shell in the sandbox.
 	Shell() error
+	// AttachInteractive runs a command interactively in the sandbox with a
+	// working directory, blocking until it exits. It is the TUI channel used
+	// by isolation full; Shell() is the /bin/bash special case of it.
+	AttachInteractive(ctx context.Context, name, cwd string) (int, error)
 }
 
 // msbSandboxInfo is the status snapshot of the managed sandbox.
@@ -129,9 +137,25 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	}
 	if exists {
 		m.warnIfWorkspaceMountIsStale(ctx)
+		// The mode-specific start script is persisted at creation and the SDK
+		// cannot rewrite it, so switching isolation on an existing sandbox
+		// would boot the wrong process (a full-mode sandbox would start
+		// `opencode serve`; a backend-mode one would only sleep). Fail with
+		// guidance instead of booting into the wrong mode.
+		if err := m.rejectIsolationMismatch(ctx, sandbox); err != nil {
+			return err
+		}
 	}
 
 	if exists && sandbox.Status == "running" {
+		if m.cfg.Isolation == IsolationFull {
+			// No health endpoint exists in full mode: the sandbox only keeps
+			// the VM alive and the TUI is attached afterwards, so a plain
+			// "running" VM is the ready state. Probing here would always
+			// report a dead backend and relaunch into the wrong mode.
+			fmt.Printf("%s is running (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
+			return nil
+		}
 		if m.backendHealthy(ctx) {
 			fmt.Printf("%s is running with a healthy OpenCode backend.\n", msbSandbox)
 			return nil
@@ -142,14 +166,21 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	if exists {
 		fmt.Printf("Starting %s...\n", msbSandbox)
-		if err := m.Client.ModifyNextStart(ctx, msbSandbox, map[string]string{
-			"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
-			"OPENCODE_SERVER_USERNAME": m.cfg.Username,
-		}, m.cfg.APIKey); err != nil {
+		apiKey := m.cfg.APIKey
+		if m.cfg.Isolation == IsolationFull {
+			// The proxy secret exists only for the backend model; in full mode
+			// the agent reads its own key from the guest env.
+			apiKey = ""
+		}
+		if err := m.Client.ModifyNextStart(ctx, msbSandbox, m.nextStartEnv(), apiKey); err != nil {
 			return err
 		}
 		if err := m.Client.Start(ctx, msbSandbox); err != nil {
 			return err
+		}
+		if m.cfg.Isolation == IsolationFull {
+			fmt.Printf("%s started (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
+			return nil
 		}
 		// Booting a stopped VM does not re-run the container entrypoint, so the
 		// backend has to be launched explicitly.
@@ -165,23 +196,50 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 // sandboxSpec builds the full sandbox configuration from the config and the
 // embedded OpenCode config and start script.
 func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
-	return msbSandboxSpec{
+	spec := msbSandboxSpec{
 		Image:       msbImage,
 		Env:         m.sandboxEnv(),
 		Workspace:   m.cfg.WorkspaceDir,
 		APIKey:      m.cfg.APIKey,
 		AllowHosts:  []string{msbAllowHost},
-		StartScript: startScript,
+		StartScript: msbStartScript(m.cfg.Isolation),
 	}
+	if m.cfg.Isolation == IsolationFull {
+		// The proxy secret exists only for the backend model; in full mode the
+		// agent reads its own key from the guest env.
+		spec.APIKey = ""
+		spec.AllowHosts = nil
+	}
+	return spec
+}
+
+// nextStartEnv builds the guest env persisted for the next boot of an
+// existing stopped sandbox. In full mode the agent reads its own key, so the
+// real ALBERT_API_KEY travels as a plain guest env entry; the backend-mode
+// proxy-secret substitution stays out of it.
+func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
+	env := map[string]string{
+		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
+		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
+	}
+	if m.cfg.Isolation == IsolationFull {
+		env["ALBERT_API_KEY"] = m.cfg.APIKey
+		env["OPENCODE_CONFIG_CONTENT"] = opencodeConfigContent
+	}
+	return env
 }
 
 // sandboxEnv builds the guest environment for the sandbox.
 func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
-	return map[string]string{
+	env := map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 		"OPENCODE_CONFIG_CONTENT":  opencodeConfigContent,
 	}
+	if m.cfg.Isolation == IsolationFull {
+		env["ALBERT_API_KEY"] = m.cfg.APIKey
+	}
+	return env
 }
 
 // launchBackend runs the container entrypoint inside a live VM. Recreating the
@@ -246,6 +304,35 @@ func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
 	fmt.Fprintf(os.Stderr, "Warning: %s was created with /workspace mounted from %s, but the workspace is now %s. "+
 		"Mounts are fixed when a sandbox is created, so /workspace will not reflect the new directory. "+
 		"Run 'just-code restart --microsandbox' to recreate it.\n", msbSandbox, mounted, m.cfg.WorkspaceDir)
+}
+
+// rejectIsolationMismatch compares the isolation mode the sandbox was
+// created in (inferred from its persisted start script) with the requested
+// mode. The script cannot be rewritten in place, so a mismatch is an error:
+// booting would run the wrong process for the requested mode.
+func (m *MicrosandboxRuntime) rejectIsolationMismatch(ctx context.Context, sandbox msbSandboxInfo) error {
+	script, err := m.Client.StartScript(ctx, sandbox.Name)
+	if err != nil || script == "" {
+		// Undetectable (older runtime, unreadable config): proceed as before
+		// rather than blocking every start on a best-effort check.
+		return nil
+	}
+	createdFull := strings.Contains(script, "sleep infinity")
+	if createdFull == (m.cfg.Isolation == IsolationFull) {
+		return nil
+	}
+	createdMode := IsolationBackend
+	requestedMode := m.cfg.Isolation
+	if createdFull {
+		createdMode = IsolationFull
+	}
+	if requestedMode == "" {
+		requestedMode = IsolationBackend
+	}
+	return fmt.Errorf("%s was created in isolation %s mode and cannot be switched to %s mode in place: "+
+		"the start script is fixed when the sandbox is created. "+
+		"Run 'just-code restart --microsandbox' (or 'just-code clean --microsandbox') to recreate it in %s mode",
+		sandbox.Name, createdMode, requestedMode, requestedMode)
 }
 
 func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
@@ -323,6 +410,33 @@ func (m *MicrosandboxRuntime) Logs() error {
 
 func (m *MicrosandboxRuntime) Shell() error {
 	return m.Client.Shell()
+}
+
+// RunAgent launches the OpenCode TUI in the foreground inside the microVM,
+// with /workspace as its working directory (isolation full). The SDK attach
+// channel passes the host terminal through.
+func (m *MicrosandboxRuntime) RunAgent(ctx context.Context) error {
+	code, err := m.Client.AttachInteractive(ctx, "opencode", "/workspace")
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("opencode TUI exited %d inside %s", code, msbSandbox)
+	}
+	return nil
+}
+
+// Status describes the sandbox's current state, for `check` in isolation
+// full where there is no health endpoint to probe.
+func (m *MicrosandboxRuntime) Status(ctx context.Context) (string, error) {
+	sandbox, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return fmt.Sprintf("%s does not exist", msbSandbox), nil
+	}
+	return fmt.Sprintf("%s is %s", msbSandbox, sandbox.Status), nil
 }
 
 func (m *MicrosandboxRuntime) IsRunning(ctx context.Context) (bool, error) {

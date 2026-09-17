@@ -23,6 +23,9 @@ type Tart struct {
 	// SelfBinary is the binary staged into the guest. Empty means the running
 	// executable (os.Executable), which is the production path.
 	SelfBinary string
+	// Interactive runs a foreground command attached to the terminal. It is a
+	// seam for tests; production uses RunInteractive.
+	Interactive func(name string, args ...string) error
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
@@ -281,7 +284,8 @@ func (t *Tart) startVM(ctx context.Context) error {
 }
 
 // Start brings the OpenCode backend up, mirroring the Tart branch of
-// `just start` and `just code`.
+// `just start` and `just code`. In isolation full it only brings the VM up:
+// the TUI is launched interactively by RunAgent, so no server is started.
 func (t *Tart) Start(ctx context.Context) error {
 	cfg := t.Config
 	if cfg.APIKey == "" {
@@ -307,6 +311,10 @@ func (t *Tart) Start(ctx context.Context) error {
 	if running {
 		if err := t.waitForAgent(ctx); err != nil {
 			return err
+		}
+		if cfg.Isolation == IsolationFull {
+			fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.TartVM)
+			return nil
 		}
 		ip, err := t.IP(ctx, cfg.TartVM)
 		if err == nil && ip != "" {
@@ -345,6 +353,10 @@ func (t *Tart) Start(ctx context.Context) error {
 	}
 	if err := t.waitForAgent(ctx); err != nil {
 		return err
+	}
+	if cfg.Isolation == IsolationFull {
+		fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.TartVM)
+		return nil
 	}
 	return t.launchBackend(ctx)
 }
@@ -421,6 +433,65 @@ func (t *Tart) Logs() error {
 // Shell opens an interactive shell in the VM, mirroring `just shell --tart`.
 func (t *Tart) Shell() error {
 	return RunInteractive("tart", "exec", "-it", t.Config.TartVM, "/bin/zsh")
+}
+
+// RunAgent launches the OpenCode TUI in the foreground inside the VM
+// (isolation full). Secrets are pushed first via the staged guest binary
+// (stdin only, never argv), then the TUI runs under `tart exec -it`, sourcing
+// the 0600 env file and execing opencode in the workspace share.
+func (t *Tart) RunAgent(ctx context.Context) error {
+	cfg := t.Config
+	if err := t.stageGuestBinary(); err != nil {
+		return err
+	}
+	// Copy the staged binary to guest-local disk (the share is not reliably
+	// executable), then push secrets and prepare the guest.
+	if err := t.guestRun(ctx, "/bin/cp", guestShareBinary, guestLocalBinary); err != nil {
+		return err
+	}
+	if err := t.guestRun(ctx, "/bin/chmod", "755", guestLocalBinary); err != nil {
+		return err
+	}
+	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, cfg.APIKey),
+		"tart", "exec", "-i", cfg.TartVM, guestLocalBinary, GuestSecretsCommand); err != nil {
+		return err
+	}
+	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand); err != nil {
+		return err
+	}
+	interactive := t.Interactive
+	if interactive == nil {
+		interactive = RunInteractive
+	}
+	return interactive("tart", "exec", "-it", cfg.TartVM, "/bin/zsh", "-lc", tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir))
+}
+
+// tartAgentLaunch builds the in-guest launch line for isolation full: source
+// the 0600 secrets env file, cd into the workspace share, exec the TUI. Both
+// paths are shell-quoted: the workspace share contains spaces, and the line
+// runs under `zsh -lc`.
+func tartAgentLaunch(secretsPath, workspaceDir string) string {
+	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode", shellQuote(secretsPath), shellQuote(workspaceDir))
+}
+
+// Status describes the managed VM's current state, for `check` in isolation
+// full where there is no health endpoint to probe.
+func (t *Tart) Status(ctx context.Context) (string, error) {
+	running, err := t.vmRunning(ctx, t.Config.TartVM)
+	if err != nil {
+		return "", err
+	}
+	if running {
+		return fmt.Sprintf("%s is running", t.Config.TartVM), nil
+	}
+	exists, err := t.vmExists(ctx)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return fmt.Sprintf("%s is stopped", t.Config.TartVM), nil
+	}
+	return fmt.Sprintf("%s does not exist", t.Config.TartVM), nil
 }
 
 // IsRunning reports whether any managed Tart VM is running.

@@ -58,6 +58,13 @@ type Backend interface {
 	IsRunning(ctx context.Context) (bool, error)
 	// Endpoint returns the host-reachable backend URL when running.
 	Endpoint(ctx context.Context) (string, error)
+	// RunAgent launches the OpenCode TUI in the foreground inside the guest
+	// (isolation full), with the workspace as its working directory and the
+	// host terminal passed through. It blocks until the TUI exits.
+	RunAgent(ctx context.Context) error
+	// Status describes the guest's current state for `check` in isolation
+	// full, where there is no health endpoint to probe.
+	Status(ctx context.Context) (string, error)
 }
 
 // ResolveRuntime picks a runtime from an explicit --<runtime> flag and the

@@ -27,6 +27,10 @@ type Runner interface {
 	// RunEnv runs a command with extra environment variables appended to the
 	// inherited environment.
 	RunEnv(ctx context.Context, env []string, name string, args ...string) (ExecResult, error)
+	// RunStdin runs a command in the foreground with a payload on stdin. It is
+	// the synchronous counterpart of Starter.Start for one-shot guest commands
+	// that must complete before the next step (secrets pushes).
+	RunStdin(ctx context.Context, stdin io.Reader, name string, args ...string) (ExecResult, error)
 }
 
 // Starter launches a detached, long-running process (tart run / tart exec -i)
@@ -45,6 +49,21 @@ func (OSRunner) Run(ctx context.Context, name string, args ...string) (ExecResul
 
 func (OSRunner) RunEnv(ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
 	return osRun(ctx, env, name, args...)
+}
+
+func (OSRunner) RunStdin(ctx context.Context, stdin io.Reader, name string, args ...string) (ExecResult, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = stdin
+	out, err := cmd.CombinedOutput()
+	res := ExecResult{Stdout: string(out), Stderr: string(out)}
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			res.ExitCode = ee.ExitCode()
+			return res, nil
+		}
+		return res, err
+	}
+	return res, nil
 }
 
 func osRun(ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
@@ -142,6 +161,20 @@ func runOK(r Runner, ctx context.Context, name string, args ...string) error {
 // runEnv is Run with additional environment variables.
 func runEnv(r Runner, ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
 	return r.RunEnv(ctx, env, name, args...)
+}
+
+// runStdinOK runs a command with a stdin payload and treats a nonzero exit
+// as an error. It is the synchronous counterpart of runOK for one-shot guest
+// commands (secrets pushes) that must complete before the next step.
+func runStdinOK(r Runner, ctx context.Context, stdin io.Reader, name string, args ...string) error {
+	res, err := r.RunStdin(ctx, stdin, name, args...)
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("%s %s failed (exit %d)", name, strings.Join(args, " "), res.ExitCode)
+	}
+	return nil
 }
 
 // runEnvOK is runOK with additional environment variables.

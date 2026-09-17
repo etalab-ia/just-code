@@ -332,3 +332,24 @@ func envHas(env []string, want string) bool {
 	}
 	return false
 }
+
+// TestGuestSecretsEnvCarriesProviderConfig pins the Tart full-mode contract:
+// the TUI sources this file and nothing else supplies the provider, so the
+// OpenCode config content must be in it, shell-quoted like every other value.
+func TestGuestSecretsEnvCarriesProviderConfig(t *testing.T) {
+	content := guestSecretsEnv("pw", "opencode", "key")
+	if !strings.Contains(content, "OPENCODE_CONFIG_CONTENT='") {
+		t.Fatalf("secrets env must carry the provider config: %q", content)
+	}
+	if !strings.Contains(content, "albert.api.etalab.gouv.fr") {
+		t.Fatalf("secrets env must carry the real provider config content: %q", content)
+	}
+	if !strings.Contains(content, "ALBERT_API_KEY='key'") || !strings.Contains(content, "OPENCODE_SERVER_PASSWORD='pw'") {
+		t.Fatalf("secrets env lost a credential line: %q", content)
+	}
+	// The config body is JSON full of quotes, braces and colons; if it were
+	// not single-quoted, sourcing the file would mangle it.
+	if strings.Contains(content, `OPENCODE_CONFIG_CONTENT={`) {
+		t.Fatalf("provider config must be single-quoted, not raw JSON: %q", content)
+	}
+}

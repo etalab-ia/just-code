@@ -35,6 +35,10 @@ func (f *fakeRunner) RunEnv(_ context.Context, env []string, name string, args .
 	return f.run(name, args...)
 }
 
+func (f *fakeRunner) RunStdin(_ context.Context, _ io.Reader, name string, args ...string) (ExecResult, error) {
+	return f.run(name, args...)
+}
+
 // hasCall reports whether any recorded call contains the given substring.
 func (f *fakeRunner) hasCall(substr string) bool {
 	for _, c := range f.calls {
@@ -292,5 +296,89 @@ func TestTartRestartPreflightsWorkspace(t *testing.T) {
 	}
 	if runner.hasCall("tart delete") || runner.hasCall("tart stop") {
 		t.Fatalf("destructive command ran before the workspace gate: %v", runner.calls)
+	}
+}
+
+func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
+	r := &fakeRunner{}
+	tt := newTestTart(t, r)
+	var interactiveArgs []string
+	tt.Interactive = func(name string, args ...string) error {
+		interactiveArgs = append([]string{name}, args...)
+		return nil
+	}
+	if err := tt.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	// Secrets push: tart exec -i with the staged binary and the hidden
+	// secrets subcommand, secrets on stdin only.
+	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand) {
+		t.Fatalf("secrets push missing; calls: %v", r.calls)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "pw") || strings.Contains(c, "key") {
+			t.Fatalf("secret value leaked into argv: %v", r.calls)
+		}
+	}
+	// Prepare step runs the staged binary's prepare subcommand.
+	if !r.hasCall("exec opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestPrepareCommand) {
+		t.Fatalf("prepare step missing; calls: %v", r.calls)
+	}
+	// Interactive TUI: tart exec -it, zsh login shell, launch line sources
+	// the secrets file and execs opencode in the workspace share.
+	if len(interactiveArgs) == 0 {
+		t.Fatal("interactive TUI step never ran")
+	}
+	joined := strings.Join(interactiveArgs, " ")
+	if !strings.HasPrefix(joined, "tart exec -it opencode-tahoe-base-latest /bin/zsh -lc ") {
+		t.Fatalf("interactive argv = %q", joined)
+	}
+	if !strings.Contains(joined, guestSecretsEnvPath) || !strings.Contains(joined, guestWorkspaceDir) || !strings.Contains(joined, "exec opencode") {
+		t.Fatalf("launch line must source the secrets file and exec opencode in the workspace: %q", joined)
+	}
+	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
+		t.Fatalf("secrets leaked into the interactive argv: %q", joined)
+	}
+}
+
+// TestTartAgentLaunchQuotesPaths pins the fix for the workspace share path:
+// it contains spaces, and the line runs under `zsh -lc`, so an unquoted `cd`
+// would receive multiple arguments and never reach `exec opencode`.
+func TestTartAgentLaunchQuotesPaths(t *testing.T) {
+	line := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir)
+	if !strings.Contains(line, "cd '"+guestWorkspaceDir+"'") {
+		t.Fatalf("workspace path must be shell-quoted for the spaced share path: %q", line)
+	}
+	if !strings.Contains(line, ". '"+guestSecretsEnvPath+"'") {
+		t.Fatalf("secrets path must be shell-quoted: %q", line)
+	}
+	// The share path really does contain spaces; guard the premise.
+	if !strings.Contains(guestWorkspaceDir, " ") {
+		t.Fatalf("guestWorkspaceDir no longer contains a space (%q); the quoting test is moot", guestWorkspaceDir)
+	}
+}
+
+func TestTartStartFullModeSkipsServerLaunch(t *testing.T) {
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		joined := strings.Join(args, " ")
+		if name == "tart" && strings.HasPrefix(joined, "list") {
+			return ExecResult{ExitCode: 0, Stdout: "local opencode-tahoe-base-latest 1.2.3.4 50G running\n"}
+		}
+		if strings.Contains(joined, "exec "+writeFakeSelf(t)) {
+			return ExecResult{ExitCode: 0}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	tt := newTestTart(t, r)
+	tt.Config.Isolation = IsolationFull
+	if err := tt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fs := tt.Starter.(*fakeStarter)
+	if fs.lastArgs != nil {
+		started := strings.Join(fs.lastArgs, " ")
+		if strings.Contains(started, GuestBootstrapCommand) {
+			t.Fatalf("full mode must not launch the backend server: %v", started)
+		}
 	}
 }
