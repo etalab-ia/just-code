@@ -114,7 +114,7 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
 		msb.WithPorts(msbPortMappings()),
 		msb.WithSecrets(msb.Secret.Env("ALBERT_API_KEY", spec.APIKey, msb.SecretEnvOptions{
-			AllowHosts: spec.AllowHosts,
+			Allow: spec.AllowHosts,
 		})),
 		msb.WithScripts(map[string]string{"start": spec.StartScript}),
 	}

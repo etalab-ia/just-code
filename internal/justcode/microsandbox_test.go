@@ -435,8 +435,8 @@ func TestMSBCreateOptions(t *testing.T) {
 	if len(cfg.Secrets) != 1 || cfg.Secrets[0].Value != spec.APIKey || cfg.Secrets[0].EnvVar != "ALBERT_API_KEY" {
 		t.Fatalf("secret config = %+v", cfg.Secrets)
 	}
-	if !reflect.DeepEqual(cfg.Secrets[0].AllowHosts, spec.AllowHosts) {
-		t.Fatalf("allowed hosts = %v", cfg.Secrets[0].AllowHosts)
+	if !reflect.DeepEqual(cfg.Secrets[0].Allow, spec.AllowHosts) {
+		t.Fatalf("allowed hosts = %v", cfg.Secrets[0].Allow)
 	}
 	if cfg.Scripts["start"] != spec.StartScript {
 		t.Fatalf("start script = %q", cfg.Scripts["start"])
