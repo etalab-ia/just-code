@@ -154,7 +154,7 @@ func TestAgentVMCleanRemovesStagingWithoutVM(t *testing.T) {
 	}
 }
 
-func TestAgentVMStartMissingTemplate(t *testing.T) {
+func TestAgentVMStartBuildsMissingDefaultTemplate(t *testing.T) {
 	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
 		if name == "limactl" && args[0] == "list" {
 			return ExecResult{ExitCode: 0, Stdout: ""}
@@ -162,12 +162,40 @@ func TestAgentVMStartMissingTemplate(t *testing.T) {
 		return ExecResult{ExitCode: 0}
 	}}
 	a := newTestAgentVM(t, runner)
+	// No error: the missing default template is built rather than reported.
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start must build the missing default template: %v", err)
+	}
+	for _, want := range []string{
+		"limactl create --name=" + DefaultAgentVMTemplate,
+		"limactl start " + DefaultAgentVMTemplate,
+		"limactl stop " + DefaultAgentVMTemplate,
+	} {
+		if !runner.hasCall(want) {
+			t.Errorf("expected call %q; calls: %v", want, runner.calls)
+		}
+	}
+}
+
+func TestAgentVMStartKeepsUserTemplateFailClosed(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: ""}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	a := newTestAgentVM(t, runner)
+	// A user-maintained template must never be built or replaced.
+	a.Config.AgentVMTemplate = "my-team-base"
 	err := a.Start(context.Background())
 	if err == nil {
-		t.Fatal("expected an error when the base template is missing")
+		t.Fatal("expected an error for a missing user template")
 	}
-	if !strings.Contains(err.Error(), "agent-vm setup") {
-		t.Errorf("error must point at agent-vm setup: %v", err)
+	if !strings.Contains(err.Error(), "my-team-base") {
+		t.Errorf("error must name the missing template: %v", err)
+	}
+	if runner.hasCall("limactl create") {
+		t.Errorf("a user template must never be created; calls: %v", runner.calls)
 	}
 }
 
@@ -258,7 +286,7 @@ func TestAgentVMDoctorMissingLimaCtl(t *testing.T) {
 	}
 }
 
-func TestAgentVMDoctorMissingTemplate(t *testing.T) {
+func TestAgentVMDoctorMissingDefaultTemplate(t *testing.T) {
 	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
 		if name == "limactl" && args[0] == "list" {
 			return ExecResult{ExitCode: 0, Stdout: ""}
@@ -266,12 +294,31 @@ func TestAgentVMDoctorMissingTemplate(t *testing.T) {
 		return ExecResult{ExitCode: 0, Stdout: "limactl version 1.0\n"}
 	}}
 	a := newTestAgentVM(t, runner)
+	// Doctor stays read-only: it reports the pending build instead of running
+	// a multi-minute provisioning side effect.
+	if err := a.Doctor(context.Background()); err != nil {
+		t.Fatalf("doctor must not fail on a missing default template: %v", err)
+	}
+	if runner.hasCall("limactl create") {
+		t.Errorf("doctor must not build the template; calls: %v", runner.calls)
+	}
+}
+
+func TestAgentVMDoctorKeepsUserTemplateFailClosed(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: ""}
+		}
+		return ExecResult{ExitCode: 0, Stdout: "limactl version 1.0\n"}
+	}}
+	a := newTestAgentVM(t, runner)
+	a.Config.AgentVMTemplate = "my-team-base"
 	err := a.Doctor(context.Background())
 	if err == nil {
-		t.Fatal("expected doctor to fail on missing template")
+		t.Fatal("expected doctor to fail when a user template is missing")
 	}
-	if !strings.Contains(err.Error(), "agent-vm setup") {
-		t.Errorf("error must point at agent-vm setup: %v", err)
+	if !strings.Contains(err.Error(), "my-team-base") {
+		t.Errorf("error must name the missing template: %v", err)
 	}
 }
 

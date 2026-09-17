@@ -125,6 +125,79 @@ func TestLoadConfigInvalidStartTimeoutIsNotFatal(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAgentVMBaseTemplateDefaults(t *testing.T) {
+	cfg := LoadConfig(lookupFrom(nil))
+	if cfg.AgentVMImage != DefaultAgentVMImage {
+		t.Errorf("AgentVMImage = %q, want %q", cfg.AgentVMImage, DefaultAgentVMImage)
+	}
+	if cfg.AgentVMDiskGB != DefaultAgentVMDiskGB ||
+		cfg.AgentVMMemoryGB != DefaultAgentVMMemoryGB ||
+		cfg.AgentVMCPUs != DefaultAgentVMCPUs {
+		t.Errorf("resource defaults = %d/%d/%d, want %d/%d/%d",
+			cfg.AgentVMDiskGB, cfg.AgentVMMemoryGB, cfg.AgentVMCPUs,
+			DefaultAgentVMDiskGB, DefaultAgentVMMemoryGB, DefaultAgentVMCPUs)
+	}
+}
+
+func TestLoadConfigAgentVMResources(t *testing.T) {
+	cfg := LoadConfig(lookupFrom(map[string]string{
+		"AGENT_VM_IMAGE":     "template:debian-12",
+		"AGENT_VM_DISK_GB":   "40",
+		"AGENT_VM_MEMORY_GB": "8",
+		"AGENT_VM_CPUS":      "6",
+	}))
+	if cfg.AgentVMResourcesErr != nil {
+		t.Fatalf("unexpected parse error: %v", cfg.AgentVMResourcesErr)
+	}
+	if cfg.AgentVMImage != "template:debian-12" {
+		t.Errorf("AgentVMImage = %q", cfg.AgentVMImage)
+	}
+	if cfg.AgentVMDiskGB != 40 || cfg.AgentVMMemoryGB != 8 || cfg.AgentVMCPUs != 6 {
+		t.Errorf("resources = %d/%d/%d, want 40/8/6", cfg.AgentVMDiskGB, cfg.AgentVMMemoryGB, cfg.AgentVMCPUs)
+	}
+}
+
+// TestLoadConfigInvalidAgentVMResourcesIsNotFatal records the deferred-error
+// contract: a typo in a sizing variable is stored rather than returned, so
+// commands that never build a template still run.
+func TestLoadConfigInvalidAgentVMResourcesIsNotFatal(t *testing.T) {
+	for _, bad := range []string{"abc", "0", "-5", "1.5"} {
+		cfg := LoadConfig(lookupFrom(map[string]string{"AGENT_VM_DISK_GB": bad}))
+		if cfg.AgentVMResourcesErr == nil {
+			t.Errorf("AGENT_VM_DISK_GB=%q: expected a deferred parse error", bad)
+		}
+		if cfg.AgentVMDiskGB != DefaultAgentVMDiskGB {
+			t.Errorf("AGENT_VM_DISK_GB=%q: DiskGB = %d, want the default", bad, cfg.AgentVMDiskGB)
+		}
+	}
+}
+
+// A user-supplied template must be recognisable as not-ours, so it is never
+// built or replaced.
+func TestAgentVMTemplateOwnership(t *testing.T) {
+	a := newTestAgentVM(t, &fakeRunner{})
+	if !a.ownsBaseTemplate() {
+		t.Errorf("the default template name must be owned by just-code")
+	}
+	a.Config.AgentVMTemplate = "my-team-base"
+	if a.ownsBaseTemplate() {
+		t.Errorf("a custom template name must not be owned by just-code")
+	}
+}
+
+func TestAgentVMBaseTemplateSpecUsesConfigResources(t *testing.T) {
+	a := newTestAgentVM(t, &fakeRunner{})
+	a.Config.AgentVMImage = "template:debian-13"
+	a.Config.AgentVMDiskGB = 33
+	a.Config.AgentVMMemoryGB = 7
+	a.Config.AgentVMCPUs = 5
+	spec := a.BaseTemplateSpec()
+	if spec.Name != DefaultAgentVMTemplate || spec.Image != "template:debian-13" ||
+		spec.DiskGB != 33 || spec.MemoryGB != 7 || spec.CPUs != 5 {
+		t.Errorf("BaseTemplateSpec = %+v, want the configured resources", spec)
+	}
+}
+
 func TestParseDotenv(t *testing.T) {
 	m := parseDotenv("# comment\nALBERT_API_KEY=\nOPENCODE_SERVER_USERNAME=opencode\nexport OPENCODE_SERVER_PASSWORD=\"albert-dev-pass\"\nRUNTIME=tart\n")
 	if m["ALBERT_API_KEY"] != "" {

@@ -111,6 +111,42 @@ func (a *AgentVM) templateExists(ctx context.Context) (bool, error) {
 	return ok, nil
 }
 
+// ownsBaseTemplate reports whether just-code is allowed to create or replace
+// the base template. Only the default name is ours: any other
+// AGENT_VM_TEMPLATE value names a template the user built and maintains, and
+// silently rebuilding it would destroy their work.
+func (a *AgentVM) ownsBaseTemplate() bool {
+	return a.Config.AgentVMTemplate == DefaultAgentVMTemplate
+}
+
+// BaseTemplateSpec returns the base template description for the configured
+// resources.
+func (a *AgentVM) BaseTemplateSpec() BaseTemplateSpec {
+	return BaseTemplateSpec{
+		Name:     a.Config.AgentVMTemplate,
+		Image:    a.Config.AgentVMImage,
+		DiskGB:   a.Config.AgentVMDiskGB,
+		MemoryGB: a.Config.AgentVMMemoryGB,
+		CPUs:     a.Config.AgentVMCPUs,
+	}
+}
+
+// ensureBaseTemplate builds the base template when it is missing. A template
+// the user maintains (any non-default AGENT_VM_TEMPLATE) is never built: it is
+// reported as missing instead, pointing at the variable that named it.
+func (a *AgentVM) ensureBaseTemplate(ctx context.Context) error {
+	if !a.ownsBaseTemplate() {
+		return fmt.Errorf("base template %s not found; build it with 'agent-vm setup' or point AGENT_VM_TEMPLATE at an existing template", a.Config.AgentVMTemplate)
+	}
+	if a.Config.AgentVMResourcesErr != nil {
+		return a.Config.AgentVMResourcesErr
+	}
+	if err := BuildBaseTemplate(ctx, a.Runner, a.BaseTemplateSpec(), mustAsset("agentvm-base-prep.sh"), os.Stdout); err != nil {
+		return err
+	}
+	return nil
+}
+
 // mountsJSON builds the Lima mounts array for the workspace: the host
 // WORKSPACE_DIR mounted writable at the same path inside the guest, mirroring
 // agent-vm's per-directory mount model.
@@ -322,7 +358,9 @@ func (a *AgentVM) Start(ctx context.Context) error {
 			return err
 		}
 		if !templateOK {
-			return fmt.Errorf("base template %s not found; build it with 'agent-vm setup' (see https://github.com/sylvinus/agent-vm)", cfg.AgentVMTemplate)
+			if err := a.ensureBaseTemplate(ctx); err != nil {
+				return err
+			}
 		}
 		if err := a.createVM(ctx); err != nil {
 			return err
@@ -422,7 +460,13 @@ func (a *AgentVM) Doctor(ctx context.Context) error {
 		return err
 	}
 	if !templateOK {
-		return fmt.Errorf("base template %s not found; build it with 'agent-vm setup' (see https://github.com/sylvinus/agent-vm)", a.Config.AgentVMTemplate)
+		if a.ownsBaseTemplate() {
+			// Doctor stays read-only: building the template is a multi-minute
+			// side effect, so it is reported here and performed by Start.
+			fmt.Printf("base template %s not found; it will be built on the next start.\n", a.Config.AgentVMTemplate)
+			return nil
+		}
+		return fmt.Errorf("base template %s not found; build it with 'agent-vm setup' or point AGENT_VM_TEMPLATE at an existing template", a.Config.AgentVMTemplate)
 	}
 	fmt.Printf("agent-vm runtime is ready (template %s).\n", a.Config.AgentVMTemplate)
 	return nil
