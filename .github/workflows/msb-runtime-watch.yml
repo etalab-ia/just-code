@@ -1,5 +1,5 @@
 # Detects upstream Microsandbox runtime releases and mirrors them into a
-# dedicated msb-runtime-v<version> release after human review.
+# dedicated microsandbox-v<version> release after human review.
 #
 # Two deliberately separated paths:
 #   - detect (scheduled): compares the latest upstream release with the SDK
@@ -96,7 +96,7 @@ jobs:
           VERSION: ${{ steps.versions.outputs.upstream_version }}
         run: |
           set -euo pipefail
-          if gh release view "msb-runtime-v$VERSION" >/dev/null 2>&1; then
+          if gh release view "microsandbox-v$VERSION" >/dev/null 2>&1; then
             echo "mirrored=true" >> "$GITHUB_OUTPUT"
           else
             echo "mirrored=false" >> "$GITHUB_OUTPUT"
@@ -150,7 +150,7 @@ jobs:
             echo ""
             echo "Procédure :"
             echo "1. Bump du SDK \`github.com/superradcompany/microsandbox/sdk/go\` vers \`v$UPSTREAM_VERSION\` dans \`go.mod\`."
-            echo "2. Mise en miroir : workflow_dispatch de \`msb-runtime-watch\` avec \`version=$UPSTREAM_VERSION\` (vérifie les empreintes amont, publie \`msb-runtime-v$UPSTREAM_VERSION\` avec \`--latest=false\`)."
+            echo "2. Mise en miroir : workflow_dispatch de \`msb-runtime-watch\` avec \`version=$UPSTREAM_VERSION\` (vérifie les empreintes amont, publie \`microsandbox-v$UPSTREAM_VERSION\` avec \`--latest=false\`)."
             echo "3. PR de code mettant à jour ensemble \`msbRuntimeVersion\`, \`msbRuntimeReleaseURL\` et les cinq empreintes dans \`internal/justcode/msb_runtime_install.go\` (\`TestMSBRuntimeVersionMatchesSDK\` bloque un décalage)."
             echo ""
             echo "👾 Generated with [Letta Code](https://letta.com)"
@@ -256,7 +256,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          tag="msb-runtime-v$VERSION"
+          tag="microsandbox-v$VERSION"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "::error::Release $tag already exists; refusing to overwrite it"
             exit 1
