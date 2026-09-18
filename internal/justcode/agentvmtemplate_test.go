@@ -3,6 +3,8 @@ package justcode
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,7 +49,7 @@ func TestBuildBaseTemplateLifecycle(t *testing.T) {
 	runner := &fakeRunner{}
 	var out strings.Builder
 	spec := BaseTemplateSpec{Name: "agent-vm-base", Image: "template:debian-13", DiskGB: 20, MemoryGB: 4, CPUs: 2}
-	if err := BuildBaseTemplate(context.Background(), runner, spec, "echo prep\n", &out); err != nil {
+	if err := BuildBaseTemplate(context.Background(), runner, spec, filepath.Join(t.TempDir(), "ready"), "echo prep\n", &out); err != nil {
 		t.Fatalf("BuildBaseTemplate: %v", err)
 	}
 	order := []string{
@@ -87,7 +89,7 @@ func TestBuildBaseTemplateRollsBackOnProvisionFailure(t *testing.T) {
 	}}
 	var out strings.Builder
 	spec := BaseTemplateSpec{Name: "agent-vm-base", Image: "template:debian-13", DiskGB: 20, MemoryGB: 4, CPUs: 2}
-	err := BuildBaseTemplate(context.Background(), runner, spec, "exit 1\n", &out)
+	err := BuildBaseTemplate(context.Background(), runner, spec, filepath.Join(t.TempDir(), "ready"), "exit 1\n", &out)
 	if err == nil {
 		t.Fatal("expected provisioning failure to be reported")
 	}
@@ -112,7 +114,7 @@ func TestBuildBaseTemplatePipesScriptOnStdin(t *testing.T) {
 	runner := &recordingStdinRunner{}
 	var out strings.Builder
 	spec := BaseTemplateSpec{Name: "agent-vm-base", Image: "template:debian-13", DiskGB: 20, MemoryGB: 4, CPUs: 2}
-	if err := BuildBaseTemplate(context.Background(), runner, spec, "SECRET_MARKER\n", &out); err != nil {
+	if err := BuildBaseTemplate(context.Background(), runner, spec, filepath.Join(t.TempDir(), "ready"), "SECRET_MARKER\n", &out); err != nil {
 		t.Fatalf("BuildBaseTemplate: %v", err)
 	}
 	for _, c := range runner.calls {
@@ -139,11 +141,123 @@ func (r *recordingStdinRunner) RunStdin(_ context.Context, stdin io.Reader, name
 	return r.fakeRunner.run(name, args...)
 }
 
-func TestDeleteBaseTemplateToleratesAbsentInstance(t *testing.T) {
+// `limactl delete` already exits 0 for an instance it does not know about, so
+// a nonzero exit is never "the template was absent": it is a real failure that
+// must propagate, or Start will accept a broken template based on its name.
+func TestDeleteBaseTemplatePropagatesFailure(t *testing.T) {
 	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
-		return ExecResult{ExitCode: 1, Stderr: "instance does not exist"}
+		return ExecResult{ExitCode: 1, Stderr: "directory exists but its lima.yaml could not be read; it was NOT deleted"}
+	}}
+	if err := DeleteBaseTemplate(context.Background(), runner, "agent-vm-base"); err == nil {
+		t.Error("a nonzero limactl delete exit must be an error, not silent success")
+	}
+}
+
+func TestDeleteBaseTemplateAcceptsAbsentInstance(t *testing.T) {
+	// The real behaviour: absent instance, exit 0, warning on stderr.
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		return ExecResult{ExitCode: 0, Stderr: "Ignoring non-existent instance \"agent-vm-base\""}
 	}}
 	if err := DeleteBaseTemplate(context.Background(), runner, "agent-vm-base"); err != nil {
-		t.Errorf("deleting an absent template must not be an error: %v", err)
+		t.Errorf("an absent instance is a clean no-op: %v", err)
+	}
+}
+
+// The marker is written only after every step succeeds; it is what separates a
+// finished template from one abandoned mid-build.
+func TestBuildBaseTemplateWritesMarkerLast(t *testing.T) {
+	runner := &fakeRunner{}
+	marker := filepath.Join(t.TempDir(), "ready")
+	var out strings.Builder
+	spec := BaseTemplateSpec{Name: "agent-vm-base", Image: "template:debian-13", DiskGB: 20, MemoryGB: 4, CPUs: 2}
+	if err := BuildBaseTemplate(context.Background(), runner, spec, marker, "echo prep\n", &out); err != nil {
+		t.Fatalf("BuildBaseTemplate: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("a successful build must write the completion marker: %v", err)
+	}
+}
+
+func TestBuildBaseTemplateDoesNotWriteMarkerOnFailure(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && args[0] == "shell" {
+			return ExecResult{ExitCode: 1, Stderr: "provisioning failed"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	marker := filepath.Join(t.TempDir(), "ready")
+	var out strings.Builder
+	spec := BaseTemplateSpec{Name: "agent-vm-base", Image: "template:debian-13", DiskGB: 20, MemoryGB: 4, CPUs: 2}
+	if err := BuildBaseTemplate(context.Background(), runner, spec, marker, "exit 1\n", &out); err == nil {
+		t.Fatal("expected provisioning failure")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("a failed build must not leave a completion marker")
+	}
+}
+
+// An interrupted build cannot run its own rollback, so the instance survives
+// with the name intact. The marker is the only evidence that it is finished.
+func TestAgentVMRebuildsUnmarkedOwnedTemplate(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && args[0] == "list" {
+			// Instance exists (as after `limactl create`), but the build never
+			// completed: no marker was written.
+			return ExecResult{ExitCode: 0, Stdout: DefaultAgentVMTemplate + "|Stopped\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	a := newTestAgentVM(t, runner)
+	if a.ownedTemplateUsable() {
+		t.Fatal("an unmarked template must not be considered usable")
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start must rebuild an unmarked template: %v", err)
+	}
+	if !runner.hasCall("limactl create --name=" + DefaultAgentVMTemplate) {
+		t.Errorf("expected a rebuild; calls: %v", runner.calls)
+	}
+}
+
+func TestAgentVMOwnedTemplateUsableWithMarker(t *testing.T) {
+	a := newTestAgentVM(t, &fakeRunner{})
+	marker := a.templateMarkerPath()
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte(DefaultAgentVMTemplate+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !a.ownedTemplateUsable() {
+		t.Error("a marked template must be usable")
+	}
+	if err := a.ensureBaseTemplate(context.Background()); err != nil {
+		t.Errorf("ensureBaseTemplate must be a no-op when already usable: %v", err)
+	}
+}
+
+// A template we did not build has no marker and must still be used as-is.
+func TestAgentVMUserTemplateUsableWithoutMarker(t *testing.T) {
+	a := newTestAgentVM(t, &fakeRunner{})
+	a.Config.AgentVMTemplate = "my-team-base"
+	if !a.ownedTemplateUsable() {
+		t.Error("a user-maintained template must not require our marker")
+	}
+}
+
+func TestAgentVMTemplateMarkerPathIsSafe(t *testing.T) {
+	a := newTestAgentVM(t, &fakeRunner{})
+	a.Config.AgentVMTemplate = "../../escape"
+	got := a.templateMarkerPath()
+	// The dangerous part of a traversal is the path separator, not the dots:
+	// the marker must remain a direct child of the state directory.
+	if strings.Contains(strings.TrimPrefix(got, a.StateDir+string(filepath.Separator)), string(filepath.Separator)) {
+		t.Errorf("marker path must be a direct child of the state dir: %q", got)
+	}
+	if filepath.Dir(got) != a.StateDir {
+		t.Errorf("marker dir = %q, want %q", filepath.Dir(got), a.StateDir)
+	}
+	if !strings.HasPrefix(filepath.Base(got), "agent-vm-template-") {
+		t.Errorf("marker name lost its prefix: %q", filepath.Base(got))
 	}
 }

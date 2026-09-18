@@ -131,9 +131,10 @@ func (a *AgentVM) BaseTemplateSpec() BaseTemplateSpec {
 	}
 }
 
-// ensureBaseTemplate builds the base template when it is missing. A template
-// the user maintains (any non-default AGENT_VM_TEMPLATE) is never built: it is
-// reported as missing instead, pointing at the variable that named it.
+// ensureBaseTemplate builds the base template when it is missing or was left
+// behind by an interrupted build. A template the user maintains (any
+// non-default AGENT_VM_TEMPLATE) is never built: it is reported as missing
+// instead, pointing at the variable that named it.
 func (a *AgentVM) ensureBaseTemplate(ctx context.Context) error {
 	if !a.ownsBaseTemplate() {
 		return fmt.Errorf("base template %s not found; build it with 'agent-vm setup' or point AGENT_VM_TEMPLATE at an existing template", a.Config.AgentVMTemplate)
@@ -141,10 +142,36 @@ func (a *AgentVM) ensureBaseTemplate(ctx context.Context) error {
 	if a.Config.AgentVMResourcesErr != nil {
 		return a.Config.AgentVMResourcesErr
 	}
-	if err := BuildBaseTemplate(ctx, a.Runner, a.BaseTemplateSpec(), mustAsset("agentvm-base-prep.sh"), os.Stdout); err != nil {
+	if err := BuildBaseTemplate(ctx, a.Runner, a.BaseTemplateSpec(), a.templateMarkerPath(), mustAsset("agentvm-base-prep.sh"), os.Stdout); err != nil {
 		return err
 	}
 	return nil
+}
+
+// templateMarkerPath is the host-side completion marker for an owned base
+// template.
+func (a *AgentVM) templateMarkerPath() string {
+	return AgentVMTemplateMarkerPath(a.StateDir, a.Config.AgentVMTemplate)
+}
+
+// ownedTemplateUsable reports whether an existing template may be cloned.
+//
+// An instance that exists is not by itself proof of a finished build: an
+// interrupted build registers the instance with `limactl create` and cannot
+// run its own rollback, so the name alone would let Start clone a template
+// that was never provisioned (no OpenCode in it). The marker is written only
+// after provisioning and the final stop succeed, so for a template we own, its
+// absence means "rebuild" rather than "use".
+//
+// A user-maintained template has no marker and is taken at face value: we did
+// not build it, so we cannot judge it, and refusing to use it would break
+// every existing setup.
+func (a *AgentVM) ownedTemplateUsable() bool {
+	if !a.ownsBaseTemplate() {
+		return true
+	}
+	_, err := os.Stat(a.templateMarkerPath())
+	return err == nil
 }
 
 // mountsJSON builds the Lima mounts array for the workspace: the host
@@ -357,7 +384,7 @@ func (a *AgentVM) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if !templateOK {
+		if !templateOK || !a.ownedTemplateUsable() {
 			if err := a.ensureBaseTemplate(ctx); err != nil {
 				return err
 			}
@@ -459,11 +486,13 @@ func (a *AgentVM) Doctor(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !templateOK {
+	if !templateOK || !a.ownedTemplateUsable() {
 		if a.ownsBaseTemplate() {
 			// Doctor stays read-only: building the template is a multi-minute
 			// side effect, so it is reported here and performed by Start.
-			fmt.Printf("base template %s not found; it will be built on the next start.\n", a.Config.AgentVMTemplate)
+			// An existing but unmarked template is the interrupted-build case,
+			// and Start rebuilds it.
+			fmt.Printf("base template %s is not ready; it will be built on the next start.\n", a.Config.AgentVMTemplate)
 			return nil
 		}
 		return fmt.Errorf("base template %s not found; build it with 'agent-vm setup' or point AGENT_VM_TEMPLATE at an existing template", a.Config.AgentVMTemplate)

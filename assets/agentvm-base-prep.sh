@@ -44,12 +44,13 @@ $SUDO apt-get install -y --no-install-recommends \
   unzip \
   xz-utils
 
-# PATH for every shell, independent of the login shell. The OpenCode installer
-# only writes ~/.zshrc and ~/.zshenv, which a non-interactive shell (briefly:
-# `limactl shell <vm> sh -c ...`) never reads. /etc/profile.d is sourced by
-# bash and zsh login shells alike.
+# PATH for interactive login shells. The authoritative mechanism is the
+# /usr/local/bin symlink created below (it is in every shell's default PATH);
+# this block only keeps the private install directories visible in a shell a
+# user opens themselves, and mirrors what the OpenCode installer would have
+# written had we let it touch the shell rc files.
 $SUDO tee /etc/profile.d/just-code.sh > /dev/null <<'PROFILE'
-# Managed by just-code. Provides the toolchain paths for every shell.
+# Managed by just-code. Keeps the per-user toolchain directories on PATH.
 if [ -d "$HOME/.opencode/bin" ]; then
   PATH="$HOME/.opencode/bin:$PATH"
 fi
@@ -66,9 +67,8 @@ curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | $SUDO -E bash -
 $SUDO apt-get install -y --no-install-recommends nodejs
 
 echo "just-code: installing OpenCode..."
-# --no-modify-path: just-code owns PATH through /etc/profile.d above. Letting
-# the installer edit shell rc files would duplicate the entry and tie the
-# install to zsh.
+# --no-modify-path: just-code owns PATH below. Letting the installer edit shell
+# rc files would tie the install to the installer's shell detection.
 curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 
 # Fail loudly here rather than at backend launch: a base template without
@@ -76,6 +76,20 @@ curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 # an opaque health timeout.
 if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
   echo "just-code: OpenCode did not install to \$HOME/.opencode/bin/opencode" >&2
+  exit 1
+fi
+
+# Put the binary on the system PATH. /usr/local/bin is in the default PATH of
+# every shell — login or not, bash or sh, interactive or not — so the backend
+# launch finds `opencode` without depending on which startup files a given
+# shell happens to read. The installer's own $HOME/.opencode/bin is left in
+# place, and the profile.d entry below still covers interactive shells.
+$SUDO ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode
+
+# Verify the system-wide path resolves, not just the private one: this is the
+# one the backend actually uses.
+if ! command -v opencode > /dev/null 2>&1; then
+  echo "just-code: opencode is not resolvable on the system PATH after install" >&2
   exit 1
 fi
 

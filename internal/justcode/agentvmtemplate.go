@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -41,33 +43,45 @@ func baseTemplateCreateArgs(spec BaseTemplateSpec) []string {
 	}
 }
 
-// DeleteBaseTemplate removes a base template, ignoring absence. It is used to
-// clear partial state before a build and to roll back a failed provisioning
-// attempt: a template that exists but was never provisioned would otherwise be
-// treated as valid by the next start.
+// DeleteBaseTemplate removes a base template. A genuinely absent instance is
+// not an error; every other nonzero exit is propagated.
+//
+// `limactl delete` already exits 0 for an instance it does not know about
+// ("Ignoring non-existent instance"), so no exit code needs special-casing.
+// The failure worth surfacing is the opposite one: an instance directory that
+// exists but cannot be read (permissions, a concurrent clone) exits nonzero
+// with "it was NOT deleted", and silently treating that as success would let
+// Start accept a broken template based only on its name.
 func DeleteBaseTemplate(ctx context.Context, r Runner, name string) error {
 	res, err := r.Run(ctx, "limactl", "delete", name, "--force")
 	if err != nil {
 		return err
 	}
-	// A missing instance is not an error for a delete.
-	_ = res
+	if res.ExitCode != 0 {
+		return fmt.Errorf("limactl delete %s failed (exit %d): %s", name, res.ExitCode, res.Stderr)
+	}
 	return nil
 }
 
 // BuildBaseTemplate creates, boots, provisions and stops the Lima base
-// template. It is idempotent only in the sense that it clears prior state
-// first: any existing instance with this name is removed, so calling it on a
+// template, then records a completion marker. It is not resumable: any
+// existing instance with this name is removed first, so calling it on a
 // populated template rebuilds from scratch. Callers must therefore gate it on
-// the template being absent (see AgentVM.ensureBaseTemplate).
-func BuildBaseTemplate(ctx context.Context, r Runner, spec BaseTemplateSpec, script string, out io.Writer) error {
+// the template being absent or unmarked (see AgentVM.ensureBaseTemplate).
+//
+// The marker is written last and is the only signal that the template is
+// usable. An interrupted build cannot run its own rollback, so the next start
+// needs a way to tell a finished template from an abandoned one.
+func BuildBaseTemplate(ctx context.Context, r Runner, spec BaseTemplateSpec, markerPath, script string, out io.Writer) error {
 	fmt.Fprintf(out, "Building the %s base template (this takes several minutes)...\n", spec.Name)
 
 	// Clear partial state: an interrupted earlier build leaves an instance
-	// Lima knows about but that was never provisioned.
+	// Lima knows about but that was never provisioned, and the marker from a
+	// previous successful build must not survive a rebuild.
 	if err := DeleteBaseTemplate(ctx, r, spec.Name); err != nil {
 		return err
 	}
+	_ = os.Remove(markerPath)
 
 	if err := runOK(r, ctx, "limactl", baseTemplateCreateArgs(spec)...); err != nil {
 		return fmt.Errorf("limactl create failed for %s: %w", spec.Name, err)
@@ -92,7 +106,19 @@ func BuildBaseTemplate(ctx context.Context, r Runner, spec BaseTemplateSpec, scr
 
 	fmt.Fprintf(out, "Stopping %s...\n", spec.Name)
 	if err := runOK(r, ctx, "limactl", "stop", spec.Name); err != nil {
+		// The template is provisioned but has not been stopped cleanly, so it
+		// stays unmarked and the next start rebuilds it rather than cloning a
+		// running instance.
+		_ = DeleteBaseTemplate(ctx, r, spec.Name)
 		return fmt.Errorf("limactl stop failed for %s: %w", spec.Name, err)
+	}
+
+	// Written last, and only after every step succeeded.
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(markerPath, []byte(spec.Name+"\n"), 0o644); err != nil {
+		return fmt.Errorf("template %s was built but its completion marker could not be written: %w", spec.Name, err)
 	}
 
 	fmt.Fprintf(out, "Base template %s is ready.\n", spec.Name)
