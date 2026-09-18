@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.3.0...just-code-v0.4.0) (2026-09-18)
+
+
+### Features
+
+* add --isolation backend|full execution mode ([db3d1ab](https://github.com/etalab-ia/just-code/commit/db3d1ab983e0a0bd96a048797dae50a371171ba7))
+* add --isolation backend|full execution mode ([1b02925](https://github.com/etalab-ia/just-code/commit/1b02925a2a49b2e8ee97cd0ddc6bbc0ec4d35f1b))
+* **agent-vm:** build the base template ourselves ([e063e33](https://github.com/etalab-ia/just-code/commit/e063e331dec72a558c0fcb5d3c62cc65b5f1012c))
+* **agent-vm:** construire nous-mêmes le template de base ([ae7fd5f](https://github.com/etalab-ia/just-code/commit/ae7fd5f8f863a2673f2ed2099092ed7b1575bf28))
+
+
+### Bug Fixes
+
+* address review findings on the isolation mode ([3bd6681](https://github.com/etalab-ia/just-code/commit/3bd6681584218efdf68ea39457e487c36c6ef9da))
+* **agent-vm:** address review findings on the base template ([6e14779](https://github.com/etalab-ia/just-code/commit/6e14779d1ba23f888846442d24307ba00ea64b7d))
+
 ## [0.3.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.2.0...just-code-v0.3.0) (2026-09-17)
 
 
