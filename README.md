@@ -58,7 +58,7 @@ Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-
 - L'un des runtimes disponibles :
   - [Microsandbox](https://github.com/superradcompany/microsandbox) sur un Mac Apple Silicon, Linux (KVM) ou Windows arm64/x64 (Windows Hypervisor Platform / WHP) ; l'exécutable `msb` n'a pas besoin d'être installé ;
   - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS) ;
-  - [agent-vm](https://github.com/sylvinus/agent-vm) ([Lima](https://lima-vm.io) requis) sur macOS ou Linux : une VM Debian persistante par workspace, clonée depuis un template de base construit par `agent-vm setup`.
+  - [agent-vm](https://github.com/sylvinus/agent-vm) ([Lima](https://lima-vm.io) requis) sur macOS ou Linux : une VM Debian persistante par workspace, clonée depuis un template de base construit par just-code.
 
 `just-code` embarque le SDK Go Microsandbox. Au premier `start` ou `doctor`, il télécharge automatiquement la version correspondante du runtime depuis une [release autonome du projet](https://github.com/etalab-ia/just-code/releases/tag/microsandbox-v0.7.0), sous `$MSB_HOME` si cette variable est définie, sinon sous `~/.microsandbox/`. L'URL et l'empreinte SHA-256 attendue pour chaque plateforme sont gravées dans le binaire : l'archive est vérifiée avant toute décompression, puis le SDK contrôle encore la présence des fichiers et la version de `msb`. Le chemin géré n'a pas besoin d'être ajouté au `PATH`.
 
@@ -158,8 +158,12 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 | `MSB_LIBKRUNFW_PATH` | non | runtime géré | Chemin direct vers la bibliothèque `libkrunfw` fournie manuellement. À définir avec `MSB_PATH`. |
 | `TART_IMAGE` | non | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Image utilisée pour créer la VM Tart. Sans effet sur Microsandbox. |
 | `TART_MTU` | non | `1280` | MTU de l'invité Tart : entier de `1280` à `1500`, ou `auto` pour ne pas la modifier. Sans effet sur Microsandbox. |
-| `AGENT_VM_TEMPLATE` | non | `agent-vm-base` | Template Lima servant de base à la VM agent-vm, construit par `agent-vm setup`. Sans effet sur les autres runtimes. |
+| `AGENT_VM_TEMPLATE` | non | `agent-vm-base` | Template Lima servant de base à la VM agent-vm. Sous ce nom par défaut, just-code le construit s'il est absent ; tout autre nom désigne un template que vous maintenez, qui n'est jamais construit ni remplacé. Sans effet sur les autres runtimes. |
 | `AGENT_VM_VM` | non | `opencode-agent-vm` | Nom de la VM Lima gérée par just-code. Sans effet sur les autres runtimes. |
+| `AGENT_VM_IMAGE` | non | `template:debian-13` | Image Lima utilisée pour créer le template de base. Sans effet sur les autres runtimes. |
+| `AGENT_VM_DISK_GB` | non | `20` | Taille du disque du template de base, en Go. Lima ne sait agrandir un disque que dans ce sens : prévoir large. Sans effet sur les autres runtimes. |
+| `AGENT_VM_MEMORY_GB` | non | `4` | Mémoire du template de base, en Go. Sans effet sur les autres runtimes. |
+| `AGENT_VM_CPUS` | non | `2` | Nombre de processeurs du template de base. Sans effet sur les autres runtimes. |
 
 ### Priorité et prise d'effet
 
@@ -214,21 +218,25 @@ Les VM Tahoe et Sonoma coexistent ; changer `TART_IMAGE` cible l'autre VM sans s
 
 ### Runtime agent-vm
 
-Le runtime `agent-vm` exécute le backend OpenCode dans une VM Linux Debian persistante pilotée par [Lima](https://lima-vm.io), clonée depuis le template de base de [agent-vm](https://github.com/sylvinus/agent-vm). Contrairement à Microsandbox (microVM éphémère par sandbox), la VM est persistante : les logiciels installés dans l'invité survivent aux arrêts.
+Le runtime `agent-vm` exécute le backend OpenCode dans une VM Linux Debian persistante pilotée par [Lima](https://lima-vm.io). Contrairement à Microsandbox (microVM éphémère par sandbox), la VM est persistante : les logiciels installés dans l'invité survivent aux arrêts.
 
 Prérequis :
 
 1. [Lima](https://lima-vm.io) (`brew install lima` sur macOS).
-2. Le template de base, construit une fois par l'outil agent-vm : `agent-vm setup`. Il préinstalle les outils de dev, Docker, Chromium et OpenCode dans `~/.opencode/bin`.
+2. Rien d'autre : le template de base est construit par just-code lui-même au premier démarrage.
 
 ```bash
-just-code doctor --agent-vm    # vérifie limactl et le template
-just-code --agent-vm           # démarre la VM et attache le TUI
+just-code doctor --agent-vm    # vérifie limactl et signale un template à construire
+just-code --agent-vm           # construit le template si besoin, démarre la VM et attache le TUI
 ```
 
-Au premier `start`, just-code clone le template en une VM nommée `opencode-agent-vm`, monte `WORKSPACE_DIR` à l'identique dans l'invité, démarre la VM puis lance `opencode serve` dedans. Le port 4096 est publié sur `127.0.0.1` côté hôte via le transfert de ports Lima ; les serveurs de dev lancés par l'agent sur les ports 3000-3010 sont également accessibles depuis l'hôte (transfert dynamique Lima). Les secrets (clé Albert, authentification HTTP) transitent par un fichier d'environnement poussé dans l'invité, jamais en ligne de commande.
+Au premier `start`, just-code construit un template de base nommé `agent-vm-base` (~5 minutes : paquets de base, Node.js 24, OpenCode), puis le clone en une VM nommée `opencode-agent-vm`, monte `WORKSPACE_DIR` à l'identique dans l'invité, démarre la VM et lance `opencode serve` dedans. Les démarrages suivants réutilisent le template. Le port 4096 est publié sur `127.0.0.1` côté hôte via le transfert de ports Lima ; les serveurs de dev lancés par l'agent sur les ports 3000-3010 sont également accessibles depuis l'hôte (transfert dynamique Lima). Les secrets (clé Albert, authentification HTTP) transitent par un fichier d'environnement poussé dans l'invité, jamais en ligne de commande.
 
-Le template est le point de personnalisation : une équipe peut maintenir son propre template (outils préinstallés, paquets durables) et le désigner via `AGENT_VM_TEMPLATE`. Le clonage depuis ce template reste identique.
+Le provisionnement est volontairement minimal : les paquets de base, Node.js et OpenCode, plus un lien symbolique `opencode` dans `/usr/local/bin` — présent dans le `PATH` par défaut de tout shell, connecté ou non — pour que le backend trouve le binaire sans dépendre des fichiers d'initialisation d'un shell donné. `/etc/profile.d/just-code.sh` complète l'ensemble pour les shells interactifs. just-code ne construit ce template que sous son nom par défaut : tout autre `AGENT_VM_TEMPLATE` désigne un template que vous maintenez, et il n'est ni construit ni remplacé. C'est le point de personnalisation — une équipe peut y préinstaller Docker, Chromium ou d'autres agents et le désigner via `AGENT_VM_TEMPLATE` ; le clonage reste identique.
+
+La construction est refaite si le template est absent **ou** s'il a été laissé inachevé. just-code écrit un marqueur d'achèvement sur l'hôte une fois le provisionnement et l'arrêt terminés : un template présent mais non marqué — le cas d'une construction interrompue, qu'un processus tué ne peut pas annuler lui-même — est reconstruit plutôt que cloné. Un template que vous maintenez n'a pas ce marqueur et est utilisé tel quel. Pour forcer une reconstruction (après un changement de ressources, par exemple), supprimez l'instance : `limactl delete agent-vm-base --force`.
+
+Une opération interrompue est rattrapée : une construction qui échoue supprime le template partiel, pour qu'un nouvel essai reparte d'une base saine plutôt que de cloner une image sans OpenCode.
 
 `just-code stop` arrête la VM (l'état est conservé), `just-code restart --agent-vm` la recrée depuis le template (destructif), `just-code clean --agent-vm` la supprime avec son état local.
 

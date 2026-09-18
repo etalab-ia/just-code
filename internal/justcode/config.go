@@ -26,13 +26,27 @@ type Config struct {
 	TartImage   string
 	TartVM      string
 	TartMTU     string
-	// AgentVMTemplate is the Lima base template the managed VM is cloned from,
-	// built by `agent-vm setup` (agent-vm-base by default).
+	// AgentVMTemplate is the Lima base template the managed VM is cloned from.
+	// The default name is owned by just-code, which builds it on first use;
+	// any other value is treated as user-managed and never built or replaced.
 	AgentVMTemplate string
 	// AgentVMVM is the managed Lima instance name, always under the opencode-
 	// prefix so `stop`/`check` find it and agent-vm's own VMs stay untouched.
 	AgentVMVM string
-	APIKey    string
+	// AgentVMImage is the Lima image the base template is created from.
+	AgentVMImage string
+	// Resource sizing for the base template. The guest holds the toolchain
+	// only (the workspace is mounted, not copied), but Lima's disk resize is
+	// grow-only, so an undersized default is worth avoiding.
+	AgentVMDiskGB   int
+	AgentVMMemoryGB int
+	AgentVMCPUs     int
+	// AgentVMResourcesErr records an invalid sizing value with the same
+	// deferred-validation contract as StartTimeoutErr: commands that never
+	// build a template must not be blocked by a typo in a variable they do
+	// not read.
+	AgentVMResourcesErr error
+	APIKey              string
 	// StartTimeout bounds the backend health wait for the attach flow.
 	// StartTimeoutErr records an invalid JUST_CODE_START_TIMEOUT so that
 	// commands which never start a runtime (stop, clean, logs, doctor, check)
@@ -55,11 +69,20 @@ const (
 	DefaultPort      = 4096
 	DefaultTartImage = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
 	DefaultTartMTU   = "1280"
-	// DefaultAgentVMTemplate matches the template name agent-vm itself uses
-	// (AGENT_VM_TEMPLATE in agent-vm.sh), so a template built by `agent-vm
-	// setup` is found without configuration.
+	// DefaultAgentVMTemplate is the base template just-code builds and owns
+	// when it is absent. Any other AGENT_VM_TEMPLATE value is treated as
+	// user-managed and is never built or overwritten.
 	DefaultAgentVMTemplate = "agent-vm-base"
 	DefaultAgentVMVM       = "opencode-agent-vm"
+	// DefaultAgentVMImage matches the image agent-vm itself creates its base
+	// template from, so a just-code-built template is equivalent.
+	DefaultAgentVMImage = "template:debian-13"
+	// Default base template sizing. The disk default is deliberately generous
+	// for the toolchain: Lima resizes disks up only, never down, and Agent
+	// CLI installations grow over time.
+	DefaultAgentVMDiskGB   = 20
+	DefaultAgentVMMemoryGB = 4
+	DefaultAgentVMCPUs     = 2
 	// DefaultStartTimeout is deliberately generous: a first Microsandbox boot
 	// installs ~384 MiB of packages inside the microVM before OpenCode starts.
 	DefaultStartTimeout = 300 * time.Second
@@ -103,6 +126,20 @@ func parseStartTimeout(value string) (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
+// parsePositiveInt parses a strictly positive whole number, rejecting the
+// empty string, signs, decimals and zero. Resource sizing variables use it so
+// that a bad value is reported rather than silently becoming zero.
+func parsePositiveInt(value string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number, got %q", value)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("must be at least 1, got %d", n)
+	}
+	return n, nil
+}
+
 // dotenvDirs lists the directories searched for a .env file, most specific
 // first.
 func dotenvDirs() []string {
@@ -132,6 +169,32 @@ func LoadConfig(lookup EnvLookup) Config {
 	}
 	cfg.AgentVMTemplate = envDefault(lookup, "AGENT_VM_TEMPLATE", DefaultAgentVMTemplate)
 	cfg.AgentVMVM = envDefault(lookup, "AGENT_VM_VM", DefaultAgentVMVM)
+	cfg.AgentVMImage = envDefault(lookup, "AGENT_VM_IMAGE", DefaultAgentVMImage)
+	cfg.AgentVMDiskGB = DefaultAgentVMDiskGB
+	cfg.AgentVMMemoryGB = DefaultAgentVMMemoryGB
+	cfg.AgentVMCPUs = DefaultAgentVMCPUs
+	for _, f := range []struct {
+		key string
+		def int
+		dst *int
+	}{
+		{"AGENT_VM_DISK_GB", DefaultAgentVMDiskGB, &cfg.AgentVMDiskGB},
+		{"AGENT_VM_MEMORY_GB", DefaultAgentVMMemoryGB, &cfg.AgentVMMemoryGB},
+		{"AGENT_VM_CPUS", DefaultAgentVMCPUs, &cfg.AgentVMCPUs},
+	} {
+		v, ok := lookup(f.key)
+		if !ok || v == "" {
+			continue
+		}
+		n, err := parsePositiveInt(v)
+		if err != nil {
+			if cfg.AgentVMResourcesErr == nil {
+				cfg.AgentVMResourcesErr = fmt.Errorf("%s %w", f.key, err)
+			}
+			continue
+		}
+		*f.dst = n
+	}
 	if v, ok := lookup("JUST_CODE_START_TIMEOUT"); ok && v != "" {
 		if d, err := parseStartTimeout(v); err != nil {
 			cfg.StartTimeoutErr = err
