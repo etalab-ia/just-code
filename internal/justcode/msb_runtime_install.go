@@ -19,9 +19,17 @@ import (
 	msb "github.com/superradcompany/microsandbox/sdk/go"
 )
 
+// msbRuntimeReleaseURL is the upstream Microsandbox release the runtime is
+// fetched from. Upstream publishes immutable releases, so the archives cannot
+// be swapped after publication, and GitHub issues a Sigstore-signed release
+// attestation covering them (see msb-runtime-watch.yml). The download is
+// nevertheless verified against the digest baked in msbRuntimeArtifactFor
+// before extraction: that digest is the trust anchor, and the download source
+// is untrusted by design. A local mirror is deliberately not kept, because it
+// would not add any guarantee.
 const (
 	msbRuntimeVersion     = "0.7.0"
-	msbRuntimeReleaseURL  = "https://github.com/etalab-ia/just-code/releases/download/microsandbox-v0.7.0"
+	msbRuntimeReleaseURL  = "https://github.com/superradcompany/microsandbox/releases/download/v0.7.0"
 	msbRuntimeHTTPTimeout = 5 * time.Minute
 	msbRuntimeMaxArchive  = 128 << 20
 	msbRuntimeMaxFile     = 64 << 20
