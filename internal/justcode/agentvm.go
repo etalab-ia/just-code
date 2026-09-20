@@ -340,6 +340,7 @@ func (a *AgentVM) Start(ctx context.Context) error {
 	if cfg.APIKey == "" {
 		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
 	}
+	warnUnprotectedRuntime("agent-vm")
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}

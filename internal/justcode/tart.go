@@ -291,6 +291,7 @@ func (t *Tart) Start(ctx context.Context) error {
 	if cfg.APIKey == "" {
 		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
 	}
+	warnUnprotectedRuntime("Tart")
 	if err := ValidateMTU(cfg.TartMTU); err != nil {
 		return err
 	}

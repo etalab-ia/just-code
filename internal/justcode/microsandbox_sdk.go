@@ -126,7 +126,7 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		}),
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
 		msb.WithPorts(msbPortMappings()),
-		msb.WithSecrets(msb.Secret.Env("ALBERT_API_KEY", spec.APIKey, msb.SecretEnvOptions{
+		msb.WithSecrets(msb.Secret.Env(msbAPISecretEnv, spec.APIKey, msb.SecretEnvOptions{
 			Allow: spec.AllowHosts,
 		})),
 		msb.WithScripts(map[string]string{"start": spec.StartScript}),
@@ -167,9 +167,10 @@ func (sdkMSBClient) Start(ctx context.Context, name string) error {
 
 func msbNextStartOptions(env map[string]string, apiKey string) msb.ModifyOptions {
 	return msb.ModifyOptions{
-		Env: env,
+		Env:       env,
+		EnvRemove: []string{msbAPISecretEnv},
 		Secrets: map[string]msb.SecretModifySpec{
-			"ALBERT_API_KEY": {Value: apiKey, AllowedHosts: []string{msbAllowHost}},
+			msbAPISecretEnv: {Value: apiKey, AllowedHosts: []string{msbAllowHost}},
 		},
 		Policy: msb.ModificationPolicyNextStart,
 	}
@@ -247,6 +248,21 @@ func (sdkMSBClient) StartScript(ctx context.Context, name string) (string, error
 		return "", err
 	}
 	return cfg.Scripts["start"], nil
+}
+
+// Env returns the persisted guest environment. Earlier versions stored the
+// real ALBERT_API_KEY here in isolation full, so it is read back to detect
+// sandboxes that must be recreated rather than booted with a plaintext key.
+func (sdkMSBClient) Env(ctx context.Context, name string) (map[string]string, error) {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := h.Config()
+	if err != nil {
+		return nil, err
+	}
+	return cfg.Env, nil
 }
 
 func (sdkMSBClient) Logs() error {
