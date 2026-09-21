@@ -110,7 +110,7 @@ func (sdkMSBClient) Lookup(ctx context.Context, name string) (msbSandboxInfo, bo
 // Kept separate from Create so tests can verify the actual SDK options without
 // loading native code or creating a VM.
 func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
-	return []msb.SandboxOption{
+	options := []msb.SandboxOption{
 		msb.WithImage(spec.Image),
 		msb.WithCPUs(2),
 		msb.WithMemory(4096),
@@ -126,11 +126,18 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		}),
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
 		msb.WithPorts(msbPortMappings()),
-		msb.WithSecrets(msb.Secret.Env("ALBERT_API_KEY", spec.APIKey, msb.SecretEnvOptions{
-			Allow: spec.AllowHosts,
-		})),
-		msb.WithScripts(map[string]string{"start": spec.StartScript}),
 	}
+	// The proxy secret exists only in backend mode; full mode drops it (the
+	// agent reads its own key from the guest env). The SDK FFI rejects a
+	// secret entry with no allowed host, so an empty key must yield no entry
+	// at all, not an empty one.
+	if spec.APIKey != "" {
+		options = append(options, msb.WithSecrets(msb.Secret.Env("ALBERT_API_KEY", spec.APIKey, msb.SecretEnvOptions{
+			Allow: spec.AllowHosts,
+		})))
+	}
+	options = append(options, msb.WithScripts(map[string]string{"start": spec.StartScript}))
+	return options
 }
 
 func (sdkMSBClient) Create(ctx context.Context, spec msbSandboxSpec) error {
@@ -166,13 +173,18 @@ func (sdkMSBClient) Start(ctx context.Context, name string) error {
 }
 
 func msbNextStartOptions(env map[string]string, apiKey string) msb.ModifyOptions {
-	return msb.ModifyOptions{
-		Env: env,
-		Secrets: map[string]msb.SecretModifySpec{
-			"ALBERT_API_KEY": {Value: apiKey, AllowedHosts: []string{msbAllowHost}},
-		},
+	opts := msb.ModifyOptions{
+		Env:    env,
 		Policy: msb.ModificationPolicyNextStart,
 	}
+	// A full-mode sandbox has no proxy secret to refresh; rotating a value
+	// into a secret that was never created fails with UnknownSecret.
+	if apiKey != "" {
+		opts.Secrets = map[string]msb.SecretModifySpec{
+			"ALBERT_API_KEY": {Value: apiKey, AllowedHosts: []string{msbAllowHost}},
+		}
+	}
+	return opts
 }
 
 func (sdkMSBClient) ModifyNextStart(ctx context.Context, name string, env map[string]string, apiKey string) error {

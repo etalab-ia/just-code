@@ -494,6 +494,28 @@ func TestMSBCreateOptions(t *testing.T) {
 	}
 }
 
+// TestMSBCreateOptionsFullModeOmitsSecret pins the full-mode half of the
+// create fix (#63): the SDK FFI rejects a secret entry with no allowed host,
+// so a full-mode spec (empty proxy key, no hosts) must yield no entry at all.
+func TestMSBCreateOptionsFullModeOmitsSecret(t *testing.T) {
+	spec := msbSandboxSpec{
+		Image:       msbImage,
+		Env:         map[string]string{"ALBERT_API_KEY": "real-key"},
+		Workspace:   "/workspace-on-host",
+		StartScript: "exec sleep infinity",
+	}
+	var cfg msb.SandboxConfig
+	for _, option := range msbCreateOptions(spec) {
+		option(&cfg)
+	}
+	if len(cfg.Secrets) != 0 {
+		t.Fatalf("full mode must not register a proxy secret: %+v", cfg.Secrets)
+	}
+	if cfg.Scripts["start"] != spec.StartScript {
+		t.Fatalf("start script = %q", cfg.Scripts["start"])
+	}
+}
+
 func TestMSBNextStartOptionsRefreshesSecret(t *testing.T) {
 	env := map[string]string{"OPENCODE_SERVER_PASSWORD": "new-password"}
 	options := msbNextStartOptions(env, "new-key")
@@ -503,6 +525,20 @@ func TestMSBNextStartOptionsRefreshesSecret(t *testing.T) {
 	secret := options.Secrets["ALBERT_API_KEY"]
 	if secret.Value != "new-key" || !reflect.DeepEqual(secret.AllowedHosts, []string{msbAllowHost}) {
 		t.Fatalf("updated secret = %+v", secret)
+	}
+}
+
+// TestMSBNextStartOptionsFullModeOmitsSecret pins the stopped-branch half of
+// #63: rotating a value into a secret that was never created fails with
+// UnknownSecret, so a full-mode next-start (empty key) must carry no secret
+// spec at all.
+func TestMSBNextStartOptionsFullModeOmitsSecret(t *testing.T) {
+	options := msbNextStartOptions(map[string]string{"ALBERT_API_KEY": "real-key"}, "")
+	if len(options.Secrets) != 0 {
+		t.Fatalf("full mode must not refresh a proxy secret: %+v", options.Secrets)
+	}
+	if options.Policy != msb.ModificationPolicyNextStart {
+		t.Fatalf("policy = %+v", options)
 	}
 }
 
