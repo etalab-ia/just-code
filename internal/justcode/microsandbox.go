@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,24 @@ const (
 	// msbAllowHosts restricts where the ALBERT_API_KEY secret may be
 	// substituted: only the Albert API host ever sees the real value.
 	msbAllowHost = "albert.api.etalab.gouv.fr"
+
+	// msbAPISecretEnv is the guest environment variable OpenCode reads for the
+	// Albert provider. Microsandbox exposes the secret *placeholder* under this
+	// name; the real key stays on the host and is swapped in at the network
+	// boundary for msbAllowHost only.
+	//
+	// Earlier versions instead persisted the real key under this same name in
+	// isolation full, so the name doubles as the marker for a sandbox that must
+	// be recreated rather than booted (see rejectLegacyRawKey). Naming it is
+	// safe now: the guest only ever holds the placeholder.
+	msbAPISecretEnv = "ALBERT_API_KEY"
+
+	// msbAPISecretPlaceholder is the exact value the runtime substitutes for
+	// the secret in the guest. It mirrors the runtime's own
+	// default_placeholder(env_var) = "$MSB_" + env_var. Only this exact value
+	// is treated as protected: matching the "$MSB_" prefix instead would let a
+	// real credential that happens to start that way pass as a placeholder.
+	msbAPISecretPlaceholder = "$MSB_" + msbAPISecretEnv
 )
 
 // MicrosandboxRuntime runs the OpenCode backend in a named Microsandbox
@@ -91,6 +110,12 @@ type msbClient interface {
 	// or "" when it cannot be read. The script is fixed at creation, so it is
 	// how the sandbox's original isolation mode is detected.
 	StartScript(ctx context.Context, name string) (string, error)
+	// Env returns the persisted guest environment of an existing sandbox. An
+	// error means the environment could not be inspected, which the caller
+	// treats as a refusal rather than as an empty environment. The values are
+	// used only to detect a plaintext credential persisted by an earlier
+	// version; they are never copied into a new sandbox.
+	Env(ctx context.Context, name string) (map[string]string, error)
 	// Logs streams sandbox logs to the terminal until interrupted.
 	Logs() error
 	// Shell opens an interactive shell in the sandbox.
@@ -145,6 +170,12 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 		if err := m.rejectIsolationMismatch(ctx, sandbox); err != nil {
 			return err
 		}
+		// A sandbox created by an earlier version may still persist the real
+		// Albert key in its guest environment. Refuse to boot it: the key
+		// would stay readable inside the guest.
+		if err := m.rejectLegacyRawKey(ctx); err != nil {
+			return err
+		}
 	}
 
 	if exists && sandbox.Status == "running" {
@@ -166,13 +197,9 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	if exists {
 		fmt.Printf("Starting %s...\n", msbSandbox)
-		apiKey := m.cfg.APIKey
-		if m.cfg.Isolation == IsolationFull {
-			// The proxy secret exists only for the backend model; in full mode
-			// the agent reads its own key from the guest env.
-			apiKey = ""
-		}
-		if err := m.Client.ModifyNextStart(ctx, msbSandbox, m.nextStartEnv(), apiKey); err != nil {
+		// Both isolation modes use the same secret-proxy configuration: the
+		// guest environment carries the placeholder, never the real key.
+		if err := m.Client.ModifyNextStart(ctx, msbSandbox, m.nextStartEnv(), m.cfg.APIKey); err != nil {
 			return err
 		}
 		if err := m.Client.Start(ctx, msbSandbox); err != nil {
@@ -194,9 +221,11 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 }
 
 // sandboxSpec builds the full sandbox configuration from the config and the
-// embedded OpenCode config and start script.
+// embedded OpenCode config and start script. The secret proxy is configured
+// identically for both isolation modes: where the TUI happens to run must not
+// change whether credentials are protected.
 func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
-	spec := msbSandboxSpec{
+	return msbSandboxSpec{
 		Image:       msbImage,
 		Env:         m.sandboxEnv(),
 		Workspace:   m.cfg.WorkspaceDir,
@@ -204,43 +233,82 @@ func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
 		AllowHosts:  []string{msbAllowHost},
 		StartScript: msbStartScript(m.cfg.Isolation),
 	}
-	if m.cfg.Isolation == IsolationFull {
-		// The proxy secret exists only for the backend model; in full mode the
-		// agent reads its own key from the guest env.
-		spec.APIKey = ""
-		spec.AllowHosts = nil
-	}
-	return spec
 }
 
 // nextStartEnv builds the guest env persisted for the next boot of an
-// existing stopped sandbox. In full mode the agent reads its own key, so the
-// real ALBERT_API_KEY travels as a plain guest env entry; the backend-mode
-// proxy-secret substitution stays out of it.
+// existing stopped sandbox. The real ALBERT_API_KEY is deliberately absent:
+// it travels as the proxy secret passed to ModifyNextStart, and the guest
+// reads the placeholder Microsandbox exposes under the same variable name.
+// ModifyNextStart merges, so the OpenCode config persisted at creation stays
+// in place and only the server credentials need refreshing here.
 func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
-	env := map[string]string{
+	return map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 	}
-	if m.cfg.Isolation == IsolationFull {
-		env["ALBERT_API_KEY"] = m.cfg.APIKey
-		env["OPENCODE_CONFIG_CONTENT"] = opencodeConfigContent
-	}
-	return env
 }
 
-// sandboxEnv builds the guest environment for the sandbox.
+// sandboxEnv builds the guest environment for the sandbox. As with
+// nextStartEnv, the Albert key is provided by the secret proxy rather than
+// the environment.
 func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
-	env := map[string]string{
+	return map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 		"OPENCODE_CONFIG_CONTENT":  opencodeConfigContent,
 	}
-	if m.cfg.Isolation == IsolationFull {
-		env["ALBERT_API_KEY"] = m.cfg.APIKey
-	}
-	return env
 }
+
+// rejectLegacyRawKey refuses to boot a sandbox that persists a plaintext
+// Albert key in its guest environment. Versions before proxy secret injection
+// wrote the real ALBERT_API_KEY there in isolation full. The SDK cannot edit a
+// persisted secret value, and booting such a sandbox would keep serving the
+// plaintext key to the guest, so the only safe recovery is to recreate it.
+//
+// The inspection fails closed. Scrub-on-next-start (EnvRemove in
+// msbNextStartOptions) only runs on the stopped path, and even there it cannot
+// repair a guest that is already up: a running sandbox is returned early by
+// Start and never reconfigured. So when the guest environment cannot be read
+// there is no way to tell a protected sandbox from a leaking one, and treating
+// the unreadable case as safe would let exactly the case this guard exists for
+// slip through.
+func (m *MicrosandboxRuntime) rejectLegacyRawKey(ctx context.Context) error {
+	env, err := m.Client.Env(ctx, msbSandbox)
+	if err != nil {
+		return fmt.Errorf("cannot read the guest environment of %s to check whether it stores a plaintext %s; "+
+			"refusing to boot a sandbox whose credentials cannot be verified. "+
+			"Run 'just-code restart --microsandbox' to recreate it with the key behind the secret proxy: %w",
+			msbSandbox, msbAPISecretEnv, err)
+	}
+	value, ok := env[msbAPISecretEnv]
+	if !ok {
+		return nil
+	}
+	// Only the exact documented placeholder is the protected configuration and
+	// safe to reuse. Anything else is a value the guest can read, including a
+	// credential that merely looks like a runtime placeholder.
+	if value == msbAPISecretPlaceholder {
+		return nil
+	}
+	return fmt.Errorf("%s was created before proxy secret injection and stores a plaintext %s in its guest environment; "+
+		"the value cannot be replaced in place. "+
+		"Run 'just-code restart --microsandbox' to recreate the sandbox with the key behind the secret proxy: %w",
+		msbSandbox, msbAPISecretEnv, errLegacyRawKeySandbox)
+}
+
+// warnUnprotectedRuntime tells the user that a runtime without a secret proxy
+// hands the real credential to the guest. Switching to isolation backend does
+// not avoid this: Tart and agent-vm expose the key in backend mode too, so the
+// warning is about the runtime, not the isolation level.
+func warnUnprotectedRuntime(runtimeName string) {
+	fmt.Fprintf(os.Stderr, "Warning: %s has no secret injection, so the real ALBERT_API_KEY is readable inside the VM "+
+		"(isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate it. "+
+		"Prefer --microsandbox for untrusted work, and treat the guest as holding a live credential.\n", runtimeName)
+}
+
+// errLegacyRawKeySandbox marks the refusal to boot a sandbox that stores a
+// plaintext credential.
+var errLegacyRawKeySandbox = errors.New("legacy sandbox stores a plaintext API key")
 
 // launchBackend runs the container entrypoint inside a live VM. Recreating the
 // sandbox runs it automatically; booting an existing one does not. The guest

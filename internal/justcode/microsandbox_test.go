@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -25,6 +26,8 @@ type fakeMSBClient struct {
 	mount        string
 	mountErr     error
 	startScript  string
+	env          map[string]string
+	envErr       error
 	createErr    error
 	startErr     error
 	modifyErr    error
@@ -115,6 +118,11 @@ func (f *fakeMSBClient) StartScript(_ context.Context, name string) (string, err
 	// "start" prefix would be indistinguishable from a Start() call.
 	f.record("readconfig " + name)
 	return f.startScript, nil
+}
+
+func (f *fakeMSBClient) Env(_ context.Context, name string) (map[string]string, error) {
+	f.record("readenv " + name)
+	return cloneStringMap(f.env), f.envErr
 }
 
 func (f *fakeMSBClient) Logs() error {
@@ -529,18 +537,23 @@ func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
 	}
 }
 
-func TestMicrosandboxFullModeSpecCarriesRealKey(t *testing.T) {
+// TestMicrosandboxFullModeSpecUsesProxySecret pins the credential contract for
+// isolation full: the TUI runs inside the microVM, but that must not move the
+// real key into the guest. The secret travels through the runtime's network
+// proxy, exactly as in backend mode, and the guest only ever sees the
+// placeholder Microsandbox exposes under ALBERT_API_KEY.
+func TestMicrosandboxFullModeSpecUsesProxySecret(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{})
 	m.cfg.Isolation = IsolationFull
 	spec := m.sandboxSpec()
-	if spec.APIKey != "" {
-		t.Fatalf("full mode must not use the proxy secret: %+v", spec)
+	if spec.APIKey != "key" {
+		t.Fatalf("full mode must configure the proxy secret: %+v", spec)
 	}
-	if spec.AllowHosts != nil {
-		t.Fatalf("full mode must not restrict proxy hosts: %v", spec.AllowHosts)
+	if !reflect.DeepEqual(spec.AllowHosts, []string{msbAllowHost}) {
+		t.Fatalf("full mode must restrict proxy hosts to Albert: %v", spec.AllowHosts)
 	}
-	if spec.Env["ALBERT_API_KEY"] != "key" {
-		t.Fatalf("full mode guest env must carry the real key: %v", spec.Env)
+	if got := spec.Env[msbAPISecretEnv]; got != "" {
+		t.Fatalf("full mode guest env must not carry the real key: %v", spec.Env)
 	}
 	if spec.Env["OPENCODE_CONFIG_CONTENT"] == "" {
 		t.Fatal("full mode guest env must carry the OpenCode config")
@@ -553,13 +566,34 @@ func TestMicrosandboxFullModeSpecCarriesRealKey(t *testing.T) {
 	}
 }
 
+// TestMicrosandboxSpecNeverLeaksRealKey is the regression guard for the whole
+// change: whatever the isolation level, no sandbox spec may place the host
+// secret in the guest environment.
+func TestMicrosandboxSpecNeverLeaksRealKey(t *testing.T) {
+	for _, isolation := range []Isolation{IsolationBackend, IsolationFull, ""} {
+		m := newTestMicrosandbox(t, &fakeMSBClient{})
+		m.cfg.Isolation = isolation
+		spec := m.sandboxSpec()
+		for key, value := range spec.Env {
+			if value == m.cfg.APIKey {
+				t.Fatalf("isolation %q leaks the real key into guest env %q", isolation, key)
+			}
+		}
+		for key, value := range m.nextStartEnv() {
+			if value == m.cfg.APIKey {
+				t.Fatalf("isolation %q leaks the real key into next-start env %q", isolation, key)
+			}
+		}
+	}
+}
+
 func TestMicrosandboxBackendModeSpecUnchanged(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{})
 	spec := m.sandboxSpec()
 	if spec.APIKey != "key" || len(spec.AllowHosts) != 1 {
 		t.Fatalf("backend mode must keep the proxy secret: %+v", spec)
 	}
-	if spec.Env["ALBERT_API_KEY"] != "" {
+	if spec.Env[msbAPISecretEnv] != "" {
 		t.Fatalf("backend mode must not leak the real key into guest env: %v", spec.Env)
 	}
 	if !strings.Contains(spec.StartScript, "exec opencode serve") {
@@ -567,7 +601,12 @@ func TestMicrosandboxBackendModeSpecUnchanged(t *testing.T) {
 	}
 }
 
-func TestMicrosandboxFullModeNextStartCarriesRealKey(t *testing.T) {
+// TestMicrosandboxFullModeNextStartUsesProxySecretAndScrubsRawEnv covers the
+// stopped-sandbox path. The proxy secret must be refreshed for the next boot
+// just as in backend mode, and any plaintext ALBERT_API_KEY persisted by an
+// earlier version must be removed from the guest environment in the same
+// modification.
+func TestMicrosandboxFullModeNextStartUsesProxySecretAndScrubsRawEnv(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{exists: true, status: "stopped"})
 	m.cfg.Isolation = IsolationFull
 	if err := m.Start(context.Background()); err != nil {
@@ -577,11 +616,19 @@ func TestMicrosandboxFullModeNextStartCarriesRealKey(t *testing.T) {
 		t.Fatal("config lost the isolation level")
 	}
 	client := m.Client.(*fakeMSBClient)
-	if client.modifiedEnv["ALBERT_API_KEY"] != "key" {
-		t.Fatalf("full mode next-start env must carry the real key: %v", client.modifiedEnv)
+	if client.modifiedKey != "key" {
+		t.Fatalf("full mode must refresh the proxy secret on restart: %q", client.modifiedKey)
 	}
-	if client.modifiedKey != "" {
-		t.Fatalf("full mode must not pass a proxy secret to ModifyNextStart: %q", client.modifiedKey)
+	if client.modifiedEnv[msbAPISecretEnv] != "" {
+		t.Fatalf("full mode next-start env must not carry the real key: %v", client.modifiedEnv)
+	}
+	options := msbNextStartOptions(m.nextStartEnv(), m.cfg.APIKey)
+	if !containsString(options.EnvRemove, msbAPISecretEnv) {
+		t.Fatalf("next-start must remove a persisted plaintext key: %v", options.EnvRemove)
+	}
+	secret := options.Secrets[msbAPISecretEnv]
+	if secret.Value != "key" || !reflect.DeepEqual(secret.AllowedHosts, []string{msbAllowHost}) {
+		t.Fatalf("proxy secret not refreshed: %+v", secret)
 	}
 	for _, prefix := range []string{"modify " + msbSandbox, "start " + msbSandbox} {
 		if !hasCall(client, prefix) {
@@ -590,6 +637,307 @@ func TestMicrosandboxFullModeNextStartCarriesRealKey(t *testing.T) {
 	}
 	if hasCall(client, "exec "+msbSandbox) {
 		t.Fatalf("full mode must not relaunch the backend: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxFullModeRejectsLegacyRawKey pins the migration guard: a
+// sandbox whose persisted guest environment holds a real key cannot be fixed
+// in place, so the start must fail with the recreate command instead of
+// booting a VM that keeps serving a plaintext credential.
+func TestMicrosandboxFullModeRejectsLegacyRawKey(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		env:         map[string]string{"ALBERT_API_KEY": "real-persisted-key"},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("a sandbox persisting a plaintext key must not boot")
+	}
+	if !strings.Contains(err.Error(), "restart --microsandbox") {
+		t.Fatalf("error must point at the recreate command: %v", err)
+	}
+	if hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a legacy sandbox must not be started: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxFullModeAcceptsPlaceholderEnv records that the guard targets
+// the plaintext value, not the variable name: a sandbox already using the
+// proxy stores the placeholder there and starts normally.
+func TestMicrosandboxFullModeAcceptsPlaceholderEnv(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		env:         map[string]string{"ALBERT_API_KEY": "$MSB_ALBERT_API_KEY"},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a proxied sandbox must start: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxStartFailsClosedOnUnreadableEnv pins the refusal when the
+// guest environment cannot be inspected. Scrub-on-next-start never runs for a
+// running sandbox, and a stopped one cannot be verified either, so an
+// unreadable config is not evidence of a protected sandbox: booting on that
+// assumption could keep serving a plaintext key.
+func TestMicrosandboxStartFailsClosedOnUnreadableEnv(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		envErr:      errors.New("config unavailable"),
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("an unreadable guest environment must not boot")
+	}
+	if !strings.Contains(err.Error(), "restart --microsandbox") {
+		t.Fatalf("error must point at the recreate command: %v", err)
+	}
+	if !errors.Is(err, client.envErr) {
+		t.Fatalf("error must carry the inspection failure: %v", err)
+	}
+	if hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("an unverifiable sandbox must not be started: %v", client.calls)
+	}
+}
+
+// persistedConfigWithGuestEnv renders the JSON the runtime stores for a
+// sandbox whose spec environment holds the given entries.
+//
+// The env field is an array of {key,value} objects, not a JSON object: the
+// runtime flattens its spec into the sandbox config (serde flatten,
+// sdk/rust/lib/sandbox/config.rs) and the spec's env is a Vec<EnvVar> where
+// EnvVar is {key, value} (packages/microsandbox-types/rust/lib/domain.rs).
+// Reproducing that shape here is the point of these tests: a fixture shaped
+// like the map the SDK would need would pass while production saw nothing.
+func persistedConfigWithGuestEnv(entries ...string) string {
+	return `{"name":"` + msbSandbox + `",` +
+		`"runtime":{"workdir":"/workspace","shell":"/bin/sh","scripts":{"start":"exec sleep infinity"}},` +
+		`"env":[` + strings.Join(entries, ",") + `]}`
+}
+
+// persistedGuestEnvFromConfig runs the production reader over the persisted
+// fixture, so the guard tests below start from the stored JSON rather than from
+// a hand-built map the runtime could never produce.
+func persistedGuestEnvFromConfig(t *testing.T, entries ...string) map[string]string {
+	t.Helper()
+	env, err := parseGuestEnv(persistedConfigWithGuestEnv(entries...))
+	if err != nil {
+		t.Fatalf("parseGuestEnv: %v", err)
+	}
+	return env
+}
+
+// TestMicrosandboxLegacyGuardReadsThePersistedConfig is the end-to-end check of
+// the guard against the stored shape, and the test that fails when the reader
+// looks at a field the SDK never fills: a legacy sandbox persisting the
+// plaintext key must be refused, and one persisting the placeholder must boot.
+func TestMicrosandboxLegacyGuardReadsThePersistedConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		wantErr bool
+	}{
+		{
+			name:    "pre-proxy sandbox holds the plaintext key",
+			entries: []string{`{"key":"OPENCODE_SERVER_USERNAME","value":"opencode"}`, `{"key":"` + msbAPISecretEnv + `","value":"albert-real-secret"}`},
+			wantErr: true,
+		},
+		{
+			name:    "proxied sandbox holds the placeholder",
+			entries: []string{`{"key":"` + msbAPISecretEnv + `","value":"` + msbAPISecretPlaceholder + `"}`},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeMSBClient{
+				exists:      true,
+				status:      "stopped",
+				startScript: msbStartScript(IsolationFull),
+				env:         persistedGuestEnvFromConfig(t, tt.entries...),
+			}
+			m := newTestMicrosandbox(t, client)
+			m.cfg.Isolation = IsolationFull
+			err := m.Start(context.Background())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("a sandbox persisting a plaintext key must not boot")
+				}
+				if !strings.Contains(err.Error(), "restart --microsandbox") {
+					t.Fatalf("error must point at the recreate command: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if !hasCall(client, "start "+msbSandbox) {
+				t.Fatalf("the sandbox must start: %v", client.calls)
+			}
+		})
+	}
+}
+
+// TestParseGuestEnvReadsThePersistedEnvShape pins the reader against the shape
+// the runtime actually persists. The legacy guard is only worth anything if it
+// sees the stored value, so this asserts the array form directly.
+func TestParseGuestEnvReadsThePersistedEnvShape(t *testing.T) {
+	config := persistedConfigWithGuestEnv(
+		`{"key":"OPENCODE_SERVER_USERNAME","value":"opencode"}`,
+		`{"key":"`+msbAPISecretEnv+`","value":"albert-real-secret"}`,
+	)
+	env, err := parseGuestEnv(config)
+	if err != nil {
+		t.Fatalf("parseGuestEnv: %v", err)
+	}
+	if got := env[msbAPISecretEnv]; got != "albert-real-secret" {
+		t.Fatalf("%s = %q, want the persisted value", msbAPISecretEnv, got)
+	}
+	if got := env["OPENCODE_SERVER_USERNAME"]; got != "opencode" {
+		t.Fatalf("OPENCODE_SERVER_USERNAME = %q, want %q", got, "opencode")
+	}
+}
+
+// TestParseGuestEnvIgnoresAbsentAndSecretsSections keeps the reader narrow: a
+// sandbox with no spec env yields an empty environment rather than an error, so
+// callers can tell "nothing persisted" from "could not read".
+func TestParseGuestEnvIgnoresAbsentAndSecretsSections(t *testing.T) {
+	env, err := parseGuestEnv(`{"name":"` + msbSandbox + `"}`)
+	if err != nil {
+		t.Fatalf("parseGuestEnv without an env section: %v", err)
+	}
+	if len(env) != 0 {
+		t.Fatalf("env = %v, want empty", env)
+	}
+	if _, err := parseGuestEnv(""); err == nil {
+		t.Fatal("an unreadable config must surface an error, not an empty environment")
+	}
+}
+
+// TestSDKSandboxConfigCannotSeeThePersistedGuestEnv is the regression guard for
+// the reason parseGuestEnv exists at all. The SDK's typed SandboxConfig decodes
+// the stored config into an internal struct with no top-level env field, and
+// fills the public Env map only from the init section, so cfg.Env stays nil for
+// anything created from a spec env. A guard reading cfg.Env therefore never
+// fires. If a future SDK version starts populating it, this fails and the raw
+// parse can be revisited.
+func TestSDKSandboxConfigCannotSeeThePersistedGuestEnv(t *testing.T) {
+	config := persistedConfigWithGuestEnv(
+		`{"key":"` + msbAPISecretEnv + `","value":"albert-real-secret"}`,
+	)
+	var cfg msb.SandboxConfig
+	if err := json.Unmarshal([]byte(config), &cfg); err != nil {
+		t.Fatalf("unmarshal SandboxConfig: %v", err)
+	}
+	if _, ok := cfg.Env[msbAPISecretEnv]; ok {
+		t.Fatalf("SandboxConfig.Env now exposes the spec env (%v); the raw parse may be unnecessary", cfg.Env)
+	}
+}
+
+// TestMicrosandboxFullModeRejectsEnvThatMerelyLooksLikeAPlaceholder covers the
+// prefix trap: only the exact documented placeholder is protected, so a value
+// that starts with the runtime's placeholder prefix is still treated as a
+// credential the guest can read.
+func TestMicrosandboxFullModeRejectsEnvThatMerelyLooksLikeAPlaceholder(t *testing.T) {
+	for _, value := range []string{"$MSB_OTHER_VAR", "$MSB_", "$MSB_ALBERT_API_KEYx"} {
+		client := &fakeMSBClient{
+			exists:      true,
+			status:      "stopped",
+			startScript: msbStartScript(IsolationFull),
+			env:         map[string]string{msbAPISecretEnv: value},
+		}
+		m := newTestMicrosandbox(t, client)
+		m.cfg.Isolation = IsolationFull
+		if err := m.Start(context.Background()); err == nil {
+			t.Fatalf("%q must not pass as the protected placeholder", value)
+		}
+		if hasCall(client, "start "+msbSandbox) {
+			t.Fatalf("%q must not boot: %v", value, client.calls)
+		}
+	}
+}
+
+// TestMicrosandboxFullModeStartsWithNoPersistedKey records that a sandbox whose
+// spec env carries no Albert entry at all is not a legacy sandbox: the guard
+// looks for a persisted value, not for the variable name.
+func TestMicrosandboxFullModeStartsWithNoPersistedKey(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		env:         map[string]string{"OPENCODE_SERVER_USERNAME": "opencode"},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a sandbox without a persisted key must start: %v", client.calls)
+	}
+}
+
+// handledConfig is a persisted document exposed the way a real SDK handle
+// exposes it. The fake carries no typed config, which is the faithful shape:
+// the real handle's typed SandboxConfig cannot see the spec env either, so a
+// reader that reaches for it observes nothing.
+type handledConfig struct{ configJSON string }
+
+func (h handledConfig) ConfigJSON() string { return h.configJSON }
+
+// TestGuestEnvFromHandleReadsThePersistedDocument covers the wiring, not just
+// the parser. The guard is only as good as the source it reads, and the source
+// that looks obvious, the handle's typed sandbox config, is blind to the spec
+// env. A reader wired to that field no-ops in production while every
+// fakeMSBClient test still passes, so this pins the document the reader uses.
+func TestGuestEnvFromHandleReadsThePersistedDocument(t *testing.T) {
+	h := handledConfig{configJSON: persistedConfigWithGuestEnv(
+		`{"key":"` + msbAPISecretEnv + `","value":"albert-real-secret"}`,
+	)}
+	env, err := guestEnvFromHandle(h)
+	if err != nil {
+		t.Fatalf("guestEnvFromHandle: %v", err)
+	}
+	if got := env[msbAPISecretEnv]; got != "albert-real-secret" {
+		t.Fatalf("%s = %q, want the value stored in the persisted document", msbAPISecretEnv, got)
+	}
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, item := range haystack {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestWarnUnprotectedRuntimeNamesTheRuntimeAndTheRisk pins the user-facing
+// warning for runtimes with no secret proxy: it must name the runtime, say the
+// key is readable in the guest, and make clear that isolation backend is not
+// an escape hatch.
+func TestWarnUnprotectedRuntimeNamesTheRuntimeAndTheRisk(t *testing.T) {
+	for _, runtimeName := range []string{"Tart", "agent-vm"} {
+		out := captureStderr(t, func() { warnUnprotectedRuntime(runtimeName) })
+		for _, want := range []string{runtimeName, "no secret injection", "ALBERT_API_KEY", "isolation backend and full"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("warning for %s missing %q: %s", runtimeName, want, out)
+			}
+		}
 	}
 }
 
