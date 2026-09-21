@@ -22,7 +22,14 @@ const (
 	// Microsandbox keeps a VM across restarts but runs the entrypoint only at
 	// creation, so a VM that came back from a restart reports `running` with no
 	// backend process listening: "VM up" is not "backend ready".
-	msbRelaunchCommand = "nohup " + msbGuestEntrypoint + " >/var/log/opencode.log 2>&1 &"
+	//
+	// The script is invoked through `sh` because the Go SDK stores script
+	// bodies verbatim (no shebang is prepended, unlike the Rust builder and
+	// the CLI), and sandboxes created before the shebang was added to
+	// guest-prep.sh persist a script that cannot be exec'd directly.
+	// The trailing `sleep 1` makes the launcher's own survival observable:
+	// a bare `nohup ... &` exits 0 even when the script dies immediately.
+	msbRelaunchCommand = "nohup sh " + msbGuestEntrypoint + " >/var/log/opencode.log 2>&1 & sleep 1"
 
 	// msbLaunchAttempts bounds the retry while the guest agent catches up with
 	// a freshly started VM.
@@ -190,7 +197,16 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	fmt.Printf("Creating %s microVM...\n", msbSandbox)
 	fmt.Println("First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.")
-	return m.Client.Create(ctx, m.sandboxSpec())
+	if err := m.Client.Create(ctx, m.sandboxSpec()); err != nil {
+		return err
+	}
+	// `msb create` boots an idle VM: the Go SDK has no equivalent of the Rust
+	// SDK's transient LaunchIntent::Background, so the persisted start script
+	// (which installs the toolchain and then execs `opencode serve`, or keeps
+	// the VM alive in full mode) is never run by creation itself. Launch it
+	// explicitly, the same way a restarted VM would.
+	fmt.Printf("Launching the start script inside %s...\n", msbSandbox)
+	return m.launchBackend(ctx)
 }
 
 // sandboxSpec builds the full sandbox configuration from the config and the
@@ -245,6 +261,11 @@ func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
 // launchBackend runs the container entrypoint inside a live VM. Recreating the
 // sandbox runs it automatically; booting an existing one does not. The guest
 // agent can lag the VM by a moment after start, hence the bounded retry.
+//
+// The command backgrounds the entrypoint and then sleeps one second, so a
+// launcher that dies immediately (missing toolchain, ENOEXEC on an old
+// shebang-less script) surfaces as a nonzero exit here instead of a silent
+// success that only the downstream health wait would catch, minutes later.
 func (m *MicrosandboxRuntime) launchBackend(ctx context.Context) error {
 	delay := m.launchRetryDelay
 	if delay == 0 {

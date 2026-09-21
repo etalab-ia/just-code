@@ -248,6 +248,30 @@ func TestMicrosandboxStartNew(t *testing.T) {
 	if !strings.Contains(spec.StartScript, "opencode serve") || !strings.Contains(spec.Env["OPENCODE_CONFIG_CONTENT"], "albert.api.etalab.gouv.fr") {
 		t.Fatal("embedded guest assets are missing")
 	}
+	// Creation boots an idle VM (the Go SDK has no background launch intent),
+	// so the start script must be launched explicitly right after Create.
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("start script was not launched after creation; calls: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxFullModeCreatePreparesGuest pins the full-mode half of the
+// create fix: the same idle-VM problem leaves a freshly created full-mode
+// sandbox without its toolchain, so the start script (which installs it and
+// then keeps the VM alive) must run there too.
+func TestMicrosandboxFullModeCreatePreparesGuest(t *testing.T) {
+	client := &fakeMSBClient{}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if client.created == nil {
+		t.Fatalf("sandbox was not created; calls: %v", client.calls)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("start script was not launched after full-mode creation; calls: %v", client.calls)
+	}
 }
 
 func TestMicrosandboxStartStopsOnInstallFailure(t *testing.T) {
@@ -326,6 +350,19 @@ func TestMicrosandboxLaunchBackendRetries(t *testing.T) {
 	}
 	if got := len(client.calls); got != 3 {
 		t.Fatalf("calls = %v, want three exec attempts", client.calls)
+	}
+}
+
+// TestMSBRelaunchCommandRunsThroughShell pins the ENOEXEC half of the fix: the
+// Go SDK stores script bodies verbatim, and sandboxes created before the
+// shebang was added to guest-prep.sh persist a script that cannot be exec'd
+// directly. The relaunch must therefore invoke the interpreter explicitly.
+func TestMSBRelaunchCommandRunsThroughShell(t *testing.T) {
+	if !strings.Contains(msbRelaunchCommand, "sh "+msbGuestEntrypoint) {
+		t.Fatalf("relaunch must run the entrypoint through sh: %q", msbRelaunchCommand)
+	}
+	if !strings.Contains(msbRelaunchCommand, "& sleep 1") {
+		t.Fatalf("relaunch must observe the backgrounded launcher's survival: %q", msbRelaunchCommand)
 	}
 }
 
