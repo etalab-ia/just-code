@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.4.0...just-code-v0.4.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **microsandbox:** le garde legacy lit vraiment la config persistée ([dbe32df](https://github.com/etalab-ia/just-code/commit/dbe32dfae7976f69d603b6738de1528cefd0b552))
+* **microsandbox:** protéger la clé Albert en mode full ([ec770a8](https://github.com/etalab-ia/just-code/commit/ec770a80a82d3b0032d63d8df231c826a434fa23))
+* **microsandbox:** protéger la clé Albert en mode full ([2d18e50](https://github.com/etalab-ia/just-code/commit/2d18e507a3788c7d3283147af5b417688bf3e113))
+
 ## [0.4.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.3.0...just-code-v0.4.0) (2026-09-20)
 
 
