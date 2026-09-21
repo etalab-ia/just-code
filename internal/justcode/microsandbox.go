@@ -45,6 +45,13 @@ const (
 	// be recreated rather than booted (see rejectLegacyRawKey). Naming it is
 	// safe now: the guest only ever holds the placeholder.
 	msbAPISecretEnv = "ALBERT_API_KEY"
+
+	// msbAPISecretPlaceholder is the exact value the runtime substitutes for
+	// the secret in the guest. It mirrors the runtime's own
+	// default_placeholder(env_var) = "$MSB_" + env_var. Only this exact value
+	// is treated as protected: matching the "$MSB_" prefix instead would let a
+	// real credential that happens to start that way pass as a placeholder.
+	msbAPISecretPlaceholder = "$MSB_" + msbAPISecretEnv
 )
 
 // MicrosandboxRuntime runs the OpenCode backend in a named Microsandbox
@@ -103,10 +110,11 @@ type msbClient interface {
 	// or "" when it cannot be read. The script is fixed at creation, so it is
 	// how the sandbox's original isolation mode is detected.
 	StartScript(ctx context.Context, name string) (string, error)
-	// Env returns the persisted guest environment of an existing sandbox, or
-	// nil when it cannot be read. The values are used only to detect a
-	// plaintext credential persisted by an earlier version; they are never
-	// copied into a new sandbox.
+	// Env returns the persisted guest environment of an existing sandbox. An
+	// error means the environment could not be inspected, which the caller
+	// treats as a refusal rather than as an empty environment. The values are
+	// used only to detect a plaintext credential persisted by an earlier
+	// version; they are never copied into a new sandbox.
 	Env(ctx context.Context, name string) (map[string]string, error)
 	// Logs streams sandbox logs to the terminal until interrupted.
 	Logs() error
@@ -255,22 +263,31 @@ func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
 // Albert key in its guest environment. Versions before proxy secret injection
 // wrote the real ALBERT_API_KEY there in isolation full. The SDK cannot edit a
 // persisted secret value, and booting such a sandbox would keep serving the
-// plaintext key to the guest, so the only safe recovery is to recreate it. An
-// unreadable config is not treated as proof of safety but does not block the
-// start either: the sandbox is then configured for proxy substitution on the
-// next boot, which is the best available state.
+// plaintext key to the guest, so the only safe recovery is to recreate it.
+//
+// The inspection fails closed. Scrub-on-next-start (EnvRemove in
+// msbNextStartOptions) only runs on the stopped path, and even there it cannot
+// repair a guest that is already up: a running sandbox is returned early by
+// Start and never reconfigured. So when the guest environment cannot be read
+// there is no way to tell a protected sandbox from a leaking one, and treating
+// the unreadable case as safe would let exactly the case this guard exists for
+// slip through.
 func (m *MicrosandboxRuntime) rejectLegacyRawKey(ctx context.Context) error {
 	env, err := m.Client.Env(ctx, msbSandbox)
 	if err != nil {
-		return nil
+		return fmt.Errorf("cannot read the guest environment of %s to check whether it stores a plaintext %s; "+
+			"refusing to boot a sandbox whose credentials cannot be verified. "+
+			"Run 'just-code restart --microsandbox' to recreate it with the key behind the secret proxy: %w",
+			msbSandbox, msbAPISecretEnv, err)
 	}
 	value, ok := env[msbAPISecretEnv]
 	if !ok {
 		return nil
 	}
-	// The placeholder form is the protected configuration and is fine to
-	// reuse; a real value means the key is sitting in the guest environment.
-	if strings.HasPrefix(value, "$MSB_") {
+	// Only the exact documented placeholder is the protected configuration and
+	// safe to reuse. Anything else is a value the guest can read, including a
+	// credential that merely looks like a runtime placeholder.
+	if value == msbAPISecretPlaceholder {
 		return nil
 	}
 	return fmt.Errorf("%s was created before proxy secret injection and stores a plaintext %s in its guest environment; "+

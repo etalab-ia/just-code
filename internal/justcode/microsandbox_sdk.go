@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -250,6 +251,54 @@ func (sdkMSBClient) StartScript(ctx context.Context, name string) (string, error
 	return cfg.Scripts["start"], nil
 }
 
+// persistedGuestEnv mirrors how the runtime stores a sandbox's guest
+// environment. The runtime flattens its spec into the sandbox config
+// (serde flatten) and the spec's env field is a list of {key, value} entries,
+// so the stored JSON carries "env" as an array of objects.
+//
+// The SDK's own SandboxConfig.Env map cannot see it. SandboxConfig.UnmarshalJSON
+// decodes into an internal struct with no top-level env field, and fills the
+// public Env map only from the init section; reading it therefore always
+// yields nil for a sandbox created with a spec env. Parsing the raw config is
+// the only way to observe what the guest actually holds.
+//
+// The representation is stable across releases: the runtime's catalog encoder
+// lists config.env among the collections that "have the same representation in
+// every supported release" (sdk/rust/lib/db/encoding.rs), so this holds for
+// sandboxes written by older builds as well. A document whose env is shaped
+// differently does not decode into the slice below and surfaces as an error,
+// which the caller treats as a refusal.
+type persistedGuestEnv struct {
+	Env []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	} `json:"env"`
+}
+
+func parseGuestEnv(configJSON string) (map[string]string, error) {
+	var raw persistedGuestEnv
+	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
+		return nil, fmt.Errorf("decode persisted sandbox config: %w", err)
+	}
+	env := make(map[string]string, len(raw.Env))
+	for _, entry := range raw.Env {
+		env[entry.Key] = entry.Value
+	}
+	return env, nil
+}
+
+// persistedConfigReader is the part of an SDK sandbox handle the guest-env
+// reader needs. Naming it keeps the reader verifiable without a live sandbox:
+// the real handle's ConfigJSON carries the persisted document, whereas its
+// typed SandboxConfig is blind to the spec env (see persistedGuestEnv).
+type persistedConfigReader interface {
+	ConfigJSON() string
+}
+
+func guestEnvFromHandle(h persistedConfigReader) (map[string]string, error) {
+	return parseGuestEnv(h.ConfigJSON())
+}
+
 // Env returns the persisted guest environment. Earlier versions stored the
 // real ALBERT_API_KEY here in isolation full, so it is read back to detect
 // sandboxes that must be recreated rather than booted with a plaintext key.
@@ -258,11 +307,7 @@ func (sdkMSBClient) Env(ctx context.Context, name string) (map[string]string, er
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := h.Config()
-	if err != nil {
-		return nil, err
-	}
-	return cfg.Env, nil
+	return guestEnvFromHandle(h)
 }
 
 func (sdkMSBClient) Logs() error {

@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -684,10 +685,12 @@ func TestMicrosandboxFullModeAcceptsPlaceholderEnv(t *testing.T) {
 	}
 }
 
-// TestMicrosandboxStartToleratesUnreadableEnv records that a config that
-// cannot be read does not block the start: the sandbox is then reconfigured
-// for proxy substitution on the next boot, which is the safe direction.
-func TestMicrosandboxStartToleratesUnreadableEnv(t *testing.T) {
+// TestMicrosandboxStartFailsClosedOnUnreadableEnv pins the refusal when the
+// guest environment cannot be inspected. Scrub-on-next-start never runs for a
+// running sandbox, and a stopped one cannot be verified either, so an
+// unreadable config is not evidence of a protected sandbox: booting on that
+// assumption could keep serving a plaintext key.
+func TestMicrosandboxStartFailsClosedOnUnreadableEnv(t *testing.T) {
 	client := &fakeMSBClient{
 		exists:      true,
 		status:      "stopped",
@@ -696,11 +699,221 @@ func TestMicrosandboxStartToleratesUnreadableEnv(t *testing.T) {
 	}
 	m := newTestMicrosandbox(t, client)
 	m.cfg.Isolation = IsolationFull
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("an unreadable guest environment must not boot")
+	}
+	if !strings.Contains(err.Error(), "restart --microsandbox") {
+		t.Fatalf("error must point at the recreate command: %v", err)
+	}
+	if !errors.Is(err, client.envErr) {
+		t.Fatalf("error must carry the inspection failure: %v", err)
+	}
+	if hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("an unverifiable sandbox must not be started: %v", client.calls)
+	}
+}
+
+// persistedConfigWithGuestEnv renders the JSON the runtime stores for a
+// sandbox whose spec environment holds the given entries.
+//
+// The env field is an array of {key,value} objects, not a JSON object: the
+// runtime flattens its spec into the sandbox config (serde flatten,
+// sdk/rust/lib/sandbox/config.rs) and the spec's env is a Vec<EnvVar> where
+// EnvVar is {key, value} (packages/microsandbox-types/rust/lib/domain.rs).
+// Reproducing that shape here is the point of these tests: a fixture shaped
+// like the map the SDK would need would pass while production saw nothing.
+func persistedConfigWithGuestEnv(entries ...string) string {
+	return `{"name":"` + msbSandbox + `",` +
+		`"runtime":{"workdir":"/workspace","shell":"/bin/sh","scripts":{"start":"exec sleep infinity"}},` +
+		`"env":[` + strings.Join(entries, ",") + `]}`
+}
+
+// persistedGuestEnvFromConfig runs the production reader over the persisted
+// fixture, so the guard tests below start from the stored JSON rather than from
+// a hand-built map the runtime could never produce.
+func persistedGuestEnvFromConfig(t *testing.T, entries ...string) map[string]string {
+	t.Helper()
+	env, err := parseGuestEnv(persistedConfigWithGuestEnv(entries...))
+	if err != nil {
+		t.Fatalf("parseGuestEnv: %v", err)
+	}
+	return env
+}
+
+// TestMicrosandboxLegacyGuardReadsThePersistedConfig is the end-to-end check of
+// the guard against the stored shape, and the test that fails when the reader
+// looks at a field the SDK never fills: a legacy sandbox persisting the
+// plaintext key must be refused, and one persisting the placeholder must boot.
+func TestMicrosandboxLegacyGuardReadsThePersistedConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		wantErr bool
+	}{
+		{
+			name:    "pre-proxy sandbox holds the plaintext key",
+			entries: []string{`{"key":"OPENCODE_SERVER_USERNAME","value":"opencode"}`, `{"key":"` + msbAPISecretEnv + `","value":"albert-real-secret"}`},
+			wantErr: true,
+		},
+		{
+			name:    "proxied sandbox holds the placeholder",
+			entries: []string{`{"key":"` + msbAPISecretEnv + `","value":"` + msbAPISecretPlaceholder + `"}`},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeMSBClient{
+				exists:      true,
+				status:      "stopped",
+				startScript: msbStartScript(IsolationFull),
+				env:         persistedGuestEnvFromConfig(t, tt.entries...),
+			}
+			m := newTestMicrosandbox(t, client)
+			m.cfg.Isolation = IsolationFull
+			err := m.Start(context.Background())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("a sandbox persisting a plaintext key must not boot")
+				}
+				if !strings.Contains(err.Error(), "restart --microsandbox") {
+					t.Fatalf("error must point at the recreate command: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if !hasCall(client, "start "+msbSandbox) {
+				t.Fatalf("the sandbox must start: %v", client.calls)
+			}
+		})
+	}
+}
+
+// TestParseGuestEnvReadsThePersistedEnvShape pins the reader against the shape
+// the runtime actually persists. The legacy guard is only worth anything if it
+// sees the stored value, so this asserts the array form directly.
+func TestParseGuestEnvReadsThePersistedEnvShape(t *testing.T) {
+	config := persistedConfigWithGuestEnv(
+		`{"key":"OPENCODE_SERVER_USERNAME","value":"opencode"}`,
+		`{"key":"`+msbAPISecretEnv+`","value":"albert-real-secret"}`,
+	)
+	env, err := parseGuestEnv(config)
+	if err != nil {
+		t.Fatalf("parseGuestEnv: %v", err)
+	}
+	if got := env[msbAPISecretEnv]; got != "albert-real-secret" {
+		t.Fatalf("%s = %q, want the persisted value", msbAPISecretEnv, got)
+	}
+	if got := env["OPENCODE_SERVER_USERNAME"]; got != "opencode" {
+		t.Fatalf("OPENCODE_SERVER_USERNAME = %q, want %q", got, "opencode")
+	}
+}
+
+// TestParseGuestEnvIgnoresAbsentAndSecretsSections keeps the reader narrow: a
+// sandbox with no spec env yields an empty environment rather than an error, so
+// callers can tell "nothing persisted" from "could not read".
+func TestParseGuestEnvIgnoresAbsentAndSecretsSections(t *testing.T) {
+	env, err := parseGuestEnv(`{"name":"` + msbSandbox + `"}`)
+	if err != nil {
+		t.Fatalf("parseGuestEnv without an env section: %v", err)
+	}
+	if len(env) != 0 {
+		t.Fatalf("env = %v, want empty", env)
+	}
+	if _, err := parseGuestEnv(""); err == nil {
+		t.Fatal("an unreadable config must surface an error, not an empty environment")
+	}
+}
+
+// TestSDKSandboxConfigCannotSeeThePersistedGuestEnv is the regression guard for
+// the reason parseGuestEnv exists at all. The SDK's typed SandboxConfig decodes
+// the stored config into an internal struct with no top-level env field, and
+// fills the public Env map only from the init section, so cfg.Env stays nil for
+// anything created from a spec env. A guard reading cfg.Env therefore never
+// fires. If a future SDK version starts populating it, this fails and the raw
+// parse can be revisited.
+func TestSDKSandboxConfigCannotSeeThePersistedGuestEnv(t *testing.T) {
+	config := persistedConfigWithGuestEnv(
+		`{"key":"` + msbAPISecretEnv + `","value":"albert-real-secret"}`,
+	)
+	var cfg msb.SandboxConfig
+	if err := json.Unmarshal([]byte(config), &cfg); err != nil {
+		t.Fatalf("unmarshal SandboxConfig: %v", err)
+	}
+	if _, ok := cfg.Env[msbAPISecretEnv]; ok {
+		t.Fatalf("SandboxConfig.Env now exposes the spec env (%v); the raw parse may be unnecessary", cfg.Env)
+	}
+}
+
+// TestMicrosandboxFullModeRejectsEnvThatMerelyLooksLikeAPlaceholder covers the
+// prefix trap: only the exact documented placeholder is protected, so a value
+// that starts with the runtime's placeholder prefix is still treated as a
+// credential the guest can read.
+func TestMicrosandboxFullModeRejectsEnvThatMerelyLooksLikeAPlaceholder(t *testing.T) {
+	for _, value := range []string{"$MSB_OTHER_VAR", "$MSB_", "$MSB_ALBERT_API_KEYx"} {
+		client := &fakeMSBClient{
+			exists:      true,
+			status:      "stopped",
+			startScript: msbStartScript(IsolationFull),
+			env:         map[string]string{msbAPISecretEnv: value},
+		}
+		m := newTestMicrosandbox(t, client)
+		m.cfg.Isolation = IsolationFull
+		if err := m.Start(context.Background()); err == nil {
+			t.Fatalf("%q must not pass as the protected placeholder", value)
+		}
+		if hasCall(client, "start "+msbSandbox) {
+			t.Fatalf("%q must not boot: %v", value, client.calls)
+		}
+	}
+}
+
+// TestMicrosandboxFullModeStartsWithNoPersistedKey records that a sandbox whose
+// spec env carries no Albert entry at all is not a legacy sandbox: the guard
+// looks for a persisted value, not for the variable name.
+func TestMicrosandboxFullModeStartsWithNoPersistedKey(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		env:         map[string]string{"OPENCODE_SERVER_USERNAME": "opencode"},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
 	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start with an unreadable config: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	if !hasCall(client, "start "+msbSandbox) {
-		t.Fatalf("an unreadable config must not block the start: %v", client.calls)
+		t.Fatalf("a sandbox without a persisted key must start: %v", client.calls)
+	}
+}
+
+// handledConfig is a persisted document exposed the way a real SDK handle
+// exposes it. The fake carries no typed config, which is the faithful shape:
+// the real handle's typed SandboxConfig cannot see the spec env either, so a
+// reader that reaches for it observes nothing.
+type handledConfig struct{ configJSON string }
+
+func (h handledConfig) ConfigJSON() string { return h.configJSON }
+
+// TestGuestEnvFromHandleReadsThePersistedDocument covers the wiring, not just
+// the parser. The guard is only as good as the source it reads, and the source
+// that looks obvious, the handle's typed sandbox config, is blind to the spec
+// env. A reader wired to that field no-ops in production while every
+// fakeMSBClient test still passes, so this pins the document the reader uses.
+func TestGuestEnvFromHandleReadsThePersistedDocument(t *testing.T) {
+	h := handledConfig{configJSON: persistedConfigWithGuestEnv(
+		`{"key":"` + msbAPISecretEnv + `","value":"albert-real-secret"}`,
+	)}
+	env, err := guestEnvFromHandle(h)
+	if err != nil {
+		t.Fatalf("guestEnvFromHandle: %v", err)
+	}
+	if got := env[msbAPISecretEnv]; got != "albert-real-secret" {
+		t.Fatalf("%s = %q, want the value stored in the persisted document", msbAPISecretEnv, got)
 	}
 }
 
