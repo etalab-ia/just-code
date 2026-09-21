@@ -278,7 +278,9 @@ En mode `backend` (défaut), `opencode serve` tourne dans le sandbox et le TUI s
 just-code check --isolation full             # état de la VM, pas de health check
 ```
 
-Les secrets ne passent jamais par la ligne de commande : en mode `full` ils sont transmis sur l'entrée standard (Tart) ou par un fichier `0600` copié dans l'invité (agent-vm), et le TUI les lit depuis ce fichier. Le fichier porte aussi la configuration du provider Albert, sans quoi le TUI n'aurait pas de modèle à utiliser.
+Les secrets ne passent jamais par la ligne de commande. Sur Microsandbox, la vraie clé Albert ne pénètre jamais l'invité, dans aucun des deux modes : l'invité ne voit qu'un placeholder (`$MSB_ALBERT_API_KEY`), et le proxy réseau du runtime substitue la vraie valeur uniquement pour les requêtes vers l'hôte Albert autorisé. Le mode `full` bénéficie de la même protection que le mode `backend` ; un sandbox `full` créé avant cette protection (clé persistée en clair dans l'environnement invité) est refusé au démarrage avec la commande de recréation à lancer.
+
+Tart et agent-vm n'ont pas d'injection protégée équivalente : en mode `full`, la vraie clé est transmise sur l'entrée standard (Tart) ou par un fichier `0600` copié dans l'invité (agent-vm), et le TUI les lit depuis ce fichier. Le fichier porte aussi la configuration du provider Albert, sans quoi le TUI n'aurait pas de modèle à utiliser. Un avertissement explicite s'affiche au lancement de ces modes : la clé réelle reste présente dans l'invité pendant toute la session, et le mode `backend` n'offre pas non plus de protection équivalente sur ces runtimes. `--microsandbox` est le seul runtime avec substitution réseau.
 
 Le niveau d'isolation est fixé à la création du sandbox Microsandbox. Le demander différent sur un sandbox existant est refusé, avec la commande de recréation à lancer ; `just-code restart --<runtime>` recrée l'environnement dans le mode demandé.
 

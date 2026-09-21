@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -259,6 +260,36 @@ func (sdkMSBClient) StartScript(ctx context.Context, name string) (string, error
 		return "", err
 	}
 	return cfg.Scripts["start"], nil
+}
+
+// GuestEnv reads the persisted spec env from the raw sandbox config JSON.
+// The Go SDK's Config() decode does not surface the spec's env array, so the
+// raw JSON is parsed here.
+func (sdkMSBClient) GuestEnv(ctx context.Context, name string) (map[string]string, error) {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return msbParseGuestEnv(h.ConfigJSON())
+}
+
+// msbParseGuestEnv extracts the persisted spec env ({"key", "value"} entries)
+// from a sandbox config JSON document.
+func msbParseGuestEnv(configJSON string) (map[string]string, error) {
+	var raw struct {
+		Env []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"env"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
+		return nil, err
+	}
+	env := make(map[string]string, len(raw.Env))
+	for _, entry := range raw.Env {
+		env[entry.Key] = entry.Value
+	}
+	return env, nil
 }
 
 func (sdkMSBClient) Logs() error {

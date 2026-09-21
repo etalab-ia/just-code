@@ -98,6 +98,11 @@ type msbClient interface {
 	// or "" when it cannot be read. The script is fixed at creation, so it is
 	// how the sandbox's original isolation mode is detected.
 	StartScript(ctx context.Context, name string) (string, error)
+	// GuestEnv returns the persisted guest env of an existing sandbox, or an
+	// error when the config cannot be read. It backs the plaintext-key
+	// migration guard: old full-mode sandboxes stored the real
+	// ALBERT_API_KEY there.
+	GuestEnv(ctx context.Context, name string) (map[string]string, error)
 	// Logs streams sandbox logs to the terminal until interrupted.
 	Logs() error
 	// Shell opens an interactive shell in the sandbox.
@@ -173,13 +178,10 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	if exists {
 		fmt.Printf("Starting %s...\n", msbSandbox)
-		apiKey := m.cfg.APIKey
-		if m.cfg.Isolation == IsolationFull {
-			// The proxy secret exists only for the backend model; in full mode
-			// the agent reads its own key from the guest env.
-			apiKey = ""
+		if err := m.rejectPlaintextKeySandbox(ctx, sandbox); err != nil {
+			return err
 		}
-		if err := m.Client.ModifyNextStart(ctx, msbSandbox, m.nextStartEnv(), apiKey); err != nil {
+		if err := m.Client.ModifyNextStart(ctx, msbSandbox, m.nextStartEnv(), m.cfg.APIKey); err != nil {
 			return err
 		}
 		if err := m.Client.Start(ctx, msbSandbox); err != nil {
@@ -212,7 +214,7 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 // sandboxSpec builds the full sandbox configuration from the config and the
 // embedded OpenCode config and start script.
 func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
-	spec := msbSandboxSpec{
+	return msbSandboxSpec{
 		Image:       msbImage,
 		Env:         m.sandboxEnv(),
 		Workspace:   m.cfg.WorkspaceDir,
@@ -220,42 +222,31 @@ func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
 		AllowHosts:  []string{msbAllowHost},
 		StartScript: msbStartScript(m.cfg.Isolation),
 	}
-	if m.cfg.Isolation == IsolationFull {
-		// The proxy secret exists only for the backend model; in full mode the
-		// agent reads its own key from the guest env.
-		spec.APIKey = ""
-		spec.AllowHosts = nil
-	}
-	return spec
 }
 
 // nextStartEnv builds the guest env persisted for the next boot of an
-// existing stopped sandbox. In full mode the agent reads its own key, so the
-// real ALBERT_API_KEY travels as a plain guest env entry; the backend-mode
-// proxy-secret substitution stays out of it.
+// existing stopped sandbox. The real ALBERT_API_KEY is never in it: the
+// network proxy substitutes the secret placeholder on requests to the
+// allowed host, in both isolation modes.
 func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
-	env := map[string]string{
+	return map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 	}
-	if m.cfg.Isolation == IsolationFull {
-		env["ALBERT_API_KEY"] = m.cfg.APIKey
-		env["OPENCODE_CONFIG_CONTENT"] = opencodeConfigContent
-	}
-	return env
 }
 
-// sandboxEnv builds the guest environment for the sandbox.
+// sandboxEnv builds the guest environment for the sandbox. The real
+// ALBERT_API_KEY is deliberately absent in both isolation modes: the guest
+// only ever sees the secret placeholder, and the network proxy substitutes
+// the real value on requests to the allowed host. The in-guest TUI of
+// isolation full goes through the same substitution as the backend mode's
+// `opencode serve`.
 func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
-	env := map[string]string{
+	return map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 		"OPENCODE_CONFIG_CONTENT":  opencodeConfigContent,
 	}
-	if m.cfg.Isolation == IsolationFull {
-		env["ALBERT_API_KEY"] = m.cfg.APIKey
-	}
-	return env
 }
 
 // launchBackend runs the container entrypoint inside a live VM. Recreating the
@@ -354,6 +345,32 @@ func (m *MicrosandboxRuntime) rejectIsolationMismatch(ctx context.Context, sandb
 		"the start script is fixed when the sandbox is created. "+
 		"Run 'just-code restart --microsandbox' (or 'just-code clean --microsandbox') to recreate it in %s mode",
 		sandbox.Name, createdMode, requestedMode, requestedMode)
+}
+
+// rejectPlaintextKeySandbox refuses to boot a sandbox whose persisted config
+// still carries the real ALBERT_API_KEY as a guest env entry. Full-mode
+// sandboxes created before the secret-proxy migration stored the key in
+// plaintext in the guest environment; booting them would re-expose it.
+// Removing the entry would also drop the key the guest needs, since the
+// secret proxy was never registered for these sandboxes, so the only safe
+// path is recreation. The check reads the raw persisted JSON because the
+// Go SDK's Config() decode does not surface the spec's env array.
+func (m *MicrosandboxRuntime) rejectPlaintextKeySandbox(ctx context.Context, sandbox msbSandboxInfo) error {
+	env, err := m.Client.GuestEnv(ctx, sandbox.Name)
+	if err != nil {
+		// Undetectable (older runtime, unreadable config): proceed as before
+		// rather than blocking every start on a best-effort check.
+		return nil
+	}
+	for key := range env {
+		if key == "ALBERT_API_KEY" {
+			return fmt.Errorf("%s was created before the secret-proxy migration and still has the real ALBERT_API_KEY persisted in its guest environment; "+
+				"booting it would expose the key inside the microVM. "+
+				"Run 'just-code clean --microsandbox' (or 'just-code restart --microsandbox') to recreate it with placeholder-only injection",
+				sandbox.Name)
+		}
+	}
+	return nil
 }
 
 func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {

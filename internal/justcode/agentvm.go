@@ -528,6 +528,10 @@ func (a *AgentVM) Shell() error {
 // which shares the host's absolute path.
 func (a *AgentVM) RunAgent(ctx context.Context) error {
 	cfg := a.Config
+	// Unlike the Microsandbox runtime, agent-vm has no secret proxy: the real
+	// Albert key sits in a guest file for the whole session. Say so, so the
+	// weaker boundary is a visible choice rather than a silent one.
+	fmt.Fprintln(os.Stderr, "Warning: agent-vm has no protected secret injection; the real ALBERT_API_KEY is written to a 0600 file inside the guest. Use --microsandbox for placeholder-only injection.")
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}

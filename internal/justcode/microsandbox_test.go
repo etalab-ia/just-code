@@ -33,6 +33,8 @@ type fakeMSBClient struct {
 	logsErr      error
 	shellErr     error
 	attachErr    error
+	guestEnv     map[string]string
+	guestEnvErr  error
 
 	calls       []string
 	created     *msbSandboxSpec
@@ -115,6 +117,14 @@ func (f *fakeMSBClient) StartScript(_ context.Context, name string) (string, err
 	// "start" prefix would be indistinguishable from a Start() call.
 	f.record("readconfig " + name)
 	return f.startScript, nil
+}
+
+func (f *fakeMSBClient) GuestEnv(_ context.Context, name string) (map[string]string, error) {
+	f.record("guestenv " + name)
+	if f.guestEnvErr != nil {
+		return nil, f.guestEnvErr
+	}
+	return cloneStringMap(f.guestEnv), nil
 }
 
 func (f *fakeMSBClient) Logs() error {
@@ -602,18 +612,19 @@ func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
 	}
 }
 
-func TestMicrosandboxFullModeSpecCarriesRealKey(t *testing.T) {
+// TestMicrosandboxFullModeSpecUsesProxySecret pins the full-mode half of the
+// secret fix (#57): the in-guest TUI goes through the same placeholder-plus-
+// substitution path as the backend, so the spec keeps the proxy secret and
+// the real key never enters the guest env.
+func TestMicrosandboxFullModeSpecUsesProxySecret(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{})
 	m.cfg.Isolation = IsolationFull
 	spec := m.sandboxSpec()
-	if spec.APIKey != "" {
-		t.Fatalf("full mode must not use the proxy secret: %+v", spec)
+	if spec.APIKey != "key" || !reflect.DeepEqual(spec.AllowHosts, []string{msbAllowHost}) {
+		t.Fatalf("full mode must use the proxy secret: %+v", spec)
 	}
-	if spec.AllowHosts != nil {
-		t.Fatalf("full mode must not restrict proxy hosts: %v", spec.AllowHosts)
-	}
-	if spec.Env["ALBERT_API_KEY"] != "key" {
-		t.Fatalf("full mode guest env must carry the real key: %v", spec.Env)
+	if _, exists := spec.Env["ALBERT_API_KEY"]; exists {
+		t.Fatalf("full mode guest env must not carry the real key: %v", spec.Env)
 	}
 	if spec.Env["OPENCODE_CONFIG_CONTENT"] == "" {
 		t.Fatal("full mode guest env must carry the OpenCode config")
@@ -640,8 +651,12 @@ func TestMicrosandboxBackendModeSpecUnchanged(t *testing.T) {
 	}
 }
 
-func TestMicrosandboxFullModeNextStartCarriesRealKey(t *testing.T) {
-	m := newTestMicrosandbox(t, &fakeMSBClient{exists: true, status: "stopped"})
+// TestMicrosandboxFullModeNextStartRefreshesProxySecret pins the stopped-branch
+// half of the secret fix (#57): a full-mode sandbox created with the proxy
+// secret gets its value refreshed on restart like a backend-mode one, and the
+// next-start env never carries the real key.
+func TestMicrosandboxFullModeNextStartRefreshesProxySecret(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{exists: true, status: "stopped", startScript: msbStartScript(IsolationFull)})
 	m.cfg.Isolation = IsolationFull
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -650,11 +665,11 @@ func TestMicrosandboxFullModeNextStartCarriesRealKey(t *testing.T) {
 		t.Fatal("config lost the isolation level")
 	}
 	client := m.Client.(*fakeMSBClient)
-	if client.modifiedEnv["ALBERT_API_KEY"] != "key" {
-		t.Fatalf("full mode next-start env must carry the real key: %v", client.modifiedEnv)
+	if client.modifiedKey != "key" {
+		t.Fatalf("full mode must refresh the proxy secret: %q", client.modifiedKey)
 	}
-	if client.modifiedKey != "" {
-		t.Fatalf("full mode must not pass a proxy secret to ModifyNextStart: %q", client.modifiedKey)
+	if _, exists := client.modifiedEnv["ALBERT_API_KEY"]; exists {
+		t.Fatalf("full mode next-start env must not carry the real key: %v", client.modifiedEnv)
 	}
 	for _, prefix := range []string{"modify " + msbSandbox, "start " + msbSandbox} {
 		if !hasCall(client, prefix) {
@@ -694,6 +709,78 @@ func TestMicrosandboxStartRejectsIsolationSwitch(t *testing.T) {
 	}
 	if hasCall(client, "start "+msbSandbox) {
 		t.Fatalf("a mismatched sandbox must not be booted: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxStartRejectsPersistedPlaintextKey pins the migration guard
+// of #57: a full-mode sandbox created before the secret-proxy fix has the
+// real ALBERT_API_KEY persisted in its guest env. Booting it would re-expose
+// the key, so Start must refuse with recreate guidance instead.
+func TestMicrosandboxStartRejectsPersistedPlaintextKey(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		guestEnv:    map[string]string{"ALBERT_API_KEY": "real-key"},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("a sandbox with a persisted plaintext key must not boot")
+	}
+	if !strings.Contains(err.Error(), "secret-proxy migration") || !strings.Contains(err.Error(), "clean --microsandbox") {
+		t.Fatalf("error must explain the migration and the recovery command: %v", err)
+	}
+	if hasCall(client, "start "+msbSandbox) || hasCall(client, "modify "+msbSandbox) {
+		t.Fatalf("a plaintext-key sandbox must not be booted or modified: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxStartProceedsWithoutPersistedKey records that the guard is
+// presence-of-key, not "always refuse": a sandbox whose guest env holds no
+// ALBERT_API_KEY (created after the fix, or a backend-mode one) starts
+// normally.
+func TestMicrosandboxStartProceedsWithoutPersistedKey(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		guestEnv:    map[string]string{"OPENCODE_SERVER_PASSWORD": "pw"},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("a migrated sandbox must start; calls: %v", client.calls)
+	}
+
+	// An unreadable config must not block the start either.
+	client = &fakeMSBClient{exists: true, status: "stopped", guestEnvErr: errors.New("config unreadable")}
+	m = newTestMicrosandbox(t, client)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start with an unreadable config: %v", err)
+	}
+	if !hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("an undetectable config must not block the start; calls: %v", client.calls)
+	}
+}
+
+// TestMSBGuestEnvParsesPersistedSpecEnv pins the raw-JSON parse behind the
+// migration guard: the Go SDK's Config() does not surface the spec env, so
+// GuestEnv reads {"key": ..., "value": ...} entries straight from ConfigJSON.
+func TestMSBGuestEnvParsesPersistedSpecEnv(t *testing.T) {
+	// Constructed from the shape the production path reads (the persisted
+	// Rust SandboxSpec env array), not from a hand-invented schema.
+	const configJSON = `{"name":"sb","env":[{"key":"ALBERT_API_KEY","value":"real"},{"key":"MODE","value":"full"}]}`
+	env, err := msbParseGuestEnv(configJSON)
+	if err != nil {
+		t.Fatalf("msbParseGuestEnv: %v", err)
+	}
+	if env["ALBERT_API_KEY"] != "real" || env["MODE"] != "full" || len(env) != 2 {
+		t.Fatalf("guest env = %v", env)
 	}
 }
 

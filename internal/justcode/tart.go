@@ -441,6 +441,10 @@ func (t *Tart) Shell() error {
 // the 0600 env file and execing opencode in the workspace share.
 func (t *Tart) RunAgent(ctx context.Context) error {
 	cfg := t.Config
+	// Unlike the Microsandbox runtime, Tart has no secret proxy: the real
+	// Albert key sits in a guest file for the whole session. Say so, so the
+	// weaker boundary is a visible choice rather than a silent one.
+	fmt.Fprintln(os.Stderr, "Warning: Tart has no protected secret injection; the real ALBERT_API_KEY is written to a 0600 file inside the guest. Use --microsandbox for placeholder-only injection.")
 	if err := t.stageGuestBinary(); err != nil {
 		return err
 	}
