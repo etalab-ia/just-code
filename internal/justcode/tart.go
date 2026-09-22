@@ -416,7 +416,12 @@ func (t *Tart) ID() Runtime { return RuntimeTart }
 // Restart recreates the VM from scratch, mirroring `just restart --tart`.
 func (t *Tart) Restart(ctx context.Context) error {
 	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the VM and its persistent state.
+	// workspace must not cost the VM and its persistent state. Create the
+	// directory first, as Start does, so a workspace that does not exist
+	// yet (default ./workspace) is not an error.
+	if err := os.MkdirAll(t.Config.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
 	if err := CheckWorkspaceGate(ctx, t.Config.WorkspaceDir); err != nil {
 		return err
 	}

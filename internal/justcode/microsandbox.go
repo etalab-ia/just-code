@@ -564,7 +564,12 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the sandbox and its persistent state.
+	// workspace must not cost the sandbox and its persistent state. Create
+	// the directory first, as Start does, so a workspace that does not
+	// exist yet (default ./workspace) is not an error.
+	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
 	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
 		return err
 	}
