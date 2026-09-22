@@ -42,6 +42,9 @@ type fakeMSBClient struct {
 	modifiedEnv map[string]string
 	modifiedKey string
 	execResults []fakeMSBExecResult
+	// execDefault is returned once execResults is drained; nil means success,
+	// which preserves the fake's historical default.
+	execDefault *fakeMSBExecResult
 }
 
 type fakeMSBExecResult struct {
@@ -91,6 +94,9 @@ func (f *fakeMSBClient) ModifyNextStart(_ context.Context, name string, env map[
 func (f *fakeMSBClient) Exec(_ context.Context, name, command string) (int, string, error) {
 	f.record("exec " + name + " " + command)
 	if len(f.execResults) == 0 {
+		if f.execDefault != nil {
+			return f.execDefault.code, f.execDefault.stderr, f.execDefault.err
+		}
 		return 0, "", nil
 	}
 	result := f.execResults[0]
@@ -256,6 +262,30 @@ func TestMicrosandboxStartNew(t *testing.T) {
 	if !strings.Contains(spec.StartScript, "opencode serve") || !strings.Contains(spec.Env["OPENCODE_CONFIG_CONTENT"], "albert.api.etalab.gouv.fr") {
 		t.Fatal("embedded guest assets are missing")
 	}
+	// Creation boots an idle VM (the Go SDK has no background launch intent),
+	// so the start script must be launched explicitly right after Create.
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("start script was not launched after creation; calls: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxFullModeCreatePreparesGuest pins the full-mode half of the
+// create fix: the same idle-VM problem leaves a freshly created full-mode
+// sandbox without its toolchain, so the start script (which installs it and
+// then keeps the VM alive) must run there too.
+func TestMicrosandboxFullModeCreatePreparesGuest(t *testing.T) {
+	client := &fakeMSBClient{}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if client.created == nil {
+		t.Fatalf("sandbox was not created; calls: %v", client.calls)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("start script was not launched after full-mode creation; calls: %v", client.calls)
+	}
 }
 
 func TestMicrosandboxStartStopsOnInstallFailure(t *testing.T) {
@@ -334,6 +364,181 @@ func TestMicrosandboxLaunchBackendRetries(t *testing.T) {
 	}
 	if got := len(client.calls); got != 3 {
 		t.Fatalf("calls = %v, want three exec attempts", client.calls)
+	}
+}
+
+// TestMSBRelaunchCommandRunsThroughShell pins the ENOEXEC half of the fix: the
+// Go SDK stores script bodies verbatim, and sandboxes created before the
+// shebang was added to guest-prep.sh persist a script that cannot be exec'd
+// directly. The relaunch must therefore invoke the interpreter explicitly.
+func TestMSBRelaunchCommandRunsThroughShell(t *testing.T) {
+	if !strings.Contains(msbRelaunchCommand, "sh "+msbGuestEntrypoint) {
+		t.Fatalf("relaunch must run the entrypoint through sh: %q", msbRelaunchCommand)
+	}
+	// A bare `nohup ... & sleep 1` always reports the sleep's exit status (0);
+	// only the kill -0 on the launcher PID makes an immediate death visible.
+	if !strings.Contains(msbRelaunchCommand, "pid=$!; sleep 1; kill -0 \"$pid\"") {
+		t.Fatalf("relaunch must check the backgrounded launcher's survival: %q", msbRelaunchCommand)
+	}
+}
+
+func TestMicrosandboxFullModeCreateWaitsForToolchain(t *testing.T) {
+	// The relaunch succeeds, the marker check fails twice, then appears:
+	// creation must block until the guest is actually prepared.
+	client := &fakeMSBClient{execResults: []fakeMSBExecResult{
+		{code: 0},            // relaunch
+		{code: 1}, {code: 1}, // marker not yet present
+		{code: 0}, // marker present
+	}}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.toolchainPollDelay = time.Millisecond
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	markerChecks := 0
+	for _, c := range client.calls {
+		if c == "exec "+msbSandbox+" "+msbGuestPrepareProbe {
+			markerChecks++
+		}
+	}
+	if markerChecks != 3 {
+		t.Fatalf("marker checked %d times, want 3; calls: %v", markerChecks, client.calls)
+	}
+}
+
+func TestMicrosandboxFullModeCreateTimesOutWaitingForToolchain(t *testing.T) {
+	// The installer never finishes: creation must fail with guidance, not
+	// report success into an unprepared guest.
+	client := &fakeMSBClient{
+		execResults: []fakeMSBExecResult{{code: 0}},               // relaunch
+		execDefault: &fakeMSBExecResult{code: msbPrepareProgress}, // never ready
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.cfg.StartTimeout = 20 * time.Millisecond
+	m.toolchainPollDelay = time.Millisecond
+	err := m.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "toolchain") {
+		t.Fatalf("Start error = %v, want a toolchain readiness timeout", err)
+	}
+}
+
+// A running full-mode sandbox can still be unprepared: a previous creation
+// may have timed out while the background installer kept going. The running
+// fast path must re-check readiness rather than attach into that guest.
+func TestMicrosandboxFullModeRunningRechecksToolchain(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "running",
+		startScript: msbStartScript(IsolationFull),
+		execDefault: &fakeMSBExecResult{code: msbPrepareProgress}, // never ready
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.cfg.StartTimeout = 20 * time.Millisecond
+	m.toolchainPollDelay = time.Millisecond
+	err := m.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "toolchain") {
+		t.Fatalf("Start error = %v, want a toolchain readiness timeout", err)
+	}
+	if hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("an installer that is alive must not be joined by a second launch: %v", client.calls)
+	}
+}
+
+// A running full-mode sandbox where nothing is preparing (an idle VM left by
+// the pre-#61 creation path, or a start script whose launch retries were
+// exhausted) must be relaunched rather than polled: no process will ever
+// write the marker on its own.
+func TestMicrosandboxFullModeIdleGuestIsRelaunched(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "running",
+		startScript: msbStartScript(IsolationFull),
+		execResults: []fakeMSBExecResult{
+			{code: msbPrepareIdle},  // nothing preparing
+			{code: 0},               // relaunch
+			{code: msbPrepareReady}, // prepared
+		},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.toolchainPollDelay = time.Millisecond
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("an idle guest must be relaunched: %v", client.calls)
+	}
+}
+
+// The relaunch loop is bounded: a guest that stays idle cannot spin.
+func TestMicrosandboxFullModeIdleRelaunchIsBounded(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "running",
+		startScript: msbStartScript(IsolationFull),
+		execResults: []fakeMSBExecResult{
+			{code: msbPrepareIdle}, {code: 0},
+			{code: msbPrepareIdle}, {code: 0},
+			{code: msbPrepareIdle}, {code: 0},
+		},
+		execDefault: &fakeMSBExecResult{code: msbPrepareIdle},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.cfg.StartTimeout = 60 * time.Millisecond
+	m.toolchainPollDelay = time.Millisecond
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("Start must fail when the guest never becomes ready")
+	}
+	relaunches := 0
+	for _, c := range client.calls {
+		if c == "exec "+msbSandbox+" "+msbRelaunchCommand {
+			relaunches++
+		}
+	}
+	if relaunches != msbToolchainRelaunchLimit {
+		t.Fatalf("relaunches = %d, want the limit %d; calls: %v", relaunches, msbToolchainRelaunchLimit, client.calls)
+	}
+}
+
+// An invalid JUST_CODE_START_TIMEOUT must surface as a configuration error in
+// full mode too: attach never reaches the validation the backend path does.
+func TestMicrosandboxFullModeSurfacesInvalidStartTimeout(t *testing.T) {
+	client := &fakeMSBClient{execDefault: &fakeMSBExecResult{code: msbPrepareProgress}}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.cfg.StartTimeoutErr = errors.New("JUST_CODE_START_TIMEOUT must be a whole number of seconds")
+	err := m.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "JUST_CODE_START_TIMEOUT") {
+		t.Fatalf("Start error = %v, want the configuration error", err)
+	}
+}
+
+// A full-mode sandbox stopped mid-preparation never finishes on boot (the
+// entrypoint only runs at creation): the stopped path relaunches the
+// idempotent start script and gates on the marker.
+func TestMicrosandboxFullModeStoppedRelaunchesAndWaits(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		execResults: []fakeMSBExecResult{
+			{code: 0},                  // relaunch
+			{code: msbPrepareProgress}, // installer alive
+			{code: msbPrepareReady},    // prepared
+		},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.toolchainPollDelay = time.Millisecond
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("stopped full-mode sandbox must relaunch the start script: %v", client.calls)
 	}
 }
 
@@ -635,8 +840,15 @@ func TestMicrosandboxFullModeNextStartUsesProxySecretAndScrubsRawEnv(t *testing.
 			t.Fatalf("missing %q; calls: %v", prefix, client.calls)
 		}
 	}
-	if hasCall(client, "exec "+msbSandbox) {
-		t.Fatalf("full mode must not relaunch the backend: %v", client.calls)
+	// Booting a stopped VM does not re-run the entrypoint, so the idempotent
+	// start script is relaunched (a sandbox stopped mid-preparation would
+	// otherwise never finish installing) and readiness is gated on the
+	// toolchain marker.
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("full mode restart must relaunch the start script: %v", client.calls)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" "+msbGuestPrepareProbe) {
+		t.Fatalf("readiness marker was not checked: %v", client.calls)
 	}
 }
 
@@ -848,6 +1060,62 @@ func TestSDKSandboxConfigCannotSeeThePersistedGuestEnv(t *testing.T) {
 	}
 }
 
+// persistedConfigWithMounts reproduces the mounts section of a real persisted
+// config document (captured from a live albert-opencode-sandbox created by
+// just-code 0.4.1, runtime v0.7.0). Keeping the full entry shape — options,
+// stat_virtualization, follow_root_symlinks — matters: a fixture trimmed to
+// what parseWorkspaceMount reads would not prove the parser accepts what the
+// runtime actually writes.
+func persistedConfigWithMounts(mounts ...string) string {
+	return `{"name":"` + msbSandbox + `",` +
+		`"runtime":{"workdir":"/workspace","shell":"/bin/sh"},` +
+		`"mounts":[` + strings.Join(mounts, ",") + `]}`
+}
+
+const persistedWorkspaceBindMount = `{"type":"Bind","host":"/Users/tester/project","guest":"/workspace",` +
+	`"options":{"readonly":false,"noexec":false,"nosuid":false,"nodev":false},` +
+	`"stat_virtualization":"strict","host_permissions":"private","follow_root_symlinks":false,"quota_mib":null}`
+
+func TestParseWorkspaceMount(t *testing.T) {
+	host, err := parseWorkspaceMount(persistedConfigWithMounts(persistedWorkspaceBindMount), "/workspace")
+	if err != nil {
+		t.Fatalf("parseWorkspaceMount: %v", err)
+	}
+	if host != "/Users/tester/project" {
+		t.Fatalf("host = %q, want /Users/tester/project", host)
+	}
+
+	otherGuest := `{"type":"Bind","host":"/elsewhere","guest":"/data"}`
+	host, err = parseWorkspaceMount(persistedConfigWithMounts(otherGuest), "/workspace")
+	if err != nil {
+		t.Fatalf("parseWorkspaceMount without a /workspace mount: %v", err)
+	}
+	if host != "" {
+		t.Fatalf("host = %q, want empty when no /workspace mount exists", host)
+	}
+
+	if _, err := parseWorkspaceMount("", "/workspace"); err == nil {
+		t.Fatal("an unreadable config must surface an error, not an empty mount")
+	}
+}
+
+// TestSDKSandboxConfigCannotSeeThePersistedMounts is the regression guard for
+// the reason parseWorkspaceMount exists at all — the mounts twin of
+// TestSDKSandboxConfigCannotSeeThePersistedGuestEnv. The SDK's typed
+// SandboxConfig decodes Volumes as nil for a sandbox created from spec mounts,
+// so a stale-mount check reading cfg.Volumes never fires. If a future SDK
+// version starts populating it, this fails and the raw parse can be revisited.
+func TestSDKSandboxConfigCannotSeeThePersistedMounts(t *testing.T) {
+	config := persistedConfigWithMounts(persistedWorkspaceBindMount)
+	var cfg msb.SandboxConfig
+	if err := json.Unmarshal([]byte(config), &cfg); err != nil {
+		t.Fatalf("unmarshal SandboxConfig: %v", err)
+	}
+	if len(cfg.Volumes) != 0 {
+		t.Fatalf("SandboxConfig.Volumes now exposes the spec mounts (%v); the raw parse may be unnecessary", cfg.Volumes)
+	}
+}
+
 // TestMicrosandboxFullModeRejectsEnvThatMerelyLooksLikeAPlaceholder covers the
 // prefix trap: only the exact documented placeholder is protected, so a value
 // that starts with the runtime's placeholder prefix is still treated as a
@@ -973,8 +1241,10 @@ func TestMicrosandboxStartRejectsIsolationSwitch(t *testing.T) {
 }
 
 // TestMicrosandboxFullModeRunningSandboxIsReady records that a running
-// full-mode sandbox needs no health probe: no backend endpoint exists in that
-// mode, so probing would always fail and relaunch into the wrong process.
+// full-mode sandbox is not health-probed (no backend endpoint exists in that
+// mode, so probing would always fail and relaunch into the wrong process) —
+// but readiness is still re-checked via the toolchain marker, because a
+// previous creation may have timed out with the installer still running.
 func TestMicrosandboxFullModeRunningSandboxIsReady(t *testing.T) {
 	client := &fakeMSBClient{exists: true, status: "running", startScript: msbStartScript(IsolationFull)}
 	m := newTestMicrosandbox(t, client)
@@ -982,8 +1252,11 @@ func TestMicrosandboxFullModeRunningSandboxIsReady(t *testing.T) {
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if hasCall(client, "exec "+msbSandbox) {
+	if hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
 		t.Fatalf("a running full-mode sandbox must not be relaunched: %v", client.calls)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" "+msbGuestPrepareProbe) {
+		t.Fatalf("readiness marker was not re-checked: %v", client.calls)
 	}
 	if hasCall(client, "create") || hasCall(client, "start "+msbSandbox) {
 		t.Fatalf("a running full-mode sandbox must be left as-is: %v", client.calls)

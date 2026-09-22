@@ -19,11 +19,52 @@ const (
 	// msbGuestEntrypoint is the container entrypoint inside the microVM. It is
 	// what launches `opencode serve`.
 	msbGuestEntrypoint = "/.msb/scripts/start"
+
+	// msbGuestLog collects the start script's output inside the guest; it is
+	// the first place to look when the backend never becomes healthy.
+	msbGuestLog = "/var/log/opencode.log"
+
+	// msbToolchainMarker is written by guest-prep.sh once the toolchain
+	// install completes. It doubles as the readiness signal for full mode,
+	// which has no health endpoint.
+	msbToolchainMarker = "/var/lib/just-code/toolchain-ready"
+
+	// msbGuestPrepareProbe reports the guest's preparation state through its
+	// exit code (Exec surfaces stderr only): ready, preparing, or idle with
+	// nothing running. The process scan reads /proc rather than using pgrep,
+	// which guest-prep only installs partway through — during a first install
+	// pgrep is absent exactly when "is something preparing?" matters. The
+	// probe skips its own PID: its command line necessarily contains the
+	// entrypoint path it greps for.
+	msbGuestPrepareProbe = "if [ -f " + msbToolchainMarker + " ]; then exit 0; fi; " +
+		"self=$$; " +
+		"for p in /proc/[0-9]*/cmdline; do " +
+		"[ \"$p\" = \"/proc/$self/cmdline\" ] && continue; " +
+		"tr '\\0' ' ' < \"$p\" 2>/dev/null | grep -q '" + msbGuestEntrypoint + "' && exit 2; " +
+		"done; exit 3"
+
+	msbPrepareReady    = 0
+	msbPrepareProgress = 2
+	msbPrepareIdle     = 3
+
+	// msbToolchainRelaunchLimit bounds how often the wait relaunches a guest
+	// where nothing is preparing, so a start script that dies repeatedly
+	// cannot spin.
+	msbToolchainRelaunchLimit = 3
 	// msbRelaunchCommand restarts that entrypoint from inside a live VM.
 	// Microsandbox keeps a VM across restarts but runs the entrypoint only at
 	// creation, so a VM that came back from a restart reports `running` with no
 	// backend process listening: "VM up" is not "backend ready".
-	msbRelaunchCommand = "nohup " + msbGuestEntrypoint + " >/var/log/opencode.log 2>&1 &"
+	//
+	// The script is invoked through `sh` because the Go SDK stores script
+	// bodies verbatim (no shebang is prepended, unlike the Rust builder and
+	// the CLI), and sandboxes created before the shebang was added to
+	// guest-prep.sh persist a script that cannot be exec'd directly.
+	// The launcher is backgrounded, then checked after one second: a bare
+	// `nohup ... &` would report the exit status of the trailing sleep (0)
+	// even when the script died instantly, so the compound ends with
+	// `kill -0` on the launcher PID to make an immediate death visible.
+	msbRelaunchCommand = "nohup sh " + msbGuestEntrypoint + " >" + msbGuestLog + " 2>&1 & pid=$!; sleep 1; kill -0 \"$pid\" 2>/dev/null"
 
 	// msbLaunchAttempts bounds the retry while the guest agent catches up with
 	// a freshly started VM.
@@ -70,14 +111,17 @@ type MicrosandboxRuntime struct {
 	Probe func(ctx context.Context, endpoint, username, password string) HealthProbe
 	// launchRetryDelay is configurable for tests; production uses two seconds.
 	launchRetryDelay time.Duration
+	// toolchainPollDelay paces the full-mode readiness wait; configurable for tests.
+	toolchainPollDelay time.Duration
 }
 
 // NewMicrosandboxRuntime builds a Microsandbox backend with production defaults.
 func NewMicrosandboxRuntime(cfg Config) *MicrosandboxRuntime {
 	return &MicrosandboxRuntime{
-		cfg:              cfg,
-		Client:           sdkMSBClient{},
-		launchRetryDelay: msbLaunchRetryDelay,
+		cfg:                cfg,
+		Client:             sdkMSBClient{},
+		launchRetryDelay:   msbLaunchRetryDelay,
+		toolchainPollDelay: msbLaunchRetryDelay,
 	}
 }
 
@@ -146,6 +190,13 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if m.cfg.APIKey == "" {
 		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
 	}
+	// A typo in JUST_CODE_START_TIMEOUT must be reported rather than silently
+	// replaced by the default. Full mode waits on the guest without ever
+	// reaching the validation the backend path performs before its health
+	// wait, so validate before doing any runtime work.
+	if m.cfg.Isolation == IsolationFull && m.cfg.StartTimeoutErr != nil {
+		return m.cfg.StartTimeoutErr
+	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
@@ -180,10 +231,13 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	if exists && sandbox.Status == "running" {
 		if m.cfg.Isolation == IsolationFull {
-			// No health endpoint exists in full mode: the sandbox only keeps
-			// the VM alive and the TUI is attached afterwards, so a plain
-			// "running" VM is the ready state. Probing here would always
-			// report a dead backend and relaunch into the wrong mode.
+			// "Running" only means the VM is up: a previous creation may have
+			// timed out waiting for the toolchain while the background
+			// installer kept going. Gate on the readiness marker here too,
+			// or a retry would attach the TUI to an unprepared guest.
+			if err := m.waitForToolchain(ctx); err != nil {
+				return err
+			}
 			fmt.Printf("%s is running (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
 			return nil
 		}
@@ -206,6 +260,16 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 			return err
 		}
 		if m.cfg.Isolation == IsolationFull {
+			// Booting a stopped VM does not re-run the entrypoint: relaunch
+			// the (idempotent) start script so a sandbox stopped mid-
+			// preparation finishes installing, then gate on readiness as
+			// at creation.
+			if err := m.launchBackend(ctx); err != nil {
+				return err
+			}
+			if err := m.waitForToolchain(ctx); err != nil {
+				return err
+			}
 			fmt.Printf("%s started (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
 			return nil
 		}
@@ -217,7 +281,75 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	fmt.Printf("Creating %s microVM...\n", msbSandbox)
 	fmt.Println("First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.")
-	return m.Client.Create(ctx, m.sandboxSpec())
+	if err := m.Client.Create(ctx, m.sandboxSpec()); err != nil {
+		return err
+	}
+	// `msb create` boots an idle VM: the Go SDK has no equivalent of the Rust
+	// SDK's transient LaunchIntent::Background, so the persisted start script
+	// (which installs the toolchain and then execs `opencode serve`, or keeps
+	// the VM alive in full mode) is never run by creation itself. Launch it
+	// explicitly, the same way a restarted VM would.
+	fmt.Printf("Launching the start script inside %s...\n", msbSandbox)
+	if err := m.launchBackend(ctx); err != nil {
+		return err
+	}
+	if m.cfg.Isolation == IsolationFull {
+		// Full mode has no health endpoint and attach runs the TUI
+		// immediately after Start returns, so creation must not report
+		// success while the guest is still preparing — or after the start
+		// script died, in which case the marker never appears.
+		return m.waitForToolchain(ctx)
+	}
+	return nil
+}
+
+// waitForToolchain blocks until the guest prep script signals completion by
+// writing its marker, bounded by the configured start timeout. A guest where
+// nothing is preparing is relaunched rather than polled: an idle VM left by
+// the pre-#61 creation path, or a start script whose launch retries were
+// exhausted, would otherwise wait out the whole timeout on every attempt and
+// only be recoverable by destructive recreation.
+func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
+	timeout := m.cfg.StartTimeout
+	if timeout <= 0 {
+		timeout = DefaultStartTimeout
+	}
+	delay := m.toolchainPollDelay
+	if delay <= 0 {
+		delay = msbLaunchRetryDelay
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	relaunches := 0
+	for first := true; ; first = false {
+		code, _, err := m.Client.Exec(ctx, msbSandbox, msbGuestPrepareProbe)
+		if err == nil {
+			switch {
+			case code == msbPrepareReady:
+				return nil
+			case code == msbPrepareProgress:
+				// The installer is alive; keep waiting.
+			case code == msbPrepareIdle && relaunches < msbToolchainRelaunchLimit:
+				relaunches++
+				fmt.Printf("Nothing is preparing the guest in %s; launching the start script...\n", msbSandbox)
+				if err := m.launchBackend(ctx); err != nil {
+					return err
+				}
+			}
+		}
+		if first {
+			// Quiet in the common case (sandbox already prepared); the wait
+			// message only makes sense when there is something to wait for.
+			fmt.Println("Waiting for the guest toolchain to finish installing...")
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return fmt.Errorf("the guest toolchain was not ready within %s (the start script may have failed); "+
+				"run 'just-code logs --microsandbox' or check %s inside the guest: %w",
+				timeout, msbGuestLog, ctx.Err())
+		}
+	}
 }
 
 // sandboxSpec builds the full sandbox configuration from the config and the
@@ -313,6 +445,11 @@ var errLegacyRawKeySandbox = errors.New("legacy sandbox stores a plaintext API k
 // launchBackend runs the container entrypoint inside a live VM. Recreating the
 // sandbox runs it automatically; booting an existing one does not. The guest
 // agent can lag the VM by a moment after start, hence the bounded retry.
+//
+// The command backgrounds the entrypoint and then sleeps one second, so a
+// launcher that dies immediately (missing toolchain, ENOEXEC on an old
+// shebang-less script) surfaces as a nonzero exit here instead of a silent
+// success that only the downstream health wait would catch, minutes later.
 func (m *MicrosandboxRuntime) launchBackend(ctx context.Context) error {
 	delay := m.launchRetryDelay
 	if delay == 0 {
@@ -364,8 +501,17 @@ func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
 	if err != nil || mounted == "" {
 		return
 	}
+	// Both sides are absolutized: the runtime persists the mount as an
+	// absolute path while WORKSPACE_DIR commonly stays relative ("./workspace"),
+	// so a raw string comparison would warn on every default-config start.
 	mountedClean := filepath.Clean(mounted)
+	if abs, err := filepath.Abs(mountedClean); err == nil {
+		mountedClean = abs
+	}
 	workspaceClean := filepath.Clean(m.cfg.WorkspaceDir)
+	if abs, err := filepath.Abs(workspaceClean); err == nil {
+		workspaceClean = abs
+	}
 	if mountedClean == workspaceClean || (runtime.GOOS == "windows" && strings.EqualFold(mountedClean, workspaceClean)) {
 		return
 	}

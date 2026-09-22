@@ -227,16 +227,40 @@ func (sdkMSBClient) Remove(ctx context.Context, name string) error {
 	return h.Destroy(ctx, msb.WithDestroyForce())
 }
 
+// persistedMounts mirrors how the runtime stores a sandbox's mounts in the
+// persisted config document. The SDK's typed SandboxConfig cannot see them:
+// its Volumes map decodes as nil for a sandbox created with spec mounts
+// (verified against a live handle — same blind spot as the spec env, see
+// persistedGuestEnv), so the raw document is the only readable source.
+type persistedMounts struct {
+	Mounts []struct {
+		Type  string `json:"type"`
+		Host  string `json:"host"`
+		Guest string `json:"guest"`
+	} `json:"mounts"`
+}
+
+// parseWorkspaceMount returns the host path bound at the guest path, or ""
+// when the document carries no such mount.
+func parseWorkspaceMount(configJSON, guestPath string) (string, error) {
+	var raw persistedMounts
+	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
+		return "", fmt.Errorf("decode persisted sandbox config: %w", err)
+	}
+	for _, m := range raw.Mounts {
+		if m.Guest == guestPath && (m.Type == "" || m.Type == "Bind") {
+			return m.Host, nil
+		}
+	}
+	return "", nil
+}
+
 func (sdkMSBClient) WorkspaceMount(ctx context.Context, name string) (string, error) {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {
 		return "", err
 	}
-	cfg, err := h.Config()
-	if err != nil {
-		return "", err
-	}
-	return cfg.Volumes["/workspace"].Bind, nil
+	return parseWorkspaceMount(h.ConfigJSON(), "/workspace")
 }
 
 func (sdkMSBClient) StartScript(ctx context.Context, name string) (string, error) {

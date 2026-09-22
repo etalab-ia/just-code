@@ -1,3 +1,4 @@
+#!/bin/sh
 set -eu
 if [ ! -f /var/lib/just-code/toolchain-ready ]; then
   apk add --no-cache bash build-base ca-certificates curl git nodejs npm procps python3 py3-pip
