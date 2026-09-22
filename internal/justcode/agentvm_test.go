@@ -550,3 +550,27 @@ func TestAgentVMRestartPreflightsWorkspace(t *testing.T) {
 		t.Fatalf("destructive command ran before the workspace gate: %v", runner.calls)
 	}
 }
+
+func TestAgentVMRestartCreatesMissingWorkspace(t *testing.T) {
+	// Restart preflights the workspace before the destructive Clean, but a
+	// workspace that does not exist yet (default ./workspace) must be
+	// created like Start does, not fail the preflight with a stat error.
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && len(args) > 0 && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: DefaultAgentVMVM + "|Running\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	a := newTestAgentVM(t, r)
+	a.Config.WorkspaceDir = filepath.Join(t.TempDir(), "missing", "workspace")
+	// Isolation full makes Start return right after waitForAgent on the
+	// already-running fake VM; the point here is the preflight, not the
+	// backend lifecycle.
+	a.Config.Isolation = IsolationFull
+	if err := a.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart must create a missing workspace, got: %v", err)
+	}
+	if info, err := os.Stat(a.Config.WorkspaceDir); err != nil || !info.IsDir() {
+		t.Fatalf("workspace was not created: %v", err)
+	}
+}

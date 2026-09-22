@@ -510,7 +510,12 @@ func (a *AgentVM) ID() Runtime { return RuntimeAgentVM }
 // Restart recreates the VM from scratch.
 func (a *AgentVM) Restart(ctx context.Context) error {
 	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the VM and its persistent state.
+	// workspace must not cost the VM and its persistent state. Create the
+	// directory first, as Start does, so a workspace that does not exist
+	// yet (default ./workspace) is not an error.
+	if err := os.MkdirAll(a.Config.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
 	if err := CheckWorkspaceGate(ctx, a.Config.WorkspaceDir); err != nil {
 		return err
 	}
