@@ -4,13 +4,21 @@ Brouillon de revue | 22 septembre 2026
 
 ## Résumé
 
-Atteindre la parité Albert Code via **21 PR revoyables**, organisées en preuves de compatibilité, fondations, un jalon de lancement par défaut utilisable, puis la configuration projet complète. Conserver Go et les adaptateurs existants. Ne pas construire un nouveau cadre d'orchestration.
+Atteindre la parité Albert Code via **22 PR revoyables**, organisées en preuves de compatibilité, fondations, un jalon de lancement par défaut utilisable, puis la configuration projet complète. Conserver Go et les adaptateurs existants. Ne pas construire un nouveau cadre d'orchestration.
 
-Ce document transforme l'[analyse architecturale acceptée](https://gist.github.com/kaaloo/daad9511fdd645712d617e8632e9aebc) en backlog de livraison proposé. Les identifiants **P01-P21 sont des identifiants de planification, pas des numéros de PR GitHub existants**. Aucune PR d'implémentation ni nouvelle issue n'a été ouverte pour ce plan.
+Ce document transforme l'[analyse architecturale acceptée](https://gist.github.com/kaaloo/daad9511fdd645712d617e8632e9aebc) en backlog de livraison proposé. Les identifiants **P01-P22 sont des identifiants de planification, pas des numéros de PR GitHub existants**. Aucune PR d'implémentation ni nouvelle issue n'a été ouverte pour ce plan.
 
 Référentiel source revérifié le 22 septembre : just-code main `6d231654633aa409ca373f89b1073f68e92ca619` (v0.4.2), Go 1.22, SDK Microsandbox 0.7.2. Main est inchangé depuis l'analyse. L'[issue #29](https://github.com/etalab-ia/just-code/issues/29) est la seule issue ouverte ; il n'y a pas de PR ouverte. La comparaison Albert Code reste fondée sur `46569c7`.
 
 **Approbation demandée :** le périmètre, la séquence, la politique de compatibilité et les critères d'acceptation ci-dessous. L'approbation de ce document n'est pas une permission d'affaiblir la protection des identifiants si une expérience technique échoue.
+
+### Révision du 22 septembre 2026 : modèle d'espace de travail scellé
+
+Le plan initial conservait le montage inscriptible du checkout hôte par défaut, avec le clone invité comme alternative rejetée. Cette décision est **inversée** : just-code adopte le **modèle scellé** — le checkout hôte n'est plus monté dans l'invité ; l'invité possède son propre clone et les changements reviennent par branche/PR ou par diff revu. Le montage partagé n'est **pas** conservé comme option d'échappement.
+
+Motif : un scan au démarrage ne peut pas fermer la fuite d'identifiants dans un montage inscriptible. `ScanWorkspace` refuse déjà les fichiers `.env` et les détections gitleaks, mais tout secret ajouté après le démarrage, dans un format non détecté, ou écrit par l'agent lui-même reste lisible. Une surveillance continue réduirait la fenêtre sans jamais la fermer. La seule frontière réelle est l'absence de montage.
+
+Conséquences acceptées, détaillées dans P22 : l'éditeur live de l'hôte disparaît du parcours par défaut, un chemin de retour des changements devient obligatoire, et l'estimation est réévaluée à la hausse.
 
 ## 1. Décisions de travail
 
@@ -19,7 +27,7 @@ Luis a accepté l'analyse et ses recommandations. Utiliser ce qui suit comme hyp
 | Topic | Implementation baseline |
 |---|---|
 | Normal launch | `just-code` uses Microsandbox and full isolation without flags or environment variables. Explicit supported overrides remain. |
-| Workspace boundary | Keep the writable project checkout mount. Full means guest execution, not absence of shared host files. No home, host Docker socket, SSH agent or browser-profile mount. Guest-owned clones are out of scope. |
+| Workspace boundary | Sealed model: the host checkout is not mounted into the guest. The guest owns its clone and returns changes through a branch/PR or a reviewed diff. No writable host-workspace mount, and no shared-mount escape hatch. No home, host Docker socket, SSH agent or browser-profile mount either. |
 | Project configuration | Secret-free manifest and lockfile intended for version control; explicit local-only storage option. Setup writes files but never stages or commits them. |
 | Credentials | Native credential store when usable; an explicitly accepted protected-file fallback for headless systems. No silent storage downgrade. |
 | GitHub | Provision `gh` in the guest when GitHub is enabled. Credential access is separately approved per project. No host GitHub CLI requirement for normal use. |
@@ -58,12 +66,13 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 | P05 | `refactor(msb): identifier les environnements par projet` | P04 | Named Microsandbox instances |
 | P06 | `refactor(runtime): cibler les opérations sur une instance` | P05 | Coherent lifecycle across adapters |
 | P07 | `feat(runtime): planifier et réconcilier les changements` | P06 | Safe, resumable application of changes |
+| P22 | `feat(workspace): clone invité et retour des changements revus` | P03, P05, P07 | Sealed guest workspace, no host mount |
 | P08 | `feat(auth): stocker les identifiants hors des projets` | P02, P04 | Native stores + explicit fallback |
 | P09 | `feat(msb): gérer les liaisons de secrets et leur révocation` | P07, P08 | Destination-bound credential lifecycle |
 | P10 | `feat(config): composer et approuver la configuration OpenCode` | P01, P07, P09 | Effective config, trust, provider/model handling |
 | P11 | `feat(setup): accompagner la configuration globale` | P03, P08, P10 | Usable global wizard |
-| P12 | `feat: lancer Microsandbox en isolation complète par défaut` | P06, P10, P11 | Minimal zero-flag vertical slice |
-| P13 | `feat(github): provisionner gh et activer les accès approuvés` | P09, P12 | Working guest GitHub workflow |
+| P12 | `feat: lancer Microsandbox en isolation complète par défaut` | P06, P10, P11, P22 | Minimal zero-flag vertical slice |
+| P13 | `feat(github): provisionner gh et activer les accès approuvés` | P09, P12 | Working guest GitHub workflow + PR-based delivery |
 | P14 | `feat(projet): gérer les skills et les instructions versionnées` | P10, P12 | Pinned skills and managed rules |
 | P15 | `feat(mcp): configurer data.gouv et Context7` | P09, P10, P12 | Remote MCP setup |
 | P16 | `feat(invité): provisionner les MCP navigateur` | P03, P07, P10, P12 | Working Playwright and DevTools |
@@ -73,13 +82,15 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 | P20 | `feat(install): accompagner l’installation sur chaque plateforme` | P12 | Verified installation wrappers |
 | P21 | `test: qualifier la parité et les parcours de migration` | P18, P19, P20 | Release evidence and support matrix |
 
+P22 was added in the 22 September revision (sealed workspace); its identifier preserves the original P01-P21 reading order, and the table rows are in planned dependency order.
+
 **Parallel opportunities:** P01-P04; P05-P07 alongside P08; P13-P16 after P12; P18/P19/P20 once their prerequisites are available. Do not parallelize edits to `main.go` without coordinating ownership.
 
 ### Jalons
 
 - **M0, evidence:** P01-P03. Close the consequential unknowns before promising GitHub protection or browser support. P04 can progress independently.
-- **M1, usable default:** P04-P12 and their prerequisites. Fresh install -> global setup -> minimal project init -> guest TUI -> retained state. This is not yet advertised as Albert Code parity.
-- **M2, project parity:** P13-P17. GitHub, selected skills, managed rules and all four curated MCPs work through a coherent wizard.
+- **M1, usable default:** P04-P12 and P22. Fresh install -> global setup -> minimal project init -> sealed guest clone -> guest TUI -> retained state. This is not yet advertised as Albert Code parity.
+- **M2, project parity:** P13-P17. GitHub (including PR-based change delivery), selected skills, managed rules and all four curated MCPs work through a coherent wizard.
 - **M3, qualified release:** P18-P21. Explicit updates, import, installation and real-host qualification are complete.
 
 ## 4. Contrats détaillés des PR
@@ -112,13 +123,13 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 
 **Purpose:** choose a practical guest foundation and verify the full-mode user experience.
 
-**Scope:** compare the current Alpine guest with a pinned Debian-based candidate for OpenCode, Node/npm, `gh`, Chromium, Playwright MCP and Chrome DevTools MCP. Record image size, cold preparation time, disk/RAM needs and both guest architectures. Test terminal resize, Ctrl+C, clean exit, reconnect and SDK handle ownership. Check Git worktree/submodule metadata references outside the workspace mount.
+**Scope:** compare the current Alpine guest with a pinned Debian-based candidate for OpenCode, Node/npm, `gh`, Chromium, Playwright MCP and Chrome DevTools MCP. Record image size, cold preparation time, disk/RAM needs and both guest architectures. Test terminal resize, Ctrl+C, clean exit, reconnect and SDK handle ownership. Measure guest-side clone behavior that P22 depends on: clone from host path versus remote origin, submodule and linked-worktree handling inside a guest-owned clone, and clone disk/time cost for realistic repository sizes.
 
 **Likely files:** proposed integration fixtures and guest candidate assets under test-only directories; no production base-image switch yet.
 
-**Acceptance:** actual browser navigation, screenshot and DOM/console operation; guest TUI runs without host Node/OpenCode; stopping an attach handle has the intended VM lifecycle. Identify unsupported host/guest combinations explicitly. Record a safe policy for linked worktrees: narrow metadata support or clear refusal, never a parent-directory mount.
+**Acceptance:** actual browser navigation, screenshot and DOM/console operation; guest TUI runs without host Node/OpenCode; stopping an attach handle has the intended VM lifecycle. Identify unsupported host/guest combinations explicitly. Record measured guest-clone behavior (host-path vs remote clone, submodules, linked worktrees, cost) as P22's design input; the sealed model has no host mount, so unsupported repository layouts must be refused with a clear error rather than worked around.
 
-**Boundary/gate:** browser measurements decide P16, not the M1 default switch. PTY and workspace-boundary evidence does gate M1. A new maintained image pipeline, if needed, is explicit scope for P16 and may be split into its own prerequisite PR.
+**Boundary/gate:** browser measurements decide P16, not the M1 default switch. PTY and guest-clone evidence gates P22 and therefore M1. A new maintained image pipeline, if needed, is explicit scope for P16 and may be split into its own prerequisite PR.
 
 ### P04. Typed configuration, schemas and provenance
 
@@ -140,9 +151,9 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 
 **Likely files:** `microsandbox.go`, `microsandbox_sdk.go`, `name.go`, `paths.go`, tests; proposed `project.go` and registry helpers.
 
-**Acceptance:** two same-named repositories and two worktrees never collide; symlink aliases resolve consistently; Windows casing/path rules are tested on Windows. Concurrent setup calls cannot create duplicate instances. Stale or unknown mounts fail closed before attach. Unsupported external Git metadata gets a precise preflight error.
+**Acceptance:** two same-named repositories and two worktrees never collide; symlink aliases resolve consistently; Windows casing/path rules are tested on Windows. Concurrent setup calls cannot create duplicate instances. Stale or unknown guest clones fail closed before attach (mount staleness checks are replaced by clone provenance checks in P22). Unsupported external Git metadata gets a precise preflight error.
 
-**Boundary/compatibility:** existing singleton instances are discovered as legacy, not renamed/deleted automatically. Metadata absence is not permission to adopt an arbitrary VM. Record ownership only after validating the real mounted path and runtime state.
+**Boundary/compatibility:** existing singleton instances are discovered as legacy, not renamed/deleted automatically. Metadata absence is not permission to adopt an arbitrary VM. Record ownership only after validating the real guest workspace provenance and runtime state.
 
 ### P06. Project-aware lifecycle across runtimes
 
@@ -167,6 +178,18 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 **Acceptance:** identical desired state performs no writes; interruption resumes at the unfinished operation; config failure leaves the prior configuration usable; resource/mount/isolation changes are classified correctly. Unknown persisted state does not trigger deletion. Existing readiness/recovery and SDK detach/close regressions remain covered.
 
 **Boundary/compatibility:** old `restart` scripts receive prominent release/migration documentation; tests prove no path invokes `Clean` as ordinary restart. Do not promise transactional rollback of OS package installation: journal completed effects and clearly mark partial repair requirements.
+
+### P22. Sealed guest workspace and reviewed change delivery
+
+**Purpose:** replace the writable host-checkout bind mount with a guest-owned clone, so no host file — including developer `.env` files and other local secrets — is readable by the agent process. Added in the 22 September revision; the shared-mount model is removed, not kept as an option.
+
+**Scope:** guest-side clone of the project's canonical repository (host checkout used as the clone source when reachable, remote origin otherwise), kept under guest-local state so it survives stop/start. Sync host working-tree changes into the guest explicitly (initial clone plus refresh on user action), and deliver guest changes back through a reviewed path: push to a branch/PR when the GitHub grant is enabled, or export a diff/patch to the host for review when it is not. Replace `WorkspaceMount` staleness checks with clone provenance checks. Retire the startup secret scan's role as a security boundary — it may remain as host-side hygiene advice, but the sealed model no longer depends on it.
+
+**Likely files:** `microsandbox.go`, `microsandbox_sdk.go` (mount removal, clone lifecycle), `workspace.go` (gate repurposing), P05 project registry (clone location metadata), guest bootstrap assets; new workspace-sync and change-delivery helpers.
+
+**Acceptance:** no bind mount of the host checkout exists in any supported path; prove it from the real persisted sandbox configuration, not only from just-code's own spec. A secret planted in the host checkout (a `.env` with a canary value) is unreadable from inside the guest — file access, `cat`, and agent-tool access all fail. Host edits reach the guest only through the explicit sync action; guest edits reach the host only through branch/PR or reviewed diff export. Uncommitted host changes are handled explicitly (sync includes them as a patch, or are refused with a clear message — decide in the PR, do not silently drop them). Clone refresh is idempotent and preserves guest-local untracked work or reports it before overwriting. Disk usage of the guest clone is accounted for in resource sizing.
+
+**Boundary/compatibility:** existing instances with bind mounts cannot be converted in place; they are legacy instances requiring explicit recreation under the sealed model (see Legacy transition). The delivery path is a workflow change users will notice — README, init review screen and release notes must state it plainly. Do not weaken the model by mounting a subdirectory "just for the .env case" or similar exceptions; the boundary is all-or-nothing per project.
 
 ### P08. Host credential storage
 
@@ -220,19 +243,19 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 
 **Purpose:** deliver the first end-to-end useful milestone, not merely change two constants.
 
-**Scope:** set built-in runtime to Microsandbox and isolation to full. Bare interactive launch offers missing global setup and a minimal `init`: project root, sharing mode, model, resources, Albert grant and review. Write the minimal manifest/lock data and launch the guest TUI. Existing environment/CLI overrides remain explicit; remove ambient `.env` discovery from the new path and offer bounded legacy import. No host OpenCode check in full mode.
+**Scope:** set built-in runtime to Microsandbox and isolation to full. Bare interactive launch offers missing global setup and a minimal `init`: project root, sharing mode, model, resources, Albert grant and review. Write the minimal manifest/lock data, prepare the sealed guest workspace (P22's clone), and launch the guest TUI. Existing environment/CLI overrides remain explicit; remove ambient `.env` discovery from the new path and offer bounded legacy import. No host OpenCode check in full mode.
 
-**Likely files:** CLI dispatch, `runtime.go`, `isolation.go`, resolver defaults, workspace gate, port mapping and launch policy; README and migration docs.
+**Likely files:** CLI dispatch, `runtime.go`, `isolation.go`, resolver defaults, port mapping and launch policy; README and migration docs.
 
-**Acceptance:** clean-machine zero-flag walkthrough; second launch needs no setup questions and retains sessions; non-TTY launch fails with actionable missing-input details instead of hanging. Full mode opens no OpenCode server port. Explicit backend mode preflights host OpenCode and uses per-instance auth; preview ports require explicit configuration and verified loopback behavior. Existing singleton/backend installations offer continued explicit legacy use or approved migration, never automatic recreation.
+**Acceptance:** clean-machine zero-flag walkthrough; second launch needs no setup questions and retains sessions; non-TTY launch fails with actionable missing-input details instead of hanging. Full mode opens no OpenCode server port and the guest holds no bind mount of the host checkout (verified from the persisted sandbox configuration). Existing singleton/backend installations offer continued explicit legacy use or approved migration, never automatic recreation.
 
-**Boundary/compatibility:** project workspace scan and secret-file guards stay in effect. Existing backend credentials explicitly set to empty retain their documented meaning, with a warning where appropriate; never silently expose a listener off loopback. P12 closes #29 only after its full acceptance criteria and migration documentation are satisfied. M1 is a default-launch release, not full parity.
+**Boundary/compatibility:** the sealed workspace gate applies to every new instance from P12 onward: launching without P22's clone path is not a supported intermediate state. Existing backend credentials explicitly set to empty retain their documented meaning, with a warning where appropriate; never silently expose a listener off loopback. P12 closes #29 only after its full acceptance criteria and migration documentation are satisfied. M1 is a default-launch release, not full parity.
 
 ### P13. Guest GitHub workflow
 
 **Purpose:** make `gh`, git push and PR operations actually available when selected.
 
-**Scope:** provision `gh` as a versioned guest capability; set user-selected Git identity; configure the tested `gh` and HTTPS git authentication path. Add project selection and approval through the existing minimal init flow. Distinguish stored token, valid account, repository access, write/PR permissions and organization approval. Use repository-scoped fine-grained PAT guidance.
+**Scope:** provision `gh` as a versioned guest capability; set user-selected Git identity; configure the tested `gh` and HTTPS git authentication path. Add project selection and approval through the existing minimal init flow. Distinguish stored token, valid account, repository access, write/PR permissions and organization approval. Use repository-scoped fine-grained PAT guidance. In the sealed model this PR also completes the primary change-delivery path: branch push and PR creation from the guest clone are how agent work returns to the host.
 
 **Likely files:** guest provisioning, GitHub helper/configuration, credential bindings, project schema and init options.
 
@@ -308,7 +331,7 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 
 **Likely files:** importer helpers/fixtures, init import flow, migration docs; no change to the albert-code repository.
 
-**Acceptance:** realistic fixtures with JSONC, custom MCPs, partial setup, malformed markers and tracked/untracked config. Import twice is idempotent. Preview contains no secret bytes; originals remain untouched until the user approves any separate cleanup. Git exclusion edits, if needed, preserve unrelated lines and use Git-resolved paths. A credential file in the mounted workspace remains a blocking security concern, not a reason to disable scanning.
+**Acceptance:** realistic fixtures with JSONC, custom MCPs, partial setup, malformed markers and tracked/untracked config. Import twice is idempotent. Preview contains no secret bytes; originals remain untouched until the user approves any separate cleanup. Git exclusion edits, if needed, preserve unrelated lines and use Git-resolved paths. Because the sealed model has no host mount, importing an Albert Code project creates a guest clone rather than adopting its workspace; the importer must state that guest sessions/files from the old setup do not transfer, and a credential file left in the host checkout is reported as host hygiene advice rather than a startup blocker.
 
 **Boundary/compatibility:** guest sessions, untracked guest files and installed tools are not declared migrated without a proven export/import path. Never execute `.agent-vm.runtime.sh` to discover configuration.
 
@@ -347,17 +370,18 @@ Toutes les dépendances ci-dessous sont **directes** ; leurs dépendances transi
 | SDK | Fixtures captured from real serialized state; positive and negative persisted-state cases; real transport smoke test when affected |
 | Lifecycle | No-op, apply failure, retry, current-versus-desired state, project isolation, no implicit deletion |
 | Credentials | Store unavailable/locked, explicit fallback, destination mismatch, redirect, rotation and removal |
+| Sealed workspace | No host bind mount in the persisted sandbox config; planted host secret unreadable from the guest; sync and change-delivery paths exercised both directions |
 | User config | Existing JSONC/MCPs/skills/instructions preserved; effective OpenCode state checked |
 | CLI | No prompt on non-TTY, help/version usable without credentials, targeted repair messages, no raw secret output |
 | Platform | Native builds and tests; real keyring/PTY/microVM evidence wherever those behaviors change |
 
-**Stop conditions:** a security boundary cannot be reproduced; a destructive migration lacks consent; an existing project loses unmanaged content; or a claimed supported platform has no required integration evidence. Do not relabel these as documentation-only limitations to ship the feature.
+**Stop conditions:** a security boundary cannot be reproduced; a host bind mount survives in any supported path; a destructive migration lacks consent; an existing project loses unmanaged content; or a claimed supported platform has no required integration evidence. Do not relabel these as documentation-only limitations to ship the feature.
 
 ### Legacy transition
 
 - Keep legacy exported environment settings for a documented deprecation interval; use provenance/warnings when they override new defaults. Choose the exact retirement release during P04, not in an unreviewed cleanup commit.
 - New configuration never implicitly sources generic project/executable-adjacent `.env`; offer explicit import and leave originals intact.
-- Existing singleton guests are legacy instances. Adoption requires matching the real mount/isolation and compatible provisioning; otherwise retain the old instance and create a new one only with explicit user approval.
+- Existing singleton guests are legacy instances. They carry a bind-mounted workspace, which the sealed model forbids: they are never adopted in place. Migration means explicit recreation under P22's clone model, with user approval and a clear statement that guest sessions and untracked guest files do not transfer. Adoption of any instance requires matching the real guest workspace provenance/isolation and compatible provisioning.
 - `stop` changes to project scope, with explicit all-instance operation. `restart` changes to non-destructive stop/start; recreation/cleanup names the instance and loss. Include these changes in M1 release notes.
 - New defaults apply to new/unconfigured intent, not as permission to overwrite explicit runtime or isolation choices. An existing backend guest is not silently transformed into full mode.
 - Schema readers fail clearly on newer unsupported schemas. Old binaries are not promised forward compatibility with newly configured guests; binary rollback and guest/config rollback are different procedures.
@@ -372,7 +396,7 @@ After plan approval, establish this issue structure. These are proposed titles, 
 |---|---|---|
 | Existing #29 | Configuration contract, global/project setup baseline, default launch and legacy config migration | P04, P11, P12; references P08/P10 |
 | `Qualifier les contrats OpenCode, secrets et environnement invité` | Compatibility evidence with three checklists | P01-P03 |
-| `Gérer les instances et leur cycle de vie par projet` | Identity, adapter scope, reconciliation | P05-P07 |
+| `Gérer les instances et leur cycle de vie par projet` | Identity, adapter scope, reconciliation and the sealed guest workspace | P05-P07, P22 |
 | `Protéger et révoquer les identifiants des projets` | Credential storage, bindings, trust and GitHub transport | P08-P10, P13 |
 | `Configurer les skills, instructions et MCP par projet` | Project capabilities and unified wizard | P14-P17 |
 | `Mettre à jour et importer les environnements existants` | Dependency updates and Albert Code import | P18-P19 |
@@ -384,10 +408,10 @@ For the plan's review, the natural repository destination is `docs/plans/albert-
 
 ## 7. Maîtrise du périmètre et estimation
 
-The earlier 5-8 engineer-week range is an initial estimate, not a commitment. Re-estimate after P01-P03 using actual credential, browser and platform results. A protected GitHub broker, maintained guest-image pipeline or worktree metadata support can materially change it. Do not absorb those as incidental wizard changes.
+The earlier 5-8 engineer-week range is an initial estimate, not a commitment. The sealed workspace decision (P22) removes the shared-mount model from scope but adds clone lifecycle, bidirectional sync and change-delivery work that the previous range did not price in; expect the upper bound to move up. Re-estimate after P01-P03 using actual credential, browser, platform and guest-clone results. A protected GitHub broker, maintained guest-image pipeline or worktree metadata support can materially change it. Do not absorb those as incidental wizard changes.
 
-The 21 PRs are review boundaries, not equal-sized units. Split P16 if it needs a new image supply chain; split native-store adapters from their common interface if P08 becomes difficult to review. Conversely, combine test-only spike artifacts only if their independent conclusions remain clear.
+The 22 PRs are review boundaries, not equal-sized units. Split P16 if it needs a new image supply chain; split P22 into clone lifecycle versus change delivery if the review surface grows; split native-store adapters from their common interface if P08 becomes difficult to review. Conversely, combine test-only spike artifacts only if their independent conclusions remain clear.
 
-**Deferred deliberately:** guest-owned clones, simultaneous active projects, host signing-key forwarding, arbitrary secret-manager plugins, broad Docker/other-agent installations, automatic background updates, a runtime/plugin framework, and package-manager distribution beyond the verified installer path.
+**Deferred deliberately:** any writable host-checkout mount (removed from scope, not deferred — the sealed model replaces it), simultaneous active projects, host signing-key forwarding, arbitrary secret-manager plugins, broad Docker/other-agent installations, automatic background updates, a runtime/plugin framework, and package-manager distribution beyond the verified installer path.
 
 **Premier lot d'implémentation après approbation :** mettre à jour #29 et créer le suivi de compatibilité ; exécuter P01-P03 tout en implémentant la fondation de configuration pure P04. Examiner leurs preuves avant de câbler des identifiants supplémentaires ou de choisir l'image navigateur de production.

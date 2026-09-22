@@ -25,11 +25,13 @@ This is a source-based assessment. No runtime, PTY, browser or secret-proxy test
 
 ### What “full isolation” means here
 
-The existing `full` mode means **the entire OpenCode process, including its TUI, runs in the guest**. It does not mean an air gap or an immutable host workspace: the checkout is writable through a bind mount and public-network access is configured. The Albert credential is substituted at the Microsandbox network boundary; other runtimes expose it inside the guest.
+The existing `full` mode means **the entire OpenCode process, including its TUI, runs in the guest**. In just-code as it stands today, it does not mean an air gap or an immutable host workspace: the checkout is writable through a bind mount and public-network access is configured. The Albert credential is substituted at the Microsandbox network boundary; other runtimes expose it inside the guest.
 
-The plan retains this existing workspace model for parity: no home-directory mount, no SSH-agent forwarding, no host browser profile, no host Docker socket, and no host MCP processes. Selected project files remain shared and writable. A startup scan cannot prevent a secret copied into that directory later from becoming visible.
+> **Revised 22 September 2026 (sealed model).** Luis decided to **remove the writable host-checkout mount entirely** and adopt a sealed guest workspace: the guest owns its own clone and returns changes through a branch/PR or a reviewed diff. The shared-mount model is no longer the default and is not kept as an escape hatch. Rationale: a startup secret scan cannot close the leakage window in a writable mount — a secret added after startup, in an undetected format, or written by the agent itself stays readable. The absence of a mount is the only real boundary. The consequences (loss of live host editing as the default path, a mandatory change-delivery flow, upward re-estimation) are detailed in P22 of the PR-by-PR plan. The passages below that still describe the old shared-mount default are retained as the historical analysis and are superseded by this note and by the plan.
 
-**Decision requiring confirmation:** if “full isolation” means *no writable host filesystem shared with the agent*, replace the bind mount with a guest-owned clone and branch/PR or reviewed-diff delivery. That is a different workspace architecture and should be settled before implementing project identity. It is not achieved by changing the isolation default.
+The plan no longer retains the writable-mount workspace model: no home-directory mount, no host checkout mount, no SSH-agent forwarding, no host browser profile, no host Docker socket, and no host MCP processes. The guest clone is the only project filesystem the agent touches.
+
+**Decision settled 22 September 2026:** "full isolation" now means *no writable host filesystem shared with the agent*. The bind mount is replaced with a guest-owned clone and branch/PR or reviewed-diff delivery (P22 of the PR-by-PR plan). This is a different workspace architecture and is settled before implementing project identity.
 
 ## 1. Parity inventory
 
@@ -283,7 +285,7 @@ Use existing `go test ./...`, race testing where supported and `go vet ./...`, p
 
 ## 8. Decisions to settle before implementation
 
-1. **Workspace boundary:** retain the current shared checkout for parity, or require guest-owned clones for stronger isolation? Recommendation for this plan: retain it, clearly disclosed; never call it complete host-filesystem isolation.
+1. **Workspace boundary:** retain the current shared checkout for parity, or require guest-owned clones for stronger isolation? ~~Recommendation for this plan: retain it, clearly disclosed; never call it complete host-filesystem isolation.~~ **Settled 22 September 2026 (Luis):** guest-owned clone (the sealed model) becomes the architecture; the shared writable mount is removed rather than kept as an option. See the revision note in "What full isolation means here" and P22 of the PR-by-PR plan.
 2. **Project sharing:** version the secret-free manifest and lockfile, or keep selections local like Albert Code? Recommendation: versioned by default, local-only option.
 3. **Credential fallback:** permit an explicit protected-file fallback on headless hosts? Recommendation: yes, with clear storage disclosure and no silent downgrade.
 4. **Browser guest:** keep Alpine if real MCP tests pass, otherwise adopt a pinned Debian-based image. Decide from the phase-0 test, not familiarity.
