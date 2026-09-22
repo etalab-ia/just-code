@@ -316,7 +316,7 @@ Le scan ne suit pas les symlinks : un lien nommé `.env` est bloqué, un lien ve
 
 **Limite connue :** le bind-mount est dynamique. Un fichier copié dans le workspace **pendant** que le backend tourne devient immédiatement lisible côté invité, sans qu'un scan au démarrage puisse l'intercepter. Ne copie jamais de secrets dans un workspace exposé à un agent en cours d'exécution ; si cela arrive, `just-code stop`, retire le fichier, puis relance.
 
-**Les montages sont figés à la création.** Microsandbox et Tart fixent le volume au moment de la création du sandbox ou de la VM. Changer `WORKSPACE_DIR` sur un sandbox Microsandbox existant n'a donc aucun effet : `just-code` détecte l'écart et prévient. Pour l'appliquer, il faut recréer avec `just-code restart --microsandbox` (destructif). Tart ne permet pas cette détection ; le changement de répertoire y est donc uniquement documenté.
+**Les montages sont figés à la création.** Microsandbox, Tart et agent-vm fixent le volume au moment de la création du sandbox ou de la VM. Changer `WORKSPACE_DIR` sur un sandbox Microsandbox existant n'a donc aucun effet : `just-code` détecte l'écart et prévient. Pour l'appliquer, il faut recréer avec `just-code restart --microsandbox` (destructif). Tart et agent-vm ne permettent pas cette détection ; le changement de répertoire y est donc uniquement documenté.
 
 Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte : `http://localhost:3000`, etc. pour Microsandbox. Avec Tart, la VM macOS est une machine à part entière sur le réseau NAT : les previews et le TUI OpenCode utilisent l'adresse de la VM, par exemple `open "http://$(tart ip opencode-tahoe-base-latest):3000"`.
 
