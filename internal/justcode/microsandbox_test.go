@@ -424,6 +424,54 @@ func TestMicrosandboxFullModeCreateTimesOutWaitingForToolchain(t *testing.T) {
 	}
 }
 
+// A running full-mode sandbox can still be unprepared: a previous creation
+// may have timed out while the background installer kept going. The running
+// fast path must re-check readiness rather than attach into that guest.
+func TestMicrosandboxFullModeRunningRechecksToolchain(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "running",
+		startScript: msbStartScript(IsolationFull),
+		execDefault: &fakeMSBExecResult{code: 1}, // marker never appears
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.cfg.StartTimeout = 20 * time.Millisecond
+	m.toolchainPollDelay = time.Millisecond
+	err := m.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "toolchain") {
+		t.Fatalf("Start error = %v, want a toolchain readiness timeout", err)
+	}
+	if hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("a running VM must not be relaunched: %v", client.calls)
+	}
+}
+
+// A full-mode sandbox stopped mid-preparation never finishes on boot (the
+// entrypoint only runs at creation): the stopped path relaunches the
+// idempotent start script and gates on the marker.
+func TestMicrosandboxFullModeStoppedRelaunchesAndWaits(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:      true,
+		status:      "stopped",
+		startScript: msbStartScript(IsolationFull),
+		execResults: []fakeMSBExecResult{
+			{code: 0}, // relaunch
+			{code: 1}, // marker not yet present
+			{code: 0}, // marker present
+		},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.toolchainPollDelay = time.Millisecond
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("stopped full-mode sandbox must relaunch the start script: %v", client.calls)
+	}
+}
+
 func TestMicrosandboxDoctorReportsDiagnostics(t *testing.T) {
 	client := &fakeMSBClient{doctorOutput: "KVM: available\n"}
 	m := newTestMicrosandbox(t, client)
@@ -722,8 +770,15 @@ func TestMicrosandboxFullModeNextStartUsesProxySecretAndScrubsRawEnv(t *testing.
 			t.Fatalf("missing %q; calls: %v", prefix, client.calls)
 		}
 	}
-	if hasCall(client, "exec "+msbSandbox) {
-		t.Fatalf("full mode must not relaunch the backend: %v", client.calls)
+	// Booting a stopped VM does not re-run the entrypoint, so the idempotent
+	// start script is relaunched (a sandbox stopped mid-preparation would
+	// otherwise never finish installing) and readiness is gated on the
+	// toolchain marker.
+	if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+		t.Fatalf("full mode restart must relaunch the start script: %v", client.calls)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" test -f "+msbToolchainMarker) {
+		t.Fatalf("readiness marker was not checked: %v", client.calls)
 	}
 }
 
@@ -1116,8 +1171,10 @@ func TestMicrosandboxStartRejectsIsolationSwitch(t *testing.T) {
 }
 
 // TestMicrosandboxFullModeRunningSandboxIsReady records that a running
-// full-mode sandbox needs no health probe: no backend endpoint exists in that
-// mode, so probing would always fail and relaunch into the wrong process.
+// full-mode sandbox is not health-probed (no backend endpoint exists in that
+// mode, so probing would always fail and relaunch into the wrong process) —
+// but readiness is still re-checked via the toolchain marker, because a
+// previous creation may have timed out with the installer still running.
 func TestMicrosandboxFullModeRunningSandboxIsReady(t *testing.T) {
 	client := &fakeMSBClient{exists: true, status: "running", startScript: msbStartScript(IsolationFull)}
 	m := newTestMicrosandbox(t, client)
@@ -1125,8 +1182,11 @@ func TestMicrosandboxFullModeRunningSandboxIsReady(t *testing.T) {
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if hasCall(client, "exec "+msbSandbox) {
+	if hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
 		t.Fatalf("a running full-mode sandbox must not be relaunched: %v", client.calls)
+	}
+	if !hasCall(client, "exec "+msbSandbox+" test -f "+msbToolchainMarker) {
+		t.Fatalf("readiness marker was not re-checked: %v", client.calls)
 	}
 	if hasCall(client, "create") || hasCall(client, "start "+msbSandbox) {
 		t.Fatalf("a running full-mode sandbox must be left as-is: %v", client.calls)

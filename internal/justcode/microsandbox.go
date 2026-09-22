@@ -201,10 +201,13 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	if exists && sandbox.Status == "running" {
 		if m.cfg.Isolation == IsolationFull {
-			// No health endpoint exists in full mode: the sandbox only keeps
-			// the VM alive and the TUI is attached afterwards, so a plain
-			// "running" VM is the ready state. Probing here would always
-			// report a dead backend and relaunch into the wrong mode.
+			// "Running" only means the VM is up: a previous creation may have
+			// timed out waiting for the toolchain while the background
+			// installer kept going. Gate on the readiness marker here too,
+			// or a retry would attach the TUI to an unprepared guest.
+			if err := m.waitForToolchain(ctx); err != nil {
+				return err
+			}
 			fmt.Printf("%s is running (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
 			return nil
 		}
@@ -227,6 +230,16 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 			return err
 		}
 		if m.cfg.Isolation == IsolationFull {
+			// Booting a stopped VM does not re-run the entrypoint: relaunch
+			// the (idempotent) start script so a sandbox stopped mid-
+			// preparation finishes installing, then gate on readiness as
+			// at creation.
+			if err := m.launchBackend(ctx); err != nil {
+				return err
+			}
+			if err := m.waitForToolchain(ctx); err != nil {
+				return err
+			}
 			fmt.Printf("%s started (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
 			return nil
 		}
@@ -273,11 +286,15 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	fmt.Println("Waiting for the guest toolchain to finish installing...")
-	for {
+	for first := true; ; first = false {
 		code, _, err := m.Client.Exec(ctx, msbSandbox, "test -f "+msbToolchainMarker)
 		if err == nil && code == 0 {
 			return nil
+		}
+		if first {
+			// Quiet in the common case (sandbox already prepared); the wait
+			// message only makes sense when there is something to wait for.
+			fmt.Println("Waiting for the guest toolchain to finish installing...")
 		}
 		select {
 		case <-time.After(delay):
