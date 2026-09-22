@@ -277,6 +277,7 @@ func TestTartRestartPreflightsWorkspace(t *testing.T) {
 			Username:     "opencode",
 			Password:     "pw",
 			TartVM:       "opencode-test",
+			TartMTU:      DefaultTartMTU,
 		},
 		Runner:           runner,
 		Starter:          &fakeStarter{},
@@ -296,6 +297,24 @@ func TestTartRestartPreflightsWorkspace(t *testing.T) {
 	}
 	if runner.hasCall("tart delete") || runner.hasCall("tart stop") {
 		t.Fatalf("destructive command ran before the workspace gate: %v", runner.calls)
+	}
+}
+
+func TestTartRestartRejectsBadConfigBeforeClean(t *testing.T) {
+	// A configuration error (missing API key, invalid MTU) must abort
+	// restart before the destructive Clean: the VM and its persistent
+	// state survive, instead of being deleted and then failing to
+	// recreate in Start.
+	runner := &fakeRunner{}
+	tt := newTestTart(t, runner)
+	tt.Config.APIKey = ""
+	if err := tt.Restart(context.Background()); err == nil {
+		t.Fatal("Restart must refuse a missing ALBERT_API_KEY")
+	} else if !strings.Contains(err.Error(), "ALBERT_API_KEY") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("command ran despite the configuration error: %v", runner.calls)
 	}
 }
 

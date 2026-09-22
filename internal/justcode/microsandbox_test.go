@@ -757,6 +757,23 @@ func TestMicrosandboxRestartCreatesMissingWorkspace(t *testing.T) {
 	}
 }
 
+func TestMicrosandboxRestartRejectsBadConfigBeforeClean(t *testing.T) {
+	// A configuration error (missing API key) must abort restart before
+	// the destructive Clean: the sandbox and its persistent state survive,
+	// instead of being removed and then failing to recreate in Start.
+	client := &fakeMSBClient{exists: true}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.APIKey = ""
+	if err := m.Restart(context.Background()); err == nil {
+		t.Fatal("Restart must refuse a missing ALBERT_API_KEY")
+	} else if !strings.Contains(err.Error(), "ALBERT_API_KEY") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("client call ran despite the configuration error: %v", client.calls)
+	}
+}
+
 // TestMicrosandboxFullModeSpecUsesProxySecret pins the credential contract for
 // isolation full: the TUI runs inside the microVM, but that must not move the
 // real key into the guest. The secret travels through the runtime's network
