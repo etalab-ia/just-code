@@ -28,6 +28,29 @@ const (
 	// install completes. It doubles as the readiness signal for full mode,
 	// which has no health endpoint.
 	msbToolchainMarker = "/var/lib/just-code/toolchain-ready"
+
+	// msbGuestPrepareProbe reports the guest's preparation state through its
+	// exit code (Exec surfaces stderr only): ready, preparing, or idle with
+	// nothing running. The process scan reads /proc rather than using pgrep,
+	// which guest-prep only installs partway through — during a first install
+	// pgrep is absent exactly when "is something preparing?" matters. The
+	// probe skips its own PID: its command line necessarily contains the
+	// entrypoint path it greps for.
+	msbGuestPrepareProbe = "if [ -f " + msbToolchainMarker + " ]; then exit 0; fi; " +
+		"self=$$; " +
+		"for p in /proc/[0-9]*/cmdline; do " +
+		"[ \"$p\" = \"/proc/$self/cmdline\" ] && continue; " +
+		"tr '\\0' ' ' < \"$p\" 2>/dev/null | grep -q '" + msbGuestEntrypoint + "' && exit 2; " +
+		"done; exit 3"
+
+	msbPrepareReady    = 0
+	msbPrepareProgress = 2
+	msbPrepareIdle     = 3
+
+	// msbToolchainRelaunchLimit bounds how often the wait relaunches a guest
+	// where nothing is preparing, so a start script that dies repeatedly
+	// cannot spin.
+	msbToolchainRelaunchLimit = 3
 	// msbRelaunchCommand restarts that entrypoint from inside a live VM.
 	// Microsandbox keeps a VM across restarts but runs the entrypoint only at
 	// creation, so a VM that came back from a restart reports `running` with no
@@ -167,6 +190,13 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if m.cfg.APIKey == "" {
 		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
 	}
+	// A typo in JUST_CODE_START_TIMEOUT must be reported rather than silently
+	// replaced by the default. Full mode waits on the guest without ever
+	// reaching the validation the backend path performs before its health
+	// wait, so validate before doing any runtime work.
+	if m.cfg.Isolation == IsolationFull && m.cfg.StartTimeoutErr != nil {
+		return m.cfg.StartTimeoutErr
+	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
@@ -274,7 +304,11 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 }
 
 // waitForToolchain blocks until the guest prep script signals completion by
-// writing its marker, bounded by the configured start timeout.
+// writing its marker, bounded by the configured start timeout. A guest where
+// nothing is preparing is relaunched rather than polled: an idle VM left by
+// the pre-#61 creation path, or a start script whose launch retries were
+// exhausted, would otherwise wait out the whole timeout on every attempt and
+// only be recoverable by destructive recreation.
 func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 	timeout := m.cfg.StartTimeout
 	if timeout <= 0 {
@@ -286,10 +320,22 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	relaunches := 0
 	for first := true; ; first = false {
-		code, _, err := m.Client.Exec(ctx, msbSandbox, "test -f "+msbToolchainMarker)
-		if err == nil && code == 0 {
-			return nil
+		code, _, err := m.Client.Exec(ctx, msbSandbox, msbGuestPrepareProbe)
+		if err == nil {
+			switch {
+			case code == msbPrepareReady:
+				return nil
+			case code == msbPrepareProgress:
+				// The installer is alive; keep waiting.
+			case code == msbPrepareIdle && relaunches < msbToolchainRelaunchLimit:
+				relaunches++
+				fmt.Printf("Nothing is preparing the guest in %s; launching the start script...\n", msbSandbox)
+				if err := m.launchBackend(ctx); err != nil {
+					return err
+				}
+			}
 		}
 		if first {
 			// Quiet in the common case (sandbox already prepared); the wait
