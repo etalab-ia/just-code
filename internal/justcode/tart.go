@@ -286,13 +286,20 @@ func (t *Tart) startVM(ctx context.Context) error {
 // Start brings the OpenCode backend up, mirroring the Tart branch of
 // `just start` and `just code`. In isolation full it only brings the VM up:
 // the TUI is launched interactively by RunAgent, so no server is started.
-func (t *Tart) Start(ctx context.Context) error {
-	cfg := t.Config
-	if cfg.APIKey == "" {
+// validateConfig checks the deterministic start-time configuration (API key,
+// MTU). Restart calls it before the destructive Clean so a configuration
+// error cannot destroy a VM that Start would then refuse to recreate.
+func (t *Tart) validateConfig() error {
+	if t.Config.APIKey == "" {
 		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
 	}
 	warnUnprotectedRuntime("Tart")
-	if err := ValidateMTU(cfg.TartMTU); err != nil {
+	return ValidateMTU(t.Config.TartMTU)
+}
+
+func (t *Tart) Start(ctx context.Context) error {
+	cfg := t.Config
+	if err := t.validateConfig(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
@@ -416,7 +423,17 @@ func (t *Tart) ID() Runtime { return RuntimeTart }
 // Restart recreates the VM from scratch, mirroring `just restart --tart`.
 func (t *Tart) Restart(ctx context.Context) error {
 	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the VM and its persistent state.
+	// workspace must not cost the VM and its persistent state. Create the
+	// directory first, as Start does, so a workspace that does not exist
+	// yet (default ./workspace) is not an error. The deterministic
+	// configuration checks run first: a bad config must not reach Clean,
+	// which would destroy a VM that Start then refuses to recreate.
+	if err := t.validateConfig(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(t.Config.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
 	if err := CheckWorkspaceGate(ctx, t.Config.WorkspaceDir); err != nil {
 		return err
 	}

@@ -277,6 +277,7 @@ func TestTartRestartPreflightsWorkspace(t *testing.T) {
 			Username:     "opencode",
 			Password:     "pw",
 			TartVM:       "opencode-test",
+			TartMTU:      DefaultTartMTU,
 		},
 		Runner:           runner,
 		Starter:          &fakeStarter{},
@@ -296,6 +297,49 @@ func TestTartRestartPreflightsWorkspace(t *testing.T) {
 	}
 	if runner.hasCall("tart delete") || runner.hasCall("tart stop") {
 		t.Fatalf("destructive command ran before the workspace gate: %v", runner.calls)
+	}
+}
+
+func TestTartRestartRejectsBadConfigBeforeClean(t *testing.T) {
+	// A configuration error (missing API key, invalid MTU) must abort
+	// restart before the destructive Clean: the VM and its persistent
+	// state survive, instead of being deleted and then failing to
+	// recreate in Start.
+	runner := &fakeRunner{}
+	tt := newTestTart(t, runner)
+	tt.Config.APIKey = ""
+	if err := tt.Restart(context.Background()); err == nil {
+		t.Fatal("Restart must refuse a missing ALBERT_API_KEY")
+	} else if !strings.Contains(err.Error(), "ALBERT_API_KEY") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("command ran despite the configuration error: %v", runner.calls)
+	}
+}
+
+func TestTartRestartCreatesMissingWorkspace(t *testing.T) {
+	// Restart preflights the workspace before the destructive Clean, but a
+	// workspace that does not exist yet (default ./workspace) must be
+	// created like Start does, not fail the preflight with a stat error.
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		joined := strings.Join(args, " ")
+		if name == "tart" && strings.HasPrefix(joined, "list") {
+			return ExecResult{ExitCode: 0, Stdout: "local opencode-tahoe-base-latest 1.2.3.4 50G running\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	tt := newTestTart(t, r)
+	tt.Config.WorkspaceDir = filepath.Join(t.TempDir(), "missing", "workspace")
+	// Isolation full makes Start return right after waitForAgent on the
+	// already-running fake VM; the point here is the preflight, not the
+	// backend lifecycle.
+	tt.Config.Isolation = IsolationFull
+	if err := tt.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart must create a missing workspace, got: %v", err)
+	}
+	if info, err := os.Stat(tt.Config.WorkspaceDir); err != nil || !info.IsDir() {
+		t.Fatalf("workspace was not created: %v", err)
 	}
 }
 

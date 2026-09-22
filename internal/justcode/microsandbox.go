@@ -186,7 +186,11 @@ type msbSandboxSpec struct {
 	StartScript string   // guest start script body
 }
 
-func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
+// validateConfig checks the deterministic start-time configuration (API key,
+// full-mode start timeout). Restart calls it before the destructive Clean so
+// a configuration error cannot destroy a sandbox that Start would then
+// refuse to recreate.
+func (m *MicrosandboxRuntime) validateConfig() error {
 	if m.cfg.APIKey == "" {
 		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
 	}
@@ -196,6 +200,13 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	// wait, so validate before doing any runtime work.
 	if m.cfg.Isolation == IsolationFull && m.cfg.StartTimeoutErr != nil {
 		return m.cfg.StartTimeoutErr
+	}
+	return nil
+}
+
+func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
+	if err := m.validateConfig(); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
@@ -564,7 +575,17 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the sandbox and its persistent state.
+	// workspace must not cost the sandbox and its persistent state. Create
+	// the directory first, as Start does, so a workspace that does not
+	// exist yet (default ./workspace) is not an error. The deterministic
+	// configuration checks run first: a bad config must not reach Clean,
+	// which would destroy a sandbox that Start then refuses to recreate.
+	if err := m.validateConfig(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
 	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
 		return err
 	}

@@ -742,6 +742,38 @@ func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
 	}
 }
 
+func TestMicrosandboxRestartCreatesMissingWorkspace(t *testing.T) {
+	// Restart preflights the workspace before the destructive Clean, but a
+	// workspace that does not exist yet (default ./workspace) must be
+	// created like Start does, not fail the preflight with a stat error.
+	client := &fakeMSBClient{exists: true}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.WorkspaceDir = filepath.Join(t.TempDir(), "missing", "workspace")
+	if err := m.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart must create a missing workspace, got: %v", err)
+	}
+	if info, err := os.Stat(m.cfg.WorkspaceDir); err != nil || !info.IsDir() {
+		t.Fatalf("workspace was not created: %v", err)
+	}
+}
+
+func TestMicrosandboxRestartRejectsBadConfigBeforeClean(t *testing.T) {
+	// A configuration error (missing API key) must abort restart before
+	// the destructive Clean: the sandbox and its persistent state survive,
+	// instead of being removed and then failing to recreate in Start.
+	client := &fakeMSBClient{exists: true}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.APIKey = ""
+	if err := m.Restart(context.Background()); err == nil {
+		t.Fatal("Restart must refuse a missing ALBERT_API_KEY")
+	} else if !strings.Contains(err.Error(), "ALBERT_API_KEY") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("client call ran despite the configuration error: %v", client.calls)
+	}
+}
+
 // TestMicrosandboxFullModeSpecUsesProxySecret pins the credential contract for
 // isolation full: the TUI runs inside the microVM, but that must not move the
 // real key into the guest. The secret travels through the runtime's network
