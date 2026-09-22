@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.2](https://github.com/etalab-ia/just-code/compare/just-code-v0.4.1...just-code-v0.4.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **agent-vm:** créer le workspace avant la pré-vérification du restart ([1ad8bc9](https://github.com/etalab-ia/just-code/commit/1ad8bc92b3674ccbfdef42a12db02c313688e5e7))
+* **agent-vm:** passerelle de sécurité workspace au démarrage et au restart ([7952609](https://github.com/etalab-ia/just-code/commit/7952609575891730c82736f93e60b57cd8a45ba8))
+* **agent-vm:** passerelle de sécurité workspace au démarrage et au restart ([9dd9eb9](https://github.com/etalab-ia/just-code/commit/9dd9eb9207cdbd846d8706ff27368b6b3defa645))
+* **microsandbox:** lancement du script au premier démarrage et détection du montage obsolète ([e7f2dc0](https://github.com/etalab-ia/just-code/commit/e7f2dc0ce6414f71121da1614bcc3cebd55062a9))
+* **microsandbox:** launch the start script after creation ([a130914](https://github.com/etalab-ia/just-code/commit/a130914891350f1c53cfe6b9a442415504a35cae))
+* **microsandbox:** lire le montage /workspace depuis le document persisté ([8272c0e](https://github.com/etalab-ia/just-code/commit/8272c0ebc466b0300bd943e77e86a9102e94ae4c))
+* **microsandbox:** relancer un invité full inactif et refuser un timeout invalide ([a549f93](https://github.com/etalab-ia/just-code/commit/a549f93c0d98c5e244797bc1cb4e036036b26386))
+* **microsandbox:** revérifier la préparation full sur sandbox existant ([867ee50](https://github.com/etalab-ia/just-code/commit/867ee5029b85d3eaee91d307d80a5ad01b0dd96e))
+* **microsandbox:** vérifier la survie du lanceur et attendre la toolchain en mode full ([b94801a](https://github.com/etalab-ia/just-code/commit/b94801a4777c1a71b0b66f00cede6e1c108557e5))
+* **tart,msb:** créer le workspace avant la pré-vérification du restart ([1278ace](https://github.com/etalab-ia/just-code/commit/1278ace19548e00edf02b6e80a2eb8da1ed95c0d))
+* **tart,msb:** créer le workspace avant la pré-vérification du restart ([1ee7c57](https://github.com/etalab-ia/just-code/commit/1ee7c5725031e4952d5443734e6307db87bc389f))
+* **tart,msb:** valider la configuration avant le Clean du restart ([f5b6d6b](https://github.com/etalab-ia/just-code/commit/f5b6d6b97bc3d6ab2f8d90a54706e029a49348f1))
+
 ## [0.4.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.4.0...just-code-v0.4.1) (2026-09-21)
 
 
