@@ -885,6 +885,62 @@ func TestSDKSandboxConfigCannotSeeThePersistedGuestEnv(t *testing.T) {
 	}
 }
 
+// persistedConfigWithMounts reproduces the mounts section of a real persisted
+// config document (captured from a live albert-opencode-sandbox created by
+// just-code 0.4.1, runtime v0.7.0). Keeping the full entry shape — options,
+// stat_virtualization, follow_root_symlinks — matters: a fixture trimmed to
+// what parseWorkspaceMount reads would not prove the parser accepts what the
+// runtime actually writes.
+func persistedConfigWithMounts(mounts ...string) string {
+	return `{"name":"` + msbSandbox + `",` +
+		`"runtime":{"workdir":"/workspace","shell":"/bin/sh"},` +
+		`"mounts":[` + strings.Join(mounts, ",") + `]}`
+}
+
+const persistedWorkspaceBindMount = `{"type":"Bind","host":"/Users/tester/project","guest":"/workspace",` +
+	`"options":{"readonly":false,"noexec":false,"nosuid":false,"nodev":false},` +
+	`"stat_virtualization":"strict","host_permissions":"private","follow_root_symlinks":false,"quota_mib":null}`
+
+func TestParseWorkspaceMount(t *testing.T) {
+	host, err := parseWorkspaceMount(persistedConfigWithMounts(persistedWorkspaceBindMount), "/workspace")
+	if err != nil {
+		t.Fatalf("parseWorkspaceMount: %v", err)
+	}
+	if host != "/Users/tester/project" {
+		t.Fatalf("host = %q, want /Users/tester/project", host)
+	}
+
+	otherGuest := `{"type":"Bind","host":"/elsewhere","guest":"/data"}`
+	host, err = parseWorkspaceMount(persistedConfigWithMounts(otherGuest), "/workspace")
+	if err != nil {
+		t.Fatalf("parseWorkspaceMount without a /workspace mount: %v", err)
+	}
+	if host != "" {
+		t.Fatalf("host = %q, want empty when no /workspace mount exists", host)
+	}
+
+	if _, err := parseWorkspaceMount("", "/workspace"); err == nil {
+		t.Fatal("an unreadable config must surface an error, not an empty mount")
+	}
+}
+
+// TestSDKSandboxConfigCannotSeeThePersistedMounts is the regression guard for
+// the reason parseWorkspaceMount exists at all — the mounts twin of
+// TestSDKSandboxConfigCannotSeeThePersistedGuestEnv. The SDK's typed
+// SandboxConfig decodes Volumes as nil for a sandbox created from spec mounts,
+// so a stale-mount check reading cfg.Volumes never fires. If a future SDK
+// version starts populating it, this fails and the raw parse can be revisited.
+func TestSDKSandboxConfigCannotSeeThePersistedMounts(t *testing.T) {
+	config := persistedConfigWithMounts(persistedWorkspaceBindMount)
+	var cfg msb.SandboxConfig
+	if err := json.Unmarshal([]byte(config), &cfg); err != nil {
+		t.Fatalf("unmarshal SandboxConfig: %v", err)
+	}
+	if len(cfg.Volumes) != 0 {
+		t.Fatalf("SandboxConfig.Volumes now exposes the spec mounts (%v); the raw parse may be unnecessary", cfg.Volumes)
+	}
+}
+
 // TestMicrosandboxFullModeRejectsEnvThatMerelyLooksLikeAPlaceholder covers the
 // prefix trap: only the exact documented placeholder is protected, so a value
 // that starts with the runtime's placeholder prefix is still treated as a

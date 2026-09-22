@@ -385,8 +385,17 @@ func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
 	if err != nil || mounted == "" {
 		return
 	}
+	// Both sides are absolutized: the runtime persists the mount as an
+	// absolute path while WORKSPACE_DIR commonly stays relative ("./workspace"),
+	// so a raw string comparison would warn on every default-config start.
 	mountedClean := filepath.Clean(mounted)
+	if abs, err := filepath.Abs(mountedClean); err == nil {
+		mountedClean = abs
+	}
 	workspaceClean := filepath.Clean(m.cfg.WorkspaceDir)
+	if abs, err := filepath.Abs(workspaceClean); err == nil {
+		workspaceClean = abs
+	}
 	if mountedClean == workspaceClean || (runtime.GOOS == "windows" && strings.EqualFold(mountedClean, workspaceClean)) {
 		return
 	}
