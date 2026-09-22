@@ -510,3 +510,43 @@ func TestAgentVMStatus(t *testing.T) {
 		t.Fatalf("Status = %q", state)
 	}
 }
+
+func TestAgentVMStartPreflightsWorkspace(t *testing.T) {
+	// The workspace is mounted read-write into the Lima VM, so Start must
+	// refuse it before anything touches the VM, exactly like Tart.
+	runner := &fakeRunner{}
+	a := newTestAgentVM(t, runner)
+	if err := os.WriteFile(filepath.Join(a.Config.WorkspaceDir, ".env"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := a.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start must refuse a workspace containing .env")
+	}
+	if !strings.Contains(err.Error(), "refusing to start") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("limactl ran before the workspace gate: %v", runner.calls)
+	}
+}
+
+func TestAgentVMRestartPreflightsWorkspace(t *testing.T) {
+	// A rejected workspace must abort restart before the destructive Clean,
+	// so the VM and its persistent state survive.
+	runner := &fakeRunner{}
+	a := newTestAgentVM(t, runner)
+	if err := os.WriteFile(filepath.Join(a.Config.WorkspaceDir, ".env"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := a.Restart(context.Background())
+	if err == nil {
+		t.Fatal("Restart must refuse a workspace containing .env")
+	}
+	if !strings.Contains(err.Error(), "refusing to start") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.hasCall("limactl delete") || runner.hasCall("limactl stop") {
+		t.Fatalf("destructive command ran before the workspace gate: %v", runner.calls)
+	}
+}
