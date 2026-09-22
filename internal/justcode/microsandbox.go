@@ -19,6 +19,15 @@ const (
 	// msbGuestEntrypoint is the container entrypoint inside the microVM. It is
 	// what launches `opencode serve`.
 	msbGuestEntrypoint = "/.msb/scripts/start"
+
+	// msbGuestLog collects the start script's output inside the guest; it is
+	// the first place to look when the backend never becomes healthy.
+	msbGuestLog = "/var/log/opencode.log"
+
+	// msbToolchainMarker is written by guest-prep.sh once the toolchain
+	// install completes. It doubles as the readiness signal for full mode,
+	// which has no health endpoint.
+	msbToolchainMarker = "/var/lib/just-code/toolchain-ready"
 	// msbRelaunchCommand restarts that entrypoint from inside a live VM.
 	// Microsandbox keeps a VM across restarts but runs the entrypoint only at
 	// creation, so a VM that came back from a restart reports `running` with no
@@ -28,9 +37,11 @@ const (
 	// bodies verbatim (no shebang is prepended, unlike the Rust builder and
 	// the CLI), and sandboxes created before the shebang was added to
 	// guest-prep.sh persist a script that cannot be exec'd directly.
-	// The trailing `sleep 1` makes the launcher's own survival observable:
-	// a bare `nohup ... &` exits 0 even when the script dies immediately.
-	msbRelaunchCommand = "nohup sh " + msbGuestEntrypoint + " >/var/log/opencode.log 2>&1 & sleep 1"
+	// The launcher is backgrounded, then checked after one second: a bare
+	// `nohup ... &` would report the exit status of the trailing sleep (0)
+	// even when the script died instantly, so the compound ends with
+	// `kill -0` on the launcher PID to make an immediate death visible.
+	msbRelaunchCommand = "nohup sh " + msbGuestEntrypoint + " >" + msbGuestLog + " 2>&1 & pid=$!; sleep 1; kill -0 \"$pid\" 2>/dev/null"
 
 	// msbLaunchAttempts bounds the retry while the guest agent catches up with
 	// a freshly started VM.
@@ -77,14 +88,17 @@ type MicrosandboxRuntime struct {
 	Probe func(ctx context.Context, endpoint, username, password string) HealthProbe
 	// launchRetryDelay is configurable for tests; production uses two seconds.
 	launchRetryDelay time.Duration
+	// toolchainPollDelay paces the full-mode readiness wait; configurable for tests.
+	toolchainPollDelay time.Duration
 }
 
 // NewMicrosandboxRuntime builds a Microsandbox backend with production defaults.
 func NewMicrosandboxRuntime(cfg Config) *MicrosandboxRuntime {
 	return &MicrosandboxRuntime{
-		cfg:              cfg,
-		Client:           sdkMSBClient{},
-		launchRetryDelay: msbLaunchRetryDelay,
+		cfg:                cfg,
+		Client:             sdkMSBClient{},
+		launchRetryDelay:   msbLaunchRetryDelay,
+		toolchainPollDelay: msbLaunchRetryDelay,
 	}
 }
 
@@ -233,7 +247,46 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	// the VM alive in full mode) is never run by creation itself. Launch it
 	// explicitly, the same way a restarted VM would.
 	fmt.Printf("Launching the start script inside %s...\n", msbSandbox)
-	return m.launchBackend(ctx)
+	if err := m.launchBackend(ctx); err != nil {
+		return err
+	}
+	if m.cfg.Isolation == IsolationFull {
+		// Full mode has no health endpoint and attach runs the TUI
+		// immediately after Start returns, so creation must not report
+		// success while the guest is still preparing — or after the start
+		// script died, in which case the marker never appears.
+		return m.waitForToolchain(ctx)
+	}
+	return nil
+}
+
+// waitForToolchain blocks until the guest prep script signals completion by
+// writing its marker, bounded by the configured start timeout.
+func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
+	timeout := m.cfg.StartTimeout
+	if timeout <= 0 {
+		timeout = DefaultStartTimeout
+	}
+	delay := m.toolchainPollDelay
+	if delay <= 0 {
+		delay = msbLaunchRetryDelay
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	fmt.Println("Waiting for the guest toolchain to finish installing...")
+	for {
+		code, _, err := m.Client.Exec(ctx, msbSandbox, "test -f "+msbToolchainMarker)
+		if err == nil && code == 0 {
+			return nil
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return fmt.Errorf("the guest toolchain was not ready within %s (the start script may have failed); "+
+				"run 'just-code logs --microsandbox' or check %s inside the guest: %w",
+				timeout, msbGuestLog, ctx.Err())
+		}
+	}
 }
 
 // sandboxSpec builds the full sandbox configuration from the config and the

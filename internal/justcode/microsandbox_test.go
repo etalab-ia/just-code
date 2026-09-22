@@ -42,6 +42,9 @@ type fakeMSBClient struct {
 	modifiedEnv map[string]string
 	modifiedKey string
 	execResults []fakeMSBExecResult
+	// execDefault is returned once execResults is drained; nil means success,
+	// which preserves the fake's historical default.
+	execDefault *fakeMSBExecResult
 }
 
 type fakeMSBExecResult struct {
@@ -91,6 +94,9 @@ func (f *fakeMSBClient) ModifyNextStart(_ context.Context, name string, env map[
 func (f *fakeMSBClient) Exec(_ context.Context, name, command string) (int, string, error) {
 	f.record("exec " + name + " " + command)
 	if len(f.execResults) == 0 {
+		if f.execDefault != nil {
+			return f.execDefault.code, f.execDefault.stderr, f.execDefault.err
+		}
 		return 0, "", nil
 	}
 	result := f.execResults[0]
@@ -369,8 +375,52 @@ func TestMSBRelaunchCommandRunsThroughShell(t *testing.T) {
 	if !strings.Contains(msbRelaunchCommand, "sh "+msbGuestEntrypoint) {
 		t.Fatalf("relaunch must run the entrypoint through sh: %q", msbRelaunchCommand)
 	}
-	if !strings.Contains(msbRelaunchCommand, "& sleep 1") {
-		t.Fatalf("relaunch must observe the backgrounded launcher's survival: %q", msbRelaunchCommand)
+	// A bare `nohup ... & sleep 1` always reports the sleep's exit status (0);
+	// only the kill -0 on the launcher PID makes an immediate death visible.
+	if !strings.Contains(msbRelaunchCommand, "pid=$!; sleep 1; kill -0 \"$pid\"") {
+		t.Fatalf("relaunch must check the backgrounded launcher's survival: %q", msbRelaunchCommand)
+	}
+}
+
+func TestMicrosandboxFullModeCreateWaitsForToolchain(t *testing.T) {
+	// The relaunch succeeds, the marker check fails twice, then appears:
+	// creation must block until the guest is actually prepared.
+	client := &fakeMSBClient{execResults: []fakeMSBExecResult{
+		{code: 0},            // relaunch
+		{code: 1}, {code: 1}, // marker not yet present
+		{code: 0}, // marker present
+	}}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.toolchainPollDelay = time.Millisecond
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	markerChecks := 0
+	for _, c := range client.calls {
+		if c == "exec "+msbSandbox+" test -f "+msbToolchainMarker {
+			markerChecks++
+		}
+	}
+	if markerChecks != 3 {
+		t.Fatalf("marker checked %d times, want 3; calls: %v", markerChecks, client.calls)
+	}
+}
+
+func TestMicrosandboxFullModeCreateTimesOutWaitingForToolchain(t *testing.T) {
+	// The start script died before writing the marker: creation must fail
+	// with guidance, not report success into an unprepared guest.
+	client := &fakeMSBClient{
+		execResults: []fakeMSBExecResult{{code: 0}}, // relaunch
+		execDefault: &fakeMSBExecResult{code: 1},    // marker never appears
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.cfg.StartTimeout = 20 * time.Millisecond
+	m.toolchainPollDelay = time.Millisecond
+	err := m.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "toolchain") {
+		t.Fatalf("Start error = %v, want a toolchain readiness timeout", err)
 	}
 }
 
