@@ -428,3 +428,38 @@ func TestImportLegacyDotenvDuplicateFirstWins(t *testing.T) {
 		t.Errorf("runtime = %q, want first definition (tart)", imp.Mapped["runtime"])
 	}
 }
+
+func TestExplainShowsDefaultsAndExplicitEmptyWins(t *testing.T) {
+	// P04 Codex fixes: unset fields print their built-in default (source
+	// "default"), and an explicit empty project value wins over a user
+	// value — it means "turn this field off", not "absent".
+	out := FormatExplain(Explain(Settings{
+		Project: map[string]string{"model": ""},
+		User:    map[string]string{"model": "user-model"},
+	}))
+	if !strings.Contains(out, "runtime") || !strings.Contains(out, "microsandbox") {
+		t.Errorf("default runtime must be visible: %q", out)
+	}
+	if !strings.Contains(out, "workspace_dir") || !strings.Contains(out, "./workspace") {
+		t.Errorf("default workspace_dir must be visible: %q", out)
+	}
+	// The explicit project empty wins over the user value.
+	s := Settings{
+		Project: map[string]string{"model": ""},
+		User:    map[string]string{"model": "user-model"},
+	}
+	if got := s.setting("model"); !got.Set || got.Value != "" || got.source != SourceProject {
+		t.Errorf("explicit empty must win: %+v", got)
+	}
+}
+
+func TestExplainFlagIsHighestPrecedence(t *testing.T) {
+	s := Settings{
+		Flag:    map[string]string{"runtime": "tart"},
+		Env:     map[string]string{"runtime": "microsandbox"},
+		Project: map[string]string{"runtime": "agent-vm"},
+	}
+	if got := s.setting("runtime"); got.Value != "tart" || got.source != SourceFlag {
+		t.Errorf("flag must win: %+v", got)
+	}
+}
