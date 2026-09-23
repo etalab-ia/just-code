@@ -49,7 +49,14 @@ type Backend interface {
 	ID() Runtime
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
+	// Restart is non-destructive (P07): it stops and starts the existing
+	// instance, preserving disk and guest state. The destructive rebuild is
+	// Recreate, which is the only path that may delete an instance.
 	Restart(ctx context.Context) error
+	// Recreate is the explicit destructive rebuild: it deletes the instance
+	// and creates a fresh one, losing guest sessions, guest-installed tools
+	// and guest-only files. It names that loss in its output.
+	Recreate(ctx context.Context) error
 	Clean(ctx context.Context) error
 	Doctor(ctx context.Context) error
 	// Logs and Shell are interactive and run attached to the terminal.

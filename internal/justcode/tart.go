@@ -490,27 +490,49 @@ func (t *Tart) Doctor(ctx context.Context) error {
 
 func (t *Tart) ID() Runtime { return RuntimeTart }
 
-// Restart recreates the VM from scratch, mirroring `just restart --tart`.
+// Restart is non-destructive (P07): it stops and starts the existing VM,
+// preserving disk and guest state. The preflights run first so a rejected
+// workspace or a bad config aborts before anything is touched. The
+// destructive rebuild is Recreate.
 func (t *Tart) Restart(ctx context.Context) error {
-	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the VM and its persistent state. Create the
-	// directory first, as Start does, so a workspace that does not exist
-	// yet (default ./workspace) is not an error. The deterministic
-	// configuration checks run first: a bad config must not reach Clean,
-	// which would destroy a VM that Start then refuses to recreate.
+	if err := t.RestartPreflights(ctx); err != nil {
+		return err
+	}
+	if err := t.Stop(ctx); err != nil {
+		return err
+	}
+	return t.Start(ctx)
+}
+
+// Recreate is the explicit destructive rebuild of the VM (P07). It names the
+// loss before and after. No lifecycle path reaches it implicitly.
+func (t *Tart) Recreate(ctx context.Context) error {
+	fmt.Printf("Recreating %s. This DESTROYS: guest sessions, tools installed in the guest, and guest-only files.\n", t.VMName())
+	if err := t.RestartPreflights(ctx); err != nil {
+		return err
+	}
+	if err := t.Clean(ctx); err != nil {
+		return err
+	}
+	if err := t.Start(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s recreated.\n", t.VMName())
+	return nil
+}
+
+// RestartPreflights runs the deterministic prechecks shared by the lifecycle
+// commands: configuration validation, workspace creation and the workspace
+// gate. A rejected workspace or bad config must abort before any destructive
+// step, so the VM and its persistent state survive.
+func (t *Tart) RestartPreflights(ctx context.Context) error {
 	if err := t.validateConfig(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(t.Config.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, t.Config.WorkspaceDir); err != nil {
-		return err
-	}
-	if err := t.Clean(ctx); err != nil {
-		return err
-	}
-	return t.Start(ctx)
+	return CheckWorkspaceGate(ctx, t.Config.WorkspaceDir)
 }
 
 // Logs follows the backend log, mirroring `just logs --tart`.

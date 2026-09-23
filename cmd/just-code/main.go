@@ -130,7 +130,7 @@ func run(args []string) (int, error) {
 	switch parsed.action {
 	case "attach":
 		return attachCmd(d, cfg, rt)
-	case "start", "logs", "shell", "restart", "clean", "doctor":
+	case "start", "logs", "shell", "restart", "recreate", "clean", "doctor":
 		return lifecycleCmd(d, rt, parsed.action)
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
@@ -175,7 +175,7 @@ type parsedArgs struct {
 // TypeScript CLI, which exposes only -V/--version.
 var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
-	"restart": true, "clean": true, "doctor": true,
+	"restart": true, "recreate": true, "clean": true, "doctor": true,
 	"help": true, "version": true, "config": true,
 }
 
@@ -405,6 +405,7 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 	ctx := context.Background()
 
 	// start and restart refuse to run while another runtime is active.
+	// recreate is excluded: its whole point is to displace whatever exists.
 	if action == "start" || action == "restart" {
 		if err := d.Prepare(ctx, rt); err != nil {
 			return 0, err
@@ -415,14 +416,17 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 	case "start":
 		err = b.Start(ctx)
 	case "restart":
-		// restart is destructive today: it recreates the environment and
-		// loses guest sessions, installed tools and guest-only files. P07
-		// replaces its semantics with non-destructive reconciliation; until
-		// then the destruction is named and confirmed (P06).
-		if code, cerr := confirmDestructiveRestart(rt); cerr != nil {
+		// restart is non-destructive (P07): it stops and starts the existing
+		// instance, preserving disk and guest state.
+		err = b.Restart(ctx)
+	case "recreate":
+		// recreate is the explicit destructive rebuild. The destruction is
+		// named and confirmed; on a non-TTY (CI, scripts) it refuses rather
+		// than destroying silently.
+		if code, cerr := confirmDestructiveRecreate(rt); cerr != nil {
 			return code, cerr
 		}
-		err = b.Restart(ctx)
+		err = b.Recreate(ctx)
 	case "clean":
 		err = b.Clean(ctx)
 	case "doctor":
@@ -437,14 +441,14 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 	return 0, err
 }
 
-// confirmDestructiveRestart asks the user to name what restart destroys. On
-// a non-TTY (CI, scripts) it refuses rather than destroying silently: the
+// confirmDestructiveRecreate asks the user to name what recreate destroys.
+// On a non-TTY (CI, scripts) it refuses rather than destroying silently: the
 // explicit replacement is `just-code clean --<runtime>` followed by start,
 // which names the instance and the loss in its own output.
-func confirmDestructiveRestart(rt justcode.Runtime) (int, error) {
-	fmt.Fprintf(os.Stderr, "Warning: restart --%s recreates the %s environment and DESTROYS: guest sessions, tools installed in the guest, and guest-only files.\n", rt, rt)
+func confirmDestructiveRecreate(rt justcode.Runtime) (int, error) {
+	fmt.Fprintf(os.Stderr, "Warning: recreate --%s rebuilds the %s environment from scratch and DESTROYS: guest sessions, tools installed in the guest, and guest-only files.\n", rt, rt)
 	if !isTTY() {
-		return 1, fmt.Errorf("restart is destructive and requires an interactive confirmation; run 'just-code clean --%s' then 'just-code start --%s' if you really want to recreate", rt, rt)
+		return 1, fmt.Errorf("recreate is destructive and requires an interactive confirmation; run 'just-code clean --%s' then 'just-code start --%s' if you really want to recreate", rt, rt)
 	}
 	fmt.Print("Recreate and lose that state? Type the runtime name to confirm: ")
 	reply, _ := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -507,7 +511,9 @@ Commands:
   stop       Stop the current project's instance (stop --all for every
              just-code instance)
   check      Check the active backend and Albert provider
-  restart    Recreate the selected sandbox (destructive; asks to confirm)
+  restart    Stop and start the current project's instance (non-destructive)
+  recreate   Rebuild the selected sandbox from scratch (destructive; asks
+             to confirm)
   logs       Follow logs for the selected runtime
   shell      Open a shell inside the selected runtime
   clean      Remove the selected sandbox and its local state

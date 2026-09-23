@@ -426,3 +426,48 @@ func TestTartStartFullModeSkipsServerLaunch(t *testing.T) {
 		}
 	}
 }
+
+func TestTartRestartIsNonDestructive(t *testing.T) {
+	// P07: restart stops and starts the existing VM. It must never delete
+	// it — the destructive rebuild is the explicit Recreate.
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		switch {
+		case name == "tart" && args[0] == "list":
+			return ExecResult{ExitCode: 0, Stdout: "local  opencode-tahoe-base-latest  running\n"}
+		case name == "tart" && args[0] == "exec" && args[2] == "pgrep":
+			return ExecResult{ExitCode: 1} // no stale backend process
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	tt := newTestTart(t, runner)
+	tt.Config.Isolation = IsolationFull
+	if err := tt.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if runner.hasCall("tart delete") {
+		t.Fatalf("Restart must not delete the VM: %v", runner.calls)
+	}
+	if !runner.hasCall("tart stop") {
+		t.Fatalf("Restart must stop the VM: %v", runner.calls)
+	}
+}
+
+func TestTartRecreateDeletesAndRecreates(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		switch {
+		case name == "tart" && args[0] == "list":
+			return ExecResult{ExitCode: 0, Stdout: "local  opencode-tahoe-base-latest  running\n"}
+		case name == "tart" && args[0] == "exec" && args[2] == "pgrep":
+			return ExecResult{ExitCode: 1} // no stale backend process
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	tt := newTestTart(t, runner)
+	tt.Config.Isolation = IsolationFull
+	if err := tt.Recreate(context.Background()); err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+	if !runner.hasCall("tart delete") {
+		t.Fatalf("Recreate must delete the VM: %v", runner.calls)
+	}
+}

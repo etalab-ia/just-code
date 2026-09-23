@@ -186,6 +186,16 @@ func newTestMicrosandbox(t *testing.T, client *fakeMSBClient) *MicrosandboxRunti
 	return m
 }
 
+func countCalls(client *fakeMSBClient, prefix string) int {
+	n := 0
+	for _, c := range client.calls {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
 func hasCall(client *fakeMSBClient, prefix string) bool {
 	for _, call := range client.calls {
 		if strings.HasPrefix(call, prefix) {
@@ -738,8 +748,8 @@ func TestMSBRuntimeBinaryUsesManagedHome(t *testing.T) {
 }
 
 func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
-	// A rejected workspace must abort restart before the destructive Clean,
-	// so the sandbox and its persistent state survive.
+	// A rejected workspace must abort restart before the instance is
+	// touched, so the sandbox and its persistent state survive.
 	client := &fakeMSBClient{exists: true}
 	m := newTestMicrosandbox(t, client)
 	if err := os.WriteFile(filepath.Join(m.cfg.WorkspaceDir, ".env"), []byte("X=1\n"), 0o644); err != nil {
@@ -760,9 +770,9 @@ func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
 }
 
 func TestMicrosandboxRestartCreatesMissingWorkspace(t *testing.T) {
-	// Restart preflights the workspace before the destructive Clean, but a
-	// workspace that does not exist yet (default ./workspace) must be
-	// created like Start does, not fail the preflight with a stat error.
+	// Restart preflights the workspace, but a workspace that does not exist
+	// yet (default ./workspace) must be created like Start does, not fail
+	// the preflight with a stat error.
 	client := &fakeMSBClient{exists: true}
 	m := newTestMicrosandbox(t, client)
 	m.cfg.WorkspaceDir = filepath.Join(t.TempDir(), "missing", "workspace")
@@ -771,6 +781,38 @@ func TestMicrosandboxRestartCreatesMissingWorkspace(t *testing.T) {
 	}
 	if info, err := os.Stat(m.cfg.WorkspaceDir); err != nil || !info.IsDir() {
 		t.Fatalf("workspace was not created: %v", err)
+	}
+}
+
+func TestMicrosandboxRestartIsNonDestructive(t *testing.T) {
+	// P07: restart stops and starts the existing instance. It must never
+	// Remove it — the destructive rebuild is the explicit Recreate.
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := newTestMicrosandbox(t, client)
+	if err := m.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	for _, call := range client.calls {
+		if strings.HasPrefix(call, "remove") {
+			t.Fatalf("Restart must not Remove the instance: %v", client.calls)
+		}
+	}
+	if !hasCall(client, "stop ") {
+		t.Fatalf("Restart must stop the instance: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRecreateRebuildsAndDropsJournal(t *testing.T) {
+	// Recreate is the explicit destructive path: it removes and re-creates,
+	// and clears the reconcile journal so the new instance is a fresh
+	// creation rather than a resumed apply.
+	client := &fakeMSBClient{exists: true}
+	m := newTestMicrosandbox(t, client)
+	if err := m.Recreate(context.Background()); err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+	if !hasCall(client, "remove") {
+		t.Fatalf("Recreate must remove the instance: %v", client.calls)
 	}
 }
 
