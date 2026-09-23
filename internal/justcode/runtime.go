@@ -74,6 +74,25 @@ type Backend interface {
 	Status(ctx context.Context) (string, error)
 }
 
+// Reconciler is the optional backend capability (P07) that applies
+// configuration changes to an existing instance without recreating it,
+// resuming interrupted applies from the persisted journal. Backends
+// without persisted reconciliation state (Tart, agent-vm) do not
+// implement it and keep their plain Start semantics.
+type Reconciler interface {
+	Reconcile(ctx context.Context) error
+}
+
+// StartOrReconcile starts the backend through its reconciliation path
+// when it has one, so an existing instance is classified instead of
+// blindly started. A nil Reconciler falls back to Start.
+func StartOrReconcile(ctx context.Context, b Backend) error {
+	if r, ok := b.(Reconciler); ok {
+		return r.Reconcile(ctx)
+	}
+	return b.Start(ctx)
+}
+
 // ResolveRuntime picks a runtime from an explicit --<runtime> flag and the
 // RUNTIME environment preference. The explicit flag always wins, mirroring the
 // justfile contract. On Windows the microsandbox runtime is the default and the

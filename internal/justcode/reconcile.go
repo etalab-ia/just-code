@@ -301,33 +301,48 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if plan.NeedsRecreate() {
 		return &ErrRecreateNeeded{Instance: m.InstanceName(), Reason: plan.Reason}
 	}
-	if plan.IsNoOp() {
-		return nil
-	}
 
 	// Resume support: a journal of pending ops from an interrupted run of
 	// the same revision is honored; a journal from a different revision is
-	// stale and replaced by the fresh plan.
+	// stale and replaced by the fresh plan. This check precedes the no-op
+	// return on purpose: a failed op journals the desired revision with
+	// Pending set, and the next run must finish that journal even when the
+	// guest currently looks healthy — otherwise a failed credential or
+	// configuration update is never retried.
 	pending := plan.Ops
 	if applied != nil && applied.ConfigRevision == desired.ConfigRevision() && len(applied.Pending) > 0 {
-		resumed := journalToOps(applied.Pending)
-		if sameOps(resumed, plan.Ops) {
-			pending = resumed
-			fmt.Printf("Resuming interrupted apply for %s at: %s\n", m.InstanceName(), joinOps(pending))
-		}
+		// The journal is authoritative for this revision: a fresh plan of
+		// [noop] must not override it, or a failed update is never retried.
+		pending = journalToOps(applied.Pending)
+		fmt.Printf("Resuming interrupted apply for %s at: %s\n", m.InstanceName(), joinOps(pending))
+	} else if plan.IsNoOp() {
+		return nil
 	}
 
+	// Persist the journal before the first side effect and advance it after
+	// each successful operation: an abrupt kill between ops must leave a
+	// progress record, or the next run would replay completed mutations.
+	st := desired.toState()
+	st.Pending = opsToJournal(pending)
+	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+		return fmt.Errorf("persisting reconcile journal for %s: %w", m.InstanceName(), err)
+	}
 	for i, op := range pending {
 		if err := m.applyReconcileOp(ctx, op); err != nil {
 			// Journal the remaining ops: the next run resumes here.
-			remaining := opsToJournal(pending[i:])
-			st := desired.toState()
-			st.Pending = remaining
+			st.Pending = opsToJournal(pending[i:])
 			_ = WriteInstanceState(DefaultFS, path, st)
 			return fmt.Errorf("reconcile %s failed at %s (will resume there): %w", m.InstanceName(), op, err)
 		}
+		if i < len(pending)-1 {
+			st.Pending = opsToJournal(pending[i+1:])
+			if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+				return fmt.Errorf("advancing reconcile journal for %s: %w", m.InstanceName(), err)
+			}
+		}
 	}
-	return WriteInstanceState(DefaultFS, path, desired.toState())
+	st.Pending = nil
+	return WriteInstanceState(DefaultFS, path, st)
 }
 
 func (m *MicrosandboxRuntime) desiredState() DesiredState {

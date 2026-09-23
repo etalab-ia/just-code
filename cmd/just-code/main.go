@@ -359,7 +359,10 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	if err := d.Prepare(ctx, rt); err != nil {
 		return 0, err
 	}
-	if err := b.Start(ctx); err != nil {
+	// Reconcile when the backend supports it (P07): an existing instance
+	// gets its configuration classified and an interrupted apply resumed,
+	// instead of a blind start.
+	if err := justcode.StartOrReconcile(ctx, b); err != nil {
 		return 0, err
 	}
 	if cfg.Isolation == justcode.IsolationFull {
@@ -404,9 +407,12 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 	}
 	ctx := context.Background()
 
-	// start and restart refuse to run while another runtime is active.
-	// recreate is excluded: its whole point is to displace whatever exists.
-	if action == "start" || action == "restart" {
+	// start, restart and recreate all refuse to run while another
+	// runtime's instance is active. recreate displaces the selected
+	// runtime's own instance, not another runtime's: leaving Prepare out
+	// would start a second environment while the first is still up,
+	// violating the one-active-instance policy.
+	if action == "start" || action == "restart" || action == "recreate" {
 		if err := d.Prepare(ctx, rt); err != nil {
 			return 0, err
 		}
@@ -414,7 +420,7 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 
 	switch action {
 	case "start":
-		err = b.Start(ctx)
+		err = justcode.StartOrReconcile(ctx, b)
 	case "restart":
 		// restart is non-destructive (P07): it stops and starts the existing
 		// instance, preserving disk and guest state.

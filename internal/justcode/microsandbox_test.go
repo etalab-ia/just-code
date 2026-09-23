@@ -1312,7 +1312,7 @@ func TestMicrosandboxStartRejectsIsolationSwitch(t *testing.T) {
 	if err == nil {
 		t.Fatal("switching an existing full-mode sandbox to backend must fail")
 	}
-	if !strings.Contains(err.Error(), "restart") {
+	if !strings.Contains(err.Error(), "recreate") {
 		t.Errorf("error must point at the recovery command: %v", err)
 	}
 	if hasCall(client, "start "+msbSandbox) || hasCall(client, "exec "+msbSandbox) {
@@ -1328,6 +1328,25 @@ func TestMicrosandboxStartRejectsIsolationSwitch(t *testing.T) {
 	}
 	if hasCall(client, "start "+msbSandbox) {
 		t.Fatalf("a mismatched sandbox must not be booted: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxRestartLeavesMismatchedSandboxRunning pins the P07
+// preflight: restart cannot fix a creation-fixed isolation mismatch, so it
+// must refuse BEFORE stopping — stopping first would leave a previously
+// usable sandbox down with an error that loops.
+func TestMicrosandboxRestartLeavesMismatchedSandboxRunning(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "running", startScript: msbStartScript(IsolationFull)}
+	m := newTestMicrosandbox(t, client)
+	err := m.Restart(context.Background())
+	if err == nil {
+		t.Fatal("restart must refuse an isolation switch")
+	}
+	if !strings.Contains(err.Error(), "recreate") {
+		t.Errorf("error must point at the recovery command: %v", err)
+	}
+	if hasCall(client, "stop "+msbSandbox) {
+		t.Fatalf("a mismatched sandbox must not be stopped by restart: %v", client.calls)
 	}
 }
 

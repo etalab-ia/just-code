@@ -595,7 +595,7 @@ func (m *MicrosandboxRuntime) rejectIsolationMismatch(ctx context.Context, sandb
 	}
 	return fmt.Errorf("%s was created in isolation %s mode and cannot be switched to %s mode in place: "+
 		"the start script is fixed when the sandbox is created. "+
-		"Run 'just-code restart --microsandbox' (or 'just-code clean --microsandbox') to recreate it in %s mode",
+		"Run 'just-code recreate --microsandbox' to rebuild it in %s mode",
 		sandbox.Name, createdMode, requestedMode, requestedMode)
 }
 
@@ -626,10 +626,26 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
 		return err
 	}
+	// Detect recreation-only states before stopping: a creation-fixed
+	// isolation mismatch cannot be fixed by restart, and stopping first
+	// would leave a previously usable sandbox down with a looping error.
+	if err := m.rejectRecreationOnlyStates(ctx); err != nil {
+		return err
+	}
 	if err := m.Stop(ctx); err != nil {
 		return err
 	}
 	return m.Start(ctx)
+}
+
+// rejectRecreationOnlyStates inspects an existing sandbox for conditions
+// restart cannot fix. It is a no-op when the sandbox does not exist.
+func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) error {
+	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
+	if err != nil || !exists {
+		return err
+	}
+	return m.rejectIsolationMismatch(ctx, sandbox)
 }
 
 func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {

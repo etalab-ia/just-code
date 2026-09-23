@@ -235,6 +235,60 @@ func TestReconcileResumesInterruptedApply(t *testing.T) {
 	_ = os.RemoveAll(filepath.Dir(path))
 }
 
+func TestReconcileFinishesPendingJournalDespiteHealthyGuest(t *testing.T) {
+	// A failed op journals the desired revision with Pending set. On the
+	// next run the guest may look healthy (the failed refresh never took
+	// effect), but the journal must still be executed — returning no-op
+	// would silently drop the failed credential or config update forever.
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := newTestMicrosandbox(t, client)
+	m.Probe = func(context.Context, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	desired := m.desiredState()
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	st := desired.toState()
+	st.Pending = []string{"refresh-credentials", "restart-vm"}
+	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !hasCall(client, "modify ") {
+		t.Fatalf("pending refresh must be retried despite healthy guest: %v", client.calls)
+	}
+	// The journal is consumed: the state file no longer carries Pending.
+	final, err := ReadInstanceState(DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final == nil || len(final.Pending) != 0 {
+		t.Fatalf("completed journal must be cleared, state: %+v", final)
+	}
+	_ = os.RemoveAll(filepath.Dir(path))
+}
+
+func TestReconcilePersistsJournalBeforeFirstSideEffect(t *testing.T) {
+	// An abrupt kill after an op produced side effects but before the
+	// error-path journal write must not replay completed mutations. The
+	// journal is persisted before execution and advanced after each op.
+	client := &fakeMSBClient{exists: true, status: "stopped", startErr: assertErr("boom")}
+	m := newTestMicrosandbox(t, client)
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := m.Reconcile(context.Background()); err == nil {
+		t.Fatal("Reconcile must surface the start failure")
+	}
+	st, err := ReadInstanceState(DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st == nil || len(st.Pending) == 0 {
+		t.Fatalf("journal must be persisted before execution, state: %+v", st)
+	}
+	_ = os.RemoveAll(filepath.Dir(path))
+}
+
 func TestReconcileSurfacesRecreateAsError(t *testing.T) {
 	// A creation-fixed change must come back as a typed error, never as an
 	// automatic Clean. The instance is untouched.
