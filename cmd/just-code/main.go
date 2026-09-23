@@ -85,6 +85,8 @@ func run(args []string) (int, error) {
 	case "version":
 		printBuildInfo()
 		return 0, nil
+	case "config":
+		return configCmd(parsed.configArgs)
 	case "stop":
 		return 0, d.StopAll(context.Background())
 	case "check":
@@ -139,6 +141,8 @@ type parsedArgs struct {
 	// isolation is the raw --isolation value (backend or full), or "".
 	isolation string
 	version   bool
+	// configArgs holds the words after the config command.
+	configArgs []string
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -148,7 +152,7 @@ type parsedArgs struct {
 var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
 	"restart": true, "clean": true, "doctor": true,
-	"help": true, "version": true,
+	"help": true, "version": true, "config": true,
 }
 
 func runtimeFlag(a string) bool {
@@ -194,6 +198,12 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 		case a == "-V" || a == "--version" || a == "-v":
 			p.version = true
+		case a == "config" && !actionSet:
+			p.action = "config"
+			actionSet = true
+			// Everything after the config command belongs to it.
+			p.configArgs = args[i+1:]
+			return p, nil
 		case actionNames[a] && !actionSet:
 			p.action = a
 			actionSet = true
@@ -215,6 +225,100 @@ func argOr(args []string, i int, def string) string {
 		return args[i]
 	}
 	return def
+}
+
+// configCmd implements `just-code config <subcommand>`. It is read-only: it
+// resolves and explains the effective configuration without mutating the
+// environment or writing any file. `explain` shows each managed field with
+// its winning source (flags > JUST_CODE_* env > project > user > default),
+// secrets never included; `import-env` previews a bounded legacy .env import
+// without touching the original file.
+func configCmd(args []string) (int, error) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: just-code config explain | import-env <path>")
+		return 2, nil
+	}
+	switch args[0] {
+	case "explain":
+		return configExplainCmd()
+	case "import-env":
+		if len(args) < 2 {
+			return 2, fmt.Errorf("Usage: just-code config import-env <path-to-.env>")
+		}
+		return configImportEnvCmd(args[1])
+	default:
+		return 2, fmt.Errorf("Unknown config command: %s (expected explain or import-env)", args[0])
+	}
+}
+
+// configExplainCmd resolves the managed fields and prints them with
+// provenance. The legacy environment variables (RUNTIME, ISOLATION, ...) are
+// NOT part of the new resolution: explain reports the new-path view only,
+// so the two paths cannot be confused during the deprecation interval.
+func configExplainCmd() (int, error) {
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		return 0, err
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, settingsPath)
+	if err != nil {
+		return 0, err
+	}
+	user := map[string]string{}
+	if us.DefaultRuntime != "" {
+		user["runtime"] = us.DefaultRuntime
+	}
+	if us.DefaultIsolation != "" {
+		user["isolation"] = us.DefaultIsolation
+	}
+	if us.DefaultModel != "" {
+		user["model"] = us.DefaultModel
+	}
+	if us.CredentialRef != "" {
+		user["credential_ref"] = us.CredentialRef
+	}
+	env := justcode.EnvSettings(os.LookupEnv)
+	cwd, _ := os.Getwd()
+	proj := map[string]string{}
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(cwd))
+	if err == nil {
+		for field, v := range map[string]string{
+			"runtime":        pm.Runtime,
+			"isolation":      pm.Isolation,
+			"model":          pm.Model,
+			"credential_ref": pm.CredentialRef,
+		} {
+			if v != "" {
+				proj[field] = v
+			}
+		}
+		if pm.CPUs > 0 {
+			proj["cpus"] = fmt.Sprintf("%d", pm.CPUs)
+		}
+		if pm.MemoryMB > 0 {
+			proj["memory_mb"] = fmt.Sprintf("%d", pm.MemoryMB)
+		}
+	}
+	entries := justcode.Explain(justcode.Settings{
+		Env:     env,
+		Project: proj,
+		User:    user,
+	})
+	fmt.Print(justcode.FormatExplain(entries))
+	return 0, nil
+}
+
+// configImportEnvCmd previews the bounded legacy .env import. It never writes
+// the original or any managed file; the user reviews the preview and applies
+// the result explicitly later (P11's wizard owns the apply step).
+func configImportEnvCmd(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", path, err)
+	}
+	imp := justcode.ImportLegacyDotenv(string(data))
+	fmt.Print(imp.FormatLegacyImport())
+	return 0, nil
 }
 
 func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime) (int, error) {
@@ -354,6 +458,7 @@ Commands:
   shell      Open a shell inside the selected runtime
   clean      Remove the selected sandbox and its local state
   doctor     Check the selected runtime installation
+  config     Show or preview managed configuration (explain, import-env)
   version    Print the build identity
   help       Show this help
 
