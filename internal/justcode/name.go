@@ -21,3 +21,18 @@ func VMName(imageRef string) string {
 	base = strings.ReplaceAll(base, "@sha256", "-sha256")
 	return managedVMPrefix + base
 }
+
+// ManagedVMName is the project-derived VM name for a project instance (P06):
+// "opencode-" + instance. The prefix is what the lifecycle sweeps filter on,
+// so project VMs are owned and enumerated by the same rule as the legacy
+// singleton. The instance name already carries a path-derived suffix, so
+// two same-named repositories and two worktrees do not collide.
+func ManagedVMName(instance string) string {
+	return managedVMPrefix + instance
+}
+
+// IsManagedVM reports whether name is a just-code-managed VM (carries the
+// managed prefix). It is the single ownership test for the lifecycle sweeps.
+func IsManagedVM(name string) bool {
+	return strings.HasPrefix(name, managedVMPrefix)
+}

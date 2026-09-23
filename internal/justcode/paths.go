@@ -15,6 +15,39 @@ func DefaultStateDir() string {
 	return filepath.Join(".local", "state", "just-code")
 }
 
+// InstanceStateDir is the per-instance host state directory: logs, staged
+// files and other instance-scoped artifacts live under it so two projects
+// never share state. instance is the project-derived instance name (P05).
+func InstanceStateDir(stateDir, instance string) string {
+	return filepath.Join(stateDir, "instances", instance)
+}
+
+// ProjectRegistryPath is the host path of the project -> instance registry
+// (P05). It lives outside any workspace.
+func ProjectRegistryPath(stateDir string) string {
+	return filepath.Join(stateDir, "projects.json")
+}
+
+// SetupLockPath is the host path of the per-instance setup lock (P05). It is
+// distinct from the project lockfile (resolve.go ProjectLockPath), which is
+// the configuration lock inside the project.
+func SetupLockPath(stateDir, instance string) string {
+	return filepath.Join(InstanceStateDir(stateDir, instance), "setup.lock")
+}
+
+// LegacyInstanceLogPath returns the pre-P06 log path for a runtime, used
+// when a backend operates on the legacy singleton instance so existing logs
+// keep appending where they always did.
+func LegacyInstanceLogPath(stateDir, runtime string) string {
+	return filepath.Join(stateDir, runtime+".log")
+}
+
+// LegacyInstanceStageDir is the pre-P06 stage directory for a runtime, used
+// when a backend operates on the legacy singleton instance.
+func LegacyInstanceStageDir(stateDir, runtime string) string {
+	return filepath.Join(stateDir, runtime)
+}
+
 // TartStageDir is the read-only share handed to the Tart guest. It holds only
 // the bootstrap script, never the checkout or its .env.
 func TartStageDir(stateDir string) string {

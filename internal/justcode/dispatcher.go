@@ -19,12 +19,25 @@ type Dispatcher struct {
 	Runner Runner
 }
 
-// NewDispatcher builds a dispatcher over the runtimes for a config.
+// NewDispatcher builds a dispatcher over the runtimes for a config. Without
+// a project context the backends operate on the legacy singleton instances,
+// so existing behavior is unchanged (P06).
 func NewDispatcher(cfg Config) *Dispatcher {
 	return NewDispatcherWith(cfg, map[Runtime]Backend{
 		RuntimeMicrosandbox: NewMicrosandboxRuntime(cfg),
 		RuntimeTart:         NewTart(cfg),
 		RuntimeAgentVM:      NewAgentVM(cfg),
+	})
+}
+
+// NewDispatcherForInstance builds a dispatcher whose backends are all bound
+// to one project-derived instance name (P06): every lifecycle operation the
+// dispatcher drives targets that project's instances only.
+func NewDispatcherForInstance(cfg Config, instance string) *Dispatcher {
+	return NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: NewMicrosandboxRuntimeForInstance(cfg, instance),
+		RuntimeTart:         NewTartForInstance(cfg, instance),
+		RuntimeAgentVM:      NewAgentVMForInstance(cfg, instance),
 	})
 }
 
@@ -76,7 +89,9 @@ func (d *Dispatcher) SingleRunning(ctx context.Context) (Runtime, error) {
 	}
 }
 
-// StopAll stops every active runtime, mirroring `just stop`.
+// StopAll stops every active runtime, mirroring `just stop`. It is the
+// explicit all-instance operation (P06): `stop` without --all stops only the
+// current project's instance.
 func (d *Dispatcher) StopAll(ctx context.Context) error {
 	if err := d.clearLegacyDocker(ctx); err != nil {
 		return err
@@ -96,6 +111,38 @@ func (d *Dispatcher) StopAll(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+// Stop stops the current project's instance on every runtime, the new
+// project-scoped `stop` contract (P06). Stopping project A never touches
+// project B: each backend stops only the instance it was constructed with.
+// An explicit all-instance stop is StopAll (`stop --all`).
+func (d *Dispatcher) Stop(ctx context.Context) error {
+	if err := d.clearLegacyDocker(ctx); err != nil {
+		return err
+	}
+	stopped := false
+	for _, rt := range supportedRuntimes() {
+		b, ok := d.backends[rt]
+		if !ok {
+			continue
+		}
+		running, err := b.IsRunning(ctx)
+		if err != nil {
+			return err
+		}
+		if !running {
+			continue
+		}
+		if err := b.Stop(ctx); err != nil {
+			return err
+		}
+		stopped = true
+	}
+	if !stopped {
+		fmt.Println("No just-code runtime is running for this project.")
+	}
+	return nil
 }
 
 // Prepare resolves conflicts before starting a runtime: it migrates a host

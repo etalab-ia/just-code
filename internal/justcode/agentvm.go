@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,10 @@ type AgentVM struct {
 	Runner   Runner
 	Starter  Starter
 	StateDir string // host state dir; default ~/.local/state/just-code
+	// Instance is the project-derived instance name (P05/P06). Empty keeps
+	// the legacy singleton VM name from the config, so existing users' VMs
+	// are found and never renamed.
+	Instance string
 
 	// KillPollInterval and KillMaxPolls bound the stale-backend kill loop.
 	KillPollInterval time.Duration
@@ -44,9 +49,43 @@ func NewAgentVM(cfg Config) *AgentVM {
 	}
 }
 
-// LogPath returns the host path of the agent-vm backend log.
+// NewAgentVMForInstance builds an agent-vm orchestrator bound to a
+// project-derived instance name (P06).
+func NewAgentVMForInstance(cfg Config, instance string) *AgentVM {
+	a := NewAgentVM(cfg)
+	a.Instance = instance
+	return a
+}
+
+// VMName returns the name of the Lima instance this backend operates on: the
+// project-derived name when an instance is set, the legacy config name
+// otherwise.
+func (a *AgentVM) VMName() string {
+	if a.Instance != "" {
+		return ManagedVMName(a.Instance)
+	}
+	return a.Config.AgentVMVM
+}
+
+// IsLegacy reports whether this backend operates on the legacy singleton VM.
+func (a *AgentVM) IsLegacy() bool { return a.Instance == "" }
+
+// LogPath returns the host path of the agent-vm backend log. The legacy
+// singleton keeps its historical path; a project instance logs under its own
+// state directory.
 func (a *AgentVM) LogPath() string {
-	return AgentVMLogPath(a.StateDir)
+	if a.IsLegacy() {
+		return AgentVMLogPath(a.StateDir)
+	}
+	return filepath.Join(InstanceStateDir(a.StateDir, a.Instance), "agent-vm.log")
+}
+
+// StageDir returns the host directory for files staged into the guest.
+func (a *AgentVM) StageDir() string {
+	if a.IsLegacy() {
+		return AgentVMStageDir(a.StateDir)
+	}
+	return filepath.Join(InstanceStateDir(a.StateDir, a.Instance), "agent-vm")
 }
 
 // ParseLimaList parses `limactl list --format '{{.Name}}|{{.Status}}'` output
@@ -88,7 +127,7 @@ func (a *AgentVM) vmExists(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, ok := vms[a.Config.AgentVMVM]
+	_, ok := vms[a.VMName()]
 	return ok, nil
 }
 
@@ -98,7 +137,7 @@ func (a *AgentVM) vmRunning(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return vms[a.Config.AgentVMVM], nil
+	return vms[a.VMName()], nil
 }
 
 // templateExists reports whether the base template is available to clone from.
@@ -190,15 +229,15 @@ func mountsJSON(workspaceDir string) string {
 // workspace mount, mirroring agent-vm's clone-then-edit flow. Editing is
 // only allowed on a stopped instance, so it happens right after the clone.
 func (a *AgentVM) createVM(ctx context.Context) error {
-	fmt.Printf("Cloning %s to %s...\n", a.Config.AgentVMTemplate, a.Config.AgentVMVM)
-	res, err := a.Runner.Run(ctx, "limactl", "clone", a.Config.AgentVMTemplate, a.Config.AgentVMVM, "--tty=false")
+	fmt.Printf("Cloning %s to %s...\n", a.Config.AgentVMTemplate, a.VMName())
+	res, err := a.Runner.Run(ctx, "limactl", "clone", a.Config.AgentVMTemplate, a.VMName(), "--tty=false")
 	if err != nil {
 		return err
 	}
 	if res.ExitCode != 0 {
 		return fmt.Errorf("limactl clone failed (exit %d): %s", res.ExitCode, res.Stderr)
 	}
-	res, err = a.Runner.Run(ctx, "limactl", "edit", a.Config.AgentVMVM, "--tty=false",
+	res, err = a.Runner.Run(ctx, "limactl", "edit", a.VMName(), "--tty=false",
 		"--set", ".mounts = "+mountsJSON(a.Config.WorkspaceDir))
 	if err != nil {
 		return err
@@ -208,10 +247,10 @@ func (a *AgentVM) createVM(ctx context.Context) error {
 		// workspace mount is unusable, and Start would treat it as a valid
 		// existing instance instead of re-creating it.
 		fmt.Printf("limactl edit (mounts) failed (exit %d): %s\n", res.ExitCode, res.Stderr)
-		fmt.Printf("Removing the incomplete clone %s...\n", a.Config.AgentVMVM)
-		if _, delErr := a.Runner.Run(ctx, "limactl", "delete", a.Config.AgentVMVM, "--force"); delErr != nil {
+		fmt.Printf("Removing the incomplete clone %s...\n", a.VMName())
+		if _, delErr := a.Runner.Run(ctx, "limactl", "delete", a.VMName(), "--force"); delErr != nil {
 			return fmt.Errorf("limactl edit (mounts) failed (exit %d): %s; cleanup also failed: %v (run 'limactl delete %s --force' manually)",
-				res.ExitCode, res.Stderr, delErr, a.Config.AgentVMVM)
+				res.ExitCode, res.Stderr, delErr, a.VMName())
 		}
 		return fmt.Errorf("limactl edit (mounts) failed (exit %d): %s (the incomplete clone was removed; retry the start)",
 			res.ExitCode, res.Stderr)
@@ -221,12 +260,12 @@ func (a *AgentVM) createVM(ctx context.Context) error {
 
 // startVM boots the VM detached. The Starter's log captures limactl output.
 func (a *AgentVM) startVM(ctx context.Context) error {
-	return a.Starter.Start(nil, a.LogPath(), "limactl", "start", a.Config.AgentVMVM)
+	return a.Starter.Start(nil, a.LogPath(), "limactl", "start", a.VMName())
 }
 
 // guestRun runs a command inside the VM synchronously via limactl shell.
 func (a *AgentVM) guestRun(ctx context.Context, args ...string) error {
-	full := append([]string{"shell", a.Config.AgentVMVM}, args...)
+	full := append([]string{"shell", a.VMName()}, args...)
 	return runOK(a.Runner, ctx, "limactl", full...)
 }
 
@@ -235,20 +274,20 @@ func (a *AgentVM) guestRun(ctx context.Context, args ...string) error {
 // full systemd.
 func (a *AgentVM) waitForAgent(ctx context.Context) error {
 	for i := 0; i < 120; i++ {
-		res, err := a.Runner.Run(ctx, "limactl", "shell", a.Config.AgentVMVM, "true")
+		res, err := a.Runner.Run(ctx, "limactl", "shell", a.VMName(), "true")
 		if err == nil && res.ExitCode == 0 {
 			return nil
 		}
 		time.Sleep(time.Second)
 	}
-	return fmt.Errorf("timed out waiting for %s guest agent", a.Config.AgentVMVM)
+	return fmt.Errorf("timed out waiting for %s guest agent", a.VMName())
 }
 
 // StopBackend terminates a stale opencode process inside the VM: SIGTERM via
 // pkill, then SIGKILL after KillMaxPolls failed pgrep checks. Same recovery
 // pattern as the Tart backend.
 func (a *AgentVM) StopBackend(ctx context.Context) error {
-	vm := a.Config.AgentVMVM
+	vm := a.VMName()
 	// SIGTERM; "no process" (nonzero exit) is expected and ignored.
 	_, _ = a.Runner.Run(ctx, "limactl", "shell", vm, "pkill", "-x", "opencode")
 
@@ -314,7 +353,7 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}
-	stageDir := AgentVMStageDir(a.StateDir)
+	stageDir := a.StageDir()
 	secretsPath, err := a.writeSecretsEnv(stageDir)
 	if err != nil {
 		return err
@@ -414,17 +453,43 @@ func (a *AgentVM) Start(ctx context.Context) error {
 
 // Stop stops the managed VM. Unlike Tart (which stops every managed VM),
 // agent-vm has a single managed instance, so there is exactly one to stop.
+// Stop stops this backend's VM. It is project-scoped (P06); the
+// all-instance sweep is StopInstance over RunningInstances.
 func (a *AgentVM) Stop(ctx context.Context) error {
-	running, err := a.vmRunning(ctx)
+	return a.StopInstance(ctx, a.VMName())
+}
+
+// RunningInstances returns the names of all managed Lima instances that are
+// up, in deterministic order. Managed means carrying the just-code prefix;
+// the base template (agent-vm-base) does not, so it is never touched.
+func (a *AgentVM) RunningInstances(ctx context.Context) ([]string, error) {
+	vms, err := a.limaList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for name, running := range vms {
+		if running && IsManagedVM(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// StopInstance stops a named managed Lima instance. It is the per-project
+// form of Stop.
+func (a *AgentVM) StopInstance(ctx context.Context, vm string) error {
+	vms, err := a.limaList(ctx)
 	if err != nil {
 		return err
 	}
-	if !running {
-		fmt.Println("No just-code agent-vm VM is running.")
+	if !vms[vm] {
+		fmt.Printf("%s is not running.\n", vm)
 		return nil
 	}
-	fmt.Printf("Stopping %s...\n", a.Config.AgentVMVM)
-	res, err := a.Runner.Run(ctx, "limactl", "stop", a.Config.AgentVMVM)
+	fmt.Printf("Stopping %s...\n", vm)
+	res, err := a.Runner.Run(ctx, "limactl", "stop", vm)
 	if err != nil {
 		return err
 	}
@@ -434,9 +499,29 @@ func (a *AgentVM) Stop(ctx context.Context) error {
 	return nil
 }
 
+// StopAll stops every running managed Lima instance, the explicit
+// all-instance operation (P06).
+func (a *AgentVM) StopAll(ctx context.Context) error {
+	vms, err := a.RunningInstances(ctx)
+	if err != nil {
+		return err
+	}
+	if len(vms) == 0 {
+		fmt.Println("No just-code agent-vm VM is running.")
+		return nil
+	}
+	var firstErr error
+	for _, vm := range vms {
+		if err := a.StopInstance(ctx, vm); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // Clean stops and deletes the managed VM and its local state.
 func (a *AgentVM) Clean(ctx context.Context) error {
-	vm := a.Config.AgentVMVM
+	vm := a.VMName()
 	running, err := a.vmRunning(ctx)
 	if err != nil {
 		return err
@@ -454,7 +539,7 @@ func (a *AgentVM) Clean(ctx context.Context) error {
 		fmt.Printf("%s does not exist.\n", vm)
 		// The staged secrets env (Albert API key, HTTP password) is host-side
 		// state and must go even when the VM was already deleted manually.
-		_ = os.RemoveAll(AgentVMStageDir(a.StateDir))
+		_ = os.RemoveAll(a.StageDir())
 		return nil
 	}
 	// Deleting is destructive: say so before and after, so a silent success
@@ -467,7 +552,7 @@ func (a *AgentVM) Clean(ctx context.Context) error {
 	if res.ExitCode != 0 {
 		return fmt.Errorf("limactl delete failed (exit %d): %s", res.ExitCode, res.Stderr)
 	}
-	_ = os.RemoveAll(AgentVMStageDir(a.StateDir))
+	_ = os.RemoveAll(a.StageDir())
 	fmt.Printf("%s deleted.\n", vm)
 	return nil
 }
@@ -532,7 +617,7 @@ func (a *AgentVM) Logs() error {
 
 // Shell opens an interactive shell in the VM.
 func (a *AgentVM) Shell() error {
-	return RunInteractive("limactl", "shell", a.Config.AgentVMVM)
+	return RunInteractive("limactl", "shell", a.VMName())
 }
 
 // RunAgent launches the OpenCode TUI in the foreground inside the VM
@@ -545,7 +630,7 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}
-	secretsPath, err := a.writeSecretsEnv(AgentVMStageDir(a.StateDir))
+	secretsPath, err := a.writeSecretsEnv(a.StageDir())
 	if err != nil {
 		return err
 	}
@@ -571,16 +656,16 @@ func (a *AgentVM) Status(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if running {
-		return fmt.Sprintf("%s is running", a.Config.AgentVMVM), nil
+		return fmt.Sprintf("%s is running", a.VMName()), nil
 	}
 	exists, err := a.vmExists(ctx)
 	if err != nil {
 		return "", err
 	}
 	if exists {
-		return fmt.Sprintf("%s is stopped", a.Config.AgentVMVM), nil
+		return fmt.Sprintf("%s is stopped", a.VMName()), nil
 	}
-	return fmt.Sprintf("%s does not exist", a.Config.AgentVMVM), nil
+	return fmt.Sprintf("%s does not exist", a.VMName()), nil
 }
 
 // IsRunning reports whether the managed VM is running.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,10 @@ type Tart struct {
 	Runner   Runner
 	Starter  Starter
 	StateDir string // host state dir; default ~/.local/state/just-code
+	// Instance is the project-derived instance name (P05/P06). Empty keeps
+	// the legacy singleton VM name from the config, so existing users' VMs
+	// are found and never renamed.
+	Instance string
 	// SelfBinary is the binary staged into the guest. Empty means the running
 	// executable (os.Executable), which is the production path.
 	SelfBinary string
@@ -43,9 +48,43 @@ func NewTart(cfg Config) *Tart {
 	}
 }
 
-// LogPath returns the host path of the Tart backend log.
+// NewTartForInstance builds a Tart orchestrator bound to a project-derived
+// instance name (P06). The VM name becomes opencode-<instance>, and logs and
+// staged files live under the instance's own state directory.
+func NewTartForInstance(cfg Config, instance string) *Tart {
+	t := NewTart(cfg)
+	t.Instance = instance
+	return t
+}
+
+// VMName returns the name of the VM this backend operates on: the project-
+// derived name when an instance is set, the legacy config name otherwise.
+func (t *Tart) VMName() string {
+	if t.Instance != "" {
+		return ManagedVMName(t.Instance)
+	}
+	return t.Config.TartVM
+}
+
+// IsLegacy reports whether this backend operates on the legacy singleton VM.
+func (t *Tart) IsLegacy() bool { return t.Instance == "" }
+
+// LogPath returns the host path of the Tart backend log. The legacy
+// singleton keeps its historical path; a project instance logs under its
+// own state directory.
 func (t *Tart) LogPath() string {
-	return TartLogPath(t.StateDir)
+	if t.IsLegacy() {
+		return TartLogPath(t.StateDir)
+	}
+	return filepath.Join(InstanceStateDir(t.StateDir, t.Instance), "tart.log")
+}
+
+// StageDir returns the host directory for files staged into the guest.
+func (t *Tart) StageDir() string {
+	if t.IsLegacy() {
+		return TartStageDir(t.StateDir)
+	}
+	return filepath.Join(InstanceStateDir(t.StateDir, t.Instance), "tart")
 }
 
 // ParseTartList extracts local, running VMs under prefix from `tart list`
@@ -106,17 +145,57 @@ func (t *Tart) vmExists(ctx context.Context) (bool, error) {
 	}
 	for _, line := range strings.Split(res.Stdout, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "local" && fields[1] == t.Config.TartVM {
+		if len(fields) >= 2 && fields[0] == "local" && fields[1] == t.VMName() {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// Stop stops every local managed VM (not just the current one), mirroring
-// `just stop --tart`.
+// Stop stops this backend's VM. It is project-scoped (P06): stopping project
+// A's VM never touches project B's. The all-instance sweep lives in
+// StopInstance over RunningInstances, driven by the dispatcher.
 func (t *Tart) Stop(ctx context.Context) error {
+	return t.StopInstance(ctx, t.VMName())
+}
+
+// RunningInstances returns the names of all managed Tart VMs that are up,
+// in deterministic order. Managed means carrying the just-code prefix.
+func (t *Tart) RunningInstances(ctx context.Context) ([]string, error) {
 	vms, err := t.RunningVMs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(vms)
+	return vms, nil
+}
+
+// StopInstance stops a named managed VM. It is the per-project form of Stop.
+func (t *Tart) StopInstance(ctx context.Context, vm string) error {
+	running, err := t.vmRunning(ctx, vm)
+	if err != nil {
+		return err
+	}
+	if !running {
+		fmt.Printf("%s is not running.\n", vm)
+		return nil
+	}
+	fmt.Printf("Stopping %s...\n", vm)
+	res, err := t.Runner.Run(ctx, "tart", "stop", vm, "--timeout", "5")
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("tart stop failed (exit %d)", res.ExitCode)
+	}
+	return nil
+}
+
+// StopAll stops every running managed Tart VM, the explicit all-instance
+// operation (P06). The legacy singleton is included when it carries the
+// managed prefix, which it does by construction.
+func (t *Tart) StopAll(ctx context.Context) error {
+	vms, err := t.RunningInstances(ctx)
 	if err != nil {
 		return err
 	}
@@ -124,31 +203,20 @@ func (t *Tart) Stop(ctx context.Context) error {
 		fmt.Println("No just-code Tart VM is running.")
 		return nil
 	}
-	exitCode := 0
+	var firstErr error
 	for _, vm := range vms {
-		fmt.Printf("Stopping %s...\n", vm)
-		res, err := t.Runner.Run(ctx, "tart", "stop", vm, "--timeout", "5")
-		if err != nil {
-			if exitCode == 0 {
-				exitCode = 1
-			}
-			continue
-		}
-		if res.ExitCode != 0 {
-			exitCode = res.ExitCode
+		if err := t.StopInstance(ctx, vm); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	if exitCode != 0 {
-		return fmt.Errorf("tart stop failed (exit %d)", exitCode)
-	}
-	return nil
+	return firstErr
 }
 
 // StopBackend terminates a stale opencode process inside the VM: SIGTERM via
 // pkill, then SIGKILL after KillMaxPolls failed pgrep checks. It returns an
 // error if the process is still alive afterward.
 func (t *Tart) StopBackend(ctx context.Context) error {
-	vm := t.Config.TartVM
+	vm := t.VMName()
 	// SIGTERM; "no process" (nonzero exit) is expected and ignored.
 	_, _ = t.Runner.Run(ctx, "tart", "exec", vm, "pkill", "-x", "opencode")
 
@@ -182,7 +250,7 @@ func (t *Tart) StopBackend(ctx context.Context) error {
 // guest can execute it as the in-VM bootstrap. The checkout, its .env, and
 // other host-only files are never shared.
 func (t *Tart) stageGuestBinary() error {
-	stageDir := TartStageDir(t.StateDir)
+	stageDir := t.StageDir()
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return err
 	}
@@ -206,7 +274,7 @@ const guestBinaryName = "just-code"
 
 // guestRun runs a command inside the VM synchronously.
 func (t *Tart) guestRun(ctx context.Context, args ...string) error {
-	full := append([]string{"exec", t.Config.TartVM}, args...)
+	full := append([]string{"exec", t.VMName()}, args...)
 	return runOK(t.Runner, ctx, "tart", full...)
 }
 
@@ -253,17 +321,17 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 // to 60 seconds.
 func (t *Tart) waitForAgent(ctx context.Context) error {
 	for i := 0; i < 60; i++ {
-		res, err := t.Runner.Run(ctx, "tart", "exec", t.Config.TartVM, "true")
+		res, err := t.Runner.Run(ctx, "tart", "exec", t.VMName(), "true")
 		if err == nil && res.ExitCode == 0 {
 			return nil
 		}
 		time.Sleep(time.Second)
 	}
-	return fmt.Errorf("timed out waiting for %s guest agent", t.Config.TartVM)
+	return fmt.Errorf("timed out waiting for %s guest agent", t.VMName())
 }
 
 func (t *Tart) clone(ctx context.Context) error {
-	res, err := t.Runner.Run(ctx, "tart", "clone", t.Config.TartImage, t.Config.TartVM)
+	res, err := t.Runner.Run(ctx, "tart", "clone", t.Config.TartImage, t.VMName())
 	if err != nil {
 		return err
 	}
@@ -277,8 +345,8 @@ func (t *Tart) startVM(ctx context.Context) error {
 	args := []string{
 		"run", "--no-graphics",
 		"--dir=workspace:" + t.Config.WorkspaceDir,
-		"--dir=just-code:" + TartStageDir(t.StateDir) + ":ro",
-		t.Config.TartVM,
+		"--dir=just-code:" + t.StageDir() + ":ro",
+		t.VMName(),
 	}
 	return t.Starter.Start(nil, t.LogPath(), "tart", args...)
 }
@@ -372,7 +440,7 @@ func (t *Tart) Start(ctx context.Context) error {
 // Clean stops and deletes the VM and its writable state, mirroring
 // `just clean --tart`.
 func (t *Tart) Clean(ctx context.Context) error {
-	vm := t.Config.TartVM
+	vm := t.VMName()
 	running, err := t.vmRunning(ctx, vm)
 	if err != nil {
 		return err
@@ -450,7 +518,7 @@ func (t *Tart) Logs() error {
 
 // Shell opens an interactive shell in the VM, mirroring `just shell --tart`.
 func (t *Tart) Shell() error {
-	return RunInteractive("tart", "exec", "-it", t.Config.TartVM, "/bin/zsh")
+	return RunInteractive("tart", "exec", "-it", t.VMName(), "/bin/zsh")
 }
 
 // RunAgent launches the OpenCode TUI in the foreground inside the VM
@@ -495,21 +563,21 @@ func tartAgentLaunch(secretsPath, workspaceDir string) string {
 // Status describes the managed VM's current state, for `check` in isolation
 // full where there is no health endpoint to probe.
 func (t *Tart) Status(ctx context.Context) (string, error) {
-	running, err := t.vmRunning(ctx, t.Config.TartVM)
+	running, err := t.vmRunning(ctx, t.VMName())
 	if err != nil {
 		return "", err
 	}
 	if running {
-		return fmt.Sprintf("%s is running", t.Config.TartVM), nil
+		return fmt.Sprintf("%s is running", t.VMName()), nil
 	}
 	exists, err := t.vmExists(ctx)
 	if err != nil {
 		return "", err
 	}
 	if exists {
-		return fmt.Sprintf("%s is stopped", t.Config.TartVM), nil
+		return fmt.Sprintf("%s is stopped", t.VMName()), nil
 	}
-	return fmt.Sprintf("%s does not exist", t.Config.TartVM), nil
+	return fmt.Sprintf("%s does not exist", t.VMName()), nil
 }
 
 // IsRunning reports whether any managed Tart VM is running.
@@ -526,7 +594,7 @@ func (t *Tart) IsRunning(ctx context.Context) (bool, error) {
 
 // Endpoint returns the backend URL for the managed VM.
 func (t *Tart) Endpoint(ctx context.Context) (string, error) {
-	ip, err := t.IP(ctx, t.Config.TartVM)
+	ip, err := t.IP(ctx, t.VMName())
 	if err != nil {
 		return "", err
 	}
