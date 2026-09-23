@@ -62,6 +62,15 @@ func (m *mapFS) WriteTemp(dir, base string, data []byte, perm os.FileMode) (stri
 	return name, nil
 }
 
+func (m *mapFS) CreateExclusive(path string, data []byte, perm os.FileMode) error {
+	if _, exists := m.files[path]; exists {
+		return os.ErrExist
+	}
+	m.files[path] = data
+	m.perms[path] = perm
+	return nil
+}
+
 func TestResolvePrecedence(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -24,6 +24,11 @@ type FS interface {
 	// base as a prefix) and returns its path. It exists so atomic writes
 	// stay inside the injected FS instead of touching the real disk.
 	WriteTemp(dir, base string, data []byte, perm os.FileMode) (string, error)
+	// CreateExclusive creates path with its content, failing with
+	// os.ErrExist when it already exists. It is the exclusive-create
+	// primitive used by per-project locks: the OS, not a check-then-write
+	// sequence, guarantees exclusivity.
+	CreateExclusive(path string, data []byte, perm os.FileMode) error
 }
 
 type realFS struct{}
@@ -56,6 +61,19 @@ func (realFS) WriteTemp(dir, base string, data []byte, perm os.FileMode) (string
 		return "", err
 	}
 	return name, nil
+}
+
+func (realFS) CreateExclusive(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	return f.Close()
 }
 
 // DefaultFS is the real filesystem.
