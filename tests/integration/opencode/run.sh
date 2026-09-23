@@ -99,16 +99,32 @@ if grep -q 'commentaire JSONC qui doit survivre' opencode.jsonc; then
   ok "C5b JSONC non réécrit (commentaire intact)"
 else fail "C5b JSONC réécrit"; fi
 
-# C6: découverte depuis un sous-répertoire
+# C6: découverte depuis un sous-répertoire. Le résultat doit se propager
+# hors du sous-shell : un échec ici doit compter dans FAILURES, sinon la
+# régression ne peut pas bloquer une mise à jour de version.
 mkdir -p sub
-( cd sub && check "C6 découverte depuis sous-répertoire" "proj/jsonc-model" "$(model)" )
+C6_FILE="$LAB/c6-result"
+( cd sub && model >"$C6_FILE" 2>"$C6_FILE.err"; echo $? >"$C6_FILE.code" )
+C6_CODE="$(cat "$C6_FILE.code")"
+C6_GOT="$(cat "$C6_FILE")"
+check "C6 découverte depuis sous-répertoire" "proj/jsonc-model" "$C6_GOT"
+if [ "$C6_CODE" != "0" ]; then
+  fail "C6 la commande model a échoué depuis le sous-répertoire (code $C6_CODE)"
+fi
 
 # C7: clé inconnue ignorée silencieusement (pas de rejet exploitable)
 cat > opencode.jsonc <<'EOF'
 { "model": "proj/jsonc-model", "totally_unknown_key_xyz": true }
 EOF
-GOT="$(config | grep -c totally_unknown_key_xyz || true)"
-check "C7 clé inconnue absente de la fusion" "0" "$GOT"
+# La commande doit réussir ET ne pas contenir la clé : si OpenCode rejette
+# la config, config échoue sans stdout et l'ancien comptage donnait 0 —
+# exactement le résultat qui aurait dû signaler le rejet.
+if ! C7_RAW="$(config)"; then
+  fail "C7 debug config a échoué (rejet de la configuration ?)"
+else
+  C7_COUNT="$(printf '%s' "$C7_RAW" | grep -c totally_unknown_key_xyz || true)"
+  check "C7 clé inconnue ignorée (config acceptée, clé absente)" "0" "$C7_COUNT"
+fi
 
 # C8: plugins auto-découverts exécutent du code (contrat de confiance)
 cat > opencode.jsonc <<'EOF'
@@ -185,13 +201,22 @@ SKILLS="$("$OC" debug skill 2>/dev/null | node -e "let d='';process.stdin.on('da
 check "C10 skills projet et global découverts" "global-skill,proj-skill" "$SKILLS"
 
 # C11: OPENCODE_DISABLE_PROJECT_CONFIG ignore la config projet
-GOT="$(OPENCODE_DISABLE_PROJECT_CONFIG=1 "$OC" debug config 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log(j.model||'')})")"
-check "C11 config projet désactivable" "" "$GOT"
+# Si debug config échoue (variable devenue non supportée), la sortie vide
+# ne doit pas se faire passer pour une suppression réussie.
+if ! OPENCODE_DISABLE_PROJECT_CONFIG=1 "$OC" debug config >"$LAB/c11.json" 2>"$LAB/c11.err"; then
+  fail "C11 debug config a échoué avec OPENCODE_DISABLE_PROJECT_CONFIG=1"
+else
+  GOT="$(node -e "const j=require('$LAB/c11.json');console.log(j.model||'')")"
+  check "C11 config projet désactivable" "" "$GOT"
+fi
 
 # --- Cas réseau (opt-in) ----------------------------------------------------
 if [ "${OPENCODE_INTEGRATION_NETWORK:-0}" = "1" ]; then
   if [ -z "${ALBERT_API_KEY:-}" ]; then
-    echo "OPENCODE_INTEGRATION_NETWORK=1 mais ALBERT_API_KEY absent; cas réseau ignorés" >&2
+    # Une invocation de qualification qui demande le réseau sans clé ne
+    # doit pas sortir avec succès : son seul appel réel n a pas eu lieu.
+    echo "OPENCODE_INTEGRATION_NETWORK=1 mais ALBERT_API_KEY absent: échec de préparation du test" >&2
+    FAILURES=$((FAILURES+1))
   else
     cat > opencode.jsonc <<'EOF'
 {
@@ -214,14 +239,21 @@ if [ "${OPENCODE_INTEGRATION_NETWORK:-0}" = "1" ]; then
   "model": "albert/deepseek-v4-flash"
 }
 EOF
+    # Deux cas distincts : N1a prouve le chargement d AGENTS.md par un
+    # marqueur unique (pas le mot demandé dans le prompt, qui serait
+    # présent même si le fichier était ignoré) ; N1b prouve l appel réel.
     cat > AGENTS.md <<'EOF'
 # Instructions de test P01
-Réponds toujours en français.
+Termine toujours ta réponse par le marqueur exact: ZQX7-JK1-MARKER.
 EOF
     OUT="$(ALBERT_API_KEY="$ALBERT_API_KEY" timeout 120 "$OC" run "réponds uniquement le mot: pret" 2>&1 || true)"
     case "$OUT" in
-      *pret*) ok "N1 modèle effectif résolu + appel Albert réel + AGENTS.md chargé" ;;
-      *) fail "N1 appel réel Albert (sortie: $(printf '%s' "$OUT" | tail -2))" ;;
+      *pret*) ok "N1a appel Albert réel (modèle effectif résolu)" ;;
+      *) fail "N1a appel réel Albert (sortie: $(printf '%s' "$OUT" | tail -2))" ;;
+    esac
+    case "$OUT" in
+      *ZQX7-JK1-MARKER*) ok "N1b AGENTS.md chargé (marqueur unique présent)" ;;
+      *) fail "N1b AGENTS.md non chargé (marqueur absent de la sortie)" ;;
     esac
     rm AGENTS.md
   fi
