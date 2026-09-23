@@ -37,8 +37,14 @@ func TestDiscoverProjectGitRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiscoverProject: %v", err)
 	}
-	if pc.Root != base {
-		t.Errorf("Root = %q, want worktree root %q", pc.Root, base)
+	// DiscoverProject resolves symlinks, and on macOS t.TempDir() lives
+	// under /var -> /private/var; compare against the resolved form.
+	want, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.Root != want {
+		t.Errorf("Root = %q, want worktree root %q", pc.Root, want)
 	}
 	if !pc.IsGit {
 		t.Error("IsGit = false, want true")
@@ -54,8 +60,12 @@ func TestDiscoverProjectNonGitUsesDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiscoverProject: %v", err)
 	}
-	if pc.Root != base {
-		t.Errorf("Root = %q, want %q", pc.Root, base)
+	want, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.Root != want {
+		t.Errorf("Root = %q, want %q", pc.Root, want)
 	}
 	if pc.IsGit {
 		t.Error("IsGit = true for a non-Git directory")
