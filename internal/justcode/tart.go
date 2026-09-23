@@ -295,7 +295,8 @@ func SecretsReader(password, apiKey string) io.Reader {
 // starts the OpenCode server inside the guest in the background.
 func (t *Tart) launchBackend(ctx context.Context) error {
 	cfg := t.Config
-	fmt.Printf("Launching OpenCode server inside %s...\n", cfg.TartVM)
+	vm := t.VMName()
+	fmt.Printf("Launching OpenCode server inside %s...\n", vm)
 	if err := os.MkdirAll(t.StateDir, 0o755); err != nil {
 		return err
 	}
@@ -313,7 +314,7 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 	}
 
 	stdin := SecretsReader(cfg.Password, cfg.APIKey)
-	args := BackendArgs(cfg.TartVM, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU)
+	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU)
 	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
 }
 
@@ -380,7 +381,8 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 
-	running, err := t.vmRunning(ctx, cfg.TartVM)
+	vm := t.VMName()
+	running, err := t.vmRunning(ctx, vm)
 	if err != nil {
 		return err
 	}
@@ -389,19 +391,19 @@ func (t *Tart) Start(ctx context.Context) error {
 			return err
 		}
 		if cfg.Isolation == IsolationFull {
-			fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.TartVM)
+			fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", vm)
 			return nil
 		}
-		ip, err := t.IP(ctx, cfg.TartVM)
+		ip, err := t.IP(ctx, vm)
 		if err == nil && ip != "" {
 			client := &http.Client{Timeout: 5 * time.Second}
 			endpoint := "http://" + ip + ":" + strconv.Itoa(DefaultPort)
 			if ProbeHealth(ctx, client, endpoint, cfg.Username, cfg.Password).Healthy {
-				fmt.Printf("%s is running with a healthy OpenCode backend.\n", cfg.TartVM)
+				fmt.Printf("%s is running with a healthy OpenCode backend.\n", vm)
 				return nil
 			}
 		}
-		fmt.Printf("%s is running but OpenCode is not healthy; restarting backend...\n", cfg.TartVM)
+		fmt.Printf("%s is running but OpenCode is not healthy; restarting backend...\n", vm)
 		if err := t.StopBackend(ctx); err != nil {
 			return err
 		}
@@ -413,7 +415,7 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 	if !exists {
-		fmt.Printf("Cloning %s to %s...\n", cfg.TartImage, cfg.TartVM)
+		fmt.Printf("Cloning %s to %s...\n", cfg.TartImage, vm)
 		if err := t.clone(ctx); err != nil {
 			return err
 		}
@@ -423,7 +425,7 @@ func (t *Tart) Start(ctx context.Context) error {
 	if err := t.stageGuestBinary(); err != nil {
 		return err
 	}
-	fmt.Printf("Starting %s with Tart...\n", cfg.TartVM)
+	fmt.Printf("Starting %s with Tart...\n", vm)
 	if err := t.startVM(ctx); err != nil {
 		return err
 	}
@@ -431,7 +433,7 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 	if cfg.Isolation == IsolationFull {
-		fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.TartVM)
+		fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", vm)
 		return nil
 	}
 	return t.launchBackend(ctx)
@@ -527,6 +529,7 @@ func (t *Tart) Shell() error {
 // the 0600 env file and execing opencode in the workspace share.
 func (t *Tart) RunAgent(ctx context.Context) error {
 	cfg := t.Config
+	vm := t.VMName()
 	if err := t.stageGuestBinary(); err != nil {
 		return err
 	}
@@ -539,7 +542,7 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 		return err
 	}
 	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, cfg.APIKey),
-		"tart", "exec", "-i", cfg.TartVM, guestLocalBinary, GuestSecretsCommand); err != nil {
+		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand); err != nil {
 		return err
 	}
 	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand); err != nil {
@@ -549,7 +552,7 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if interactive == nil {
 		interactive = RunInteractive
 	}
-	return interactive("tart", "exec", "-it", cfg.TartVM, "/bin/zsh", "-lc", tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir))
+	return interactive("tart", "exec", "-it", vm, "/bin/zsh", "-lc", tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir))
 }
 
 // tartAgentLaunch builds the in-guest launch line for isolation full: source

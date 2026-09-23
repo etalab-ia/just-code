@@ -348,8 +348,8 @@ func shellQuote(s string) string {
 // launchBackend pushes the secrets env file into the guest and starts the
 // OpenCode server detached, mirroring the Tart launch flow.
 func (a *AgentVM) launchBackend(ctx context.Context) error {
-	cfg := a.Config
-	fmt.Printf("Launching OpenCode server inside %s...\n", cfg.AgentVMVM)
+	vm := a.VMName()
+	fmt.Printf("Launching OpenCode server inside %s...\n", vm)
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}
@@ -359,7 +359,7 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 		return err
 	}
 	// Push the env file into the guest at a fixed location.
-	if err := runOK(a.Runner, ctx, "limactl", "copy", secretsPath, cfg.AgentVMVM+":/tmp/just-code-opencode.env"); err != nil {
+	if err := runOK(a.Runner, ctx, "limactl", "copy", secretsPath, vm+":/tmp/just-code-opencode.env"); err != nil {
 		return err
 	}
 	// Ensure the file is only readable by the guest user.
@@ -369,7 +369,7 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 	// Launch detached: source the env file, then exec opencode serve in the
 	// background. The Starter writes output to the host-side log.
 	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; exec opencode serve --hostname 0.0.0.0 --port %d`, DefaultPort)
-	args := []string{"shell", cfg.AgentVMVM, "sh", "-c", launch}
+	args := []string{"shell", vm, "sh", "-c", launch}
 	return a.Starter.Start(nil, a.LogPath(), "limactl", args...)
 }
 
@@ -390,6 +390,7 @@ func (a *AgentVM) Start(ctx context.Context) error {
 		return err
 	}
 
+	vm := a.VMName()
 	running, err := a.vmRunning(ctx)
 	if err != nil {
 		return err
@@ -399,7 +400,7 @@ func (a *AgentVM) Start(ctx context.Context) error {
 			return err
 		}
 		if cfg.Isolation == IsolationFull {
-			fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.AgentVMVM)
+			fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", vm)
 			return nil
 		}
 		endpoint, err := a.Endpoint(ctx)
@@ -408,10 +409,10 @@ func (a *AgentVM) Start(ctx context.Context) error {
 		}
 		client := &http.Client{Timeout: 5 * time.Second}
 		if ProbeHealth(ctx, client, endpoint, cfg.Username, cfg.Password).Healthy {
-			fmt.Printf("%s is running with a healthy OpenCode backend.\n", cfg.AgentVMVM)
+			fmt.Printf("%s is running with a healthy OpenCode backend.\n", vm)
 			return nil
 		}
-		fmt.Printf("%s is running but OpenCode is not healthy; restarting backend...\n", cfg.AgentVMVM)
+		fmt.Printf("%s is running but OpenCode is not healthy; restarting backend...\n", vm)
 		if err := a.StopBackend(ctx); err != nil {
 			return err
 		}
@@ -437,7 +438,7 @@ func (a *AgentVM) Start(ctx context.Context) error {
 		}
 	}
 
-	fmt.Printf("Starting %s with Lima...\n", cfg.AgentVMVM)
+	fmt.Printf("Starting %s with Lima...\n", vm)
 	if err := a.startVM(ctx); err != nil {
 		return err
 	}
@@ -445,7 +446,7 @@ func (a *AgentVM) Start(ctx context.Context) error {
 		return err
 	}
 	if cfg.Isolation == IsolationFull {
-		fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", cfg.AgentVMVM)
+		fmt.Printf("%s is running (isolation full; the TUI runs inside the VM).\n", vm)
 		return nil
 	}
 	return a.launchBackend(ctx)
@@ -627,6 +628,7 @@ func (a *AgentVM) Shell() error {
 // which shares the host's absolute path.
 func (a *AgentVM) RunAgent(ctx context.Context) error {
 	cfg := a.Config
+	vm := a.VMName()
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}
@@ -634,7 +636,7 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := runOK(a.Runner, ctx, "limactl", "copy", secretsPath, cfg.AgentVMVM+":/tmp/just-code-opencode.env"); err != nil {
+	if err := runOK(a.Runner, ctx, "limactl", "copy", secretsPath, vm+":/tmp/just-code-opencode.env"); err != nil {
 		return err
 	}
 	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
@@ -645,7 +647,7 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if interactive == nil {
 		interactive = RunInteractive
 	}
-	return interactive("limactl", "shell", cfg.AgentVMVM, "sh", "-c", launch)
+	return interactive("limactl", "shell", vm, "sh", "-c", launch)
 }
 
 // Status describes the managed VM's current state, for `check` in isolation

@@ -2,7 +2,9 @@ package justcode
 
 import (
 	"context"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -220,6 +222,7 @@ func DefaultTartVMName() string {
 // fakeInstanceSurface is the shared map of running instance names across the
 // fake backends of one test, so cross-project interference is observable.
 type fakeInstanceSurface struct {
+	mu      sync.Mutex
 	running map[string]bool
 	stopped []string
 }
@@ -242,6 +245,8 @@ func (f *fakeInstanceBackend) Start(context.Context) error {
 	return nil
 }
 func (f *fakeInstanceBackend) Stop(context.Context) error {
+	f.surface.mu.Lock()
+	defer f.surface.mu.Unlock()
 	f.surface.running[f.instance] = false
 	f.surface.stopped = append(f.surface.stopped, f.instance)
 	return nil
@@ -252,6 +257,8 @@ func (f *fakeInstanceBackend) Doctor(context.Context) error  { return nil }
 func (f *fakeInstanceBackend) Logs() error                   { return nil }
 func (f *fakeInstanceBackend) Shell() error                  { return nil }
 func (f *fakeInstanceBackend) IsRunning(context.Context) (bool, error) {
+	f.surface.mu.Lock()
+	defer f.surface.mu.Unlock()
 	return f.surface.running[f.instance], nil
 }
 func (f *fakeInstanceBackend) Endpoint(context.Context) (string, error) {
@@ -262,15 +269,64 @@ func (f *fakeInstanceBackend) Status(context.Context) (string, error) {
 	return f.instance + " state", nil
 }
 func (f *fakeInstanceBackend) StopInstance(_ context.Context, n string) error {
+	f.surface.mu.Lock()
+	defer f.surface.mu.Unlock()
 	f.surface.running[n] = false
 	return nil
 }
 func (f *fakeInstanceBackend) RunningInstances(context.Context) ([]string, error) {
+	f.surface.mu.Lock()
+	defer f.surface.mu.Unlock()
 	var names []string
 	for name, up := range f.surface.running {
 		if up {
 			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 	return names, nil
+}
+
+// TestStopAllSweepsOtherProjectsInstances pins the P06 review fix: StopAll
+// must enumerate instances globally (RunningInstances/StopInstance), not
+// stop only the dispatcher's own project-scoped backends. Here project B's
+// instance is running while the dispatcher is bound to project A; the old
+// Running()/Stop() implementation left B running.
+func TestStopAllSweepsOtherProjectsInstances(t *testing.T) {
+	surface := newFakeInstanceSurface()
+	d := NewDispatcherForInstance(Config{}, "jc-a-11111")
+	d.backends[RuntimeTart] = &fakeInstanceBackend{surface: surface, id: RuntimeTart, instance: "opencode-jc-a-11111"}
+	d.backends[RuntimeAgentVM] = &fakeInstanceBackend{surface: surface, id: RuntimeAgentVM, instance: "opencode-jc-b-22222"}
+
+	// Only another project's instance is running; A's own instance is down.
+	surface.running["opencode-jc-b-22222"] = true
+
+	if err := d.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	if surface.running["opencode-jc-b-22222"] {
+		t.Fatal("StopAll left another project's instance running: Running()/Stop() was used instead of the global sweep")
+	}
+}
+
+// TestPrepareDetectsConflictsInOtherProjects pins the second P06 review
+// fix: Prepare must enumerate running instances globally. The dispatcher is
+// bound to project A with no instance of its own running, but project B has
+// an instance up on another runtime — that is a conflict the old
+// project-scoped Running() could not see.
+func TestPrepareDetectsConflictsInOtherProjects(t *testing.T) {
+	surface := newFakeInstanceSurface()
+	d := NewDispatcherForInstance(Config{}, "jc-a-11111")
+	d.backends[RuntimeTart] = &fakeInstanceBackend{surface: surface, id: RuntimeTart, instance: "opencode-jc-a-11111"}
+	d.backends[RuntimeAgentVM] = &fakeInstanceBackend{surface: surface, id: RuntimeAgentVM, instance: "opencode-jc-b-22222"}
+
+	surface.running["opencode-jc-b-22222"] = true
+
+	err := d.Prepare(context.Background(), RuntimeTart)
+	if err == nil {
+		t.Fatal("Prepare missed a conflict running in another project: project-scoped Running() was used instead of the global enumeration")
+	}
+	if !strings.Contains(err.Error(), "opencode-jc-b-22222") {
+		t.Errorf("conflict message should name the running instance, got: %v", err)
+	}
 }
