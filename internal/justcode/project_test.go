@@ -2,11 +2,13 @@ package justcode
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -307,5 +309,118 @@ func TestMicrosandboxLegacyInstanceNotAdopted(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("unregistered project resolved to a registration")
+	}
+}
+
+// TestRegistryCrossProcessRegistrationIsNotLost pins the P05 review fix:
+// two registry objects (two CLI processes) registering different projects
+// concurrently must both survive. Without the cross-process file lock, the
+// last rename silently discarded the other registration.
+func TestRegistryCrossProcessRegistrationIsNotLost(t *testing.T) {
+	fs := newMapFS()
+	var wg sync.WaitGroup
+	roots := []string{"/proj/a", "/proj/b", "/proj/c", "/proj/d"}
+	for i, root := range roots {
+		wg.Add(1)
+		go func(i int, root string) {
+			defer wg.Done()
+			r := NewProjectRegistry("/reg/registry.json")
+			r.FS = fs
+			if err := r.Register(root, fmt.Sprintf("jc-%d", i)); err != nil {
+				t.Errorf("Register(%s): %v", root, err)
+			}
+		}(i, root)
+	}
+	wg.Wait()
+	// A fresh reader must see all four registrations.
+	r := NewProjectRegistry("/reg/registry.json")
+	r.FS = fs
+	for i, root := range roots {
+		inst, ok, err := r.Lookup(root)
+		if err != nil || !ok || inst != fmt.Sprintf("jc-%d", i) {
+			t.Errorf("Lookup(%s) = %q, %v, %v; registration was lost", root, inst, ok, err)
+		}
+	}
+}
+
+// TestRegistryRollsBackWhenSaveFails pins the second P05 review fix: if the
+// write fails, the in-memory entry is rolled back so a retry on the same
+// object cannot report success from the idempotent branch while nothing
+// was persisted.
+type failingWriteFS struct {
+	FS
+	fail bool
+}
+
+func (f *failingWriteFS) WriteTemp(dir, base string, data []byte, perm os.FileMode) (string, error) {
+	if f.fail {
+		return "", fmt.Errorf("simulated write failure")
+	}
+	return f.FS.WriteTemp(dir, base, data, perm)
+}
+
+func TestRegistryRollsBackWhenSaveFails(t *testing.T) {
+	fs := &failingWriteFS{FS: newMapFS(), fail: true}
+	r := NewProjectRegistry("/reg/registry.json")
+	r.FS = fs
+	if err := r.Register("/proj/a", "jc-a"); err == nil {
+		t.Fatal("Register must surface the write failure")
+	}
+	// The entry must not linger in memory: the idempotent branch would
+	// otherwise return success on retry while the file was never written.
+	if _, ok, _ := r.Lookup("/proj/a"); ok {
+		t.Fatal("failed Register left the entry in memory")
+	}
+	// Retry with the failure cleared: it must now succeed and persist.
+	fs.fail = false
+	if err := r.Register("/proj/a", "jc-a"); err != nil {
+		t.Fatalf("retry after transient failure: %v", err)
+	}
+	r2 := NewProjectRegistry("/reg/registry.json")
+	r2.FS = fs
+	if inst, ok, err := r2.Lookup("/proj/a"); err != nil || !ok || inst != "jc-a" {
+		t.Fatalf("persisted lookup = %q, %v, %v", inst, ok, err)
+	}
+}
+
+// TestProjectLockStaleStealDoesNotDeleteLiveLock pins the third P05 review
+// fix: when two waiters observe the same stale lock, the loser of the steal
+// race must not delete the winner's freshly created live lock.
+func TestProjectLockStaleStealDoesNotDeleteLiveLock(t *testing.T) {
+	fs := newMapFS()
+	lockPath := "/reg/proj/setup.lock"
+	if err := fs.MkdirAll("/reg/proj", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A provably stale lock: the PID cannot exist on this host.
+	if err := fs.WriteFile(lockPath, []byte("999999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	acquired := make(chan struct{}, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l := &ProjectLock{Path: lockPath, FS: fs}
+			release, err := l.Acquire()
+			if err != nil {
+				t.Errorf("Acquire: %v", err)
+				return
+			}
+			acquired <- struct{}{}
+			// Hold briefly so the other waiter exercises the contended path.
+			time.Sleep(30 * time.Millisecond)
+			release()
+		}()
+	}
+	wg.Wait()
+	// Both waiters must have acquired (serially); neither errored, and the
+	// lockfile is gone at the end.
+	if len(acquired) != 2 {
+		t.Fatalf("both waiters must acquire the lock, got %d", len(acquired))
+	}
+	if _, err := fs.ReadFile(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("lockfile must be released, err = %v", err)
 	}
 }

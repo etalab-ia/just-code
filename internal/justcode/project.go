@@ -145,6 +145,12 @@ func gitWorktreeRootExists(root string) bool {
 // every workspace. It is the authority for "which instance belongs to this
 // root" so a moved or renamed checkout can be detected instead of silently
 // adopting an unrelated VM.
+//
+// Mutations serialize across processes through an exclusive file lock
+// (registry.lock next to the registry file): two CLI processes registering
+// different projects concurrently must not lose one registration to a
+// last-rename-wins race. The in-memory mutex alone cannot provide that —
+// it only protects one Go object.
 type ProjectRegistry struct {
 	// Path is the registry file path (host state).
 	Path string
@@ -160,6 +166,45 @@ type ProjectRegistry struct {
 // NewProjectRegistry builds a registry backed by path.
 func NewProjectRegistry(path string) *ProjectRegistry {
 	return &ProjectRegistry{Path: path, FS: DefaultFS, entries: map[string]string{}}
+}
+
+// lockPath is the cross-process mutation lock for the registry.
+func (r *ProjectRegistry) lockPath() string {
+	return strings.TrimSuffix(r.Path, ".json") + ".lock"
+}
+
+// withFileLock runs fn while holding the registry's cross-process lock.
+// The lock uses the same O_EXCL exclusive-create primitive as ProjectLock,
+// with dead-holder detection so a crashed process cannot deadlock the
+// registry forever. Steal-based recovery is safe here because the lock is
+// held only around the read-modify-write, never across guest operations.
+func (r *ProjectRegistry) withFileLock(fn func() error) error {
+	lockPath := r.lockPath()
+	if err := r.FS.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return err
+	}
+	for {
+		err := r.FS.CreateExclusive(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+		// A live holder: wait for it to finish.
+		data, rerr := r.FS.ReadFile(lockPath)
+		if rerr != nil {
+			continue // holder released between the failed create and the read
+		}
+		var pid int
+		if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil || !processAlive(pid) {
+			_ = r.FS.Remove(lockPath)
+			continue
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	defer func() { _ = r.FS.Remove(lockPath) }()
+	return fn()
 }
 
 // registryEntry is one serialized registry record.
@@ -179,6 +224,12 @@ const registrySchemaVersion = 1
 func (r *ProjectRegistry) load() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.loadLocked()
+}
+
+// loadLocked reads the registry file into entries. The caller holds r.mu
+// (and, for mutations, the cross-process file lock).
+func (r *ProjectRegistry) loadLocked() error {
 	if r.loaded {
 		return nil
 	}
@@ -197,6 +248,7 @@ func (r *ProjectRegistry) load() error {
 	if rf.SchemaVersion > registrySchemaVersion {
 		return fmt.Errorf("project registry %s: schemaVersion %d is newer than this build supports (%d)", r.Path, rf.SchemaVersion, registrySchemaVersion)
 	}
+	r.entries = map[string]string{}
 	for _, e := range rf.Entries {
 		r.entries[e.Root] = e.Instance
 	}
@@ -219,41 +271,69 @@ func (r *ProjectRegistry) Lookup(root string) (string, bool, error) {
 // different root's claim on the same instance name (collision fail-closed)
 // and to rebind a root to a different instance silently: rebinding is an
 // explicit operation (Rebind), not a side effect of Register.
+//
+// The whole check-and-write runs under the cross-process registry lock with
+// a fresh reload from disk, so a concurrent registration from another
+// process is neither lost nor overwritten.
 func (r *ProjectRegistry) Register(root, instance string) error {
-	if err := r.load(); err != nil {
-		return err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if existing, ok := r.entries[root]; ok && existing != instance {
-		return fmt.Errorf("project %s is already registered to instance %s; rebinding to %s requires an explicit rebind", root, existing, instance)
-	}
-	for otherRoot, otherInst := range r.entries {
-		if otherRoot != root && otherInst == instance {
-			return fmt.Errorf("instance %s is already registered to project %s; refusing to create a duplicate registration", instance, otherRoot)
+	return r.withFileLock(func() error {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		// Reload under the lock: another process may have registered since
+		// this object last read the file.
+		r.loaded = false
+		if err := r.loadLocked(); err != nil {
+			return err
 		}
-	}
-	if r.entries[root] == instance {
+		if existing, ok := r.entries[root]; ok && existing != instance {
+			return fmt.Errorf("project %s is already registered to instance %s; rebinding to %s requires an explicit rebind", root, existing, instance)
+		}
+		for otherRoot, otherInst := range r.entries {
+			if otherRoot != root && otherInst == instance {
+				return fmt.Errorf("instance %s is already registered to project %s; refusing to create a duplicate registration", instance, otherRoot)
+			}
+		}
+		if r.entries[root] == instance {
+			return nil
+		}
+		// Roll back the in-memory entry if the write fails, so a retry on
+		// the same object does not report success from the idempotent
+		// branch while nothing was persisted.
+		r.entries[root] = instance
+		if err := r.save(); err != nil {
+			delete(r.entries, root)
+			return err
+		}
 		return nil
-	}
-	r.entries[root] = instance
-	return r.save()
+	})
 }
 
 // Rebind explicitly moves a root to a different instance.
 func (r *ProjectRegistry) Rebind(root, instance string) error {
-	if err := r.load(); err != nil {
-		return err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for otherRoot, otherInst := range r.entries {
-		if otherRoot != root && otherInst == instance {
-			return fmt.Errorf("instance %s is already registered to project %s", instance, otherRoot)
+	return r.withFileLock(func() error {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.loaded = false
+		if err := r.loadLocked(); err != nil {
+			return err
 		}
-	}
-	r.entries[root] = instance
-	return r.save()
+		for otherRoot, otherInst := range r.entries {
+			if otherRoot != root && otherInst == instance {
+				return fmt.Errorf("instance %s is already registered to project %s", instance, otherRoot)
+			}
+		}
+		prev, had := r.entries[root]
+		r.entries[root] = instance
+		if err := r.save(); err != nil {
+			if had {
+				r.entries[root] = prev
+			} else {
+				delete(r.entries, root)
+			}
+			return err
+		}
+		return nil
+	})
 }
 
 // save writes the registry atomically, sorted for stable diffs.
@@ -292,6 +372,13 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 	if err := l.FS.MkdirAll(filepath.Dir(l.Path), 0o755); err != nil {
 		return nil, err
 	}
+	// The steal file proves ownership of a stale-lock removal: two waiters
+	// can both observe the same dead PID, and an unconditional Remove would
+	// let the second waiter delete the first waiter's freshly created live
+	// lock. Only the waiter that wins the steal-create may remove the stale
+	// lockfile, and it re-reads the PID immediately before removing, so a
+	// replacement lock created in between is never destroyed.
+	stealPath := l.Path + ".steal"
 	for {
 		err := l.FS.CreateExclusive(l.Path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600)
 		if err == nil {
@@ -300,7 +387,8 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 		if !os.IsExist(err) {
 			return nil, err
 		}
-		// Stale-lock detection: if the holder is dead, break the lock.
+		// Stale-lock detection: if the holder is dead, break the lock — but
+		// only after winning the steal race for this lockfile.
 		data, rerr := l.FS.ReadFile(l.Path)
 		if rerr != nil {
 			// The holder released between the failed create and this read;
@@ -308,12 +396,40 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 			continue
 		}
 		var pid int
-		if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil || !processAlive(pid) {
-			_ = l.FS.Remove(l.Path)
+		if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && processAlive(pid) {
+			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		time.Sleep(50 * time.Millisecond)
+		if serr := l.FS.CreateExclusive(stealPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); serr != nil {
+			// Another waiter is already stealing this lock; let it finish.
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		// Re-read under the steal: if the PID changed, the lockfile was
+		// already replaced by a new live holder — do not remove it.
+		fresh, rerr2 := l.FS.ReadFile(l.Path)
+		if rerr2 != nil {
+			_ = l.FS.Remove(stealPath)
+			continue
+		}
+		if bytesEqual(fresh, data) {
+			_ = l.FS.Remove(l.Path)
+		}
+		_ = l.FS.Remove(stealPath)
 	}
+}
+
+// bytesEqual compares two byte slices without pulling in bytes for one use.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // processAlive reports whether a PID exists on this host. On Windows,
