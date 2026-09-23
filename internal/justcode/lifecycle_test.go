@@ -15,7 +15,10 @@ import (
 
 func TestStopProjectLeavesOtherProjectIntact(t *testing.T) {
 	// Two dispatchers bound to two instances over the same fake runtime
-	// surface: stopping one must not stop the other.
+	// surface: stopping one must not stop the other. The platform is pinned
+	// so the faked tart/agent-vm backends are probed on every OS (on Windows
+	// supportedRuntimes would otherwise skip them entirely).
+	withGOOS(t, "linux")
 	surface := newFakeInstanceSurface()
 	cfg := Config{}
 
@@ -39,6 +42,7 @@ func TestStopProjectLeavesOtherProjectIntact(t *testing.T) {
 }
 
 func TestStopAllStopsEveryInstance(t *testing.T) {
+	withGOOS(t, "linux")
 	surface := newFakeInstanceSurface()
 	d := NewDispatcherForInstance(Config{}, "jc-a-11111")
 	d.backends[RuntimeTart] = &fakeInstanceBackend{surface: surface, id: RuntimeTart, instance: "opencode-jc-a-11111"}
@@ -61,6 +65,7 @@ func TestMissingProjectContextDoesNotStopAll(t *testing.T) {
 	// A dispatcher without a project context falls back to the legacy
 	// singleton; its Stop must still target only its own instance, not every
 	// managed VM on the host.
+	withGOOS(t, "linux")
 	surface := newFakeInstanceSurface()
 	d := NewDispatcher(Config{})
 	d.backends[RuntimeTart] = &fakeInstanceBackend{surface: surface, id: RuntimeTart, instance: DefaultTartVMName()}
@@ -293,6 +298,7 @@ func (f *fakeInstanceBackend) RunningInstances(context.Context) ([]string, error
 // instance is running while the dispatcher is bound to project A; the old
 // Running()/Stop() implementation left B running.
 func TestStopAllSweepsOtherProjectsInstances(t *testing.T) {
+	withGOOS(t, "linux")
 	surface := newFakeInstanceSurface()
 	d := NewDispatcherForInstance(Config{}, "jc-a-11111")
 	d.backends[RuntimeTart] = &fakeInstanceBackend{surface: surface, id: RuntimeTart, instance: "opencode-jc-a-11111"}
@@ -315,6 +321,7 @@ func TestStopAllSweepsOtherProjectsInstances(t *testing.T) {
 // an instance up on another runtime — that is a conflict the old
 // project-scoped Running() could not see.
 func TestPrepareDetectsConflictsInOtherProjects(t *testing.T) {
+	withGOOS(t, "linux")
 	surface := newFakeInstanceSurface()
 	d := NewDispatcherForInstance(Config{}, "jc-a-11111")
 	d.backends[RuntimeTart] = &fakeInstanceBackend{surface: surface, id: RuntimeTart, instance: "opencode-jc-a-11111"}
