@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,25 @@ import (
 func newFileStore(t *testing.T) *FileCredentialStore {
 	t.Helper()
 	return &FileCredentialStore{Path: filepath.Join(t.TempDir(), "credentials.json")}
+}
+
+// expectOwnerOnlyMode asserts the store file is owner-only. On Windows,
+// Go's os.Chmod only toggles the read-only bit and Lstat reports the
+// 666/444 convention, so the numeric assertion cannot hold there; the
+// enforcement calls still run, and the Windows ACL surface is the
+// platform's own protection. The check is real everywhere else.
+func expectOwnerOnlyMode(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want 0600", fi.Mode().Perm())
+	}
 }
 
 // TestFileStorePutWithoutConsentNeverCreates pins the no-silent-plaintext
@@ -41,18 +61,12 @@ func TestFileStoreConsentedPutCreatesOwnerOnly(t *testing.T) {
 	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	fi, err := os.Lstat(s.Path)
-	if err != nil {
-		t.Fatalf("store file: %v", err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("store file mode = %o, want 0600", fi.Mode().Perm())
-	}
+	expectOwnerOnlyMode(t, s.Path)
 	dirFi, err := os.Lstat(filepath.Dir(s.Path))
 	if err != nil {
 		t.Fatalf("config dir: %v", err)
 	}
-	if dirFi.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && dirFi.Mode().Perm() != 0o700 {
 		t.Fatalf("config dir mode = %o, want 0700", dirFi.Mode().Perm())
 	}
 	v, err := s.Get(context.Background(), CredentialAlbert)
@@ -176,13 +190,7 @@ func TestFileStoreTightensLoosePermissions(t *testing.T) {
 	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	fi, err := os.Lstat(s.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("mode = %o, want tightened 0600", fi.Mode().Perm())
-	}
+	expectOwnerOnlyMode(t, s.Path)
 }
 
 // TestFileStoreVerifyNeverCreates verifies the status probe is
