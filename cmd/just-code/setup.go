@@ -99,7 +99,7 @@ func humanBytes(n int64) string {
 // empty + Ctrl-D (EOF) cancels the current stage, and "cancel" at the first
 // prompt of the flow exits with the journal preserved for a later resume.
 func setupRunCmd(fallback bool) (int, error) {
-	return setupWizardRun(fallback, bufio.NewReader(os.Stdin), nil, nil)
+	return setupWizardRun(fallback, bufio.NewReader(os.Stdin), nil, nil, nil)
 }
 
 // setupWizardRun is the testable core of the wizard: input comes from in,
@@ -107,7 +107,7 @@ func setupRunCmd(fallback bool) (int, error) {
 // are injectable so tests never hit the network or download anything. A nil
 // validate uses the real endpoint probe; a nil ensure installs the real
 // managed runtime.
-func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Context, string) error, ensure func(context.Context) error) (int, error) {
+func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Context, string) error, ensure func(context.Context) error, catalogue func(model string) string) (int, error) {
 	ctx := context.Background()
 	stateDir := justcode.DefaultStateDir()
 	fs := justcode.DefaultFS
@@ -270,7 +270,11 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	// unreachable catalogue (first run offline, or the endpoint down) is a
 	// warning, not a blocker — the key itself was already validated above.
 	if model != "" {
-		if warn := validateModelAgainstCatalogue(model); warn != "" {
+		validateModel := validateModelAgainstCatalogue
+		if catalogue != nil {
+			validateModel = catalogue
+		}
+		if warn := validateModel(model); warn != "" {
 			fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
 		}
 	}

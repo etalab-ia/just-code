@@ -84,12 +84,18 @@ func validateAlbertKeyAt(ctx context.Context, client *http.Client, key, url stri
 		client = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}}
-	} else if client.CheckRedirect == nil {
-		// A caller-supplied client without a redirect policy gets the same
-		// no-follow policy; an explicit caller policy is respected.
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
+	} else {
+		// Clone rather than mutate: a caller-supplied client is often
+		// shared (the CLI reuses one per process), and patching its
+		// redirect policy in place would change every other request it
+		// makes. An explicit caller policy is respected.
+		c := *client
+		if c.CheckRedirect == nil {
+			c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			}
 		}
+		client = &c
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -111,6 +117,9 @@ func validateAlbertKeyAt(ctx context.Context, client *http.Client, key, url stri
 		}
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
 			return CredentialProbe{Unreachable: true, Detail: "HTTP 200 with a non-catalogue body (endpoint misconfigured?)"}
+		}
+		if raw.Data == nil {
+			return CredentialProbe{Unreachable: true, Detail: "HTTP 200 with a non-catalogue body (no models data)"}
 		}
 		return CredentialProbe{}
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:

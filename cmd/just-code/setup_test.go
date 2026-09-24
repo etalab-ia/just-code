@@ -97,7 +97,8 @@ func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
 		func(context.Context, string) error {
 			return justcode.RejectedCredentialError{Detail: "HTTP 401"}
 		},
-		func(context.Context) error { return nil })
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
 	if code == 0 || err != nil {
 		t.Fatalf("a rejected key must exit non-zero: code=%d err=%v", code, err)
 	}
@@ -130,7 +131,8 @@ func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 			seenKey = key
 			return nil
 		},
-		func(context.Context) error { return nil })
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
 	if code != 0 || err != nil {
 		t.Fatalf("wizard run: code=%d err=%v", code, err)
 	}
@@ -153,7 +155,8 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 	input := "test-key\nn\n\n\nsome-model\nn\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
-		func(context.Context) error { return nil })
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
 	if code == 0 || err == nil {
 		t.Fatalf("cancel at apply must exit non-zero: code=%d err=%v", code, err)
 	}
