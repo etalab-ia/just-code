@@ -15,11 +15,10 @@ import (
 
 func TestPlanReconcileClassification(t *testing.T) {
 	desired := DesiredState{
-		Instance:     "jc-foo-ab12c",
-		Isolation:    IsolationBackend,
-		WorkspaceDir: "/tmp/foo",
-		Image:        msbImage,
-		Username:     "opencode",
+		Instance:  "jc-foo-ab12c",
+		Isolation: IsolationBackend,
+		Image:     msbImage,
+		Username:  "opencode",
 	}
 	applied := desired.toState()
 
@@ -108,7 +107,7 @@ func TestPlanReconcileClassification(t *testing.T) {
 func TestConfigRevisionExcludesSecrets(t *testing.T) {
 	// The revision must not move when only a secret value changes: the
 	// state file must never contain anything derived from a credential.
-	base := DesiredState{Instance: "i", Isolation: IsolationBackend, WorkspaceDir: "/w", Image: "img", Username: "u"}
+	base := DesiredState{Instance: "i", Isolation: IsolationBackend, Image: "img", Username: "u"}
 	if base.ConfigRevision() != base.ConfigRevision() {
 		t.Fatal("revision must be deterministic")
 	}
@@ -117,19 +116,20 @@ func TestConfigRevisionExcludesSecrets(t *testing.T) {
 	if base.ConfigRevision() == changed.ConfigRevision() {
 		t.Fatal("the binding-set revision must participate in the revision")
 	}
-	// Workspace path normalization: the same directory expressed with a
-	// trailing separator or ./ must not look like a change.
-	dirty := base
-	dirty.WorkspaceDir = filepath.Join("/w") + string(os.PathSeparator)
-	if base.ConfigRevision() != dirty.ConfigRevision() {
-		t.Fatalf("path normalization failed: %q vs %q", base.WorkspaceDir, dirty.WorkspaceDir)
+	// The host workspace path is NOT part of the revision: with the sealed
+	// workspace (P22) the sandbox holds no reference to it, so changing the
+	// transfer source must not schedule a sandbox restart. The path lives in
+	// the host config and takes effect at the next 'workspace sync'.
+	normalized := base
+	if base.ConfigRevision() != normalized.ConfigRevision() {
+		t.Fatal("the revision must be stable for the same desired state")
 	}
 }
 
 func TestInstanceStateRoundTripAndSchemaGuard(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "reconcile.json")
-	st := DesiredState{Instance: "i", Isolation: IsolationFull, WorkspaceDir: "/w", Image: "img", Username: "u"}.toState()
+	st := DesiredState{Instance: "i", Isolation: IsolationFull, Image: "img", Username: "u"}.toState()
 	st.Pending = []string{"refresh-credentials", "restart-vm"}
 	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
 		t.Fatalf("write: %v", err)
@@ -464,5 +464,54 @@ func TestInstanceStateReadsLegacyNumericCredentialGen(t *testing.T) {
 	again, err := ReadInstanceState(DefaultFS, path)
 	if err != nil || string(again.CredentialGen) != "albert@native:2;github@file:1" {
 		t.Fatalf("string composite round trip: %+v, %v", again, err)
+	}
+}
+
+// TestReconcileProceedsWithDotenvInTheCheckout pins the P22 change of role on
+// the real CLI start path: Reconcile must not refuse a checkout that holds a
+// .env, because with the sealed workspace that file is not mounted. The scan's
+// finding is hygiene advice; the transfer filter is the boundary.
+func TestReconcileProceedsWithDotenvInTheCheckout(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := newTestMicrosandbox(t, client)
+	m.Probe = func(context.Context, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	if err := os.WriteFile(filepath.Join(m.cfg.WorkspaceDir, ".env"), []byte("SECRET=canary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t, func() {
+		err := m.Reconcile(context.Background())
+		if err != nil {
+			// Any other failure is fine to surface, but it must not be the
+			// retired workspace gate.
+			if strings.Contains(err.Error(), "refusing to start") {
+				t.Fatalf("the workspace gate must not run on the sealed runtime: %v", err)
+			}
+		}
+	})
+	if !strings.Contains(stderr, "excluded from transfer") {
+		t.Fatalf("the hygiene advice must still be shown: %q", stderr)
+	}
+	for _, call := range client.calls {
+		if strings.HasPrefix(call, "remove") {
+			t.Fatalf("a .env in the checkout must never destroy the instance: %v", client.calls)
+		}
+	}
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	_ = os.RemoveAll(filepath.Dir(path))
+}
+
+// TestWorkspaceSourceChangeDoesNotMoveTheRevision pins the sealed-model
+// semantics of WORKSPACE_DIR: it is the transfer source, read at sync time,
+// and the sandbox holds no reference to it. Changing it must therefore not
+// schedule a restart, let alone a destructive recreation.
+func TestWorkspaceSourceChangeDoesNotMoveTheRevision(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	before := m.desiredState(true, nil, nil).ConfigRevision()
+	m.cfg.WorkspaceDir = t.TempDir()
+	after := m.desiredState(true, nil, nil).ConfigRevision()
+	if before != after {
+		t.Fatalf("changing the transfer source moved the config revision (%s -> %s)", before, after)
 	}
 }

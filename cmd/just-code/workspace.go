@@ -38,7 +38,16 @@ func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRo
 	case "status":
 		return workspaceStatusCmd(projectRoot, instance, records)
 	case "sync":
-		force := len(args) > 1 && args[1] == "--force"
+		force := false
+		for _, a := range args[1:] {
+			if a == "--force" {
+				force = true
+				continue
+			}
+			// An unrecognized flag must not be ignored: `sync --forc` running
+			// an unforced sync is the confusing half of a typo.
+			return 2, fmt.Errorf("Unknown workspace sync option: %s (expected --force)", a)
+		}
 		rt := justcode.NewMicrosandboxRuntimeForInstance(cfg, instance)
 		if err := rt.SyncGuestWorkspace(context.Background(), justcode.SyncOptions{Force: force, OptIn: optIn}); err != nil {
 			return 1, err
@@ -60,8 +69,17 @@ func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRo
 		return 0, nil
 	case "export":
 		out := ""
-		if len(args) > 2 && args[1] == "--out" {
+		if len(args) > 1 {
+			if args[1] != "--out" {
+				return 2, fmt.Errorf("Unknown workspace export option: %s (expected --out <file>)", args[1])
+			}
+			if len(args) < 3 {
+				return 2, fmt.Errorf("workspace export --out needs a file path")
+			}
 			out = args[2]
+			if len(args) > 3 {
+				return 2, fmt.Errorf("workspace export takes a single --out <file>")
+			}
 		}
 		rt := justcode.NewMicrosandboxRuntimeForInstance(cfg, instance)
 		path, err := rt.ExportGuestChanges(context.Background(), out)
@@ -150,6 +168,9 @@ func workspaceAllowCmd(store justcode.TransferOptInStore, projectRoot, rawPath s
 	if found.Included {
 		fmt.Printf("%s already crosses into the guest; no decision needed.\n", rel)
 		return 0, nil
+	}
+	if !found.Overridable {
+		return 1, fmt.Errorf("%s is excluded for a structural reason that a per-file decision cannot override: %s", rel, found.Reason)
 	}
 	if err := store.Allow(rel, found.Reason); err != nil {
 		return 1, err

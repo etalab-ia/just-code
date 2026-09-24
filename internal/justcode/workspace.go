@@ -193,10 +193,15 @@ func relTo(root, path string) string {
 	return filepath.ToSlash(rel)
 }
 
-// CheckWorkspaceGate is the startup gate shared by the runtimes: it scans the
-// workspace and returns an error when the scan found secrets, explaining what
-// to do. It prints a warning when gitleaks is missing so users know the
-// secret scan did not run.
+// CheckWorkspaceGate is the startup gate for the runtimes that still MOUNT the
+// host checkout: Tart and agent-vm. There the scan is a real boundary — the
+// guest reads whatever is in the mounted directory — so a finding refuses the
+// start. It prints a warning when gitleaks is missing so users know the secret
+// scan did not run.
+//
+// Microsandbox does NOT call this: its workspace is sealed (P22), the checkout
+// is not mounted, and the enforceable boundary is the transfer filter
+// (ResolveTransferSet). It uses warnWorkspaceHygiene instead.
 func CheckWorkspaceGate(ctx context.Context, dir string) error {
 	res, err := ScanWorkspace(ctx, dir)
 	if err != nil {

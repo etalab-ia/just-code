@@ -57,8 +57,10 @@ type fakeMSBClient struct {
 	written  []fakeMSBWrite
 	writeErr error
 	// owned reports the /workspace provenance (P22): true means an owned
-	// volume, i.e. a sealed workspace with no host mount.
-	owned    bool
+	// volume, i.e. a sealed workspace with no host mount. Nil means "derive
+	// from mount": no host bind source means owned storage, which is what the
+	// runtime actually persists for a sealed sandbox.
+	owned    *bool
 	ownedErr error
 	// listed/listedRunning drive List: the managed sandboxes the fake
 	// runtime knows, and which of them are up.
@@ -107,6 +109,11 @@ func (f *fakeMSBClient) Create(_ context.Context, spec msbSandboxSpec) error {
 	copy.Env = cloneStringMap(spec.Env)
 	copy.Bindings = append([]msbSecretBinding(nil), spec.Bindings...)
 	f.created = &copy
+	// Creating a sandbox makes it exist: the provenance probes that follow
+	// creation (P22) look the instance up.
+	if f.createErr == nil {
+		f.exists = true
+	}
 	return f.createErr
 }
 
@@ -165,7 +172,13 @@ func (f *fakeMSBClient) WorkspaceMount(_ context.Context, name string) (string, 
 
 func (f *fakeMSBClient) WorkspaceOwned(_ context.Context, name string) (bool, error) {
 	f.record("owned " + name)
-	return f.owned, f.ownedErr
+	if f.ownedErr != nil {
+		return false, f.ownedErr
+	}
+	if f.owned != nil {
+		return *f.owned, nil
+	}
+	return f.mount == "", nil
 }
 
 func (f *fakeMSBClient) WriteFile(_ context.Context, name, guestPath string, data []byte) error {

@@ -111,11 +111,15 @@ type InstanceState struct {
 	SchemaVersion int `json:"schemaVersion"`
 	// Instance is the instance this state belongs to.
 	Instance string `json:"instance"`
-	// Isolation, WorkspaceDir and Image are the creation-fixed attributes
-	// the instance was created with. A change classifies as recreate.
-	Isolation    string `json:"isolation"`
-	WorkspaceDir string `json:"workspaceDir"`
-	Image        string `json:"image"`
+	// Isolation and Image are the creation-fixed attributes the instance was
+	// created with. A change classifies as recreate.
+	//
+	// The host workspace path is deliberately NOT recorded here: with the
+	// sealed workspace (P22) the sandbox holds no reference to it — the
+	// directory is only the transfer source, read at sync time — so changing
+	// it must not look like a difference the sandbox was created with.
+	Isolation string `json:"isolation"`
+	Image     string `json:"image"`
 	// ConfigRevision is the hash of the non-secret desired config that was
 	// applied. Identical revision + healthy guest = no-op.
 	ConfigRevision string `json:"configRevision"`
@@ -149,10 +153,9 @@ const maxSupportedInstanceStateSchema = 1
 
 // DesiredState is the configuration just-code wants the instance to have.
 type DesiredState struct {
-	Instance     string
-	Isolation    Isolation
-	WorkspaceDir string
-	Image        string
+	Instance  string
+	Isolation Isolation
+	Image     string
 	// CredentialRev is the hash of the desired binding-set descriptor (P09).
 	CredentialRev string
 	// CredentialGeneration is the non-secret rotation marker of the stored
@@ -178,7 +181,6 @@ func (d DesiredState) ConfigRevision() string {
 		"jc-state-v1",
 		d.Instance,
 		string(d.Isolation),
-		filepath.Clean(d.WorkspaceDir),
 		d.Image,
 		d.Username,
 		"rev:" + d.CredentialRev,
@@ -352,9 +354,10 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
-		return err
-	}
+	// The scan is host hygiene advice, not a gate: with the sealed workspace
+	// (P22) the checkout is not mounted, so a secret in it cannot reach the
+	// guest. The transfer filter is the enforceable boundary.
+	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
 
 	path := instanceStatePath(stateDir, m.InstanceName())
 	applied, err := ReadInstanceState(DefaultFS, path)
@@ -441,11 +444,10 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 // the revision cannot leave a stale refresh unperformed.
 func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBinding, applied *InstanceState) DesiredState {
 	d := DesiredState{
-		Instance:     m.InstanceName(),
-		Isolation:    m.cfg.Isolation,
-		WorkspaceDir: m.cfg.WorkspaceDir,
-		Image:        msbImage,
-		Username:     m.cfg.Username,
+		Instance:  m.InstanceName(),
+		Isolation: m.cfg.Isolation,
+		Image:     msbImage,
+		Username:  m.cfg.Username,
 	}
 	if resolved {
 		d.CredentialRev = bindingsRevision(bindings)
@@ -471,7 +473,6 @@ func (d DesiredState) toState() InstanceState {
 		SchemaVersion:    instanceStateSchemaVersion,
 		Instance:         d.Instance,
 		Isolation:        string(d.Isolation),
-		WorkspaceDir:     filepath.Clean(d.WorkspaceDir),
 		Image:            d.Image,
 		ConfigRevision:   d.ConfigRevision(),
 		CredentialRev:    d.CredentialRev,
@@ -503,7 +504,6 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 	// exists; without it, the live checks (isolation script, mount) stand in.
 	if applied != nil {
 		creationFixed := applied.Isolation != string(desired.Isolation) ||
-			applied.WorkspaceDir != filepath.Clean(desired.WorkspaceDir) ||
 			applied.Image != desired.Image
 		if creationFixed {
 			facts.CreationFixedChanged = true
@@ -629,9 +629,7 @@ func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
-		return err
-	}
+	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
 	if err := m.Clean(ctx); err != nil {
 		return err
 	}

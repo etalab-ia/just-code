@@ -391,10 +391,10 @@ func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []reso
 		return err
 	}
 	if exists {
-		// A sandbox whose /workspace is a host bind mount was created by a
+		// A sandbox whose /workspace is not guest-owned was created by a
 		// pre-P22 version: it exposes the checkout to the guest, which the
 		// sealed model forbids. Such an instance is never adopted in place.
-		if err := m.rejectLegacyBindMount(ctx); err != nil {
+		if err := m.requireSealedWorkspace(ctx); err != nil {
 			return err
 		}
 		// The mode-specific start script is persisted at creation and the SDK
@@ -725,31 +725,50 @@ func (m *MicrosandboxRuntime) backendHealthy(ctx context.Context) bool {
 	return probe(ctx, endpoint, m.cfg.Username, m.cfg.Password).Healthy
 }
 
-// rejectLegacyBindMount refuses to boot an instance whose /workspace is a host
-// bind mount. Such an instance was created before the sealed model (P22), and
-// its guest can read the host checkout — including every untracked or ignored
-// secret in it. Staleness of the mounted path is no longer the question: any
-// host-backed workspace is the case the sealed model exists to remove.
+// requireSealedWorkspace proves that the instance's /workspace is guest-owned
+// storage before anything reads or writes it. Every operation that touches the
+// guest workspace calls this first: with a pre-P22 bind mount, /workspace
+// inside the guest IS the host checkout, so a transfer would extract over the
+// user's files and `git add -A` would stage and commit them.
 //
-// The check reads the persisted sandbox configuration, not just-code's spec,
-// so it cannot be satisfied by a spec the runtime ignored.
-func (m *MicrosandboxRuntime) rejectLegacyBindMount(ctx context.Context) error {
+// The check is positive and fail-closed. Asking "is there a bind mount?" and
+// defaulting to safe when the answer is unclear would let an unrecognized
+// mount shape through; the question that matters is "is this storage owned by
+// the guest?", and anything less than a proven yes is refused.
+//
+// The reading comes from the persisted sandbox configuration, not from
+// just-code's own spec, so a spec the runtime ignored cannot satisfy it.
+func (m *MicrosandboxRuntime) requireSealedWorkspace(ctx context.Context) error {
+	if _, exists, err := m.Client.Lookup(ctx, m.InstanceName()); err != nil {
+		return fmt.Errorf("cannot look up %s to verify its workspace isolation: %w", m.InstanceName(), err)
+	} else if !exists {
+		return fmt.Errorf("%s does not exist yet; run 'just-code start' first", m.InstanceName())
+	}
+	// A recognized bind source is reported by path: naming it is the clearest
+	// way to explain the refusal.
 	mounted, err := m.Client.WorkspaceMount(ctx, m.InstanceName())
 	if err != nil {
-		// An unreadable configuration cannot prove the workspace is sealed.
-		// Fail closed: the alternative is booting a guest that may expose the
-		// host checkout.
-		return fmt.Errorf("cannot read the /workspace provenance of %s; refusing to boot an instance whose workspace isolation cannot be verified. "+
-			"Recreate it with 'just-code recreate --microsandbox': %w", m.InstanceName(), err)
+		return fmt.Errorf("cannot read the /workspace provenance of %s; refusing to use an instance whose workspace isolation cannot be verified. "+
+			"Recreate it with 'just-code clean --microsandbox' then 'just-code start --microsandbox': %w", m.InstanceName(), err)
 	}
-	if mounted == "" {
-		// No bind source at the workspace path: sealed (owned) storage.
-		return nil
+	if mounted != "" {
+		return fmt.Errorf("%s was created with %s mounted from the host at /workspace, which exposes the host checkout to the guest. "+
+			"The sealed workspace model has no host mount, and an existing instance is never converted in place: "+
+			"run 'just-code clean --microsandbox' then 'just-code start --microsandbox' to recreate it, or use an explicit legacy runtime (--tart) for this project",
+			m.InstanceName(), mounted)
 	}
-	return fmt.Errorf("%s was created with %s mounted from the host at /workspace, which exposes the host checkout to the guest. "+
-		"The sealed workspace model has no host mount, and an existing instance is never converted in place: "+
-		"run 'just-code clean --microsandbox' then 'just-code start --microsandbox' to recreate it, or use an explicit legacy runtime (--tart) for this project",
-		m.InstanceName(), mounted)
+	// No recognized bind source is not proof either: confirm owned storage.
+	owned, err := m.Client.WorkspaceOwned(ctx, m.InstanceName())
+	if err != nil {
+		return fmt.Errorf("cannot confirm that /workspace of %s is guest-owned storage; refusing to use an instance whose workspace isolation cannot be verified. "+
+			"Recreate it with 'just-code clean --microsandbox' then 'just-code start --microsandbox': %w", m.InstanceName(), err)
+	}
+	if !owned {
+		return fmt.Errorf("/workspace of %s is not guest-owned storage: the persisted configuration shows a workspace this runtime does not recognize as sealed, "+
+			"so the host checkout may be mounted into the guest. The sealed model has no host mount, and an existing instance is never converted in place: "+
+			"run 'just-code clean --microsandbox' then 'just-code start --microsandbox' to recreate it", m.InstanceName())
+	}
+	return nil
 }
 
 // warnWorkspaceHygiene prints host-side advice about secrets sitting in the
@@ -850,6 +869,13 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) error {
 	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
 	if err != nil || !exists {
+		return err
+	}
+	// Workspace provenance is a recreation-only state too: Restart runs Stop
+	// before Start's own check, so without this a legacy bind-mounted
+	// instance would be stopped and then refused, leaving a previously
+	// usable sandbox down.
+	if err := m.requireSealedWorkspace(ctx); err != nil {
 		return err
 	}
 	return m.rejectIsolationMismatch(ctx, sandbox)

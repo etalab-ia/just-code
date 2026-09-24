@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -63,6 +64,11 @@ type TransferEntry struct {
 	// OptIn reports that inclusion came from an explicit per-file decision
 	// rather than the default policy.
 	OptIn bool
+	// Overridable reports whether a per-file decision may re-include this
+	// path. Structural exclusions (a symlink, Git metadata, a file above the
+	// transfer cap) are not overridable: re-including them would break the
+	// property the rule protects, not merely override a judgement call.
+	Overridable bool
 	// Reason explains the decision, for the review screen.
 	Reason string
 	// Mode is the file's permission bits, applied on extraction.
@@ -85,9 +91,10 @@ type TransferManifest struct {
 	// skipped directory).
 	Warnings []string
 	// UnmappedFindings lists gitleaks findings whose reported path could not
-	// be attributed to a candidate. They cannot be matched to a file, so the
+	// be attributed to a candidate. They cannot be matched to a file, so a
 	// transfer must refuse rather than proceed without knowing what was
-	// flagged (fail closed: see UnmappedFindingsError).
+	// flagged — the enforcement lives in workspace_sealed.go, where the
+	// transfer is refused while this list is non-empty.
 	UnmappedFindings []string
 }
 
@@ -256,7 +263,7 @@ func ResolveTransferSet(ctx context.Context, root string, opts TransferOptions) 
 			continue
 		}
 		seen[c.rel] = true
-		entry, err := classifyTransferCandidate(abs, c.rel, c.ignored, findingsByPath[c.rel], opts)
+		entry, err := classifyTransferCandidate(abs, c.rel, c.ignored, man.GitManaged, findingsByPath[c.rel], opts)
 		if err != nil {
 			man.Warnings = append(man.Warnings, fmt.Sprintf("skipped %s: %v", c.rel, err))
 			continue
@@ -271,7 +278,7 @@ func ResolveTransferSet(ctx context.Context, root string, opts TransferOptions) 
 // order of the checks decides the reported reason: a dotenv file that is also
 // git-ignored is reported as a dotenv exclusion, because that is the
 // security-relevant fact.
-func classifyTransferCandidate(root, rel string, ignored bool, findings []gitleaksFinding, opts TransferOptions) (TransferEntry, error) {
+func classifyTransferCandidate(root, rel string, ignored, gitManaged bool, findings []gitleaksFinding, opts TransferOptions) (TransferEntry, error) {
 	entry := TransferEntry{Rel: rel}
 	abs := filepath.Join(root, filepath.FromSlash(rel))
 	info, err := os.Lstat(abs)
@@ -279,7 +286,13 @@ func classifyTransferCandidate(root, rel string, ignored bool, findings []gitlea
 		return entry, err
 	}
 	if info.IsDir() {
-		// Directories are recreated by the archive's own parent entries.
+		// In git mode the only directory git reports is a gitlink: a
+		// submodule, whose content is a repository of its own. Name it
+		// rather than emitting an opaque skip.
+		if gitManaged {
+			entry.Reason = "submodule (gitlink); its own repository is not transferred"
+			return entry, nil
+		}
 		return entry, fmt.Errorf("directory entry")
 	}
 	entry.Size = info.Size()
@@ -287,8 +300,12 @@ func classifyTransferCandidate(root, rel string, ignored bool, findings []gitlea
 
 	optIn := opts.OptIn[rel]
 
-	exclude := func(reason string) (TransferEntry, error) {
-		if optIn {
+	// exclude records a refusal. overridable marks a judgement call the user
+	// may revisit; a structural refusal (symlink, Git metadata, size cap)
+	// cannot be overridden, because what it protects is not a preference.
+	exclude := func(reason string, overridable bool) (TransferEntry, error) {
+		entry.Overridable = overridable
+		if optIn && overridable {
 			entry.Included = true
 			entry.OptIn = true
 			entry.Reason = "re-included by an explicit per-file decision; filter rule was: " + reason
@@ -301,17 +318,21 @@ func classifyTransferCandidate(root, rel string, ignored bool, findings []gitlea
 	name := filepath.Base(rel)
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
-		return exclude("symlink; not transferred into the sealed guest")
+		return exclude("symlink; not transferred into the sealed guest", false)
+	case !info.Mode().IsRegular():
+		// A FIFO, socket or device node: reading it can block forever, and
+		// none of them carries project content worth transferring.
+		return exclude("not a regular file (socket, device or FIFO); not transferred", false)
 	case name == ".git" || strings.HasPrefix(rel, ".git/"):
-		return exclude("Git metadata; the guest repository is created inside the guest")
+		return exclude("Git metadata; the guest repository is created inside the guest", false)
 	case isDotenvName(name):
-		return exclude("dotenv file (default-deny)")
+		return exclude("dotenv file (default-deny)", true)
 	case len(findings) > 0:
-		return exclude(fmt.Sprintf("gitleaks: %s", findings[0].RuleID))
+		return exclude(fmt.Sprintf("gitleaks: %s", findings[0].RuleID), true)
 	case ignored:
-		return exclude("git-ignored (local or derived state); re-include explicitly if the guest needs it")
+		return exclude("git-ignored (local or derived state); re-include explicitly if the guest needs it", true)
 	case info.Size() > opts.MaxFileBytes:
-		return exclude(fmt.Sprintf("above the per-file transfer cap (%s)", FormatByteSize(opts.MaxFileBytes)))
+		return exclude(fmt.Sprintf("above the per-file transfer cap (%s)", FormatByteSize(opts.MaxFileBytes)), false)
 	}
 	entry.Included = true
 	entry.Reason = "included"
@@ -494,7 +515,30 @@ func BuildTransferArchive(man TransferManifest) ([]byte, error) {
 				return nil, err
 			}
 		}
-		data, err := os.ReadFile(filepath.Join(man.Root, filepath.FromSlash(e.Rel)))
+		abs := filepath.Join(man.Root, filepath.FromSlash(e.Rel))
+		// Re-check at read time. Classification ran earlier, and the path
+		// could have been replaced in between: opening a symlink here would
+		// pull content from outside the resolved set into the payload, and a
+		// file that grew would exceed the size the manifest promised.
+		info, err := os.Lstat(abs)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("transfer %s: the path is no longer a regular file (%s)", e.Rel, info.Mode().Type())
+		}
+		if info.Size() != e.Size {
+			return nil, fmt.Errorf("transfer %s: the file changed size since the transfer set was resolved (%d -> %d bytes); re-run the sync", e.Rel, e.Size, info.Size())
+		}
+		file, err := os.Open(abs)
+		if err != nil {
+			return nil, err
+		}
+		// O_NOFOLLOW is unavailable portably; the Lstat above plus the
+		// regular-file check narrow the window to a same-size regular-file
+		// swap, which the host user would have to perform deliberately.
+		data, err := io.ReadAll(file)
+		_ = file.Close()
 		if err != nil {
 			return nil, err
 		}

@@ -108,3 +108,42 @@ func TestWorkspaceStatusReportsFilteredSet(t *testing.T) {
 		t.Fatal("a read-only status must not write state")
 	}
 }
+
+// TestWorkspaceAllowRefusesStructuralExclusion pins the CLI half of the
+// overridable rule: recording a decision for a symlink would create a rule
+// that never applies, which reads as "allowed" while nothing crosses.
+func TestWorkspaceAllowRefusesStructuralExclusion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	store := justcode.TransferOptInStore{Path: filepath.Join(t.TempDir(), "optin.json"), FS: justcode.DefaultFS}
+	code, err := workspaceAllowCmd(store, dir, "link")
+	if code == 0 || err == nil {
+		t.Fatalf("a structural exclusion must be refused: code=%d err=%v", code, err)
+	}
+	if !strings.Contains(err.Error(), "structural") {
+		t.Fatalf("the refusal must say why: %v", err)
+	}
+	records, lerr := store.Load()
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if _, ok := records["link"]; ok {
+		t.Fatal("no rule may be recorded for a path that can never cross")
+	}
+}
+
+// TestWorkspaceSyncRejectsUnknownOption keeps a typo from silently running an
+// unforced sync.
+func TestWorkspaceSyncRejectsUnknownOption(t *testing.T) {
+	for _, args := range [][]string{{"sync", "--forc"}, {"export", "--bogus"}, {"export", "--out"}} {
+		code, err := workspaceCmd(args, justcode.Config{}, "jc-x", t.TempDir())
+		if code != 2 || err == nil {
+			t.Fatalf("%v must be a usage error: code=%d err=%v", args, code, err)
+		}
+	}
+}

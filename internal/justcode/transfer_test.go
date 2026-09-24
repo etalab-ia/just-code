@@ -215,18 +215,21 @@ func TestTransferArchiveContainsOnlyIncludedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := archiveNames(t, payload)
+	content := archiveContent(t, payload)
 	for _, want := range []string{"src/main.go", "src/nested/deep.txt"} {
-		if !names[want] {
-			t.Fatalf("archive is missing %s: %v", want, names)
+		if _, ok := content[want]; !ok {
+			t.Fatalf("archive is missing %s: %v", want, content)
 		}
 	}
-	if names[".env"] {
+	if _, ok := content[".env"]; ok {
 		t.Fatal("the archive must not carry a file the filter refused")
 	}
-	// The canary value must not appear in the payload bytes at all.
-	if bytes.Contains(payload, []byte("CANARY=do-not-transfer")) {
-		t.Fatal("the canary value is present in the transfer payload")
+	// Decompress and look for the canary value itself: a gzip stream never
+	// holds the plaintext, so a raw-bytes check would pass either way.
+	for name, body := range content {
+		if strings.Contains(body, "CANARY=do-not-transfer") {
+			t.Fatalf("the canary value crossed in %s", name)
+		}
 	}
 }
 
@@ -414,7 +417,7 @@ func TestTransferRefusesUnattributableFinding(t *testing.T) {
 	if len(man.UnmappedFindings) == 0 {
 		t.Fatal("an unattributable finding must be recorded")
 	}
-	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{stdout: "no"}}}
+	client := &fakeMSBClient{exists: true, execCaptureResults: []fakeMSBExecCaptureResult{{stdout: "no"}}}
 	m := newTestMicrosandbox(t, client)
 	m.cfg.WorkspaceDir = dir
 	if err := m.ProvisionGuestWorkspace(context.Background(), SyncOptions{Print: func(string) {}}); err == nil {
@@ -498,5 +501,79 @@ func TestFindingRelPath(t *testing.T) {
 	}
 	if got := findingRelPath(real, filepath.Join(link, "src", "config.txt")); got != "src/config.txt" {
 		t.Fatalf("reverse-view attribution = %q, want src/config.txt", got)
+	}
+}
+
+// archiveContent decompresses the payload and returns each regular file's
+// content. Asserting on decompressed content is the only way to prove a value
+// did (or did not) cross: a gzip stream never contains the plaintext.
+func archiveContent(t *testing.T, payload []byte) map[string]string {
+	t.Helper()
+	gz, err := gzip.NewReader(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	out := map[string]string{}
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[hdr.Name] = string(data)
+	}
+	return out
+}
+
+// TestStructuralExclusionsCannotBeOverridden pins that a per-file decision
+// only revisits judgement calls. Re-including a symlink would pull content
+// from outside the resolved set, and re-including an oversized file would
+// drop the memory bound the cap protects, so both stay refused.
+func TestStructuralExclusionsCannotBeOverridden(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "keep.txt", "keep\n")
+	writeFile(t, dir, "big.bin", strings.Repeat("x", 4096))
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	gitInitForTransfer(t, dir)
+
+	man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{
+		OptIn:        map[string]bool{"link": true, "big.bin": true},
+		MaxFileBytes: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range man.Included() {
+		switch e.Rel {
+		case "link":
+			t.Fatal("a symlink must not be re-includable")
+		case "big.bin":
+			t.Fatal("a file above the cap must not be re-includable")
+		}
+	}
+	// And the manifest says so, so the CLI can refuse the decision instead of
+	// recording a rule that never applies.
+	for _, e := range man.Excluded() {
+		if e.Rel == "link" || e.Rel == "big.bin" {
+			if e.Overridable {
+				t.Fatalf("%s must be reported as not overridable: %+v", e.Rel, e)
+			}
+		}
+		if e.Rel == ".gitignore" && !e.Overridable {
+			t.Fatalf("a content exclusion must stay overridable: %+v", e)
+		}
 	}
 }

@@ -57,6 +57,16 @@ func (m *MicrosandboxRuntime) WorkspaceManifest(ctx context.Context, opts SyncOp
 // a guest that already carries a repository is left alone (use
 // SyncGuestWorkspace to refresh).
 func (m *MicrosandboxRuntime) ProvisionGuestWorkspace(ctx context.Context, opts SyncOptions) error {
+	// Never transfer into a workspace whose isolation is unproven: with a
+	// pre-P22 bind mount, /workspace is the host checkout and this call would
+	// extract over the user's files and commit them.
+	if err := m.requireSealedWorkspace(ctx); err != nil {
+		return err
+	}
+	// The initial transfer honours the same recorded per-file decisions as a
+	// refresh: a user who ran 'workspace allow' before the first start must
+	// not have to run a second command to see it applied.
+	opts.OptIn = m.mergeRecordedOptIn(opts.OptIn)
 	provisioned, err := m.guestWorkspaceProvisioned(ctx)
 	if err != nil {
 		return err
@@ -75,6 +85,21 @@ func (m *MicrosandboxRuntime) ProvisionGuestWorkspace(ctx context.Context, opts 
 // the guest edited and the host also changed would be clobbered, which is the
 // case worth stopping for.)
 func (m *MicrosandboxRuntime) SyncGuestWorkspace(ctx context.Context, opts SyncOptions) error {
+	if err := m.requireSealedWorkspace(ctx); err != nil {
+		return err
+	}
+	opts.OptIn = m.mergeRecordedOptIn(opts.OptIn)
+	provisioned, err := m.guestWorkspaceProvisioned(ctx)
+	if err != nil {
+		return err
+	}
+	if !provisioned {
+		// Nothing to refresh: a guest without a usable repository has no work
+		// to preserve, so the first transfer is what it needs. (A guest with
+		// a repository probes as provisioned, which is where the dirty check
+		// below applies.)
+		return m.transferIntoGuest(ctx, opts, "Provisioning the sealed guest workspace")
+	}
 	if !opts.Force {
 		dirty, err := m.guestWorkingTreeDirty(ctx)
 		if err != nil {
@@ -86,6 +111,30 @@ func (m *MicrosandboxRuntime) SyncGuestWorkspace(ctx context.Context, opts SyncO
 		}
 	}
 	return m.transferIntoGuest(ctx, opts, "Refreshing the sealed guest workspace")
+}
+
+// mergeRecordedOptIn folds the persisted per-file re-inclusions into the
+// caller's set. The store lives in host state, keyed by instance, so it
+// follows the project rather than the invocation.
+func (m *MicrosandboxRuntime) mergeRecordedOptIn(given map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for rel, allowed := range given {
+		out[rel] = allowed
+	}
+	store := TransferOptInStore{Path: TransferOptInPath(m.stateDirOrDefault(), m.InstanceName()), FS: DefaultFS}
+	records, err := store.Load()
+	if err != nil {
+		// An unreadable store must not silently drop the rules it may hold:
+		// fail closed by refusing to transfer at all is wrong here (the rules
+		// only ever ADD files), so the caller is told and the default-deny
+		// policy still applies to everything else.
+		fmt.Fprintf(os.Stderr, "Warning: cannot read the recorded transfer re-inclusions for %s (%v); only the default-deny filter applies\n", m.InstanceName(), err)
+		return out
+	}
+	for rel := range records {
+		out[rel] = true
+	}
+	return out
 }
 
 // transferIntoGuest resolves, filters, archives, and writes the transfer set.
@@ -179,10 +228,15 @@ func (m *MicrosandboxRuntime) guestGitConfig() GuestConfig {
 }
 
 // guestWorkspaceProvisioned reports whether the guest already has a workspace
-// repository.
+// repository with a commit.
+//
+// The probe asks for a resolvable HEAD rather than the presence of .git: a
+// repository with no commit (an interrupted provision, or a hand-made empty
+// repo) cannot produce a diff, so treating it as provisioned would leave
+// change delivery broken with no way to notice.
 func (m *MicrosandboxRuntime) guestWorkspaceProvisioned(ctx context.Context) (bool, error) {
 	stdout, _, code, err := m.Client.ExecCapture(ctx, m.InstanceName(),
-		"test -d "+shellQuote(msbGuestWorkspace+"/.git")+" && echo yes || echo no")
+		"cd "+shellQuote(msbGuestWorkspace)+" && git rev-parse --verify -q HEAD >/dev/null && echo yes || echo no")
 	if err != nil {
 		return false, err
 	}
@@ -193,7 +247,9 @@ func (m *MicrosandboxRuntime) guestWorkspaceProvisioned(ctx context.Context) (bo
 }
 
 // guestWorkingTreeDirty returns the guest's porcelain status, or "" when the
-// tree is clean.
+// tree is clean. A guest without a repository (or with an unreadable one) is
+// reported as an error rather than as clean: reading a failure as "nothing to
+// lose" is how a refresh would overwrite work.
 func (m *MicrosandboxRuntime) guestWorkingTreeDirty(ctx context.Context) (string, error) {
 	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(),
 		"cd "+shellQuote(msbGuestWorkspace)+" && git status --porcelain")
@@ -201,10 +257,12 @@ func (m *MicrosandboxRuntime) guestWorkingTreeDirty(ctx context.Context) (string
 		return "", err
 	}
 	if code != 0 {
-		// No repository yet is not "dirty": the first transfer is free to run.
-		return "", nil
+		detail := strings.TrimSpace(stderr)
+		if detail == "" {
+			detail = "git status failed in the guest workspace"
+		}
+		return "", fmt.Errorf("cannot read the state of the guest workspace: %s", detail)
 	}
-	_ = stderr
 	return strings.TrimSpace(stdout), nil
 }
 
@@ -227,6 +285,11 @@ func (m *MicrosandboxRuntime) guestShell(ctx context.Context, command string) er
 // The patch is written outside the project by default (host state), so
 // reviewing it does not itself dirty the checkout.
 func (m *MicrosandboxRuntime) ExportGuestChanges(ctx context.Context, outPath string) (string, error) {
+	// `git add -A -N` below mutates the repository it runs in; on a
+	// bind-mounted instance that repository is the user's own checkout.
+	if err := m.requireSealedWorkspace(ctx); err != nil {
+		return "", err
+	}
 	// `git add -A -N` marks untracked files intent-to-add so they appear in
 	// the diff; without it, new files would be invisible in the export.
 	cmd := "cd " + shellQuote(msbGuestWorkspace) + " && git add -A -N && git diff HEAD"

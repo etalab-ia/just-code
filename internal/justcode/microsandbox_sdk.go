@@ -193,6 +193,9 @@ func msbWorkspaceMounts(spec msbSandboxSpec) map[string]msb.MountConfig {
 		// keeps the mount table from ever carrying a host bind.
 		return map[string]msb.MountConfig{}
 	}
+	// The owned volume lives on the sandbox's managed root disk (8 GiB, see
+	// msbCreateOptions), so guest workspace growth is bounded by it and is
+	// accounted for in that sizing rather than through a separate quota.
 	return map[string]msb.MountConfig{
 		msbGuestWorkspace: msb.Mount.Owned(msb.OwnedVolumeOptions{Kind: msb.VolumeKindDir}),
 	}
@@ -422,13 +425,18 @@ type persistedMounts struct {
 
 // parseWorkspaceMount returns the host path bound at the guest path, or ""
 // when the document carries no such mount.
+//
+// The type comparison is case-insensitive for the same reason the owned side
+// is: the serializer has emitted different spellings across versions, and a
+// missed bind mount here would read as "no host workspace" — the one answer
+// that must never be produced by accident.
 func parseWorkspaceMount(configJSON, guestPath string) (string, error) {
 	var raw persistedMounts
 	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
 		return "", fmt.Errorf("decode persisted sandbox config: %w", err)
 	}
 	for _, m := range raw.Mounts {
-		if m.Guest == guestPath && (m.Type == "" || m.Type == "Bind") {
+		if m.Guest == guestPath && (m.Type == "" || strings.EqualFold(m.Type, "Bind")) {
 			return m.Host, nil
 		}
 	}

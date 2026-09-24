@@ -12,7 +12,7 @@ import (
 // path end to end at the client boundary: the guest receives one archive,
 // built from the filtered set, and the .env in the checkout is not in it.
 func TestProvisionGuestWorkspaceWritesFilteredPayload(t *testing.T) {
-	client := &fakeMSBClient{
+	client := &fakeMSBClient{exists: true,
 		// The guest has no repository yet: provisioning must run.
 		execCaptureResults: []fakeMSBExecCaptureResult{
 			{stdout: "no"}, // guestWorkspaceProvisioned
@@ -50,7 +50,7 @@ func TestProvisionGuestWorkspaceWritesFilteredPayload(t *testing.T) {
 // already carries its repository is not re-provisioned, so a plain start
 // never overwrites guest work.
 func TestProvisionGuestWorkspaceIsIdempotent(t *testing.T) {
-	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "yes"}}
+	client := &fakeMSBClient{exists: true, execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "yes"}}
 	m := newTestMicrosandbox(t, client)
 	writeFile(t, m.cfg.WorkspaceDir, "main.go", "package main\n")
 	gitInitForTransfer(t, m.cfg.WorkspaceDir)
@@ -67,8 +67,9 @@ func TestProvisionGuestWorkspaceIsIdempotent(t *testing.T) {
 // refresh stops when the guest holds uncommitted work, names it, and only
 // proceeds with Force.
 func TestSyncRefusesOverGuestChanges(t *testing.T) {
-	client := &fakeMSBClient{
+	client := &fakeMSBClient{exists: true,
 		execCaptureResults: []fakeMSBExecCaptureResult{
+			{stdout: "yes"},                          // guestWorkspaceProvisioned
 			{stdout: " M main.go\n?? scratch.txt\n"}, // guestWorkingTreeDirty
 		},
 	}
@@ -104,7 +105,7 @@ func TestSyncRefusesOverGuestChanges(t *testing.T) {
 // would hand the guest an empty workspace: that is a configuration mistake
 // worth stopping for, not a silent empty project.
 func TestSyncRefusesEmptyTransferSet(t *testing.T) {
-	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: ""}}
+	client := &fakeMSBClient{exists: true, execCaptureDefault: &fakeMSBExecCaptureResult{stdout: ""}}
 	m := newTestMicrosandbox(t, client)
 	// Only a dotenv file: everything is filtered out.
 	writeFile(t, m.cfg.WorkspaceDir, ".env", "X=1\n")
@@ -124,7 +125,7 @@ func TestSyncRefusesEmptyTransferSet(t *testing.T) {
 // empty project (the default './workspace' on a fresh install), so it gets a
 // repository rather than an error.
 func TestProvisionEmptySourceCreatesEmptyRepository(t *testing.T) {
-	client := &fakeMSBClient{
+	client := &fakeMSBClient{exists: true,
 		execCaptureResults: []fakeMSBExecCaptureResult{{stdout: "no"}},
 	}
 	m := newTestMicrosandbox(t, client)
@@ -147,7 +148,7 @@ func TestProvisionEmptySourceCreatesEmptyRepository(t *testing.T) {
 // be reviewed before anything is applied.
 func TestExportGuestChangesWritesPatchForReview(t *testing.T) {
 	patch := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n"
-	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: patch}}
+	client := &fakeMSBClient{exists: true, execCaptureDefault: &fakeMSBExecCaptureResult{stdout: patch}}
 	m := newTestMicrosandbox(t, client)
 	out := filepath.Join(t.TempDir(), "guest.patch")
 
@@ -170,7 +171,7 @@ func TestExportGuestChangesWritesPatchForReview(t *testing.T) {
 // TestExportGuestChangesEmptyWhenClean pins the quiet case: no changes means
 // no patch file, not an empty one a user might mistake for work.
 func TestExportGuestChangesEmptyWhenClean(t *testing.T) {
-	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "  \n"}}
+	client := &fakeMSBClient{exists: true, execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "  \n"}}
 	m := newTestMicrosandbox(t, client)
 	path, err := m.ExportGuestChanges(context.Background(), filepath.Join(t.TempDir(), "none.patch"))
 	if err != nil {
@@ -199,7 +200,7 @@ func TestGuestRepositoryUsesConfiguredIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: ""}}
+	client := &fakeMSBClient{exists: true, execCaptureDefault: &fakeMSBExecCaptureResult{stdout: ""}}
 	m := newTestMicrosandbox(t, client)
 	if err := m.ensureGuestRepository(context.Background()); err != nil {
 		t.Fatalf("ensureGuestRepository: %v", err)
@@ -207,5 +208,99 @@ func TestGuestRepositoryUsesConfiguredIdentity(t *testing.T) {
 	joined := strings.Join(client.calls, "\n")
 	if !strings.Contains(joined, "Luis Arias") || !strings.Contains(joined, "luis@example.gouv.fr") {
 		t.Fatalf("the guest commit must use the configured identity: %v", client.calls)
+	}
+}
+
+// TestWorkspaceOpsRefuseLegacyBindMount pins the guard on the operations that
+// write into the guest workspace. Against a pre-P22 instance, /workspace IS
+// the host checkout, so an unguarded sync would extract over the user's files
+// and an export would stage them in their repository. Both must refuse.
+func TestWorkspaceOpsRefuseLegacyBindMount(t *testing.T) {
+	ops := map[string]func(*MicrosandboxRuntime) error{
+		"provision": func(m *MicrosandboxRuntime) error {
+			return m.ProvisionGuestWorkspace(context.Background(), SyncOptions{Print: func(string) {}})
+		},
+		"sync": func(m *MicrosandboxRuntime) error {
+			return m.SyncGuestWorkspace(context.Background(), SyncOptions{Force: true, Print: func(string) {}})
+		},
+		"export": func(m *MicrosandboxRuntime) error {
+			_, err := m.ExportGuestChanges(context.Background(), "")
+			return err
+		},
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			client := &fakeMSBClient{exists: true, mount: "/Users/someone/project"}
+			m := newTestMicrosandbox(t, client)
+			writeFile(t, m.cfg.WorkspaceDir, "main.go", "package main\n")
+			err := op(m)
+			if err == nil {
+				t.Fatal("the operation must refuse a host-mounted workspace")
+			}
+			if !strings.Contains(err.Error(), "mounted from the host") {
+				t.Fatalf("the refusal must name the cause: %v", err)
+			}
+			if len(client.written) != 0 {
+				t.Fatal("nothing may be written into a host-mounted workspace")
+			}
+		})
+	}
+}
+
+// TestWorkspaceOpsRefuseUnprovenProvenance pins the positive side of the
+// check: a workspace the runtime does not recognize as guest-owned storage is
+// refused even when no bind source is visible, so an unrecognized mount shape
+// cannot be read as sealed.
+func TestWorkspaceOpsRefuseUnprovenProvenance(t *testing.T) {
+	notOwned := false
+	client := &fakeMSBClient{exists: true, owned: &notOwned}
+	m := newTestMicrosandbox(t, client)
+	writeFile(t, m.cfg.WorkspaceDir, "main.go", "package main\n")
+	err := m.SyncGuestWorkspace(context.Background(), SyncOptions{Force: true, Print: func(string) {}})
+	if err == nil {
+		t.Fatal("an unproven workspace must be refused")
+	}
+	if !strings.Contains(err.Error(), "not guest-owned storage") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestWorkspaceOpsRefuseMissingInstance keeps the failure actionable: there is
+// nothing to transfer into before the instance exists.
+func TestWorkspaceOpsRefuseMissingInstance(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{exists: false})
+	err := m.SyncGuestWorkspace(context.Background(), SyncOptions{Print: func(string) {}})
+	if err == nil || !strings.Contains(err.Error(), "does not exist yet") {
+		t.Fatalf("expected an actionable not-found error, got %v", err)
+	}
+}
+
+// TestSyncHonoursRecordedOptInWithoutTheFlag pins that a recorded per-file
+// decision reaches the transfer even when the caller passes no opt-in set:
+// otherwise the initial provisioning would silently ignore 'workspace allow'.
+func TestSyncHonoursRecordedOptInWithoutTheFlag(t *testing.T) {
+	client := &fakeMSBClient{exists: true, execCaptureDefault: &fakeMSBExecCaptureResult{stdout: ""}}
+	m := newTestMicrosandbox(t, client)
+	writeFile(t, m.cfg.WorkspaceDir, ".env", "SECRET=allowed-by-decision\n")
+	gitInitForTransfer(t, m.cfg.WorkspaceDir)
+
+	store := TransferOptInStore{Path: TransferOptInPath(m.StateDir, m.InstanceName()), FS: DefaultFS}
+	if err := store.Allow(".env", "dotenv file (default-deny)"); err != nil {
+		t.Fatal(err)
+	}
+	// No OptIn in the options: the recorded decision must still apply.
+	if err := m.SyncGuestWorkspace(context.Background(), SyncOptions{Force: true, Print: func(string) {}}); err != nil {
+		t.Fatalf("SyncGuestWorkspace: %v", err)
+	}
+	if len(client.written) != 1 {
+		t.Fatalf("expected one payload, got %d", len(client.written))
+	}
+	content := archiveContent(t, client.written[0].data)
+	body, ok := content[".env"]
+	if !ok {
+		t.Fatalf("the recorded re-inclusion must reach the transfer: %v", content)
+	}
+	if !strings.Contains(body, "SECRET=allowed-by-decision") {
+		t.Fatalf(".env content = %q", body)
 	}
 }
