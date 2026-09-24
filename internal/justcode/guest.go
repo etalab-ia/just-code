@@ -61,6 +61,10 @@ func (SysExecer) Exec(path string, argv []string, env []string) error {
 type GuestConfig struct {
 	Port     string
 	Username string
+	// OpenCodeOverlay is the managed OpenCode configuration layer (P10).
+	// The composed config content replaces the raw embedded asset in the
+	// guest environment.
+	OpenCodeOverlay ManagedOverlay
 	// MTU is TART_MTU. Empty means "unset" and falls back to DefaultTartMTU;
 	// "auto" leaves the guest network untouched.
 	MTU    string
@@ -135,11 +139,15 @@ func RunGuestBootstrap(ctx context.Context, cfg GuestConfig) error {
 	if err != nil {
 		return err
 	}
+	configContent, cerr := ComposeConfigContent(cfg.OpenCodeOverlay)
+	if cerr != nil {
+		configContent = opencodeConfigContent
+	}
 	childEnv := withEnv(env,
 		"OPENCODE_SERVER_PASSWORD="+password,
 		"OPENCODE_SERVER_USERNAME="+cfg.Username,
 		"ALBERT_API_KEY="+apiKey,
-		"OPENCODE_CONFIG_CONTENT="+opencodeConfigContent,
+		"OPENCODE_CONFIG_CONTENT="+configContent,
 	)
 	return cfg.Execer.Exec(opencodePath, []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", cfg.Port}, childEnv)
 }
@@ -396,7 +404,7 @@ func RunGuestSecrets(cfg GuestConfig) error {
 	if err != nil {
 		return err
 	}
-	content := guestSecretsEnv(password, cfg.Username, apiKey)
+	content := guestSecretsEnv(password, cfg.Username, apiKey, cfg.OpenCodeOverlay)
 	if err := os.WriteFile(guestSecretsEnvPath, []byte(content), 0o600); err != nil {
 		return err
 	}
@@ -406,9 +414,13 @@ func RunGuestSecrets(cfg GuestConfig) error {
 // guestSecretsEnv builds the sourced env file body. Every value is
 // single-quoted because the file is sourced by a shell; the shell syntax in
 // the embedded provider config makes this non-optional.
-func guestSecretsEnv(password, username, apiKey string) string {
+func guestSecretsEnv(password, username, apiKey string, overlay ManagedOverlay) string {
 	// The provider config travels the same way as in backend mode (env), so
 	// the full-mode TUI sees the same Albert provider/model definition.
+	configContent, err := ComposeConfigContent(overlay)
+	if err != nil {
+		configContent = opencodeConfigContent
+	}
 	return fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
-		shellQuote(password), shellQuote(username), shellQuote(apiKey), shellQuote(opencodeConfigContent))
+		shellQuote(password), shellQuote(username), shellQuote(apiKey), shellQuote(configContent))
 }

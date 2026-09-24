@@ -527,6 +527,12 @@ func readStoredCredential(ctx context.Context, kind CredentialKind) (string, str
 	return readStoredWithNative(ctx, kind, native, fileGet)
 }
 
+// ResolveAlbert is the exported form of resolveAlbert, for the CLI's
+// catalogue validation. It never exposes the value beyond the return.
+func ResolveAlbert(ctx context.Context, cfg Config, from string) (string, bindingSource, string, string, error) {
+	return resolveAlbert(ctx, cfg, from)
+}
+
 // ReadStoredCredential is the exported form of readStoredCredential, for the
 // CLI's status reporting. It never exposes the value beyond the return.
 func ReadStoredCredential(ctx context.Context, kind CredentialKind) (string, error) {

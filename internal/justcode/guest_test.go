@@ -236,7 +236,14 @@ func TestGuestExecArgvAndEnv(t *testing.T) {
 	if !envHas(execer.env, "OPENCODE_SERVER_USERNAME=albert") {
 		t.Fatalf("username not propagated; env: %v", execer.env)
 	}
-	if !envHas(execer.env, "OPENCODE_CONFIG_CONTENT="+opencodeConfigContent) {
+	// The composed config (P10) equals the base asset semantically when the
+	// overlay carries no selection: the provider block and model fields
+	// survive the compose round trip.
+	composed, err := ComposeConfigContent(ManagedOverlay{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !envHas(execer.env, "OPENCODE_CONFIG_CONTENT="+composed) {
 		t.Fatal("opencode config content not propagated")
 	}
 }
@@ -337,7 +344,7 @@ func envHas(env []string, want string) bool {
 // the TUI sources this file and nothing else supplies the provider, so the
 // OpenCode config content must be in it, shell-quoted like every other value.
 func TestGuestSecretsEnvCarriesProviderConfig(t *testing.T) {
-	content := guestSecretsEnv("pw", "opencode", "key")
+	content := guestSecretsEnv("pw", "opencode", "key", ManagedOverlay{})
 	if !strings.Contains(content, "OPENCODE_CONFIG_CONTENT='") {
 		t.Fatalf("secrets env must carry the provider config: %q", content)
 	}

@@ -48,6 +48,21 @@ func NewDispatcherWith(cfg Config, backends map[Runtime]Backend) *Dispatcher {
 	return &Dispatcher{cfg: cfg, backends: backends, Runner: OSRunner{}}
 }
 
+// SetOpenCodeOverlay applies the managed OpenCode configuration layer
+// (P10) to every backend that carries one.
+func (d *Dispatcher) SetOpenCodeOverlay(o ManagedOverlay) {
+	for _, b := range d.backends {
+		switch v := b.(type) {
+		case *MicrosandboxRuntime:
+			v.OpenCodeOverlay = o
+		case *Tart:
+			v.OpenCodeOverlay = o
+		case *AgentVM:
+			v.OpenCodeOverlay = o
+		}
+	}
+}
+
 // Backend returns the backend for a runtime.
 func (d *Dispatcher) Backend(rt Runtime) (Backend, error) {
 	b, ok := d.backends[rt]

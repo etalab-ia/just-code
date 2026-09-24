@@ -169,3 +169,34 @@ utilisera après création/redémarrage de l'invité.
 - Les appels `opencode run` réels ont utilisé le réseau ; le harnais de test
   embarqué couvre les cas non réseau (fusion, découverte, JSONC,
   auto-découverte de plugins) et marque les cas réseau comme opt-in.
+
+## Addendum P10 (2026-09-24) : implémentation
+
+P10 applique les décisions de ce document :
+
+- **Composition.** `ComposeConfigContent` fusionne côté hôte l'asset embarqué
+  et la couche managée (`model`, `small_model` uniquement) en un seul
+  document JSON — pas de dépendance envers l'analyse de documents JSON
+  multiples par OpenCode. La fusion finale d'OpenCode (contenu inline en
+  dernier) reste le mécanisme : la config projet et utilisateur survivent
+  champ par champ en dessous. La sélection suit `JUST_CODE_MODEL` >
+  manifeste > réglages utilisateur > défaut intégré ; le contenu composé est
+  rafraîchi au prochain démarrage d'une instance arrêtée comme à la création.
+- **Conflits.** `DetectOverlayConflicts` compare la couche managée à la
+  config projet (JSONC lu en lecture seule, harnais interne sans
+  dépendance) et affiche un diff champ par champ avant lancement ; la valeur
+  gérée gagne, mais jamais silencieusement.
+- **Confiance.** `trust status|approve` enregistre l'approbation locale par
+  **contenu haché** (plugins déclarés et auto-découverts, commandes MCP
+  locales ; la config déclarante est approuvée par son propre hachage). Un
+  fichier modifié est de nouveau non approuvé ; les liens symboliques sont
+  refusés (un chemin repointable n'est pas un contenu épinglé) ; l'enregistrement
+  ne quitte jamais l'état hôte. `start`/`attach`/`restart`/`recreate`
+  refusent tant qu'une entrée est non approuvée — les commandes en lecture
+  seule (`stop`, `check`, `logs`, `shell`) ne sont pas bloquées.
+- **Catalogue.** `just-code models` valide contre
+  `https://albert.api.etalab.gouv.fr/v1/models` (seuls les `text-generation`
+  sont listables) ; un échec réseau retombe sur le dernier-known-good
+  (`catalogue.json` en état hôte). Les limites viennent de l'entrée du
+  catalogue uniquement — un identifiant absent n'a pas de limites
+  fabriquées — et une sélection introuvable est signalée, jamais effacée.
