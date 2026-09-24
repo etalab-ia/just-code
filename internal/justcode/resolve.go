@@ -117,6 +117,11 @@ type UserSettings struct {
 	// DefaultModel is the preferred OpenCode model (provider/model-id).
 	DefaultModel string `json:"defaultModel,omitempty"`
 
+	// GitName and GitEmail are the git identity for guest commits (P11).
+	// Non-secret; the guest bootstrap configures git with them.
+	GitName  string `json:"gitName,omitempty"`
+	GitEmail string `json:"gitEmail,omitempty"`
+
 	// CredentialRef names the default global credential (P08 reference,
 	// never a literal).
 	CredentialRef string `json:"credentialRef,omitempty"`

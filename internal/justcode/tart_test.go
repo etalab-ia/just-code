@@ -209,13 +209,13 @@ func TestStopBackendRefusesWhenStillRunning(t *testing.T) {
 
 func TestBackendArgsExcludeSecrets(t *testing.T) {
 	args := BackendArgs("opencode-tahoe-base-latest",
-		"/tmp/just-code-guest", "4096", "opencode", "1280", "albert/deepseek-v4-flash")
+		"/tmp/just-code-guest", "4096", "opencode", "1280", "albert/deepseek-v4-flash", "Luis", "luis@example.gouv.fr")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
 		t.Fatalf("secrets leaked into argv: %v", args)
 	}
 	want := []string{"exec", "-i", "opencode-tahoe-base-latest",
-		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280", "albert/deepseek-v4-flash"}
+		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280", "albert/deepseek-v4-flash", "Luis", "luis@example.gouv.fr"}
 	if len(args) != len(want) {
 		t.Fatalf("BackendArgs = %v, want %v", args, want)
 	}
@@ -354,6 +354,23 @@ func TestTartRestartCreatesMissingWorkspace(t *testing.T) {
 }
 
 func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
+	// The host identity (P11) is read from the real user settings path;
+	// write a disposable one so the exact-argv assertions below observe
+	// the values that would travel to the guest.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	settingsPath, err := UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteUserSettings(DefaultFS, settingsPath, UserSettings{
+		SchemaVersion: 1, GitName: "Albert Code Agent", GitEmail: "albert-code@noreply.etalab.gouv.fr",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	r := &fakeRunner{}
 	tt := newTestTart(t, r)
 	var interactiveArgs []string
@@ -369,6 +386,12 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand) {
 		t.Fatalf("secrets push missing; calls: %v", r.calls)
 	}
+	// Exact argv for the secrets subcommand: __guest-secrets <username> <model>.
+	// The consumer (main.go) reads Username at position 1 and Model at
+	// position 2; a position drift scrambles the in-guest env file.
+	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand + " opencode albert/deepseek-v4-flash") {
+		t.Fatalf("secrets argv must be __guest-secrets <username> <model>; calls: %v", r.calls)
+	}
 	for _, c := range r.calls {
 		if strings.Contains(c, "pw") || strings.Contains(c, "key") {
 			t.Fatalf("secret value leaked into argv: %v", r.calls)
@@ -377,6 +400,12 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	// Prepare step runs the staged binary's prepare subcommand.
 	if !r.hasCall("exec opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestPrepareCommand) {
 		t.Fatalf("prepare step missing; calls: %v", r.calls)
+	}
+	// Exact argv for the prepare subcommand: __guest-prepare <username>
+	// <gitName> <gitEmail>. The consumer reads Username at 1, GitName at
+	// 2, GitEmail at 3; a drift puts the email in user.name.
+	if !r.hasCall("exec opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestPrepareCommand + " opencode Albert Code Agent albert-code@noreply.etalab.gouv.fr") {
+		t.Fatalf("prepare argv must be __guest-prepare <username> <gitName> <gitEmail>; calls: %v", r.calls)
 	}
 	// Interactive TUI: tart exec -it, zsh login shell, launch line sources
 	// the secrets file and execs opencode in the workspace share.

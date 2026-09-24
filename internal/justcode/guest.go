@@ -80,6 +80,26 @@ type GuestConfig struct {
 	Home    string
 	Environ []string
 	HTTPGet func(url string) ([]byte, error)
+	// GitName and GitEmail override the default git identity for guest
+	// commits (P11: from the user settings). Empty keeps the defaults.
+	GitName  string
+	GitEmail string
+}
+
+// guestGitIdentity resolves the git identity for guest commits: the
+// configured values, or the documented defaults when unset. The settings
+// file is the durable source (the setup wizard writes it); the guest reads
+// it through the caller-supplied values, never by touching host files
+// itself.
+func guestGitIdentity(cfg GuestConfig) (name, email string) {
+	name, email = "Albert Code Agent", "albert-code@noreply.etalab.gouv.fr"
+	if cfg.GitName != "" {
+		name = cfg.GitName
+	}
+	if cfg.GitEmail != "" {
+		email = cfg.GitEmail
+	}
+	return name, email
 }
 
 // RunGuestBootstrap is the in-VM entry point: it clamps the MTU, installs
@@ -120,8 +140,9 @@ func RunGuestBootstrap(ctx context.Context, cfg GuestConfig) error {
 	}
 
 	// Best-effort git identity and safe.directory, matching the shell behavior.
-	_, _ = g.run(ctx, "git", "config", "--global", "user.name", "Albert Code Agent")
-	_, _ = g.run(ctx, "git", "config", "--global", "user.email", "albert-code@noreply.etalab.gouv.fr")
+	gitName, gitEmail := guestGitIdentity(cfg)
+	_, _ = g.run(ctx, "git", "config", "--global", "user.name", gitName)
+	_, _ = g.run(ctx, "git", "config", "--global", "user.email", gitEmail)
 	_, _ = g.run(ctx, "git", "config", "--global", "--add", "safe.directory", "*")
 
 	workspace := guestWorkspaceDir
@@ -383,8 +404,9 @@ func RunGuestPrepare(ctx context.Context, cfg GuestConfig) error {
 	}
 
 	// Best-effort git identity and safe.directory, matching the bootstrap.
-	_, _ = g.run(ctx, "git", "config", "--global", "user.name", "Albert Code Agent")
-	_, _ = g.run(ctx, "git", "config", "--global", "user.email", "albert-code@noreply.etalab.gouv.fr")
+	gitName, gitEmail := guestGitIdentity(cfg)
+	_, _ = g.run(ctx, "git", "config", "--global", "user.name", gitName)
+	_, _ = g.run(ctx, "git", "config", "--global", "user.email", gitEmail)
 	_, _ = g.run(ctx, "git", "config", "--global", "--add", "safe.directory", "*")
 	return nil
 }

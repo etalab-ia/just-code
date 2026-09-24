@@ -82,6 +82,24 @@ func TestGuestPathIncludesAdminDirsAndOpencodeBin(t *testing.T) {
 	}
 }
 
+func TestGuestGitIdentityConfiguredAndDefault(t *testing.T) {
+	// Configured values win; empty fields fall back per-field, so a
+	// partially configured identity keeps the documented default for the
+	// missing half only.
+	name, email := guestGitIdentity(GuestConfig{GitName: "Luis", GitEmail: "luis@example.gouv.fr"})
+	if name != "Luis" || email != "luis@example.gouv.fr" {
+		t.Fatalf("configured identity = %q <%s>", name, email)
+	}
+	name, email = guestGitIdentity(GuestConfig{})
+	if name != "Albert Code Agent" || email != "albert-code@noreply.etalab.gouv.fr" {
+		t.Fatalf("default identity = %q <%s>", name, email)
+	}
+	name, email = guestGitIdentity(GuestConfig{GitName: "Luis"})
+	if name != "Luis" || email != "albert-code@noreply.etalab.gouv.fr" {
+		t.Fatalf("partial identity = %q <%s>", name, email)
+	}
+}
+
 func TestParseDefaultInterface(t *testing.T) {
 	out := "   route to: default\ndestination: default\n       mask: default\n    gateway: 192.168.64.1\n  interface: en0\n      flags: <UP,GATEWAY>\n"
 	if got := parseDefaultInterface(out); got != "en0" {

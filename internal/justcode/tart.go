@@ -284,11 +284,29 @@ func (t *Tart) guestRun(ctx context.Context, args ...string) error {
 }
 
 // BackendArgs returns the argv for the detached bootstrap invocation:
-// `tart exec -i <vm> <local binary> __guest-bootstrap <port> <username> <mtu> <model>`.
+// `tart exec -i <vm> <local binary> __guest-bootstrap <port> <username> <mtu> <model> <gitName> <gitEmail>`.
 // Secrets are deliberately absent: they travel on stdin only. The model
-// selection (P10) rides argv: it is non-secret managed configuration.
-func BackendArgs(vm, localBinary, port, username, mtu, model string) []string {
-	return []string{"exec", "-i", vm, localBinary, GuestBootstrapCommand, port, username, mtu, model}
+// selection (P10) and the git identity (P11) ride argv: both are non-secret
+// managed configuration.
+func BackendArgs(vm, localBinary, port, username, mtu, model, gitName, gitEmail string) []string {
+	return []string{"exec", "-i", vm, localBinary, GuestBootstrapCommand, port, username, mtu, model, gitName, gitEmail}
+}
+
+// hostGitIdentity reads the git identity (P11, written by setup) from the
+// host user settings. The guest helpers cannot read it themselves: they run
+// inside the VM, where the host settings file does not exist, so the
+// identity travels on argv like the model — never on stdin (it is not a
+// secret, but stdin is the secrets channel and must stay unambiguous).
+func hostGitIdentity() (name, email string) {
+	path, err := UserSettingsPath()
+	if err != nil {
+		return "", ""
+	}
+	us, err := ReadUserSettings(DefaultFS, path)
+	if err != nil {
+		return "", ""
+	}
+	return us.GitName, us.GitEmail
 }
 
 // SecretsReader returns the bootstrap stdin payload: password on line 1, API
@@ -326,7 +344,8 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 		return err
 	}
 	stdin := SecretsReader(cfg.Password, key)
-	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model)
+	name, email := hostGitIdentity()
+	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model, name, email)
 	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
 }
 
@@ -598,11 +617,17 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	model := t.OpenCodeOverlay.EffectiveOverlay().Model
 	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key),
-		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand, t.OpenCodeOverlay.EffectiveOverlay().Model); err != nil {
+		// argv: __guest-secrets <username> <model> — the consumer reads
+		// Username at position 1 and Model at position 2.
+		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand, cfg.Username, model); err != nil {
 		return err
 	}
-	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand); err != nil {
+	name, email := hostGitIdentity()
+	// argv: __guest-prepare <username> <gitName> <gitEmail> — the consumer
+	// reads Username at 1, GitName at 2, GitEmail at 3.
+	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand, cfg.Username, name, email); err != nil {
 		return err
 	}
 	interactive := t.Interactive
