@@ -27,9 +27,15 @@ import (
 func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
 	t.Helper()
 	home := t.TempDir()
+	// os.UserHomeDir reads HOME on unix and USERPROFILE on windows;
+	// os.UserConfigDir reads XDG_CONFIG_HOME on unix and AppData on
+	// windows. Set both families so the disposable HOME is honored on
+	// every CI leg.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	// msbRuntimeHome reads HOME; an empty dir means "not installed", which
 	// keeps the primitive probe path deterministic.
 	return justcode.DefaultStateDir(), ""
