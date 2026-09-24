@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // Reconciliation and non-destructive restart (P07). The goal: applying setup
@@ -68,13 +70,43 @@ func (p ReconcilePlan) NeedsRecreate() bool {
 	return false
 }
 
+// credentialGenJSON reads the rotation marker from either its historical
+// numeric form (P07 wrote `credentialGen: 0`) or the current string composite
+// (P09). A decode failure in the old format would otherwise make every
+// pre-existing state file unreadable, blocking reconciliation of instances
+// the upgrade should simply refresh.
+type credentialGenJSON string
+
+func (g *credentialGenJSON) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "null" {
+		*g = ""
+		return nil
+	}
+	// Numeric form (possibly quoted by a middle version): accept 0 and any
+	// integer, mapping them to the empty marker so the next apply records
+	// the real composite.
+	if n, err := strconv.Atoi(strings.Trim(s, `"`)); err == nil {
+		_ = n
+		*g = ""
+		return nil
+	}
+	return json.Unmarshal(data, (*string)(g))
+}
+
+func (g credentialGenJSON) MarshalJSON() ([]byte, error) {
+	if g == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(string(g))
+}
+
 // InstanceState is the persisted desired/applied record of one instance
 // (P07). It lives in host state, never in the workspace, and never carries
 // credential values: the config revision is a hash of non-secret fields, and
-// credentials are tracked only through opaque generations (P09 wires real
-// generations; the env-sourced key has none, so its refresh is always
-// planned — idempotent, and the only way to pick up a rotated key without
-// storing anything derived from it).
+// credentials are tracked only through the binding-set revision (P09) — a
+// hash of kinds, sources, guest variables and allowed hosts — plus the list
+// of store-bound kinds, which revocation uses to decide what it can reach.
 type InstanceState struct {
 	SchemaVersion int `json:"schemaVersion"`
 	// Instance is the instance this state belongs to.
@@ -87,8 +119,21 @@ type InstanceState struct {
 	// ConfigRevision is the hash of the non-secret desired config that was
 	// applied. Identical revision + healthy guest = no-op.
 	ConfigRevision string `json:"configRevision"`
-	// CredentialGen is the opaque credential generation applied (P09).
-	CredentialGen int `json:"credentialGen"`
+	// CredentialRev is the hash of the applied binding-set descriptor (P09).
+	// A value rotation within an unchanged set does not move it: the secret
+	// reference re-resolves at the next boot.
+	CredentialRev string `json:"credentialRev,omitempty"`
+	// CredentialGen is the non-secret rotation marker applied (P09): the
+	// composite store generation of the binding set at apply time. A value
+	// rotation bumps it, which is the only signal a rotation has on a
+	// healthy running instance. P07-era state wrote it as a JSON number
+	// (always 0); both forms are accepted on read.
+	CredentialGen credentialGenJSON `json:"credentialGen,omitempty"`
+	// BoundCredentials lists the credential kinds that were store-sourced at
+	// apply time, sorted. Revocation (auth remove) uses it to skip instances
+	// whose credential came from the environment, which just-code cannot
+	// revoke. A missing state file means "unknown", treated as bound.
+	BoundCredentials []string `json:"boundCredentials,omitempty"`
 	// Pending journals the operations of the current apply that have not
 	// completed yet, so an interrupted apply resumes instead of restarting
 	// from scratch or silently skipping.
@@ -108,15 +153,25 @@ type DesiredState struct {
 	Isolation    Isolation
 	WorkspaceDir string
 	Image        string
-	// CredentialGen is the opaque generation of the credential set (P09).
-	CredentialGen int
+	// CredentialRev is the hash of the desired binding-set descriptor (P09).
+	CredentialRev string
+	// CredentialGeneration is the non-secret rotation marker of the stored
+	// credential (P09): a host-side counter bumped by every `auth add`. The
+	// binding-set revision is unchanged by a pure value rotation (the
+	// reference re-resolves at boot), so without this marker a rotation on a
+	// healthy running instance would take the no-op path and keep serving
+	// the old credential.
+	CredentialGeneration string
+	// BoundCredentials lists the store-sourced credential kinds (P09).
+	BoundCredentials []string
 	// Non-secret server credentials participate in the revision.
 	Username string
 }
 
 // ConfigRevision hashes the non-secret configuration. Credential values
 // (API key, server password) are deliberately excluded: the state file must
-// not contain anything derived from a secret.
+// not contain anything derived from a secret. The binding-set revision is a
+// hash of metadata, so it participates.
 func (d DesiredState) ConfigRevision() string {
 	h := sha256.New()
 	for _, part := range []string{
@@ -126,7 +181,8 @@ func (d DesiredState) ConfigRevision() string {
 		filepath.Clean(d.WorkspaceDir),
 		d.Image,
 		d.Username,
-		fmt.Sprintf("gen:%d", d.CredentialGen),
+		"rev:" + d.CredentialRev,
+		"gen:" + d.CredentialGeneration,
 	} {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{0})
@@ -147,8 +203,9 @@ type ReconcileFacts struct {
 	// CreationFixedChanged: isolation, mount or image differ from what the
 	// instance was created with.
 	CreationFixedChanged bool
-	// CredentialChanged: the credential generation differs from the applied
-	// one (always true for the env-sourced key, which has no generation).
+	// CredentialChanged: the desired binding-set revision differs from the
+	// applied one (a value rotation within an unchanged set does NOT set it:
+	// the reference re-resolves at the next boot).
 	CredentialChanged bool
 }
 
@@ -280,6 +337,18 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if err := m.validateConfig(); err != nil {
 		return err
 	}
+	// Resolve the binding set once for the whole apply: the desired state,
+	// the persisted BoundCredentials record, and the refresh operation all
+	// derive from it. Values travel only through withHostSecrets below.
+	// A resolution failure must not block the apply: an instance that only
+	// needs a restart (or a stop/clean) must not become unusable because a
+	// credential is missing. The set is then recorded as unresolved rather
+	// than empty, so revocation cannot mistake it for "nothing was bound".
+	bindings, err := m.resolveBindings(ctx)
+	resolved := err == nil
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.\n", m.InstanceName(), err)
+	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
@@ -292,7 +361,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	desired := m.desiredState()
+	desired := m.desiredState(resolved, bindings, applied)
 	facts, err := m.reconcileFacts(ctx, applied, desired)
 	if err != nil {
 		return err
@@ -319,62 +388,104 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 		return nil
 	}
 
+	// A credential-dependent operation cannot run on an unresolved binding
+	// set. Deriving the desired secret set from nothing and applying it would
+	// turn "reuse the persisted references" into their removal — the patch
+	// semantics make the empty set authoritative. Stop before the first side
+	// effect, with the journal intact, so a later run with a resolvable
+	// credential resumes here.
+	if !resolved && containsCredentialOps(pending) {
+		return fmt.Errorf("cannot apply the credential operations of %s (%s): the credential set could not be resolved (%v). "+
+			"Store or restore the credential, then retry; nothing was changed",
+			m.InstanceName(), joinOps(pending), err)
+	}
+
 	// Persist the journal before the first side effect and advance it after
 	// each successful operation: an abrupt kill between ops must leave a
 	// progress record, or the next run would replay completed mutations.
+	// The whole apply runs under withHostSecrets so the SDK's env references
+	// (refresh-credentials, and the Start paths that re-resolve at boot)
+	// find their transport variables without any value being persisted.
 	st := desired.toState()
 	st.Pending = opsToJournal(pending)
 	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
 		return fmt.Errorf("persisting reconcile journal for %s: %w", m.InstanceName(), err)
 	}
-	for i, op := range pending {
-		if err := m.applyReconcileOp(ctx, op); err != nil {
-			// Journal the remaining ops: the next run resumes here.
-			st.Pending = opsToJournal(pending[i:])
-			_ = WriteInstanceState(DefaultFS, path, st)
-			return fmt.Errorf("reconcile %s failed at %s (will resume there): %w", m.InstanceName(), op, err)
-		}
-		if i < len(pending)-1 {
-			st.Pending = opsToJournal(pending[i+1:])
-			if err := WriteInstanceState(DefaultFS, path, st); err != nil {
-				return fmt.Errorf("advancing reconcile journal for %s: %w", m.InstanceName(), err)
+	return withHostSecrets(bindings, func() error {
+		for i, op := range pending {
+			if err := m.applyReconcileOp(ctx, op, bindings); err != nil {
+				// Journal the remaining ops: the next run resumes here.
+				st.Pending = opsToJournal(pending[i:])
+				_ = WriteInstanceState(DefaultFS, path, st)
+				return fmt.Errorf("reconcile %s failed at %s (will resume there): %w", m.InstanceName(), op, err)
+			}
+			if i < len(pending)-1 {
+				st.Pending = opsToJournal(pending[i+1:])
+				if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+					return fmt.Errorf("advancing reconcile journal for %s: %w", m.InstanceName(), err)
+				}
 			}
 		}
-	}
-	st.Pending = nil
-	return WriteInstanceState(DefaultFS, path, st)
+		st.Pending = nil
+		return WriteInstanceState(DefaultFS, path, st)
+	})
 }
 
-func (m *MicrosandboxRuntime) desiredState() DesiredState {
-	return DesiredState{
-		Instance:      m.InstanceName(),
-		Isolation:     m.cfg.Isolation,
-		WorkspaceDir:  m.cfg.WorkspaceDir,
-		Image:         msbImage,
-		CredentialGen: 0, // env-sourced key has no generation (P09 wires one)
-		Username:      m.cfg.Username,
+// desiredState builds the desired record for an apply. When the binding set
+// could not be resolved, the credential fields are carried over from the
+// applied state rather than computed from an empty set: the bound-entry
+// markers must survive so a later revocation still knows what the instance
+// resolved from, and the revision must not appear to change for a reason that
+// is only a missing credential. The apply itself refuses the
+// credential-dependent operations in that case (see Reconcile), so carrying
+// the revision cannot leave a stale refresh unperformed.
+func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBinding, applied *InstanceState) DesiredState {
+	d := DesiredState{
+		Instance:     m.InstanceName(),
+		Isolation:    m.cfg.Isolation,
+		WorkspaceDir: m.cfg.WorkspaceDir,
+		Image:        msbImage,
+		Username:     m.cfg.Username,
 	}
+	if resolved {
+		d.CredentialRev = bindingsRevision(bindings)
+		d.BoundCredentials = storeBoundEntries(bindings)
+		d.CredentialGeneration = storeGenerationOf(DefaultFS, DefaultStateDir(), bindings)
+		return d
+	}
+	if applied != nil {
+		d.CredentialRev = applied.CredentialRev
+		d.CredentialGeneration = string(applied.CredentialGen)
+		d.BoundCredentials = append([]string(nil), applied.BoundCredentials...)
+	} else {
+		// Nothing applied to carry over, but an earlier apply outside the
+		// journal may still have left a store-bound secret behind: record
+		// the unknown marker so revocation does not skip this instance.
+		d.BoundCredentials = []string{pendingBoundEntry}
+	}
+	return d
 }
 
 func (d DesiredState) toState() InstanceState {
 	return InstanceState{
-		SchemaVersion:  instanceStateSchemaVersion,
-		Instance:       d.Instance,
-		Isolation:      string(d.Isolation),
-		WorkspaceDir:   filepath.Clean(d.WorkspaceDir),
-		Image:          d.Image,
-		ConfigRevision: d.ConfigRevision(),
-		CredentialGen:  d.CredentialGen,
+		SchemaVersion:    instanceStateSchemaVersion,
+		Instance:         d.Instance,
+		Isolation:        string(d.Isolation),
+		WorkspaceDir:     filepath.Clean(d.WorkspaceDir),
+		Image:            d.Image,
+		ConfigRevision:   d.ConfigRevision(),
+		CredentialRev:    d.CredentialRev,
+		CredentialGen:    credentialGenJSON(d.CredentialGeneration),
+		BoundCredentials: append([]string(nil), d.BoundCredentials...),
 	}
 }
 
 // reconcileFacts gathers what the plan needs from the guest. All guest
 // interaction lives here and in applyReconcileOp; the plan itself is pure.
 func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *InstanceState, desired DesiredState) (ReconcileFacts, error) {
-	// The env-sourced key has no generation of its own (P09 wires one), so
-	// the credential generation travels inside the config revision. When
-	// the applied revision matches the desired one, the credential set is
-	// by definition unchanged; without this, every reconcile would take the
+	// The binding-set revision travels inside the config revision, so when
+	// the applied revision matches the desired one the credential set is by
+	// definition unchanged; without this, every reconcile would take the
 	// refresh+restart path and a true no-op would be unreachable.
 	facts := ReconcileFacts{CredentialChanged: applied == nil || applied.ConfigRevision != desired.ConfigRevision()}
 	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
@@ -429,12 +540,12 @@ func (m *MicrosandboxRuntime) workspaceMountChanged(ctx context.Context) bool {
 
 // applyReconcileOp executes one plan operation. Every operation is
 // idempotent, which is what makes the journal safe to replay.
-func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op ReconcileOp) error {
+func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op ReconcileOp, bindings []resolvedBinding) error {
 	switch op {
 	case OpCreate, OpStartVM:
 		return m.Start(ctx)
 	case OpRefreshCredentials:
-		return m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), m.cfg.APIKey)
+		return m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings))
 	case OpRestartBackend:
 		return m.launchBackend(ctx)
 	case OpRestartVM:
@@ -445,6 +556,21 @@ func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op Reconcile
 	default:
 		return fmt.Errorf("unsupported reconcile op %q", op)
 	}
+}
+
+// containsCredentialOps reports whether a plan depends on the resolved
+// credential set. OpRefreshCredentials persists the secret references;
+// OpCreate and OpStartVM resolve them while starting. The restart and
+// backend-relaunch operations do not (their boots re-resolve whatever the
+// persisted references name), so an unresolved set can still serve them.
+func containsCredentialOps(ops []ReconcileOp) bool {
+	for _, op := range ops {
+		switch op {
+		case OpRefreshCredentials, OpCreate, OpStartVM:
+			return true
+		}
+	}
+	return false
 }
 
 func opsToJournal(ops []ReconcileOp) []string {
@@ -491,6 +617,11 @@ func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
 	lossSummary := "guest sessions, tools installed in the guest, and guest-only files"
 	fmt.Printf("Recreating %s. This DESTROYS: %s.\n", m.InstanceName(), lossSummary)
 	if err := m.validateConfig(); err != nil {
+		return err
+	}
+	// Resolve credentials before the destructive Clean: a resolution failure
+	// must not destroy a sandbox that Start would then refuse to recreate.
+	if _, err := m.resolveBindings(ctx); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {

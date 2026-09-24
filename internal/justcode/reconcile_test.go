@@ -113,9 +113,9 @@ func TestConfigRevisionExcludesSecrets(t *testing.T) {
 		t.Fatal("revision must be deterministic")
 	}
 	changed := base
-	changed.CredentialGen = 7
+	changed.CredentialRev = "abc123"
 	if base.ConfigRevision() == changed.ConfigRevision() {
-		t.Fatal("credential generation must participate in the revision")
+		t.Fatal("the binding-set revision must participate in the revision")
 	}
 	// Workspace path normalization: the same directory expressed with a
 	// trailing separator or ./ must not look like a change.
@@ -166,7 +166,7 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 	}
 	// Point the state at a temp dir by writing the applied state through
 	// the same path the runtime will read.
-	desired := m.desiredState()
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	if err := WriteInstanceState(DefaultFS, path, desired.toState()); err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestReconcileResumesInterruptedApply(t *testing.T) {
 	client := &fakeMSBClient{exists: true, status: "stopped"}
 	m := newTestMicrosandbox(t, client)
 
-	desired := m.desiredState()
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	// Simulate a crash after refresh-credentials, with the journal written.
 	st := desired.toState()
@@ -245,7 +245,7 @@ func TestReconcileFinishesPendingJournalDespiteHealthyGuest(t *testing.T) {
 	m.Probe = func(context.Context, string, string, string) HealthProbe {
 		return HealthProbe{Healthy: true}
 	}
-	desired := m.desiredState()
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	st := desired.toState()
 	st.Pending = []string{"refresh-credentials", "restart-vm"}
@@ -297,7 +297,7 @@ func TestReconcileSurfacesRecreateAsError(t *testing.T) {
 	m.Probe = func(context.Context, string, string, string) HealthProbe {
 		return HealthProbe{Healthy: true}
 	}
-	desired := m.desiredState()
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	st := desired.toState()
 	st.Isolation = string(IsolationFull) // differs from desired (backend)
@@ -378,4 +378,91 @@ func errorsAs(err error, target **ErrRecreateNeeded) bool {
 		return true
 	}
 	return false
+}
+
+// TestReconcileRefusesCredentialOpsWhenUnresolved pins the Codex P2 on the
+// second review: with an unresolved binding set, the desired secret set is
+// empty, and applying it would turn "reuse the persisted references" into
+// their removal — the patch semantics make an empty set authoritative.
+// Nothing may be changed, and the journal must survive so a later run with a
+// resolvable credential resumes here.
+func TestReconcileRefusesCredentialOpsWhenUnresolved(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "stopped"}
+	m := newTestMicrosandbox(t, client)
+	// No resolvable credential: neither the env key nor a stored entry.
+	m.cfg.APIKey = ""
+	m.cfg.CredentialRef = "missing-ref"
+	m.credentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
+	// Point the state at a temp dir by writing the applied state through
+	// the same path the runtime reads.
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	// A journal left by a failed SDK refresh: the retry must not replay it
+	// against an empty desired set.
+	st := m.desiredState(false, nil, nil).toState()
+	st.Pending = []string{"refresh-credentials", "start-vm"}
+	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Remove(path)
+		_ = os.RemoveAll(filepath.Dir(path))
+	}()
+
+	err := m.Reconcile(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "credential set could not be resolved") {
+		t.Fatalf("an unresolved credential set must refuse the credential ops: %v", err)
+	}
+	for _, call := range client.calls {
+		switch {
+		case strings.HasPrefix(call, "modify "), strings.HasPrefix(call, "start "), strings.HasPrefix(call, "create"):
+			t.Fatalf("no credential-dependent operation may run: %q", call)
+		}
+	}
+	// The journal survives, so the apply resumes once the credential is back.
+	after, rerr := ReadInstanceState(DefaultFS, path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(after.Pending) == 0 {
+		t.Fatal("the journal must survive a refused apply")
+	}
+	// The operations that do not need the credential set stay available: a
+	// plan of restart/relaunch only must not be blocked.
+	if containsCredentialOps([]ReconcileOp{OpRestartBackend}) || containsCredentialOps([]ReconcileOp{OpRestartVM}) {
+		t.Fatal("restart and backend-relaunch do not depend on the credential set")
+	}
+	if !containsCredentialOps([]ReconcileOp{OpRefreshCredentials}) || !containsCredentialOps([]ReconcileOp{OpStartVM}) {
+		t.Fatal("refresh-credentials and start-vm do depend on the credential set")
+	}
+}
+
+// TestInstanceStateReadsLegacyNumericCredentialGen pins the fifth review's
+// P1: P07-era state files serialize `credentialGen` as a JSON number, and the
+// upgrade must read them (mapping the number to the empty marker so the next
+// apply records the real composite) instead of failing to unmarshal.
+func TestInstanceStateReadsLegacyNumericCredentialGen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reconcile.json")
+	legacy := []byte(`{"schemaVersion":1,"instance":"jc-x","isolation":"backend","workspaceDir":"/w","image":"img","configRevision":"abc","credentialGen":0}` + "\n")
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := ReadInstanceState(DefaultFS, path)
+	if err != nil {
+		t.Fatalf("a P07-era numeric credentialGen must read cleanly: %v", err)
+	}
+	if string(st.CredentialGen) != "" {
+		t.Fatalf("the legacy number maps to the empty marker: %q", st.CredentialGen)
+	}
+	// The current string composite round-trips.
+	st.CredentialGen = credentialGenJSON("albert@native:2;github@file:1")
+	if err := WriteInstanceState(DefaultFS, path, *st); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ReadInstanceState(DefaultFS, path)
+	if err != nil || string(again.CredentialGen) != "albert@native:2;github@file:1" {
+		t.Fatalf("string composite round trip: %+v, %v", again, err)
+	}
 }

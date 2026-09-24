@@ -47,6 +47,17 @@ type Config struct {
 	// not read.
 	AgentVMResourcesErr error
 	APIKey              string
+	// CredentialRef names the stored credential that provides the Albert key
+	// (P08/P09): a reference, never a value. Precedence at resolution time is
+	// JUST_CODE_CREDENTIAL_REF > project manifest credentialRef > user
+	// settings credentialRef; empty means the legacy chain (ALBERT_API_KEY
+	// environment, then the default stored albert credential).
+	CredentialRef string
+	// GuestCredentialsAcknowledged records the explicit
+	// --acknowledge-guest-credentials flag (P09): Tart and agent-vm transport
+	// the credential into the guest in plaintext, so starting them requires
+	// this acknowledgement.
+	GuestCredentialsAcknowledged bool
 	// StartTimeout bounds the backend health wait for the attach flow.
 	// StartTimeoutErr records an invalid JUST_CODE_START_TIMEOUT so that
 	// commands which never start a runtime (stop, clean, logs, doctor, check)

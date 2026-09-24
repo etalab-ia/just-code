@@ -31,6 +31,9 @@ type Tart struct {
 	// Interactive runs a foreground command attached to the terminal. It is a
 	// seam for tests; production uses RunInteractive.
 	Interactive func(name string, args ...string) error
+	// CredentialRead reads a stored credential; production uses
+	// readStoredWith. It is a test seam.
+	CredentialRead credentialReader
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
@@ -313,7 +316,13 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 		return err
 	}
 
-	stdin := SecretsReader(cfg.Password, cfg.APIKey)
+	// The credential is resolved at launch time (credentialRef, legacy
+	// environment, or the store) and travels on stdin only — never argv.
+	key, _, _, _, err := t.resolveAlbertFor(ctx)
+	if err != nil {
+		return err
+	}
+	stdin := SecretsReader(cfg.Password, key)
 	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU)
 	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
 }
@@ -355,20 +364,39 @@ func (t *Tart) startVM(ctx context.Context) error {
 // Start brings the OpenCode backend up, mirroring the Tart branch of
 // `just start` and `just code`. In isolation full it only brings the VM up:
 // the TUI is launched interactively by RunAgent, so no server is started.
-// validateConfig checks the deterministic start-time configuration (API key,
-// MTU). Restart calls it before the destructive Clean so a configuration
-// error cannot destroy a VM that Start would then refuse to recreate.
-func (t *Tart) validateConfig() error {
-	if t.Config.APIKey == "" {
-		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
+// validateConfig checks the deterministic start-time configuration
+// (credential, acknowledgement, MTU). Restart calls it before the destructive
+// Clean so a configuration error cannot destroy a VM that Start would then
+// refuse to recreate.
+//
+// Tart has no secret proxy: the credential travels into the guest in
+// plaintext (stdin at launch, 0600 env file for the TUI), where any process —
+// the agent included — can read and exfiltrate it. Starting therefore
+// requires the explicit --acknowledge-guest-credentials flag (P09, issue
+// #74); the warning stays so the choice is visible on every start.
+func (t *Tart) validateConfig(ctx context.Context) error {
+	if !t.Config.GuestCredentialsAcknowledged {
+		return fmt.Errorf("tart hands the Albert credential to the guest in plaintext, where any process (the agent included) can read it; " +
+			"pass --acknowledge-guest-credentials to accept this, or use --microsandbox, which keeps the credential behind the secret proxy")
+	}
+	if _, _, _, _, err := t.resolveAlbertFor(ctx); err != nil {
+		return err
 	}
 	warnUnprotectedRuntime("Tart")
 	return ValidateMTU(t.Config.TartMTU)
 }
 
+// resolveAlbertFor routes the Albert resolution through the test seam.
+func (t *Tart) resolveAlbertFor(ctx context.Context) (string, bindingSource, string, string, error) {
+	if t.CredentialRead != nil {
+		return resolveAlbertWith(t.CredentialRead, ctx, t.Config, "")
+	}
+	return resolveAlbert(ctx, t.Config, "")
+}
+
 func (t *Tart) Start(ctx context.Context) error {
 	cfg := t.Config
-	if err := t.validateConfig(); err != nil {
+	if err := t.validateConfig(ctx); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
@@ -526,7 +554,7 @@ func (t *Tart) Recreate(ctx context.Context) error {
 // gate. A rejected workspace or bad config must abort before any destructive
 // step, so the VM and its persistent state survive.
 func (t *Tart) RestartPreflights(ctx context.Context) error {
-	if err := t.validateConfig(); err != nil {
+	if err := t.validateConfig(ctx); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(t.Config.WorkspaceDir, 0o755); err != nil {
@@ -563,7 +591,11 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err := t.guestRun(ctx, "/bin/chmod", "755", guestLocalBinary); err != nil {
 		return err
 	}
-	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, cfg.APIKey),
+	key, _, _, _, err := t.resolveAlbertFor(ctx)
+	if err != nil {
+		return err
+	}
+	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key),
 		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand); err != nil {
 		return err
 	}

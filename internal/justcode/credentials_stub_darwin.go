@@ -34,6 +34,10 @@ func (*WinCredStore) Verify(ctx context.Context) error {
 		Err: fmt.Errorf("the Windows Credential Manager adapter is not compiled on this platform")}
 }
 
+func (*WinCredStore) Generation(ctx context.Context, kind CredentialKind) (string, error) {
+	return "", nil
+}
+
 type SecretServiceStore struct{}
 
 func (*SecretServiceStore) Kind() string { return "secret-service" }
@@ -52,4 +56,8 @@ func (*SecretServiceStore) Remove(ctx context.Context, kind CredentialKind) erro
 func (*SecretServiceStore) Verify(ctx context.Context) error {
 	return &StoreError{Op: "verify", Kind: "secret-service", State: "unavailable",
 		Err: fmt.Errorf("the Secret Service adapter is not compiled on this platform")}
+}
+
+func (*SecretServiceStore) Generation(ctx context.Context, kind CredentialKind) (string, error) {
+	return "", nil
 }

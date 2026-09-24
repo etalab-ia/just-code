@@ -32,6 +32,10 @@ func (*KeychainStore) Verify(ctx context.Context) error {
 		Err: fmt.Errorf("the Keychain adapter is not compiled on this platform")}
 }
 
+func (*KeychainStore) Generation(ctx context.Context, kind CredentialKind) (string, error) {
+	return "", nil
+}
+
 type WinCredStore struct{}
 
 func (*WinCredStore) Kind() string { return "credential-manager" }
@@ -50,4 +54,8 @@ func (*WinCredStore) Remove(ctx context.Context, kind CredentialKind) error {
 func (*WinCredStore) Verify(ctx context.Context) error {
 	return &StoreError{Op: "verify", Kind: "credential-manager", State: "unavailable",
 		Err: fmt.Errorf("the Windows Credential Manager adapter is not compiled on this platform")}
+}
+
+func (*WinCredStore) Generation(ctx context.Context, kind CredentialKind) (string, error) {
+	return "", nil
 }

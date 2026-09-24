@@ -37,11 +37,14 @@ type fakeMSBClient struct {
 	shellErr     error
 	attachErr    error
 
-	calls       []string
-	created     *msbSandboxSpec
-	modifiedEnv map[string]string
-	modifiedKey string
-	execResults []fakeMSBExecResult
+	calls            []string
+	created          *msbSandboxSpec
+	modifiedEnv      map[string]string
+	modifiedBindings []msbSecretBinding
+	rotatedBindings  []msbSecretBinding
+	removedSecrets   []string
+	removedLive      bool
+	execResults      []fakeMSBExecResult
 	// execDefault is returned once execResults is drained; nil means success,
 	// which preserves the fake's historical default.
 	execDefault *fakeMSBExecResult
@@ -78,7 +81,7 @@ func (f *fakeMSBClient) Create(_ context.Context, spec msbSandboxSpec) error {
 	f.record("create")
 	copy := spec
 	copy.Env = cloneStringMap(spec.Env)
-	copy.AllowHosts = append([]string(nil), spec.AllowHosts...)
+	copy.Bindings = append([]msbSecretBinding(nil), spec.Bindings...)
 	f.created = &copy
 	return f.createErr
 }
@@ -88,10 +91,23 @@ func (f *fakeMSBClient) Start(_ context.Context, name string) error {
 	return f.startErr
 }
 
-func (f *fakeMSBClient) ModifyNextStart(_ context.Context, name string, env map[string]string, apiKey string) error {
+func (f *fakeMSBClient) ModifyNextStart(_ context.Context, name string, env map[string]string, bindings []msbSecretBinding) error {
 	f.record("modify " + name)
 	f.modifiedEnv = cloneStringMap(env)
-	f.modifiedKey = apiKey
+	f.modifiedBindings = append([]msbSecretBinding(nil), bindings...)
+	return f.modifyErr
+}
+
+func (f *fakeMSBClient) RotateSecretsLive(_ context.Context, name string, bindings []msbSecretBinding) error {
+	f.record("rotate " + name)
+	f.rotatedBindings = append([]msbSecretBinding(nil), bindings...)
+	return f.modifyErr
+}
+
+func (f *fakeMSBClient) RemoveSecrets(_ context.Context, name string, guestEnvs []string, live bool) error {
+	f.record("remove-secrets " + name)
+	f.removedSecrets = append(f.removedSecrets, guestEnvs...)
+	f.removedLive = live
 	return f.modifyErr
 }
 
@@ -180,10 +196,19 @@ func newTestMicrosandbox(t *testing.T, client *fakeMSBClient) *MicrosandboxRunti
 		Password:     "pw",
 	})
 	m.Client = client
+	// Approvals live in host state; tests must never read the real one.
+	m.StateDir = t.TempDir()
 	m.launchRetryDelay = time.Millisecond
 	// Default to "backend not healthy" so tests exercise the relaunch path.
 	m.Probe = func(context.Context, string, string, string) HealthProbe { return HealthProbe{} }
 	return m
+}
+
+// testBindings builds the binding set the runtime resolves with a legacy
+// env-sourced Albert credential: the required albert binding only.
+func testBindings(value string) []resolvedBinding {
+	b, _ := bindingForKind(CredentialAlbert)
+	return []resolvedBinding{{msbSecretBinding: b, source: bindingSourceEnv, value: value}}
 }
 
 func countCalls(client *fakeMSBClient, prefix string) int {
@@ -256,6 +281,13 @@ func TestMicrosandboxStartRequiresAPIKey(t *testing.T) {
 	client := &fakeMSBClient{}
 	m := NewMicrosandboxRuntime(Config{WorkspaceDir: t.TempDir()})
 	m.Client = client
+	m.StateDir = t.TempDir()
+	// The credential store is not what this test exercises: inject the
+	// resolution seam so a missing key is reported as missing, not as a
+	// store-unreachable error on hosts without a native store.
+	m.credentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
 	if err := m.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "ALBERT_API_KEY") {
 		t.Fatalf("expected API key error, got %v", err)
 	}
@@ -277,8 +309,18 @@ func TestMicrosandboxStartNew(t *testing.T) {
 	if spec.Image != msbImage || spec.Workspace != m.cfg.WorkspaceDir {
 		t.Fatalf("created spec = %+v", spec)
 	}
-	if spec.APIKey != "key" || !reflect.DeepEqual(spec.AllowHosts, []string{msbAllowHost}) {
-		t.Fatalf("secret config = key %q, hosts %v", spec.APIKey, spec.AllowHosts)
+	if len(spec.Bindings) != 1 || spec.Bindings[0].GuestEnv != msbAPISecretEnv ||
+		!reflect.DeepEqual(spec.Bindings[0].AllowHosts, []string{msbAllowHost}) {
+		t.Fatalf("binding config = %+v", spec.Bindings)
+	}
+	// The spec carries binding metadata only; the value transits through the
+	// host env reference, and the create-time sentinel is rotated to it right
+	// after creation, before the start script runs.
+	if !hasCall(client, "rotate "+msbSandbox) {
+		t.Fatalf("the bootstrap sentinel was not rotated to the env reference; calls: %v", client.calls)
+	}
+	if len(client.rotatedBindings) != 1 || client.rotatedBindings[0].HostEnv == "" {
+		t.Fatalf("rotate bindings = %+v", client.rotatedBindings)
 	}
 	if spec.Env["OPENCODE_SERVER_PASSWORD"] != "pw" || spec.Env["OPENCODE_SERVER_USERNAME"] != "opencode" {
 		t.Fatalf("credentials missing from guest env: %v", spec.Env)
@@ -363,8 +405,11 @@ func TestMicrosandboxStartStoppedRefreshesSecretAndRelaunches(t *testing.T) {
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if client.modifiedKey != "key" {
-		t.Fatalf("API key was not refreshed for next start: %q", client.modifiedKey)
+	if len(client.modifiedBindings) != 1 || client.modifiedBindings[0].GuestEnv != msbAPISecretEnv {
+		t.Fatalf("the albert binding was not refreshed for next start: %+v", client.modifiedBindings)
+	}
+	if client.modifiedBindings[0].HostEnv == "" {
+		t.Fatalf("the refresh must use the host env reference transport: %+v", client.modifiedBindings[0])
 	}
 	if client.modifiedEnv["OPENCODE_SERVER_PASSWORD"] != "pw" {
 		t.Fatalf("credentials were not refreshed: %v", client.modifiedEnv)
@@ -658,8 +703,7 @@ func TestMSBCreateOptions(t *testing.T) {
 		Image:       msbImage,
 		Env:         map[string]string{"OPENCODE_SERVER_USERNAME": "opencode"},
 		Workspace:   "/workspace-on-host",
-		APIKey:      "secret-value",
-		AllowHosts:  []string{msbAllowHost},
+		Bindings:    bindingsMetadata(testBindings("secret-value")),
 		StartScript: "exec opencode serve",
 	}
 	var cfg msb.SandboxConfig
@@ -686,10 +730,16 @@ func TestMSBCreateOptions(t *testing.T) {
 	if cfg.Ports[DefaultPort] != DefaultPort || cfg.Network == nil {
 		t.Fatalf("network config = ports %v, network %+v", cfg.Ports, cfg.Network)
 	}
-	if len(cfg.Secrets) != 1 || cfg.Secrets[0].Value != spec.APIKey || cfg.Secrets[0].EnvVar != "ALBERT_API_KEY" {
+	if len(cfg.Secrets) != 1 || cfg.Secrets[0].EnvVar != msbAPISecretEnv {
 		t.Fatalf("secret config = %+v", cfg.Secrets)
 	}
-	if !reflect.DeepEqual(cfg.Secrets[0].Allow, spec.AllowHosts) {
+	// The create surface only accepts inline values, so the binding is
+	// registered with the inert bootstrap sentinel — never the real value —
+	// and rotated to the host env reference right after creation.
+	if cfg.Secrets[0].Value != msbSecretBootstrapValue {
+		t.Fatalf("create must register the bootstrap sentinel, not a value: %+v", cfg.Secrets[0])
+	}
+	if !reflect.DeepEqual(cfg.Secrets[0].Allow, []string{msbAllowHost}) {
 		t.Fatalf("allowed hosts = %v", cfg.Secrets[0].Allow)
 	}
 	if cfg.Scripts["start"] != spec.StartScript {
@@ -699,13 +749,18 @@ func TestMSBCreateOptions(t *testing.T) {
 
 func TestMSBNextStartOptionsRefreshesSecret(t *testing.T) {
 	env := map[string]string{"OPENCODE_SERVER_PASSWORD": "new-password"}
-	options := msbNextStartOptions(env, "new-key")
+	bindings := bindingsMetadata(testBindings("new-key"))
+	options := msbNextStartOptions(env, bindings)
 	if options.Policy != msb.ModificationPolicyNextStart || !reflect.DeepEqual(options.Env, env) {
 		t.Fatalf("modify options = %+v", options)
 	}
-	secret := options.Secrets["ALBERT_API_KEY"]
-	if secret.Value != "new-key" || !reflect.DeepEqual(secret.AllowedHosts, []string{msbAllowHost}) {
-		t.Fatalf("updated secret = %+v", secret)
+	secret := options.Secrets[msbAPISecretEnv]
+	// The refresh is a host env *reference*: no value is ever persisted.
+	if secret.Value != "" || secret.Env != bindings[0].HostEnv {
+		t.Fatalf("updated secret must be an env reference, not a value: %+v", secret)
+	}
+	if !reflect.DeepEqual(secret.AllowedHosts, []string{msbAllowHost}) {
+		t.Fatalf("allowed hosts = %+v", secret)
 	}
 }
 
@@ -823,6 +878,12 @@ func TestMicrosandboxRestartRejectsBadConfigBeforeClean(t *testing.T) {
 	client := &fakeMSBClient{exists: true}
 	m := newTestMicrosandbox(t, client)
 	m.cfg.APIKey = ""
+	// The credential store is not what this test exercises: inject the
+	// resolution seam so a missing key is reported as missing, not as a
+	// store-unreachable error on hosts without a native store.
+	m.credentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
 	if err := m.Restart(context.Background()); err == nil {
 		t.Fatal("Restart must refuse a missing ALBERT_API_KEY")
 	} else if !strings.Contains(err.Error(), "ALBERT_API_KEY") {
@@ -841,12 +902,12 @@ func TestMicrosandboxRestartRejectsBadConfigBeforeClean(t *testing.T) {
 func TestMicrosandboxFullModeSpecUsesProxySecret(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{})
 	m.cfg.Isolation = IsolationFull
-	spec := m.sandboxSpec()
-	if spec.APIKey != "key" {
-		t.Fatalf("full mode must configure the proxy secret: %+v", spec)
+	spec := m.sandboxSpec(testBindings(m.cfg.APIKey))
+	if len(spec.Bindings) != 1 || spec.Bindings[0].GuestEnv != msbAPISecretEnv {
+		t.Fatalf("full mode must configure the proxy binding: %+v", spec)
 	}
-	if !reflect.DeepEqual(spec.AllowHosts, []string{msbAllowHost}) {
-		t.Fatalf("full mode must restrict proxy hosts to Albert: %v", spec.AllowHosts)
+	if !reflect.DeepEqual(spec.Bindings[0].AllowHosts, []string{msbAllowHost}) {
+		t.Fatalf("full mode must restrict proxy hosts to Albert: %v", spec.Bindings[0].AllowHosts)
 	}
 	if got := spec.Env[msbAPISecretEnv]; got != "" {
 		t.Fatalf("full mode guest env must not carry the real key: %v", spec.Env)
@@ -869,7 +930,7 @@ func TestMicrosandboxSpecNeverLeaksRealKey(t *testing.T) {
 	for _, isolation := range []Isolation{IsolationBackend, IsolationFull, ""} {
 		m := newTestMicrosandbox(t, &fakeMSBClient{})
 		m.cfg.Isolation = isolation
-		spec := m.sandboxSpec()
+		spec := m.sandboxSpec(testBindings(m.cfg.APIKey))
 		for key, value := range spec.Env {
 			if value == m.cfg.APIKey {
 				t.Fatalf("isolation %q leaks the real key into guest env %q", isolation, key)
@@ -885,9 +946,9 @@ func TestMicrosandboxSpecNeverLeaksRealKey(t *testing.T) {
 
 func TestMicrosandboxBackendModeSpecUnchanged(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{})
-	spec := m.sandboxSpec()
-	if spec.APIKey != "key" || len(spec.AllowHosts) != 1 {
-		t.Fatalf("backend mode must keep the proxy secret: %+v", spec)
+	spec := m.sandboxSpec(testBindings(m.cfg.APIKey))
+	if len(spec.Bindings) != 1 || !reflect.DeepEqual(spec.Bindings[0].AllowHosts, []string{msbAllowHost}) {
+		t.Fatalf("backend mode must keep the proxy binding: %+v", spec)
 	}
 	if spec.Env[msbAPISecretEnv] != "" {
 		t.Fatalf("backend mode must not leak the real key into guest env: %v", spec.Env)
@@ -912,19 +973,20 @@ func TestMicrosandboxFullModeNextStartUsesProxySecretAndScrubsRawEnv(t *testing.
 		t.Fatal("config lost the isolation level")
 	}
 	client := m.Client.(*fakeMSBClient)
-	if client.modifiedKey != "key" {
-		t.Fatalf("full mode must refresh the proxy secret on restart: %q", client.modifiedKey)
+	if len(client.modifiedBindings) != 1 || client.modifiedBindings[0].GuestEnv != msbAPISecretEnv {
+		t.Fatalf("full mode must refresh the proxy binding on restart: %+v", client.modifiedBindings)
 	}
 	if client.modifiedEnv[msbAPISecretEnv] != "" {
 		t.Fatalf("full mode next-start env must not carry the real key: %v", client.modifiedEnv)
 	}
-	options := msbNextStartOptions(m.nextStartEnv(), m.cfg.APIKey)
+	bindings := bindingsMetadata(testBindings(m.cfg.APIKey))
+	options := msbNextStartOptions(m.nextStartEnv(), bindings)
 	if !containsString(options.EnvRemove, msbAPISecretEnv) {
 		t.Fatalf("next-start must remove a persisted plaintext key: %v", options.EnvRemove)
 	}
 	secret := options.Secrets[msbAPISecretEnv]
-	if secret.Value != "key" || !reflect.DeepEqual(secret.AllowedHosts, []string{msbAllowHost}) {
-		t.Fatalf("proxy secret not refreshed: %+v", secret)
+	if secret.Value != "" || secret.Env != bindings[0].HostEnv || !reflect.DeepEqual(secret.AllowedHosts, []string{msbAllowHost}) {
+		t.Fatalf("proxy secret not refreshed as an env reference: %+v", secret)
 	}
 	for _, prefix := range []string{"modify " + msbSandbox, "start " + msbSandbox} {
 		if !hasCall(client, prefix) {

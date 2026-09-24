@@ -123,6 +123,17 @@ type MicrosandboxRuntime struct {
 	launchRetryDelay time.Duration
 	// toolchainPollDelay paces the full-mode readiness wait; configurable for tests.
 	toolchainPollDelay time.Duration
+	// StateDir is the host state dir the binding approvals are read from;
+	// empty means the default (~/.local/state/just-code).
+	StateDir string
+	// CredentialStore names the store the credential must resolve from:
+	// "" selects the normal order (native, then file fallback), "native" or
+	// "file" pin one store (revocation uses this).
+	CredentialStore string
+	// credentialRead reads a stored credential; production uses
+	// readStoredWith. It is a seam so tests can drive the store paths
+	// without a real keychain.
+	credentialRead credentialReader
 }
 
 // NewMicrosandboxRuntime builds a Microsandbox backend with production
@@ -172,8 +183,19 @@ type msbClient interface {
 	Create(ctx context.Context, spec msbSandboxSpec) error
 	// Start boots a stopped sandbox.
 	Start(ctx context.Context, name string) error
-	// ModifyNextStart persists env changes for the next boot.
-	ModifyNextStart(ctx context.Context, name string, env map[string]string, apiKey string) error
+	// ModifyNextStart persists env and secret-reference changes for the next
+	// boot. Bindings carry metadata only (guest variable, host transport
+	// variable, allowed hosts) — never a value.
+	ModifyNextStart(ctx context.Context, name string, env map[string]string, bindings []msbSecretBinding) error
+	// RotateSecretsLive re-registers each binding as a host env reference on
+	// a running sandbox (NoRestart). It is the create path's second step:
+	// creation registers an inert sentinel, and this rotates it to the
+	// reference before the start script runs.
+	RotateSecretsLive(ctx context.Context, name string, bindings []msbSecretBinding) error
+	// RemoveSecrets drops the proxy registrations for guestEnvs: live when
+	// the sandbox is running (the placeholder dangles in the guest
+	// environment until restart), persisted for the next boot when stopped.
+	RemoveSecrets(ctx context.Context, name string, guestEnvs []string, live bool) error
 	// Exec runs a shell command in the sandbox, returning its exit code and stderr.
 	Exec(ctx context.Context, name, command string) (int, string, error)
 	// Stop gracefully stops a running sandbox.
@@ -213,25 +235,25 @@ type msbSandboxInfo struct {
 	Status string
 }
 
-// msbSandboxSpec is the full sandbox configuration passed to the SDK.
+// msbSandboxSpec is the full sandbox configuration passed to the SDK. It
+// carries binding *metadata* only: no secret value may appear here, so a spec
+// can never leak a credential into a persisted config or an SDK error dump.
 type msbSandboxSpec struct {
 	Name        string // instance name (P05); empty means the legacy singleton
 	Image       string
 	Env         map[string]string
-	Workspace   string   // host path bind-mounted at /workspace
-	APIKey      string   // host-side secret value, never a guest environment entry
-	AllowHosts  []string // hosts allowed to see the real secret value
-	StartScript string   // guest start script body
+	Workspace   string             // host path bind-mounted at /workspace
+	Bindings    []msbSecretBinding // secret-proxy bindings (metadata only)
+	StartScript string             // guest start script body
 }
 
-// validateConfig checks the deterministic start-time configuration (API key,
-// full-mode start timeout). Restart calls it before the destructive Clean so
-// a configuration error cannot destroy a sandbox that Start would then
-// refuse to recreate.
+// validateConfig checks the deterministic start-time configuration (the
+// full-mode start timeout). Credential resolution is NOT checked here: it
+// involves the credential store and runs in resolveBindings at operation
+// time. Restart calls validateConfig before the destructive Clean so a
+// configuration error cannot destroy a sandbox that Start would then refuse
+// to recreate.
 func (m *MicrosandboxRuntime) validateConfig() error {
-	if m.cfg.APIKey == "" {
-		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
-	}
 	// A typo in JUST_CODE_START_TIMEOUT must be reported rather than silently
 	// replaced by the default. Full mode waits on the guest without ever
 	// reaching the validation the backend path performs before its health
@@ -242,10 +264,82 @@ func (m *MicrosandboxRuntime) validateConfig() error {
 	return nil
 }
 
+// stateDirOrDefault returns the host state directory the binding approvals
+// live under.
+func (m *MicrosandboxRuntime) stateDirOrDefault() string {
+	if m.StateDir != "" {
+		return m.StateDir
+	}
+	return DefaultStateDir()
+}
+
+// resolveBindings computes the binding set in effect for this instance right
+// now: the required Albert binding (credentialRef > legacy env > stored
+// albert) plus every optional binding that is both approved for this instance
+// (host-local bindings.json) and stored. An approved-but-unstored optional
+// binding is skipped with a warning rather than blocking the start. Values
+// are resolved here, immediately before the runtime operation, and travel
+// only through withHostSecrets.
+func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBinding, error) {
+	read := m.credentialRead
+	if read == nil {
+		read = readStoredWith
+	}
+	var out []resolvedBinding
+	for _, b := range msbSecretBindings() {
+		if !b.Optional {
+			v, src, store, entry, err := resolveAlbertWith(read, ctx, m.cfg, m.CredentialStore)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, resolvedBinding{msbSecretBinding: b, source: src, value: v, store: store, entry: entry})
+			continue
+		}
+		approvals, err := ReadBindingApprovals(DefaultFS, bindingApprovalsPath(m.stateDirOrDefault(), m.InstanceName()))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot read the binding approvals for %s (%v); optional bindings are skipped\n", m.InstanceName(), err)
+			continue
+		}
+		if !approvals.Approves(b.Kind) {
+			continue
+		}
+		v, store, err := read(ctx, b.Kind, m.CredentialStore)
+		if err != nil {
+			if isNotFound(err) {
+				fmt.Fprintf(os.Stderr, "Warning: the %s binding is approved for %s but no %q credential is stored; skipping it (just-code auth add %s)\n",
+					b.Kind, m.InstanceName(), b.Kind, b.Kind)
+				continue
+			}
+			// A locked, denied, unavailable or corrupt store on an APPROVED
+			// binding is a hard error: dropping the binding here would make
+			// the omission the desired set, and the refresh would strip the
+			// persisted registration (the patch semantics make absence
+			// authoritative). A transient store failure must not become the
+			// loss of a live binding.
+			return nil, fmt.Errorf("cannot read the approved %s credential for %s: %w", b.Kind, m.InstanceName(), err)
+		}
+		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store, entry: string(b.Kind)})
+	}
+	return out, nil
+}
+
 func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if err := m.validateConfig(); err != nil {
 		return err
 	}
+	bindings, err := m.resolveBindings(ctx)
+	if err != nil {
+		return err
+	}
+	// The host transport variables exist only for the duration of the start:
+	// the SDK's env references resolve from this process's environment at
+	// apply/boot time, and are restored afterwards.
+	return withHostSecrets(bindings, func() error {
+		return m.start(ctx, bindings)
+	})
+}
+
+func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBinding) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
@@ -301,8 +395,11 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if exists {
 		fmt.Printf("Starting %s...\n", m.InstanceName())
 		// Both isolation modes use the same secret-proxy configuration: the
-		// guest environment carries the placeholder, never the real key.
-		if err := m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), m.cfg.APIKey); err != nil {
+		// guest environment carries the placeholder, never the real key. The
+		// reference re-resolves from this process's environment at boot, so a
+		// rotated credential is picked up here without any value being
+		// persisted.
+		if err := m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings)); err != nil {
 			return err
 		}
 		if err := m.Client.Start(ctx, m.InstanceName()); err != nil {
@@ -330,8 +427,18 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 
 	fmt.Printf("Creating %s microVM...\n", m.InstanceName())
 	fmt.Println("First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.")
-	if err := m.Client.Create(ctx, m.sandboxSpec()); err != nil {
+	if err := m.Client.Create(ctx, m.sandboxSpec(bindings)); err != nil {
 		return err
+	}
+	// The SDK create surface only accepts inline values, so each binding was
+	// registered with an inert sentinel (msbSecretBootstrapValue). Rotate
+	// every binding to its host env reference now, before the start script
+	// runs: the raw value must never be what the persisted config holds. A
+	// failed rotation removes the incomplete sandbox rather than leaving a
+	// sentinel-bound or value-bound instance behind.
+	if err := m.Client.RotateSecretsLive(ctx, m.InstanceName(), bindingsMetadata(bindings)); err != nil {
+		_ = m.Client.Remove(ctx, m.InstanceName())
+		return fmt.Errorf("rotating the credentials of %s onto the secret proxy failed (%w); the incomplete sandbox was removed, retry the start", m.InstanceName(), err)
 	}
 	// `msb create` boots an idle VM: the Go SDK has no equivalent of the Rust
 	// SDK's transient LaunchIntent::Background, so the persisted start script
@@ -401,18 +508,19 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 	}
 }
 
-// sandboxSpec builds the full sandbox configuration from the config and the
-// embedded OpenCode config and start script. The secret proxy is configured
-// identically for both isolation modes: where the TUI happens to run must not
-// change whether credentials are protected.
-func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
+// sandboxSpec builds the full sandbox configuration from the config, the
+// resolved bindings, and the embedded OpenCode config and start script. The
+// secret proxy is configured identically for both isolation modes: where the
+// TUI happens to run must not change whether credentials are protected. The
+// spec carries binding metadata only — values transit exclusively through
+// withHostSecrets.
+func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandboxSpec {
 	return msbSandboxSpec{
 		Name:        m.InstanceName(),
 		Image:       msbImage,
 		Env:         m.sandboxEnv(),
 		Workspace:   m.cfg.WorkspaceDir,
-		APIKey:      m.cfg.APIKey,
-		AllowHosts:  []string{msbAllowHost},
+		Bindings:    bindingsMetadata(bindings),
 		StartScript: msbStartScript(m.cfg.Isolation),
 	}
 }
@@ -618,6 +726,11 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 // The destructive rebuild is Recreate.
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	if err := m.validateConfig(); err != nil {
+		return err
+	}
+	// Resolve credentials before stopping: a resolution failure must not
+	// leave a previously usable sandbox stopped.
+	if _, err := m.resolveBindings(ctx); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {

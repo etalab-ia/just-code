@@ -21,6 +21,9 @@ func newTestAgentVM(t *testing.T, runner Runner) *AgentVM {
 			PasswordSet:     true,
 			WorkspaceDir:    t.TempDir(),
 			APIKey:          "key",
+			// Tests exercise the runtime; the P09 acknowledgement gate is
+			// covered by its own test.
+			GuestCredentialsAcknowledged: true,
 		},
 		Runner:           runner,
 		Starter:          &fakeStarter{},
@@ -325,7 +328,7 @@ func TestAgentVMDoctorKeepsUserTemplateFailClosed(t *testing.T) {
 func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	a := newTestAgentVM(t, &fakeRunner{})
 	dir := t.TempDir()
-	path, err := a.writeSecretsEnv(dir)
+	path, err := a.writeSecretsEnv(dir, "key")
 	if err != nil {
 		t.Fatalf("writeSecretsEnv: %v", err)
 	}
@@ -382,7 +385,7 @@ func TestAgentVMWriteSecretsEnvShellSafe(t *testing.T) {
 	a := newTestAgentVM(t, &fakeRunner{})
 	a.Config.Password = "two words$(dangerous)"
 	dir := t.TempDir()
-	path, err := a.writeSecretsEnv(dir)
+	path, err := a.writeSecretsEnv(dir, "key")
 	if err != nil {
 		t.Fatalf("writeSecretsEnv: %v", err)
 	}
@@ -605,5 +608,17 @@ func TestAgentVMRecreateDeletesAndRecreates(t *testing.T) {
 	}
 	if !runner.hasCall("limactl delete") {
 		t.Fatalf("Recreate must delete the VM: %v", runner.calls)
+	}
+}
+
+// TestAgentVMStartRequiresGuestCredentialsAcknowledgement pins the P09 gate
+// (issue #74): agent-vm transports the credential into the guest in
+// plaintext, so Start refuses without the explicit acknowledgement flag.
+func TestAgentVMStartRequiresGuestCredentialsAcknowledgement(t *testing.T) {
+	a := newTestAgentVM(t, &fakeRunner{})
+	a.Config.GuestCredentialsAcknowledged = false
+	err := a.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "--acknowledge-guest-credentials") {
+		t.Fatalf("Start must require the acknowledgement: %v", err)
 	}
 }

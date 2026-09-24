@@ -139,7 +139,19 @@ func (sdkMSBClient) List(ctx context.Context) ([]msbSandboxInfo, error) {
 
 // Kept separate from Create so tests can verify the actual SDK options without
 // loading native code or creating a VM.
+//
+// Secret handling (P09): the SDK's create surface only accepts inline values,
+// so each binding is registered with the inert bootstrap sentinel and rotated
+// to its host env reference immediately after creation (RotateSecretsLive),
+// before the start script runs. The raw value never reaches the persisted
+// sandbox config.
 func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
+	secrets := make([]msb.SecretEntry, 0, len(spec.Bindings))
+	for _, b := range spec.Bindings {
+		secrets = append(secrets, msb.Secret.Env(b.GuestEnv, msbSecretBootstrapValue, msb.SecretEnvOptions{
+			Allow: b.AllowHosts,
+		}))
+	}
 	return []msb.SandboxOption{
 		msb.WithImage(spec.Image),
 		msb.WithCPUs(2),
@@ -156,9 +168,7 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		}),
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
 		msb.WithPorts(msbPortMappings()),
-		msb.WithSecrets(msb.Secret.Env(msbAPISecretEnv, spec.APIKey, msb.SecretEnvOptions{
-			Allow: spec.AllowHosts,
-		})),
+		msb.WithSecrets(secrets...),
 		msb.WithScripts(map[string]string{"start": spec.StartScript}),
 		// Ownership label (P06): the lifecycle sweeps list managed sandboxes
 		// by this label rather than by name guessing, and the legacy singleton
@@ -199,23 +209,122 @@ func (sdkMSBClient) Start(ctx context.Context, name string) error {
 	return detachMSBSandbox(sb)
 }
 
-func msbNextStartOptions(env map[string]string, apiKey string) msb.ModifyOptions {
-	return msb.ModifyOptions{
-		Env:       env,
-		EnvRemove: []string{msbAPISecretEnv},
-		Secrets: map[string]msb.SecretModifySpec{
-			msbAPISecretEnv: {Value: apiKey, AllowedHosts: []string{msbAllowHost}},
-		},
-		Policy: msb.ModificationPolicyNextStart,
+// msbNextStartOptions builds the next-boot refresh for an existing sandbox.
+// Every binding is re-registered as a host env reference ({"kind":"env",
+// "var":...}): the raw value is never persisted, and the reference is
+// re-resolved from the just-code process environment at apply/boot time, so a
+// rotated credential is picked up on the next boot without any value crossing
+// the persisted config.
+//
+// EnvRemove names every managed guest variable: it scrubs a raw value an
+// earlier version may have persisted in the guest environment (the secret
+// registration for the same name coexists with it, as it always has).
+// SecretsRemove names the managed variables absent from the desired set: the
+// SDK modification is a patch, so a registration persisted by an earlier
+// apply survives unless it is named explicitly.
+func msbNextStartOptions(env map[string]string, bindings []msbSecretBinding) msb.ModifyOptions {
+	opts := msb.ModifyOptions{
+		Env:           env,
+		EnvRemove:     allBindingGuestEnvs(),
+		Secrets:       make(map[string]msb.SecretModifySpec, len(bindings)),
+		SecretsRemove: staleBindingGuestEnvs(bindings),
+		Policy:        msb.ModificationPolicyNextStart,
 	}
+	for _, b := range bindings {
+		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, AllowedHosts: b.AllowHosts}
+	}
+	return opts
 }
 
-func (sdkMSBClient) ModifyNextStart(ctx context.Context, name string, env map[string]string, apiKey string) error {
+func (sdkMSBClient) ModifyNextStart(ctx context.Context, name string, env map[string]string, bindings []msbSecretBinding) error {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {
 		return err
 	}
-	_, err = h.Modify(ctx, msbNextStartOptions(env, apiKey))
+	_, err = h.Modify(ctx, msbNextStartOptions(env, bindings))
+	return err
+}
+
+// msbRotateLiveOptions re-registers each binding as a host env reference with
+// the NoRestart policy: the only secret change the runtime applies to a
+// running sandbox. The create path uses it to replace the bootstrap sentinel
+// before the start script runs.
+func msbRotateLiveOptions(bindings []msbSecretBinding) msb.ModifyOptions {
+	opts := msb.ModifyOptions{
+		Secrets: make(map[string]msb.SecretModifySpec, len(bindings)),
+		Policy:  msb.ModificationPolicyNoRestart,
+	}
+	for _, b := range bindings {
+		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, AllowedHosts: b.AllowHosts}
+	}
+	return opts
+}
+
+// staleBindingGuestEnvs lists the guest variables of registered bindings that
+// are absent from the desired set. The SDK modification is a patch: omitting a
+// name never removes it, so a registration persisted by an earlier apply
+// survives every later refresh unless it is named explicitly. Without this,
+// an optional binding whose approval is lifted (bindings.json deleted,
+// unreadable, or revoked) would keep its proxy registration — and therefore
+// its credential — through the next refresh and restart, which is exactly the
+// state the per-project approval exists to prevent.
+func staleBindingGuestEnvs(bindings []msbSecretBinding) []string {
+	desired := make(map[string]bool, len(bindings))
+	for _, b := range bindings {
+		desired[b.GuestEnv] = true
+	}
+	var stale []string
+	for _, b := range msbSecretBindings() {
+		if !desired[b.GuestEnv] {
+			stale = append(stale, b.GuestEnv)
+		}
+	}
+	return stale
+}
+
+// allBindingGuestEnvs lists every managed guest variable name, in registry
+// order.
+func allBindingGuestEnvs() []string {
+	registered := msbSecretBindings()
+	out := make([]string, 0, len(registered))
+	for _, b := range registered {
+		out = append(out, b.GuestEnv)
+	}
+	return out
+}
+
+func (sdkMSBClient) RotateSecretsLive(ctx context.Context, name string, bindings []msbSecretBinding) error {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return err
+	}
+	_, err = h.Modify(ctx, msbRotateLiveOptions(bindings))
+	return err
+}
+
+// msbRemoveSecretsOptions drops the proxy registrations for guestEnvs. Live
+// (running sandbox, NoRestart) the registration goes away immediately but the
+// guest process keeps its environment — the placeholder variable dangles
+// until restart, which the caller must warn about. On a stopped sandbox the
+// removal is persisted for the next boot and the placeholder's variable is
+// scrubbed too.
+func msbRemoveSecretsOptions(guestEnvs []string, live bool) msb.ModifyOptions {
+	opts := msb.ModifyOptions{SecretsRemove: guestEnvs}
+	if live {
+		opts.Policy = msb.ModificationPolicyNoRestart
+	} else {
+		opts.Policy = msb.ModificationPolicyNextStart
+		opts.EnvRemove = guestEnvs
+	}
+	return opts
+}
+
+func (sdkMSBClient) RemoveSecrets(ctx context.Context, name string, guestEnvs []string, live bool) error {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return err
+	}
+	_, err = h.Modify(ctx, msbRemoveSecretsOptions(guestEnvs, live))
 	return err
 }
 

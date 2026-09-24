@@ -39,9 +39,10 @@ func authCmd(args []string) (int, error) {
 }
 
 // parseAuthArgs returns the credential kind, the --stdin flag and the
-// --fallback flag. The kind defaults to albert, the only credential the
-// current runtimes transport; unknown kinds are rejected so a typo does
-// not store a credential nothing will ever read.
+// --fallback flag. The kind defaults to albert; the known optional kinds
+// (github, context7) are accepted, and unknown kinds are rejected so a typo
+// does not store a credential nothing will ever read. A credentialRef may
+// still name an arbitrary store entry — the CLI manages the known kinds.
 func parseAuthArgs(args []string) (justcode.CredentialKind, bool, bool, error) {
 	kind := justcode.CredentialAlbert
 	stdin, fallback := false, false
@@ -51,10 +52,10 @@ func parseAuthArgs(args []string) (justcode.CredentialKind, bool, bool, error) {
 			stdin = true
 		case "--fallback":
 			fallback = true
-		case "albert":
-			kind = justcode.CredentialAlbert
+		case "albert", "github", "context7":
+			kind = justcode.CredentialKind(a)
 		default:
-			return kind, stdin, fallback, fmt.Errorf("Unknown credential kind or flag: %s (expected albert, --stdin or --fallback)", a)
+			return kind, stdin, fallback, fmt.Errorf("Unknown credential kind or flag: %s (expected albert, github, context7, --stdin or --fallback)", a)
 		}
 	}
 	return kind, stdin, fallback, nil
@@ -124,6 +125,10 @@ func authAddCmd(args []string) (int, error) {
 	if err := store.Put(context.Background(), kind, value); err != nil {
 		return 1, err
 	}
+	// Bump the rotation marker after a successful write: a value change on a
+	// running instance must schedule a refresh, not be swallowed by the
+	// no-op path.
+	justcode.BumpCredentialGeneration(kind)
 	fmt.Printf("Stored credential %q in the %s store. It is referenced by name (credentialRef), never written to a project file.\n", kind, store.Kind())
 	return 0, nil
 }
@@ -143,12 +148,14 @@ func authStatusCmd() (int, error) {
 		} else {
 			fmt.Println("  state: reachable")
 		}
-		if _, err := native.Get(ctx, justcode.CredentialAlbert); err == nil {
-			fmt.Printf("  albert: stored\n")
-		} else if justcode.IsCredentialNotFound(err) {
-			fmt.Println("  albert: not stored")
-		} else {
-			fmt.Printf("  albert: unreadable (%v)\n", err)
+		for _, kind := range justcode.KnownCredentialKinds() {
+			if _, err := native.Get(ctx, kind); err == nil {
+				fmt.Printf("  %s: stored\n", kind)
+			} else if justcode.IsCredentialNotFound(err) {
+				fmt.Printf("  %s: not stored\n", kind)
+			} else {
+				fmt.Printf("  %s: unreadable (%v)\n", kind, err)
+			}
 		}
 	}
 	// The fallback store is reported but never created by a status read.
@@ -165,13 +172,42 @@ func authStatusCmd() (int, error) {
 			} else {
 				fmt.Printf("File fallback: error (%v)\n", err)
 			}
-		} else if fileStore.HasCredential(justcode.CredentialAlbert) {
-			fmt.Println("File fallback: present, albert stored")
+			return 0, nil
+		}
+		var stored []string
+		for _, kind := range justcode.KnownCredentialKinds() {
+			if fileStore.HasCredential(kind) {
+				stored = append(stored, string(kind))
+			}
+		}
+		if len(stored) > 0 {
+			fmt.Printf("File fallback: present, stored: %s\n", strings.Join(stored, ", "))
 		} else {
-			fmt.Println("File fallback: present, albert not stored")
+			fmt.Println("File fallback: present, nothing stored")
 		}
 	}
 	return 0, nil
+}
+
+// resolveCredentialRefForAuth applies the same precedence as the run path
+// (env > project manifest > user settings), from the discovered project root.
+// auth runs before project resolution in main, so the discovery is done here;
+// a failure means "no reference", never a blocked removal.
+func resolveCredentialRefForAuth() string {
+	if v := strings.TrimSpace(os.Getenv("JUST_CODE_CREDENTIAL_REF")); v != "" {
+		return v
+	}
+	if pc, err := justcode.DiscoverProject("."); err == nil {
+		if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil && pm.CredentialRef != "" {
+			return pm.CredentialRef
+		}
+	}
+	if path, err := justcode.UserSettingsPath(); err == nil {
+		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil {
+			return us.CredentialRef
+		}
+	}
+	return ""
 }
 
 func authRemoveCmd(args []string) (int, error) {
@@ -183,13 +219,41 @@ func authRemoveCmd(args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	// P08/P09 boundary: removing a credential that a running sandbox
-	// still binds cannot revoke the guest's copy. Until P09 enforces
-	// revocation, refuse with an actionable message rather than claim
-	// the access was revoked. The check is host-side only: a sandbox
-	// that is not running keeps nothing live.
-	if justcode.CredentialBoundToRunningInstance(kind) {
-		return 1, fmt.Errorf("credential %q is bound to a running sandbox; stop it first (just-code stop) so the removal can take effect, or remove the credential after P09 revocation lands", kind)
+	// P09: revoke the access before deleting the credential. Microsandbox
+	// instances bound through the proxy are revoked in place (live when
+	// running, persisted when stopped); Tart/agent-vm instances hold the
+	// plaintext credential, so removal while one runs is refused rather than
+	// reported as a revocation it cannot be.
+	// Revocation is scoped to the store being edited: the native and
+	// fallback stores can both hold the kind, and removing one must not
+	// revoke sandboxes bound to the other.
+	storeName := "native"
+	if fallback {
+		storeName = "file"
+	}
+	// The project's credentialRef decides which store entry feeds the Albert
+	// binding here. auth runs before project/config resolution in main, so it
+	// is read explicitly: without it, removing a differently-named entry that
+	// feeds Albert would look harmless while a Tart/agent-vm guest still
+	// holds the readable credential.
+	report, err := justcode.RevokeCredential(context.Background(), string(kind), storeName, resolveCredentialRefForAuth())
+	if err != nil {
+		return 1, err
+	}
+	for _, name := range report.LiveRevoked {
+		fmt.Printf("Revoked %q from the running sandbox %s.\n", kind, name)
+	}
+	for _, name := range report.StoppedCleared {
+		fmt.Printf("Cleared the persisted %q reference from %s (effective at its next start).\n", kind, name)
+	}
+	if len(report.Revolved) > 0 {
+		fmt.Printf("Guest bindings revoked: %s.\n", strings.Join(report.Revolved, ", "))
+	}
+	if report.PlaceholderDangles {
+		fmt.Fprintf(os.Stderr, "Warning: a running guest keeps the now-inert %s placeholder in its environment until it restarts; requests to the formerly allowed host will fail, but the placeholder string itself is disclosed. Restart the instance to clear it.\n", kind)
+	}
+	if len(report.Pending) > 0 {
+		fmt.Fprintf(os.Stderr, "Note: the source of %q could not be confirmed for %v; their bindings were revoked rather than left in place. Restart or recreate them to drop any dangling reference.\n", kind, report.Pending)
 	}
 	if err := store.Remove(context.Background(), kind); err != nil {
 		if justcode.IsCredentialNotFound(err) {

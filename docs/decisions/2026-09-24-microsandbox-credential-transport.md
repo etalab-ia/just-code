@@ -179,3 +179,61 @@ ici sans être automatisés.
 - Le harnais rejouable exige le laboratoire local (DNS + TLS + CA) et
   n'est pas exécutable en CI tel quel ; c'est un harnais de reproduction
   manuelle, comme P01 pour ses cas réseau.
+
+## Addendum P09 (2026-09-24) : migration effective vers le chemin référence
+
+P09 a appliqué la décision 2 : plus aucun chemin just-code n'utilise la
+source `Value` du SDK.
+
+- **Création.** La surface create du SDK n'accepte que des valeurs en ligne
+  ; chaque liaison y est enregistrée avec une sentinelle inerte
+  (`$MSB_BOOTSTRAP_UNSET`, reconnaissable, sans aucun pouvoir), puis
+  immédiatement tournée vers la référence d'environnement hôte
+  (`SecretModifySpec{Env: ...}`, politique `no_restart` — le seul cycle live)
+  avant que le script de démarrage ne s'exécute. Un échec de rotation
+  supprime le sandbox incomplet plutôt que de laisser la sentinelle.
+- **Rafraîchissement (next_start).** `ModifyNextStart` ré-enregistre chaque
+  liaison comme référence `{"kind":"env","var":...}` ; la valeur est résolue
+  depuis l'environnement du processus just-code au moment de l'application
+  et du démarrage, jamais persistée.
+- **Résolution à l'instant de l'opération.** La valeur (credentialRef >
+  environnement legacy > magasin P08) n'existe que dans une variable de
+  transport dédiée (`JUST_CODE_HOST_*`), publiée le temps de l'appel SDK
+  puis retirée (la valeur préexistante est restaurée). La spec SDK ne porte
+  que des métadonnées : aucune erreur SDK ne peut contenir de secret.
+- **Liaisons multiples.** Le registre (albert requis ; github, context7
+  optionnels et approuvés projet par projet, enregistrement local hôte non
+  versionné) impose des hôtes autorisés disjoints : une liaison ne peut pas
+  être substituée vers la destination d'une autre.
+- **Révocation.** `auth remove` supprime la liaison proxy à chaud sur les
+  instances en cours d'exécution (décision 4 : l'avertissement sur le
+  placeholder pendant est émis) et la référence persistée sur les instances
+  arrêtées. Les instances dont la clé venait de l'environnement sont
+  ignorées (enregistrement `boundCredentials` de l'état de réconciliation).
+  Tart et agent-vm, sans proxy, bloquent la suppression tant qu'une
+  instance tourne et exigent `--acknowledge-guest-credentials` au
+  démarrage.
+
+  **Révocation par entrée, pas par nom de liaison (ajouté après revue Codex).**
+  Un `credentialRef` peut faire résoudre la liaison Albert depuis une entrée
+  de magasin nommée autrement (`credentialRef: "github"` → `ALBERT_API_KEY`
+  côté invité). La révocation adresse donc des entrées : l'état persiste
+  `entrée@magasin#liaison`, et c'est la liaison invitée effectivement
+  alimentée qui est retirée. Le garde-fou des runtimes en clair (Tart,
+  agent-vm) se déclenche sur la **liaison** et non sur le nom de l'entrée :
+  supprimer une entrée qui alimente Albert est bloqué même si elle ne
+  s'appelle pas `albert`.
+  - Le magasin qui a répondu fait partie de l'empreinte du jeu de liaisons :
+    sans lui, perdre l'entrée native alors que le repli la détient encore
+    laisserait la révision inchangée et l'instance saine prendrait le chemin
+    no-op, sans jamais se relier au repli.
+  - Une opération de réconciliation dépendante des identifiants
+    (`refresh-credentials`, `create`, `start-vm`) est **refusée** quand le
+    jeu n'a pas pu être résolu : dériver l'ensemble désiré du vide et
+    l'appliquer transformerait « réutiliser les références persistées » en
+    leur suppression. Le journal est conservé pour reprendre après
+    résolution ; `restart-vm` et le relancement du backend restent
+    disponibles, leurs démarrages re-résolvant les références persistées.
+- Les tests de contrat P02 qui épinglaient l'écart (persistance de la
+  valeur brute) ont été basculés en tests P09 qui épinglent l'absence de
+  valeur brute.
