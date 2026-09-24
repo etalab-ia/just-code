@@ -287,9 +287,16 @@ func storeGenerationOf(fs FS, stateDir string, bindings []resolvedBinding) strin
 		}
 		entry := b.storeEntry()
 		gen := ""
-		if fstore, err := NewFileCredentialStore(); err == nil {
-			if g, gerr := fstore.Generation(context.Background(), CredentialKind(entry)); gerr == nil {
-				gen = g
+		// The generation source follows the store the binding resolved from.
+		// Reading the file store's counter for a native-sourced binding would
+		// let a stale fallback generation (entries survive Remove) mask a
+		// native rotation: the composite would not move and a healthy
+		// instance would keep serving the old credential.
+		if b.store == "file" {
+			if fstore, err := NewFileCredentialStore(); err == nil {
+				if g, gerr := fstore.Generation(context.Background(), CredentialKind(entry)); gerr == nil {
+					gen = g
+				}
 			}
 		}
 		if gen == "" {

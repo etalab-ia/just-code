@@ -437,3 +437,32 @@ func TestReconcileRefusesCredentialOpsWhenUnresolved(t *testing.T) {
 		t.Fatal("refresh-credentials and start-vm do depend on the credential set")
 	}
 }
+
+// TestInstanceStateReadsLegacyNumericCredentialGen pins the fifth review's
+// P1: P07-era state files serialize `credentialGen` as a JSON number, and the
+// upgrade must read them (mapping the number to the empty marker so the next
+// apply records the real composite) instead of failing to unmarshal.
+func TestInstanceStateReadsLegacyNumericCredentialGen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reconcile.json")
+	legacy := []byte(`{"schemaVersion":1,"instance":"jc-x","isolation":"backend","workspaceDir":"/w","image":"img","configRevision":"abc","credentialGen":0}` + "\n")
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := ReadInstanceState(DefaultFS, path)
+	if err != nil {
+		t.Fatalf("a P07-era numeric credentialGen must read cleanly: %v", err)
+	}
+	if string(st.CredentialGen) != "" {
+		t.Fatalf("the legacy number maps to the empty marker: %q", st.CredentialGen)
+	}
+	// The current string composite round-trips.
+	st.CredentialGen = credentialGenJSON("albert@native:2;github@file:1")
+	if err := WriteInstanceState(DefaultFS, path, *st); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ReadInstanceState(DefaultFS, path)
+	if err != nil || string(again.CredentialGen) != "albert@native:2;github@file:1" {
+		t.Fatalf("string composite round trip: %+v, %v", again, err)
+	}
+}

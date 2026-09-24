@@ -569,3 +569,41 @@ func TestStoreGenerationComposite(t *testing.T) {
 		t.Fatal("dropping a binding must change the composite marker")
 	}
 }
+
+// TestStoreGenerationFollowsTheResolvedStore pins the fifth review's P1: the
+// generation source must be the store the binding resolved from. A stale
+// fallback generation (entries survive Remove in the file store) must not
+// mask a native rotation.
+func TestStoreGenerationFollowsTheResolvedStore(t *testing.T) {
+	fs, stateDir := DefaultFS, t.TempDir()
+	native := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore,
+		value: "k", store: "native", entry: "albert",
+	}}
+	// Host-side counter (what a native-sourced binding reads) at N.
+	if err := writeCredentialGeneration(fs, stateDir, CredentialAlbert); err != nil {
+		t.Fatal(err)
+	}
+	base := storeGenerationOf(fs, stateDir, native)
+	if !strings.Contains(base, "albert@native:1") {
+		t.Fatalf("a native-sourced binding reads the host-side counter: %q", base)
+	}
+	// A native rotation moves the composite even though the file store
+	// exists and would answer a generation for the same entry.
+	if err := writeCredentialGeneration(fs, stateDir, CredentialAlbert); err != nil {
+		t.Fatal(err)
+	}
+	rotated := storeGenerationOf(fs, stateDir, native)
+	if base == rotated {
+		t.Fatal("a native rotation must move the composite marker")
+	}
+	// The file store's own counter participates only for file-sourced
+	// bindings.
+	fromFile := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore,
+		value: "k", store: "file", entry: "albert",
+	}}
+	if got := storeGenerationOf(fs, stateDir, fromFile); !strings.Contains(got, "albert@file:") {
+		t.Fatalf("a file-sourced binding must use the file store's counter: %q", got)
+	}
+}

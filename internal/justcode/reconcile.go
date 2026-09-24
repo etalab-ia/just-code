@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // Reconciliation and non-destructive restart (P07). The goal: applying setup
@@ -68,6 +70,37 @@ func (p ReconcilePlan) NeedsRecreate() bool {
 	return false
 }
 
+// credentialGenJSON reads the rotation marker from either its historical
+// numeric form (P07 wrote `credentialGen: 0`) or the current string composite
+// (P09). A decode failure in the old format would otherwise make every
+// pre-existing state file unreadable, blocking reconciliation of instances
+// the upgrade should simply refresh.
+type credentialGenJSON string
+
+func (g *credentialGenJSON) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "null" {
+		*g = ""
+		return nil
+	}
+	// Numeric form (possibly quoted by a middle version): accept 0 and any
+	// integer, mapping them to the empty marker so the next apply records
+	// the real composite.
+	if n, err := strconv.Atoi(strings.Trim(s, `"`)); err == nil {
+		_ = n
+		*g = ""
+		return nil
+	}
+	return json.Unmarshal(data, (*string)(g))
+}
+
+func (g credentialGenJSON) MarshalJSON() ([]byte, error) {
+	if g == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(string(g))
+}
+
 // InstanceState is the persisted desired/applied record of one instance
 // (P07). It lives in host state, never in the workspace, and never carries
 // credential values: the config revision is a hash of non-secret fields, and
@@ -91,10 +124,11 @@ type InstanceState struct {
 	// reference re-resolves at the next boot.
 	CredentialRev string `json:"credentialRev,omitempty"`
 	// CredentialGen is the non-secret rotation marker applied (P09): the
-	// host-side generation counter of the stored credential at apply time.
-	// A value rotation bumps it, which is the only signal a rotation has on
-	// a healthy running instance.
-	CredentialGen string `json:"credentialGen,omitempty"`
+	// composite store generation of the binding set at apply time. A value
+	// rotation bumps it, which is the only signal a rotation has on a
+	// healthy running instance. P07-era state wrote it as a JSON number
+	// (always 0); both forms are accepted on read.
+	CredentialGen credentialGenJSON `json:"credentialGen,omitempty"`
 	// BoundCredentials lists the credential kinds that were store-sourced at
 	// apply time, sorted. Revocation (auth remove) uses it to skip instances
 	// whose credential came from the environment, which just-code cannot
@@ -421,7 +455,7 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 	}
 	if applied != nil {
 		d.CredentialRev = applied.CredentialRev
-		d.CredentialGeneration = applied.CredentialGen
+		d.CredentialGeneration = string(applied.CredentialGen)
 		d.BoundCredentials = append([]string(nil), applied.BoundCredentials...)
 	} else {
 		// Nothing applied to carry over, but an earlier apply outside the
@@ -441,7 +475,7 @@ func (d DesiredState) toState() InstanceState {
 		Image:            d.Image,
 		ConfigRevision:   d.ConfigRevision(),
 		CredentialRev:    d.CredentialRev,
-		CredentialGen:    d.CredentialGeneration,
+		CredentialGen:    credentialGenJSON(d.CredentialGeneration),
 		BoundCredentials: append([]string(nil), d.BoundCredentials...),
 	}
 }
