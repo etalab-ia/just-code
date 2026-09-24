@@ -81,6 +81,11 @@ func run(args []string) (int, error) {
 	if parsed.action == "auth" {
 		return authCmd(parsed.authArgs)
 	}
+	// setup runs before any config load: a first-run wizard must not depend
+	// on a .env or a resolved runtime (P11).
+	if parsed.action == "setup" {
+		return setupCmd(parsed.setupArgs)
+	}
 
 	cfg := justcode.LoadConfigEnv()
 	cfg.GuestCredentialsAcknowledged = parsed.ackGuestCreds
@@ -266,6 +271,8 @@ type parsedArgs struct {
 	trustArgs []string
 	// modelsArgs holds the words after the models command.
 	modelsArgs []string
+	// setupArgs holds the words after the setup command.
+	setupArgs []string
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -358,6 +365,12 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the models command belongs to it.
 			p.modelsArgs = args[i+1:]
+			return p, nil
+		case a == "setup" && !actionSet:
+			p.action = "setup"
+			actionSet = true
+			// Everything after the setup command belongs to it.
+			p.setupArgs = args[i+1:]
 			return p, nil
 		case actionNames[a] && !actionSet:
 			p.action = a
@@ -749,6 +762,9 @@ Commands:
   trust      Approve execution-relevant project OpenCode inputs (status,
              approve)
   models     List the validated Albert models (live, or last-known-good)
+  setup      Configure the machine: preflight, credentials, identity, model,
+             then install the managed runtime (setup doctor for the
+             read-only diagnosis)
   version    Print the build identity
   help       Show this help
 

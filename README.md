@@ -127,6 +127,39 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
 ## Configuration
 
+### Configurer la machine (setup)
+
+`just-code setup` prépare la machine en une passe guidée : diagnostic
+(plateforme, virtualisation, disque — lecture seule) → identifiant Albert
+(masqué, validé contre le catalogue ; rejet et indisponibilité réseau
+distincts) → identifiant GitHub optionnel → identité git → modèle par
+défaut → revue → application (réglages globaux + runtime managé).
+
+```bash
+just-code setup            # assistant interactif
+just-code setup doctor     # diagnostic lecture seule, aucune écriture
+just-code setup --fallback # utiliser le magasin fichier consentit
+just-code setup --no-color # sortie terminal simple
+```
+
+Règles du flux :
+
+- **Aucune saisie avant un bloqueur fatal.** La virtualisation et le disque
+  sont vérifiés avant toute invite : la clé n'est jamais demandée sur une
+  machine qui ne peut pas exécuter le runtime.
+- **Reprise.** Un setup interrompu reprend là où il s'est arrêté (journal
+  d'état hôte) — les identifiants déjà stockés ne sont pas redemandés.
+- **Rejet ≠ réseau.** Une clé refusée (401/403) propose de la ressaisir ;
+  un endpoint injoignable stocke la clé avec un avertissement (la
+  validation se rattrapera avec `just-code models`). Aucun appel
+  d'inférence n'est effectué pour valider.
+- **GitHub sans pénalité.** Ignorer l'identifiant GitHub ne bloque rien ;
+  il n'est activé pour aucun projet (l'approbation par projet vient du
+  chantier GitHub invité).
+- **Magasin indisponible = choix explicite.** Un Secret Service absent
+  propose le repli fichier consentit (`--fallback`), jamais une création
+  silencieuse.
+
 Place le fichier `.env` dans le répertoire depuis lequel tu lances `just-code`. Le CLI cherche d'abord à cet endroit, puis à côté de l'exécutable ; pour un binaire installé globalement, utilise le répertoire de lancement plutôt que `/usr/local/bin` ou équivalent.
 
 Configuration courante :
