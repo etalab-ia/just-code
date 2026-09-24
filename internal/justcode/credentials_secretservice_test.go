@@ -60,11 +60,12 @@ func TestSecretServiceGetMapsNotFound(t *testing.T) {
 	}
 }
 
-// TestSecretServiceGetMapsDeniedToStoreError verifies a locked/refused
-// collection (nonzero exit, stderr present) reports a denied StoreError.
+// TestSecretServiceGetMapsDeniedToStoreError verifies an access denial
+// (nonzero exit, stderr present, not a locked-collection wording)
+// reports a denied StoreError.
 func TestSecretServiceGetMapsDeniedToStoreError(t *testing.T) {
 	f := &fakeStoreRunner{onRun: func(name string, args []string) (ExecResult, error) {
-		return ExecResult{ExitCode: 1, Stderr: "collection locked"}, nil
+		return ExecResult{ExitCode: 1, Stderr: "secret-tool: operation not permitted"}, nil
 	}}
 	s := &SecretServiceStore{Runner: f}
 	_, err := s.Get(context.Background(), CredentialAlbert)
