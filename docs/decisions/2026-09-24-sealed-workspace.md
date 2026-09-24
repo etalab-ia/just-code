@@ -57,6 +57,12 @@ l'invité n'est pas vide, nomme les fichiers, et n'écrase qu'avec `--force`.
   distingue déjà les deux cas de source vide — répertoire sans fichier
   (projet légitimement vide, l'invité reçoit quand même un dépôt) et tous les
   candidats refusés par le filtre (refus explicite, avec les raisons).
+  Conséquence sur la réconciliation : le chemin n'est plus un attribut figé à
+  la création (ni dans la comparaison, ni dans la révision de configuration).
+  Le sandbox n'y fait plus référence — pas de montage, pas de variable
+  d'environnement — donc changer de source ne doit déclencher ni recréation
+  destructrice ni redémarrage : la nouvelle source prend effet au
+  `workspace sync` suivant.
 - Le scan de workspace perd son rôle de frontière : il devient un **conseil
   d'hygiène** côté hôte, et sa logique de détection est réutilisée **à la
   frontière de transfert**, où un refus est effectif (`ResolveTransferSet`).
