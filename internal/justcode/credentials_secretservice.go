@@ -121,3 +121,10 @@ func (s *SecretServiceStore) Verify(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Generation returns no marker: the native store has no store-local
+// rotation counter, so reconcile uses the host-side generation counter
+// (CredentialGeneration), which `auth add` bumps on every write.
+func (s *SecretServiceStore) Generation(ctx context.Context, kind CredentialKind) (string, error) {
+	return "", nil
+}

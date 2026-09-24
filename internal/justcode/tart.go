@@ -31,6 +31,9 @@ type Tart struct {
 	// Interactive runs a foreground command attached to the terminal. It is a
 	// seam for tests; production uses RunInteractive.
 	Interactive func(name string, args ...string) error
+	// CredentialRead reads a stored credential; production uses
+	// readStoredWith. It is a test seam.
+	CredentialRead credentialReader
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
@@ -315,7 +318,7 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 
 	// The credential is resolved at launch time (credentialRef, legacy
 	// environment, or the store) and travels on stdin only — never argv.
-	key, _, _, _, err := resolveAlbert(ctx, cfg, "")
+	key, _, _, _, err := t.resolveAlbertFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -376,11 +379,19 @@ func (t *Tart) validateConfig(ctx context.Context) error {
 		return fmt.Errorf("tart hands the Albert credential to the guest in plaintext, where any process (the agent included) can read it; " +
 			"pass --acknowledge-guest-credentials to accept this, or use --microsandbox, which keeps the credential behind the secret proxy")
 	}
-	if _, _, _, _, err := resolveAlbert(ctx, t.Config, ""); err != nil {
+	if _, _, _, _, err := t.resolveAlbertFor(ctx); err != nil {
 		return err
 	}
 	warnUnprotectedRuntime("Tart")
 	return ValidateMTU(t.Config.TartMTU)
+}
+
+// resolveAlbertFor routes the Albert resolution through the test seam.
+func (t *Tart) resolveAlbertFor(ctx context.Context) (string, bindingSource, string, string, error) {
+	if t.CredentialRead != nil {
+		return resolveAlbertWith(t.CredentialRead, ctx, t.Config, "")
+	}
+	return resolveAlbert(ctx, t.Config, "")
 }
 
 func (t *Tart) Start(ctx context.Context) error {
@@ -580,7 +591,7 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err := t.guestRun(ctx, "/bin/chmod", "755", guestLocalBinary); err != nil {
 		return err
 	}
-	key, _, _, _, err := resolveAlbert(ctx, cfg, "")
+	key, _, _, _, err := t.resolveAlbertFor(ctx)
 	if err != nil {
 		return err
 	}

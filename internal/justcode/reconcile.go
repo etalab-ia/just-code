@@ -90,6 +90,11 @@ type InstanceState struct {
 	// A value rotation within an unchanged set does not move it: the secret
 	// reference re-resolves at the next boot.
 	CredentialRev string `json:"credentialRev,omitempty"`
+	// CredentialGen is the non-secret rotation marker applied (P09): the
+	// host-side generation counter of the stored credential at apply time.
+	// A value rotation bumps it, which is the only signal a rotation has on
+	// a healthy running instance.
+	CredentialGen string `json:"credentialGen,omitempty"`
 	// BoundCredentials lists the credential kinds that were store-sourced at
 	// apply time, sorted. Revocation (auth remove) uses it to skip instances
 	// whose credential came from the environment, which just-code cannot
@@ -116,6 +121,13 @@ type DesiredState struct {
 	Image        string
 	// CredentialRev is the hash of the desired binding-set descriptor (P09).
 	CredentialRev string
+	// CredentialGeneration is the non-secret rotation marker of the stored
+	// credential (P09): a host-side counter bumped by every `auth add`. The
+	// binding-set revision is unchanged by a pure value rotation (the
+	// reference re-resolves at boot), so without this marker a rotation on a
+	// healthy running instance would take the no-op path and keep serving
+	// the old credential.
+	CredentialGeneration string
 	// BoundCredentials lists the store-sourced credential kinds (P09).
 	BoundCredentials []string
 	// Non-secret server credentials participate in the revision.
@@ -136,6 +148,7 @@ func (d DesiredState) ConfigRevision() string {
 		d.Image,
 		d.Username,
 		"rev:" + d.CredentialRev,
+		"gen:" + d.CredentialGeneration,
 	} {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{0})
@@ -403,10 +416,12 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 	if resolved {
 		d.CredentialRev = bindingsRevision(bindings)
 		d.BoundCredentials = storeBoundEntries(bindings)
+		d.CredentialGeneration = storeGenerationOf(bindings)
 		return d
 	}
 	if applied != nil {
 		d.CredentialRev = applied.CredentialRev
+		d.CredentialGeneration = applied.CredentialGen
 		d.BoundCredentials = append([]string(nil), applied.BoundCredentials...)
 	} else {
 		// Nothing applied to carry over, but an earlier apply outside the
@@ -426,6 +441,7 @@ func (d DesiredState) toState() InstanceState {
 		Image:            d.Image,
 		ConfigRevision:   d.ConfigRevision(),
 		CredentialRev:    d.CredentialRev,
+		CredentialGen:    d.CredentialGeneration,
 		BoundCredentials: append([]string(nil), d.BoundCredentials...),
 	}
 }

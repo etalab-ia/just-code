@@ -312,6 +312,12 @@ func TestTartRestartRejectsBadConfigBeforeClean(t *testing.T) {
 	runner := &fakeRunner{}
 	tt := newTestTart(t, runner)
 	tt.Config.APIKey = ""
+	// The credential store is not what this test exercises: without this,
+	// hosts lacking a native store (no secret-tool) would see an unrelated
+	// store-unreachable error instead of the missing-key message.
+	tt.CredentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
 	if err := tt.Restart(context.Background()); err == nil {
 		t.Fatal("Restart must refuse a missing ALBERT_API_KEY")
 	} else if !strings.Contains(err.Error(), "ALBERT_API_KEY") {

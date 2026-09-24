@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -223,6 +224,25 @@ func readStoredWith(ctx context.Context, kind CredentialKind, from string) (stri
 	}
 }
 
+// readStoredWithNative is readStoredCredential with both stores injected, so
+// the no-silent-fallback contract can be pinned without a real keychain.
+func readStoredWithNative(ctx context.Context, kind CredentialKind, native, fileStore func(context.Context, CredentialKind) (string, error)) (string, string, error) {
+	if v, err := native(ctx, kind); err == nil {
+		return v, "native", nil
+	} else if !isNotFound(err) {
+		// Locked, denied, corrupt, unavailable: hard errors. The fallback
+		// file may hold a different credential exactly when the expected one
+		// cannot be verified, so binding it silently is forbidden.
+		return "", "", err
+	}
+	if v, err := fileStore(ctx, kind); err == nil {
+		return v, "file", nil
+	} else if !isNotFound(err) && !errors.Is(err, ErrFileStoreAbsent) && !errors.Is(err, ErrFileStoreNotConsented) {
+		return "", "", err
+	}
+	return "", "", ErrCredentialNotFound
+}
+
 // resolvedBinding is a binding plus its value at operation time. The value
 // field must never be persisted, logged, or passed to the SDK spec: it only
 // ever transits through withHostSecrets.
@@ -250,6 +270,29 @@ func (r resolvedBinding) storeEntry() string {
 		return r.entry
 	}
 	return string(r.Kind)
+}
+
+// storeGenerationOf returns the store-local rotation marker for the binding
+// set, preferring the file store's counter and falling back to the host-side
+// counter: whichever the `auth add` path bumps is the one reconcile compares.
+// It is non-secret by construction — a counter, never anything derived from a
+// value.
+func storeGenerationOf(bindings []resolvedBinding) string {
+	for _, b := range bindings {
+		if b.source != bindingSourceStore {
+			continue
+		}
+		if fs, err := NewFileCredentialStore(); err == nil {
+			if gen, gerr := fs.Generation(context.Background(), CredentialKind(b.storeEntry())); gerr == nil && gen != "" {
+				return gen
+			}
+		}
+		if n, nerr := CredentialGeneration(CredentialKind(b.storeEntry())); nerr == nil {
+			return strconv.Itoa(n)
+		}
+		return ""
+	}
+	return ""
 }
 
 // metadata drops the value and source, for the SDK-facing spec.
@@ -383,35 +426,56 @@ func storeBoundEntries(bindings []resolvedBinding) []string {
 // store suffix, so the marker cannot collide with one.
 const pendingBoundEntry = "?@?"
 
-// entryVerdict reports what a persisted BoundCredentials list says about a
-// credential-store entry being edited. A record naming the entry in this
-// store means "revoke the guest binding it fed"; naming it in the other store
-// is a known "elsewhere"; a legacy bare record (no store) means "revoke by
-// the entry name". Records for other entries are ignored. binding is the
-// guest binding to drop, and known is false when no record mentions the
-// entry.
+// entryVerdicts reports what a persisted BoundCredentials list says about a
+// credential-store entry being edited, across every record for that entry.
+// One entry can feed several guest bindings at once — `credentialRef:
+// "github"` with the GitHub binding approved records both
+// `github@native#albert` and `github@native#github` — so the verdict collects
+// every binding rather than stopping at the first record.
+//
+// A record naming the entry in this store contributes its guest binding;
+// naming it in the other store is a known "elsewhere"; a legacy bare record
+// (no store) means the store being edited cannot be ruled out. Records for
+// other entries are ignored. known is false when no record mentions the entry.
 //
 // An empty store means the normal lookup order (native, then fallback): a
 // removal on that path addresses whichever store answered, so any store in
-// the record matches.
-func entryVerdict(bound []string, entry, store string) (verdict bindingVerdict, binding CredentialKind, known bool) {
+// the records matches.
+func entryVerdicts(bound []string, entry, store string) (verdict bindingVerdict, bindings []CredentialKind, known bool) {
+	verdict = bindingOther
 	for _, record := range bound {
 		parsed, form := parseBoundStoreEntry(record)
 		if form == boundRecordPending || parsed.Entry != entry {
 			continue
 		}
+		known = true
 		switch form {
 		case boundRecordLegacy:
 			// No store recorded: the store being edited cannot be ruled out.
-			return bindingThisStore, parsed.Binding, true
+			verdict = bindingThisStore
+			bindings = appendUniqueKind(bindings, parsed.Binding)
 		case boundRecordInterim, boundRecordFull:
 			if store == "" || parsed.Store == store {
-				return bindingThisStore, parsed.Binding, true
+				verdict = bindingThisStore
+				bindings = appendUniqueKind(bindings, parsed.Binding)
 			}
-			return bindingOther, parsed.Binding, true
+			// A record naming the other store contributes no binding here
+			// and does not flip the verdict to ThisStore.
 		}
 	}
-	return bindingThisStore, "", false
+	if !known {
+		return bindingThisStore, nil, false
+	}
+	return verdict, bindings, known
+}
+
+func appendUniqueKind(list []CredentialKind, kind CredentialKind) []CredentialKind {
+	for _, k := range list {
+		if k == kind {
+			return list
+		}
+	}
+	return append(list, kind)
 }
 
 // placeholderFor returns the exact value the runtime exposes in the guest for
@@ -421,31 +485,31 @@ func entryVerdict(bound []string, entry, store string) (verdict bindingVerdict, 
 func placeholderFor(envVar string) string { return "$MSB_" + envVar }
 
 // readStoredCredential reads kind from the credential store: the native
-// store first, then the consented file fallback when the native store is
-// absent or unavailable. A present-but-failing native store (locked, denied,
-// corrupt) is a hard error — silently falling back would mask it.
+// store first, then the consented file fallback when the native store
+// reports not-found. A failing native store (unavailable, locked, denied,
+// corrupt) is a hard error, never a silent fallback: the fallback file may
+// hold a stale or different credential precisely when the expected one
+// cannot be verified, and the runtime must not start a sandbox on it without
+// the reason being surfaced.
 //
 // The returned store name records which store answered, so the caller can
 // persist it: revocation must target the store it was read from.
 func readStoredCredential(ctx context.Context, kind CredentialKind) (string, string, error) {
-	if s := DefaultCredentialStore(); s != nil {
-		v, err := s.Get(ctx, kind)
-		if err == nil {
-			return v, "native", nil
-		}
-		var se *StoreError
-		if !isNotFound(err) && !(errors.As(err, &se) && se.State == "unavailable") {
-			return "", "", err
+	native := func(ctx context.Context, kind CredentialKind) (string, error) {
+		if s := DefaultCredentialStore(); s == nil {
+			return "", ErrCredentialNotFound
+		} else {
+			return s.Get(ctx, kind)
 		}
 	}
-	if fs, err := NewFileCredentialStore(); err == nil {
-		if v, gerr := fs.Get(ctx, kind); gerr == nil {
-			return v, "file", nil
-		} else if !isNotFound(gerr) && !errors.Is(gerr, ErrFileStoreAbsent) && !errors.Is(gerr, ErrFileStoreNotConsented) {
-			return "", "", gerr
+	fileGet := func(ctx context.Context, kind CredentialKind) (string, error) {
+		fs, err := NewFileCredentialStore()
+		if err != nil {
+			return "", err
 		}
+		return fs.Get(ctx, kind)
 	}
-	return "", "", ErrCredentialNotFound
+	return readStoredWithNative(ctx, kind, native, fileGet)
 }
 
 // ReadStoredCredential is the exported form of readStoredCredential, for the

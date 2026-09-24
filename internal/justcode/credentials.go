@@ -2,8 +2,11 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -102,6 +105,11 @@ type CredentialStore interface {
 	// whether the store is reachable and usable. It must not create
 	// anything.
 	Verify(ctx context.Context) error
+	// Generation returns a non-secret, store-local revision marker for
+	// kind, or "" when the store provides none: reconcile falls back to the
+	// host-side generation counter (CredentialGeneration), which every
+	// rotation path bumps. Nothing is ever derived from a value.
+	Generation(ctx context.Context, kind CredentialKind) (string, error)
 }
 
 // DefaultCredentialStore returns the OS-native store, or nil when the
@@ -155,6 +163,83 @@ func (f *FileCredentialStore) HasCredential(kind CredentialKind) bool {
 
 // CredentialBoundToRunningInstance is superseded by P09's RevokeCredential
 // (see revoke.go), which revokes live bindings instead of refusing removal.
+
+// CredentialGeneration is the host-side, store-independent rotation marker:
+// a counter per credential kind, bumped by every successful Put. Reconcile
+// compares it (preferring the store's own marker when one exists) so a value
+// rotation on a healthy running instance schedules a refresh instead of
+// taking the no-op path. The counter is non-secret and lives in host state,
+// never in the workspace or a repository.
+func CredentialGeneration(kind CredentialKind) (int, error) {
+	return credentialGenerationIn(DefaultFS, DefaultStateDir(), kind)
+}
+
+// BumpCredentialGeneration is the exported form of
+// bumpCredentialGeneration, for the CLI's auth add.
+func BumpCredentialGeneration(kind CredentialKind) {
+	bumpCredentialGeneration(kind)
+}
+
+// bumpCredentialGeneration advances the counter after a successful Put. It
+// is best-effort: a rotation is still detected at the next boot even if the
+// bump fails, so the credential write itself never fails because of it.
+func bumpCredentialGeneration(kind CredentialKind) {
+	_ = writeCredentialGeneration(DefaultFS, DefaultStateDir(), kind)
+}
+
+// credentialGenerationFile is the host-state file holding the counters.
+func credentialGenerationFile(stateDir string) string {
+	return filepath.Join(stateDir, "credential-generations.json")
+}
+
+type credentialGenerations struct {
+	SchemaVersion int            `json:"schemaVersion"`
+	Generations   map[string]int `json:"generations"`
+}
+
+const credentialGenerationsSchemaVersion = 1
+
+func readCredentialGenerations(fs FS, stateDir string) (credentialGenerations, error) {
+	data := credentialGenerations{SchemaVersion: credentialGenerationsSchemaVersion, Generations: map[string]int{}}
+	raw, err := fs.ReadFile(credentialGenerationFile(stateDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return data, nil
+		}
+		return data, err
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return data, fmt.Errorf("credential generations: %w", err)
+	}
+	if data.Generations == nil {
+		data.Generations = map[string]int{}
+	}
+	return data, nil
+}
+
+func credentialGenerationIn(fs FS, stateDir string, kind CredentialKind) (int, error) {
+	data, err := readCredentialGenerations(fs, stateDir)
+	if err != nil {
+		return 0, err
+	}
+	return data.Generations[string(kind)], nil
+}
+
+func writeCredentialGeneration(fs FS, stateDir string, kind CredentialKind) error {
+	data, err := readCredentialGenerations(fs, stateDir)
+	if err != nil {
+		return err
+	}
+	data.Generations[string(kind)]++
+	raw, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := fs.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	return atomicWrite(fs, credentialGenerationFile(stateDir), append(raw, '\n'), 0o600)
+}
 
 // isNotFound reports whether err is the not-found outcome, wrapping
 // included.

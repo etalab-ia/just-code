@@ -125,6 +125,10 @@ func authAddCmd(args []string) (int, error) {
 	if err := store.Put(context.Background(), kind, value); err != nil {
 		return 1, err
 	}
+	// Bump the rotation marker after a successful write: a value change on a
+	// running instance must schedule a refresh, not be swallowed by the
+	// no-op path.
+	justcode.BumpCredentialGeneration(kind)
 	fmt.Printf("Stored credential %q in the %s store. It is referenced by name (credentialRef), never written to a project file.\n", kind, store.Kind())
 	return 0, nil
 }
@@ -185,6 +189,27 @@ func authStatusCmd() (int, error) {
 	return 0, nil
 }
 
+// resolveCredentialRefForAuth applies the same precedence as the run path
+// (env > project manifest > user settings), from the discovered project root.
+// auth runs before project resolution in main, so the discovery is done here;
+// a failure means "no reference", never a blocked removal.
+func resolveCredentialRefForAuth() string {
+	if v := strings.TrimSpace(os.Getenv("JUST_CODE_CREDENTIAL_REF")); v != "" {
+		return v
+	}
+	if pc, err := justcode.DiscoverProject("."); err == nil {
+		if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil && pm.CredentialRef != "" {
+			return pm.CredentialRef
+		}
+	}
+	if path, err := justcode.UserSettingsPath(); err == nil {
+		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil {
+			return us.CredentialRef
+		}
+	}
+	return ""
+}
+
 func authRemoveCmd(args []string) (int, error) {
 	kind, _, fallback, err := parseAuthArgs(args)
 	if err != nil {
@@ -206,7 +231,12 @@ func authRemoveCmd(args []string) (int, error) {
 	if fallback {
 		storeName = "file"
 	}
-	report, err := justcode.RevokeCredential(context.Background(), string(kind), storeName)
+	// The project's credentialRef decides which store entry feeds the Albert
+	// binding here. auth runs before project/config resolution in main, so it
+	// is read explicitly: without it, removing a differently-named entry that
+	// feeds Albert would look harmless while a Tart/agent-vm guest still
+	// holds the readable credential.
+	report, err := justcode.RevokeCredential(context.Background(), string(kind), storeName, resolveCredentialRefForAuth())
 	if err != nil {
 		return 1, err
 	}

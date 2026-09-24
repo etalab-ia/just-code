@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // FileCredentialStore is the P08 explicit fallback for hosts without a
@@ -76,6 +77,10 @@ func (f *FileCredentialStore) Kind() string { return "file" }
 type fileStoreData struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Credentials   map[string]string `json:"credentials"`
+	// Generations maps kind to a monotonically increasing counter bumped
+	// by every Put. It is the non-secret rotation marker reconcile compares:
+	// nothing is derived from any value.
+	Generations map[string]int `json:"generations,omitempty"`
 }
 
 // read loads the store file. A missing file is ErrFileStoreNotConsented
@@ -192,6 +197,10 @@ func (f *FileCredentialStore) Put(ctx context.Context, kind CredentialKind, valu
 		data = fileStoreData{SchemaVersion: fileStoreSchemaVersion, Credentials: map[string]string{}}
 	}
 	data.Credentials[string(kind)] = value
+	if data.Generations == nil {
+		data.Generations = map[string]int{}
+	}
+	data.Generations[string(kind)]++
 	return f.write(data)
 }
 
@@ -205,6 +214,24 @@ func (f *FileCredentialStore) Get(ctx context.Context, kind CredentialKind) (str
 		return "", ErrCredentialNotFound
 	}
 	return v, nil
+}
+
+// Generation returns the kind's write counter. A missing credential has no
+// generation (empty string), which callers treat as "no marker" rather than
+// as an error.
+func (f *FileCredentialStore) Generation(ctx context.Context, kind CredentialKind) (string, error) {
+	data, err := f.read()
+	if err != nil {
+		if err == ErrFileStoreNotConsented {
+			return "", nil
+		}
+		return "", err
+	}
+	n, ok := data.Generations[string(kind)]
+	if !ok {
+		return "", nil
+	}
+	return strconv.Itoa(n), nil
 }
 
 func (f *FileCredentialStore) Remove(ctx context.Context, kind CredentialKind) error {

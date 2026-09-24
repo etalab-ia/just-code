@@ -299,6 +299,10 @@ Le secret ne passe jamais par la ligne de commande (argv) : la saisie interactiv
 
 Au démarrage, la clé Albert est résolue dans l'ordre : `credentialRef` (env `JUST_CODE_CREDENTIAL_REF` > manifeste projet > réglages utilisateur), puis la variable d'environnement `ALBERT_API_KEY`, puis l'identifiant `albert` du magasin. Les identifiants restent référencés par nom (`credentialRef`) dans la configuration gérée ; la valeur ne figure jamais dans `settings.json`, `project.json` ni les exports.
 
+Un magasin natif indisponible ou verrouillé est une erreur explicite au démarrage, jamais un repli silencieux vers le fichier : ce fichier peut détenir un identifiant périmé ou différent précisément quand l'attendu ne peut pas être vérifié. Seul un « introuvable » (aucune entrée) poursuit vers le repli consentit.
+
+La rotation est détectée sans jamais toucher la valeur : `auth add` incrémente un compteur par identifiant (état hôte, non secret), et la réconciliation compare ce compteur — remplacer une clé sur une instance saine planifie un rafraîchissement au lieu du no-op.
+
 ### Liaisons d'identifiants (bindings)
 
 Sur Microsandbox, les identifiants sont injectés par le proxy de secrets : la valeur brute n'est jamais persistée (ni dans la base du runtime, ni dans l'environnement invité) — la liaison est une référence à une variable d'environnement hôte, re-résolue à chaque application et à chaque démarrage. La liaison `albert` est obligatoire ; `github` et `context7` sont **optionnelles et approuvées projet par projet** :

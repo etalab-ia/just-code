@@ -129,23 +129,62 @@ func TestParseBoundStoreEntryFormats(t *testing.T) {
 func TestEntryVerdictMapsEntryToGuestBinding(t *testing.T) {
 	// credentialRef "github" feeds ALBERT_API_KEY from the fallback store.
 	bound := []string{"github@file#albert"}
-	verdict, binding, known := entryVerdict(bound, "github", "file")
-	if !known || verdict != bindingThisStore || binding != CredentialAlbert {
-		t.Fatalf("removing the entry must drop the guest binding it fed: %v, %q, %v", verdict, binding, known)
+	verdict, bindings, known := entryVerdicts(bound, "github", "file")
+	if !known || verdict != bindingThisStore || len(bindings) != 1 || bindings[0] != CredentialAlbert {
+		t.Fatalf("removing the entry must drop the guest binding it fed: %v, %v, %v", verdict, bindings, known)
 	}
 	// Editing the native store must not touch a fallback-bound instance.
-	verdict, _, known = entryVerdict(bound, "github", "native")
+	verdict, _, known = entryVerdicts(bound, "github", "native")
 	if !known || verdict != bindingOther {
 		t.Fatalf("another store's entry must be left alone: %v, %v", verdict, known)
 	}
 	// A record for a different entry does not mention this one.
-	if _, _, known := entryVerdict([]string{"albert@native#albert"}, "github", "native"); known {
+	if _, _, known := entryVerdicts([]string{"albert@native#albert"}, "github", "native"); known {
 		t.Fatal("an unrelated record must not answer for this entry")
 	}
 	// A legacy bare record has no store, so it cannot be ruled out.
-	verdict, binding, known = entryVerdict([]string{"albert"}, "albert", "file")
-	if !known || verdict != bindingThisStore || binding != CredentialAlbert {
-		t.Fatalf("a store-less record must be revoked: %v, %q, %v", verdict, binding, known)
+	verdict, bindings, known = entryVerdicts([]string{"albert"}, "albert", "file")
+	if !known || verdict != bindingThisStore || len(bindings) != 1 || bindings[0] != CredentialAlbert {
+		t.Fatalf("a store-less record must be revoked: %v, %v, %v", verdict, bindings, known)
+	}
+}
+
+// TestEntryVerdictCollectsEveryFedBinding pins the Codex P1 on the third
+// review: one entry can feed several guest bindings at once (credentialRef
+// "github" plus an approved GitHub binding), and revocation must remove all
+// of them, not just the first recorded.
+func TestEntryVerdictCollectsEveryFedBinding(t *testing.T) {
+	bound := []string{"github@native#albert", "github@native#github"}
+	verdict, bindings, known := entryVerdicts(bound, "github", "native")
+	if !known || verdict != bindingThisStore {
+		t.Fatalf("the entry is bound in this store: %v, %v, %v", verdict, bindings, known)
+	}
+	if len(bindings) != 2 || bindings[0] != CredentialAlbert || bindings[1] != CredentialGithub {
+		t.Fatalf("both fed bindings must be collected: %v", bindings)
+	}
+}
+
+// TestCredentialGenerationBumpsOnWrite pins the rotation detection the third
+// review asked for: `auth add` bumps a non-secret per-kind counter, so
+// reconcile can see a value change without hashing or deriving anything from
+// the value itself.
+func TestCredentialGenerationBumpsOnWrite(t *testing.T) {
+	dir := t.TempDir()
+	if n, err := credentialGenerationIn(DefaultFS, dir, CredentialAlbert); err != nil || n != 0 {
+		t.Fatalf("initial generation = %d, %v", n, err)
+	}
+	if err := writeCredentialGeneration(DefaultFS, dir, CredentialAlbert); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentialGeneration(DefaultFS, dir, CredentialAlbert); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := credentialGenerationIn(DefaultFS, dir, CredentialAlbert); err != nil || n != 2 {
+		t.Fatalf("generation after two writes = %d, %v", n, err)
+	}
+	// Kinds are independent.
+	if n, err := credentialGenerationIn(DefaultFS, dir, CredentialGithub); err != nil || n != 0 {
+		t.Fatalf("github generation = %d, %v", n, err)
 	}
 }
 
@@ -169,6 +208,20 @@ func TestBindingsRevisionIncludesStore(t *testing.T) {
 	}}
 	if bindingsRevision(fromNative) == bindingsRevision(otherEntry) {
 		t.Fatal("a different credentialRef entry must move the revision")
+	}
+}
+
+// TestCredentialGenerationMovesTheRevision pins the third review's P1: a
+// value rotation must be visible to reconcile even when the binding set is
+// otherwise unchanged. The generation counter participates in the config
+// revision, so `auth add` over an existing credential schedules a refresh on
+// the next reconcile instead of the no-op path.
+func TestCredentialGenerationMovesTheRevision(t *testing.T) {
+	base := DesiredState{Instance: "i", Isolation: IsolationBackend, WorkspaceDir: "/w", Image: "img", Username: "u"}
+	rotated := base
+	rotated.CredentialGeneration = "3"
+	if base.ConfigRevision() == rotated.ConfigRevision() {
+		t.Fatal("a credential generation change must move the revision")
 	}
 }
 
@@ -424,5 +477,36 @@ func stubReader(value string) credentialReader {
 			store = "native"
 		}
 		return value + "-" + string(kind), store, nil
+	}
+}
+
+// TestReadStoredWithNoSilentFallback pins the third review's P1: a pinned
+// native store that answers "unavailable" must surface that error even when a
+// consented file store holds the kind. Only a genuine not-found continues to
+// the fallback; anything else is a state the runtime must not paper over.
+func TestReadStoredWithNoSilentFallback(t *testing.T) {
+	unavailable := storeErrorf("get", "secret-service", "unavailable", "daemon down")
+	// Pinned native + fallback answering: the native error must surface.
+	_, _, err := readStoredWithNative(context.Background(), CredentialAlbert,
+		func(context.Context, CredentialKind) (string, error) { return "", unavailable },
+		func(context.Context, CredentialKind) (string, error) { return "fallback-value", nil })
+	if err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("the native store's unavailable state must surface: %v", err)
+	}
+	// Native not-found + fallback holding the entry: the fallback is the
+	// documented continuation.
+	v, store, err := readStoredWithNative(context.Background(), CredentialAlbert,
+		func(context.Context, CredentialKind) (string, error) { return "", ErrCredentialNotFound },
+		func(context.Context, CredentialKind) (string, error) { return "fallback-value", nil })
+	if err != nil || v != "fallback-value" || store != "file" {
+		t.Fatalf("not-found must continue to the fallback: %q, %q, %v", v, store, err)
+	}
+	// Native locked: hard error, the same no-silent-downgrade contract.
+	locked := storeErrorf("get", "secret-service", "locked", "collection locked")
+	_, _, err = readStoredWithNative(context.Background(), CredentialAlbert,
+		func(context.Context, CredentialKind) (string, error) { return "", locked },
+		func(context.Context, CredentialKind) (string, error) { return "fallback-value", nil })
+	if err == nil || !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("a locked native store must surface: %v", err)
 	}
 }

@@ -106,7 +106,7 @@ func (f *fakeMSBClient) RotateSecretsLive(_ context.Context, name string, bindin
 
 func (f *fakeMSBClient) RemoveSecrets(_ context.Context, name string, guestEnvs []string, live bool) error {
 	f.record("remove-secrets " + name)
-	f.removedSecrets = append([]string(nil), guestEnvs...)
+	f.removedSecrets = append(f.removedSecrets, guestEnvs...)
 	f.removedLive = live
 	return f.modifyErr
 }
@@ -282,6 +282,12 @@ func TestMicrosandboxStartRequiresAPIKey(t *testing.T) {
 	m := NewMicrosandboxRuntime(Config{WorkspaceDir: t.TempDir()})
 	m.Client = client
 	m.StateDir = t.TempDir()
+	// The credential store is not what this test exercises: inject the
+	// resolution seam so a missing key is reported as missing, not as a
+	// store-unreachable error on hosts without a native store.
+	m.credentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
 	if err := m.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "ALBERT_API_KEY") {
 		t.Fatalf("expected API key error, got %v", err)
 	}
@@ -872,6 +878,12 @@ func TestMicrosandboxRestartRejectsBadConfigBeforeClean(t *testing.T) {
 	client := &fakeMSBClient{exists: true}
 	m := newTestMicrosandbox(t, client)
 	m.cfg.APIKey = ""
+	// The credential store is not what this test exercises: inject the
+	// resolution seam so a missing key is reported as missing, not as a
+	// store-unreachable error on hosts without a native store.
+	m.credentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
 	if err := m.Restart(context.Background()); err == nil {
 		t.Fatal("Restart must refuse a missing ALBERT_API_KEY")
 	} else if !strings.Contains(err.Error(), "ALBERT_API_KEY") {

@@ -189,3 +189,10 @@ exit 3  # sentinel unexpectedly present
 		return storeErrorf("verify", w.Kind(), "denied", "exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 }
+
+// Generation returns no marker: the native store has no store-local
+// rotation counter, so reconcile uses the host-side generation counter
+// (CredentialGeneration), which `auth add` bumps on every write.
+func (w *WinCredStore) Generation(ctx context.Context, kind CredentialKind) (string, error) {
+	return "", nil
+}

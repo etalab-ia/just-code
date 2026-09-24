@@ -313,3 +313,24 @@ func TestRecreateClearsBindingApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestRevokeRemoveAllFedBindings pins the Codex P1 on the third review: a
+// credentialRef plus an approved optional binding feed two guest bindings from
+// one entry, and removing the entry must remove both registrations, not only
+// the first recorded.
+func TestRevokeRemoveAllFedBindings(t *testing.T) {
+	stateDir := t.TempDir()
+	writeBoundState(t, stateDir, "jc-both", []string{"github@native#albert", "github@native#github"})
+	client := &fakeMSBClient{listed: []string{"jc-both"}, status: "stopped"}
+	r := revokerForTest(client, stateDir, nil, nil)
+	rep, err := r.Revoke(context.Background(), "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(client.removedSecrets, []string{"ALBERT_API_KEY", "GITHUB_TOKEN"}) {
+		t.Fatalf("both fed bindings must be removed: %v", client.removedSecrets)
+	}
+	if len(rep.Revolved) != 2 {
+		t.Fatalf("the report must name both: %+v", rep)
+	}
+}
