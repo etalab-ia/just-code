@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -318,17 +317,26 @@ func archiveNames(t *testing.T, payload []byte) map[string]bool {
 	return names
 }
 
-// fakeGitleaks installs a stub `gitleaks` on PATH that emits report, so the
-// finding→path mapping is exercised without depending on the real tool's
-// presence (and without depending on its current path convention).
-func fakeGitleaks(t *testing.T, report string) {
+// withFindings replaces the secret-detection seam for one test, so the
+// finding→path mapping is exercised without the real tool (whose presence,
+// executable-script support on Windows and path convention we do not control).
+func withFindings(t *testing.T, findings []gitleaksFinding) {
 	t.Helper()
-	dir := t.TempDir()
-	script := "#!/bin/sh\ncat <<'REPORT'\n" + report + "\nREPORT\n"
-	if err := os.WriteFile(filepath.Join(dir, "gitleaks"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	orig := probeGitleaks
+	probeGitleaks = func(context.Context, string) (gitleaksProbe, error) {
+		return gitleaksProbe{findings: findings}, nil
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { probeGitleaks = orig })
+}
+
+// withNoGitleaks makes the probe report the tool as absent.
+func withNoGitleaks(t *testing.T) {
+	t.Helper()
+	orig := probeGitleaks
+	probeGitleaks = func(context.Context, string) (gitleaksProbe, error) {
+		return gitleaksProbe{missing: true}, nil
+	}
+	t.Cleanup(func() { probeGitleaks = orig })
 }
 
 // TestTransferFindingPathMappingHandlesBothConventions pins the mapping for a
@@ -348,7 +356,9 @@ func TestTransferFindingPathMappingHandlesBothConventions(t *testing.T) {
 			writeFile(t, dir, "src/config.txt", "password: \"hunter2correcthorsebatterystaple12345\"\n")
 			writeFile(t, dir, "src/other.go", "package main\n")
 			gitInitForTransfer(t, dir)
-			fakeGitleaks(t, fmt.Sprintf(`[{"RuleID":"generic-api-key","File":%q,"StartLine":1,"Match":"REDACTED"}]`, tc.file(dir)))
+			withFindings(t, []gitleaksFinding{{
+				RuleID: "generic-api-key", File: tc.file(dir), Line: 1, Match: "REDACTED",
+			}})
 
 			man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{})
 			if err != nil {
@@ -393,7 +403,9 @@ func TestTransferRefusesUnattributableFinding(t *testing.T) {
 	writeFile(t, dir, "main.go", "package main\n")
 	gitInitForTransfer(t, dir)
 	// A path outside the source root cannot be attributed to any candidate.
-	fakeGitleaks(t, `[{"RuleID":"generic-api-key","File":"/elsewhere/other/config.txt","StartLine":1,"Match":"REDACTED"}]`)
+	withFindings(t, []gitleaksFinding{{
+		RuleID: "generic-api-key", File: "/elsewhere/other/config.txt", Line: 1, Match: "REDACTED",
+	}})
 
 	man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{})
 	if err != nil {
@@ -410,5 +422,87 @@ func TestTransferRefusesUnattributableFinding(t *testing.T) {
 	}
 	if len(client.written) != 0 {
 		t.Fatal("nothing may be written when the filter cannot decide")
+	}
+}
+
+// TestTransferWithoutGitleaksStillFiltersNames pins the honest degraded mode:
+// when the detection tool is absent the manifest says so, and the name-based
+// filter keeps working rather than being silently disabled.
+func TestTransferWithoutGitleaksStillFiltersNames(t *testing.T) {
+	withNoGitleaks(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n")
+	writeFile(t, dir, ".env", "SECRET=canary\n")
+	gitInitForTransfer(t, dir)
+
+	man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !man.GitleaksMissing {
+		t.Fatal("the manifest must report that detection did not run")
+	}
+	if !strings.Contains(man.Summary(), "gitleaks is not installed") {
+		t.Fatalf("the summary must warn: %q", man.Summary())
+	}
+	for _, e := range man.Included() {
+		if e.Rel == ".env" {
+			t.Fatal("the name filter must still refuse a dotenv file")
+		}
+	}
+}
+
+// TestFindingRelPath pins the attribution rules, including the case where the
+// two sides sit on different views of the same tree (macOS /var).
+func TestFindingRelPath(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		name     string
+		reported string
+		want     string
+	}{
+		{"relative path", "src/config.txt", "src/config.txt"},
+		{"relative with dot prefix", "./src/config.txt", "src/config.txt"},
+		{"absolute under the root", filepath.Join(root, "src", "config.txt"), "src/config.txt"},
+		{"absolute outside the root", filepath.Join(string(filepath.Separator)+"elsewhere", "x.txt"), ""},
+		{"escapes the root", "../outside.txt", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := findingRelPath(root, tc.reported); got != tc.want {
+				t.Fatalf("findingRelPath(%q) = %q, want %q", tc.reported, got, tc.want)
+			}
+		})
+	}
+	// A resolved root with an unresolved reported path (the macOS /var case):
+	// the two name the same file, so attribution must succeed.
+	if canon, err := filepath.EvalSymlinks(root); err == nil && canon != root {
+		got := findingRelPath(canon, filepath.Join(root, "src", "config.txt"))
+		if got != "src/config.txt" {
+			t.Fatalf("cross-view attribution = %q, want src/config.txt", got)
+		}
+	}
+	// Exercise the same branch unconditionally on every platform (a symlinked
+	// root and a finding naming the real path), so the macOS-relevant logic is
+	// covered on Linux CI too.
+	real := filepath.Join(t.TempDir(), "real")
+	// The reported file must exist: gitleaks only reports real paths, and the
+	// canonicalization that makes cross-view attribution work relies on that.
+	if err := os.MkdirAll(filepath.Join(real, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "src", "config.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if got := findingRelPath(link, filepath.Join(real, "src", "config.txt")); got != "src/config.txt" {
+		t.Fatalf("symlinked-root attribution = %q, want src/config.txt", got)
+	}
+	if got := findingRelPath(real, filepath.Join(link, "src", "config.txt")); got != "src/config.txt" {
+		t.Fatalf("reverse-view attribution = %q, want src/config.txt", got)
 	}
 }

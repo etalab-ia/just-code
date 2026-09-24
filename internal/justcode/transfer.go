@@ -186,21 +186,18 @@ func ResolveTransferSet(ctx context.Context, root string, opts TransferOptions) 
 	// Secret detection runs over the whole working tree; findings are then
 	// mapped onto candidates so a flagged file is refused by path.
 	findingsByPath := map[string][]gitleaksFinding{}
-	if _, err := exec.LookPath("gitleaks"); err != nil {
-		man.GitleaksMissing = true
-	} else {
-		findings, err := runGitleaksFindings(ctx, abs)
-		if err != nil {
-			return man, err
+	probe, err := probeGitleaks(ctx, abs)
+	if err != nil {
+		return man, err
+	}
+	man.GitleaksMissing = probe.missing
+	for _, f := range probe.findings {
+		rel := findingRelPath(abs, f.File)
+		if rel == "" {
+			man.UnmappedFindings = append(man.UnmappedFindings, fmt.Sprintf("%s:%d (%s)", f.File, f.Line, f.RuleID))
+			continue
 		}
-		for _, f := range findings {
-			rel := findingRelPath(abs, f.File)
-			if rel == "" {
-				man.UnmappedFindings = append(man.UnmappedFindings, fmt.Sprintf("%s:%d (%s)", f.File, f.Line, f.RuleID))
-				continue
-			}
-			findingsByPath[rel] = append(findingsByPath[rel], f)
-		}
+		findingsByPath[rel] = append(findingsByPath[rel], f)
 	}
 
 	type candidate struct {
@@ -350,25 +347,84 @@ func gitAvailable() bool {
 	return err == nil
 }
 
+// gitleaksProbe is one secret-detection run: either findings, or the fact
+// that gitleaks is not installed (in which case the dotenv name filter still
+// applies and the caller warns).
+type gitleaksProbe struct {
+	findings []gitleaksFinding
+	missing  bool
+}
+
+// probeGitleaks is the detection seam. It is a variable so tests can supply
+// findings directly: driving it through a stub executable on PATH is not
+// portable (a shell script is not executable on Windows, and a resolved path
+// differs from an unresolved one on macOS), and the mapping logic under test
+// is the code that consumes the findings, not the tool invocation.
+var probeGitleaks = func(ctx context.Context, dir string) (gitleaksProbe, error) {
+	if _, err := exec.LookPath("gitleaks"); err != nil {
+		return gitleaksProbe{missing: true}, nil
+	}
+	findings, err := runGitleaksFindings(ctx, dir)
+	if err != nil {
+		return gitleaksProbe{}, err
+	}
+	return gitleaksProbe{findings: findings}, nil
+}
+
 // findingRelPath maps a gitleaks report path onto the manifest's relative
 // form. Current gitleaks versions report the path relative to --source, but
 // an absolute path has been observed in other builds; both are normalized
 // here so the mapping cannot silently miss. A path that cannot be attributed
 // returns "" and the caller fails closed: dropping a finding would let the
 // flagged file cross.
+//
+// An absolute path is relativized against both the root as given and its
+// symlink-resolved form, because the two sides can sit on different views of
+// the same tree (macOS /var -> /private/var): comparing raw strings would
+// refuse a transfer gitleaks attributed correctly.
 func findingRelPath(root, reported string) string {
 	if strings.TrimSpace(reported) == "" {
 		return ""
 	}
 	p := filepath.FromSlash(reported)
-	if filepath.IsAbs(p) {
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return ""
-		}
-		p = rel
+	if !filepath.IsAbs(p) {
+		return NormalizeTransferPath(filepath.ToSlash(p))
 	}
-	return NormalizeTransferPath(filepath.ToSlash(p))
+	for _, base := range distinctPaths(root) {
+		if rel := relativize(base, p); rel != "" {
+			return rel
+		}
+	}
+	// The report may name a resolved path while the root is not (or the
+	// reverse): canonicalize the report and retry.
+	if canon, err := filepath.EvalSymlinks(p); err == nil {
+		for _, base := range distinctPaths(root) {
+			if rel := relativize(base, canon); rel != "" {
+				return rel
+			}
+		}
+	}
+	return ""
+}
+
+// distinctPaths returns the path as given plus its symlink-resolved form,
+// skipping duplicates.
+func distinctPaths(p string) []string {
+	out := []string{p}
+	if canon, err := filepath.EvalSymlinks(p); err == nil && canon != p {
+		out = append(out, canon)
+	}
+	return out
+}
+
+// relativize returns the project-relative form of abs under base, or "" when
+// abs is not inside base.
+func relativize(base, abs string) string {
+	rel, err := filepath.Rel(base, abs)
+	if err != nil {
+		return ""
+	}
+	return NormalizeTransferPath(filepath.ToSlash(rel))
 }
 
 // FormatByteSize renders a byte count for the review screen. The justcode
