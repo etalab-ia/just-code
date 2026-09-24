@@ -32,8 +32,11 @@ type ProjectContext struct {
 	Name string
 	// IsGit records whether the root is a Git worktree. The sealed workspace
 	// (P22) has no clone source for a non-Git root; discovery records the
-	// class so later stages can reject or snapshot instead of failing
-	// opaquely.
+	// class so later stages know which transfer path applies. P22's decision
+	// (docs/decisions/2026-09-24-sealed-workspace.md) is a filtered snapshot
+	// for a non-Git root, not a rejection, so this flag selects the source
+	// set (git's view of the working tree, or a directory walk) rather than
+	// gating the project.
 	IsGit bool
 	// Explicit records that the root came from an explicit override rather
 	// than discovery.

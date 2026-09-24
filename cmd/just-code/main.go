@@ -179,6 +179,17 @@ func run(args []string) (int, error) {
 		return trustCmd(parsed.trustArgs, pc.Root)
 	}
 
+	// workspace manages the sealed guest workspace (P22): the transfer
+	// manifest, the per-file re-inclusion decisions, the refresh, and the
+	// reviewed change export. It needs the project root and the instance
+	// name, so it runs after discovery like bindings.
+	if parsed.action == "workspace" {
+		if projErr != nil {
+			return 2, fmt.Errorf("workspace requires a project directory: %v", projErr)
+		}
+		return workspaceCmd(parsed.workspaceArgs, cfg, instance, pc.Root)
+	}
+
 	// The dispatcher and its backends are built from the resolved config,
 	// bound to the project instance when discovery succeeded. Discovery
 	// failure falls back to the legacy singleton rather than blocking
@@ -275,6 +286,8 @@ type parsedArgs struct {
 	trustArgs []string
 	// modelsArgs holds the words after the models command.
 	modelsArgs []string
+	// workspaceArgs holds the words after the workspace command.
+	workspaceArgs []string
 	// setupArgs holds the words after the setup command.
 	setupArgs []string
 }
@@ -288,6 +301,7 @@ var actionNames = map[string]bool{
 	"restart": true, "recreate": true, "clean": true, "doctor": true,
 	"help": true, "version": true, "config": true,
 	"auth": true, "bindings": true,
+	"workspace": true,
 }
 
 func runtimeFlag(a string) bool {
@@ -357,6 +371,12 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the bindings command belongs to it.
 			p.bindingsArgs = args[i+1:]
+			return p, nil
+		case a == "workspace" && !actionSet:
+			p.action = "workspace"
+			actionSet = true
+			// Everything after the workspace command belongs to it.
+			p.workspaceArgs = args[i+1:]
 			return p, nil
 		case a == "trust" && !actionSet:
 			p.action = "trust"
@@ -766,6 +786,9 @@ Commands:
   trust      Approve execution-relevant project OpenCode inputs (status,
              approve)
   models     List the validated Albert models (live, or last-known-good)
+  workspace  Manage the sealed guest workspace: what crosses into the guest,
+             per-file re-inclusions, refresh and reviewed export (status,
+             sync, allow, deny, export). The host checkout is never mounted.
   setup      Configure the machine: preflight, credentials, identity, model,
              then install the managed runtime (setup doctor for the
              read-only diagnosis)

@@ -392,18 +392,48 @@ just-code --microsandbox
 
 ### Sécurité du workspace
 
-Le workspace est bind-mounté dans le sandbox : **tout ce qui est lisible dans le workspace est lisible par l'agent**, y compris via des commandes shell (`cat`, `grep`, scripts de build...). Les règles de permission `read` d'OpenCode (qui refusent `*.env` par défaut) ne couvrent que l'outil de lecture, pas le shell.
+**En mode Microsandbox, le checkout hôte n'est pas monté dans l'invité.** L'invité possède son propre espace de travail, un volume interne au sandbox : aucun fichier de l'hôte — `.env`, secret non commité, fichier ignoré — n'est lisible depuis l'agent. Le contenu ne traverse la frontière que par un **transfert filtré**, jamais par un montage.
 
-Avant chaque démarrage, `just-code` scanne donc le workspace et **refuse de démarrer** s'il contient :
+#### Transfert hôte → invité (filtre refus par défaut)
 
-- un fichier `.env` ou `.env.*` (hors `.env.example` / `.env.sample`) ;
-- un secret détecté par [gitleaks](https://github.com/gitleaks/gitleaks), si l'outil est installé sur l'hôte (sinon un avertissement signale que ce scan n'a pas pu s'exécuter).
+Chaque synchronisation — provisionnement initial et chaque rafraîchissement — résout un ensemble de fichiers concret, visible avant qu'un octet ne traverse. Sont **exclus par défaut** :
 
-Le scan ne suit pas les symlinks : un lien nommé `.env` est bloqué, un lien vers un répertoire hors du workspace n'est pas traversé. La règle : les vrais secrets restent hors du workspace ; un `.env.example` vidé sert de gabarit.
+- les fichiers `.env` / `.env.*` (hors `.env.example` / `.env.sample`) ;
+- les fichiers signalés par [gitleaks](https://github.com/gitleaks/gitleaks), si l'outil est installé sur l'hôte (sinon l'avertissement signale que la détection n'a pas tourné ; le filtre par nom, lui, s'applique toujours) ;
+- les fichiers ignorés par Git (c'est là que vivent les `.env` locaux et l'état dérivé) ;
+- les symlinks (un lien peut résoudre hors de l'ensemble résolu) ;
+- la métadonnée `.git` (le dépôt de l'invité est créé **dans** l'invité).
 
-**Limite connue :** le bind-mount est dynamique. Un fichier copié dans le workspace **pendant** que le backend tourne devient immédiatement lisible côté invité, sans qu'un scan au démarrage puisse l'intercepter. Ne copie jamais de secrets dans un workspace exposé à un agent en cours d'exécution ; si cela arrive, `just-code stop`, retire le fichier, puis relance.
+Le filtre est **structurellement inévitable** : le transfert écrit un payload unique construit depuis l'ensemble résolu, pas une copie d'arborescence. Un fichier refusé ne peut donc pas se retrouver dans l'invité.
 
-**Les montages sont figés à la création.** Microsandbox, Tart et agent-vm fixent le volume au moment de la création du sandbox ou de la VM. Changer `WORKSPACE_DIR` sur un sandbox Microsandbox existant n'a donc aucun effet : `just-code` détecte l'écart et prévient. Pour l'appliquer, il faut recréer avec `just-code restart --microsandbox` (destructif). Tart et agent-vm ne permettent pas cette détection ; le changement de répertoire y est donc uniquement documenté.
+```
+just-code workspace status          # ce qui traverserait, ce qui est refusé et pourquoi
+just-code workspace allow <chemin>  # réintégrer explicitement un fichier précis
+just-code workspace deny <chemin>   # revenir au refus par défaut
+just-code workspace sync [--force]  # rafraîchir l'espace invité
+```
+
+Il n'y a **pas** d'option « tout inclure » : une réintégration est une décision par fichier, enregistrée dans l'état hôte.
+
+#### Retour des changements
+
+Les modifications faites dans l'invité ne reviennent jamais en écriture directe dans ton checkout :
+
+```
+just-code workspace export [--out <fichier>]
+```
+
+produit un patch (fichiers suivis et nouveaux) écrit dans l'état hôte, à relire puis appliquer avec `git apply`. Avec le grant GitHub activé, la livraison par branche/PR prend le relais (P13).
+
+**Non destructif :** `workspace sync` refuse de rafraîchir si l'invité contient du travail non commité ; il nomme les fichiers et n'écrase qu'avec `--force`.
+
+#### Instances héritées et scan d'hygiène
+
+Une instance créée avant ce modèle porte un **montage lié** de l'hôte : son invité peut lire ton checkout. Elle n'est jamais convertie sur place — `just-code` refuse de la démarrer et indique la recréation explicite (`just-code clean --microsandbox` puis `start`).
+
+Le scan de démarrage n'est plus une frontière de sécurité : il reste un **conseil d'hygiène** qui signale les fichiers ressemblant à des secrets dans le checkout. Sa détection est réutilisée à la frontière de transfert, où le refus est effectif.
+
+**Tart et agent-vm montent toujours le workspace** : le modèle scellé ne s'y applique pas, et le scan y garde son rôle bloquant. Pour un projet qui doit exposer le checkout à l'invité, l'un de ces runtimes reste le choix explicite.
 
 Les serveurs de dev lancés par l'agent sur les ports **3000-3010** sont accessibles depuis le navigateur de l'hôte : `http://localhost:3000`, etc. pour Microsandbox. Avec Tart, la VM macOS est une machine à part entière sur le réseau NAT : les previews et le TUI OpenCode utilisent l'adresse de la VM, par exemple `open "http://$(tart ip opencode-tahoe-base-latest):3000"`.
 

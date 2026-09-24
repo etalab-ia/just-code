@@ -217,7 +217,7 @@ func TestBindingsRevisionIncludesStore(t *testing.T) {
 // revision, so `auth add` over an existing credential schedules a refresh on
 // the next reconcile instead of the no-op path.
 func TestCredentialGenerationMovesTheRevision(t *testing.T) {
-	base := DesiredState{Instance: "i", Isolation: IsolationBackend, WorkspaceDir: "/w", Image: "img", Username: "u"}
+	base := DesiredState{Instance: "i", Isolation: IsolationBackend, Image: "img", Username: "u"}
 	rotated := base
 	rotated.CredentialGeneration = "3"
 	if base.ConfigRevision() == rotated.ConfigRevision() {

@@ -56,8 +56,8 @@ func TestP02SecretEntryDefaultsPinsTheTransportContract(t *testing.T) {
 // mode 0644) and must not be "fixed" by updating the test.
 func TestP09CreateOptionsNeverPersistRawValueOnHost(t *testing.T) {
 	spec := msbSandboxSpec{
-		Image:     msbImage,
-		Workspace: "/workspace-on-host",
+		Image:           msbImage,
+		SealedWorkspace: true,
 		Bindings: bindingsMetadata([]resolvedBinding{
 			{msbSecretBinding: mustBinding(t, CredentialAlbert), source: bindingSourceEnv, value: "raw-secret-value"},
 		}),

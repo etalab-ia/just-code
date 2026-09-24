@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -204,12 +202,24 @@ type msbClient interface {
 	RemoveSecrets(ctx context.Context, name string, guestEnvs []string, live bool) error
 	// Exec runs a shell command in the sandbox, returning its exit code and stderr.
 	Exec(ctx context.Context, name, command string) (int, string, error)
+	// ExecCapture is Exec with stdout captured too. Change delivery (P22)
+	// needs the guest's diff text, which Exec discards.
+	ExecCapture(ctx context.Context, name, command string) (stdout, stderr string, code int, err error)
 	// Stop gracefully stops a running sandbox.
 	Stop(ctx context.Context, name string) error
 	// Remove deletes the sandbox and its local state.
 	Remove(ctx context.Context, name string) error
 	// WorkspaceMount returns the host path mounted at the guest /workspace.
+	// An owned (sealed) workspace has no host path, so this returns "".
 	WorkspaceMount(ctx context.Context, name string) (string, error)
+	// WorkspaceOwned reports whether the sandbox's /workspace is owned
+	// storage inside the sandbox rather than a host bind mount (P22). It is
+	// the provenance check that replaces mount-staleness detection.
+	WorkspaceOwned(ctx context.Context, name string) (bool, error)
+	// WriteFile writes one payload to a path inside the running sandbox. It
+	// is the host->guest transfer channel; the caller passes files already
+	// resolved by the transfer filter.
+	WriteFile(ctx context.Context, name, guestPath string, data []byte) error
 	// StartScript returns the persisted start script of an existing sandbox,
 	// or "" when it cannot be read. The script is fixed at creation, so it is
 	// how the sandbox's original isolation mode is detected.
@@ -245,12 +255,15 @@ type msbSandboxInfo struct {
 // carries binding *metadata* only: no secret value may appear here, so a spec
 // can never leak a credential into a persisted config or an SDK error dump.
 type msbSandboxSpec struct {
-	Name        string // instance name (P05); empty means the legacy singleton
-	Image       string
-	Env         map[string]string
-	Workspace   string             // host path bind-mounted at /workspace
-	Bindings    []msbSecretBinding // secret-proxy bindings (metadata only)
-	StartScript string             // guest start script body
+	Name  string // instance name (P05); empty means the legacy singleton
+	Image string
+	Env   map[string]string
+	// SealedWorkspace selects the P22 sealed model: /workspace is an owned
+	// volume inside the sandbox and the host checkout is NOT mounted. The
+	// zero value is refused rather than falling back to a bind mount.
+	SealedWorkspace bool
+	Bindings        []msbSecretBinding // secret-proxy bindings (metadata only)
+	StartScript     string             // guest start script body
 }
 
 // validateConfig checks the deterministic start-time configuration (the
@@ -345,13 +358,30 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	})
 }
 
+// start brings the instance up, then guarantees its sealed workspace exists.
+// The two steps are separate because provisioning needs a running guest: the
+// transfer is written into the sandbox, so it can only happen after boot.
 func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBinding) error {
+	if err := m.startInstance(ctx, bindings); err != nil {
+		return err
+	}
+	// Idempotent: a guest that already carries its repository is left
+	// untouched. Refreshing an existing workspace is explicit
+	// (SyncGuestWorkspace / 'just-code workspace sync'), never a side effect
+	// of a plain start.
+	return m.ProvisionGuestWorkspace(ctx, SyncOptions{})
+}
+
+func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []resolvedBinding) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
-		return err
-	}
+	// No workspace gate: with the sealed model (P22) the host checkout is not
+	// mounted, so a secret in it is not reachable from the guest. The scan's
+	// detection logic now runs at the transfer boundary
+	// (ResolveTransferSet), where refusing a file actually protects
+	// something. What remains here is hygiene advice, never a block.
+	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
 	if err := m.Client.EnsureInstalled(ctx); err != nil {
 		return err
 	}
@@ -361,7 +391,12 @@ func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBind
 		return err
 	}
 	if exists {
-		m.warnIfWorkspaceMountIsStale(ctx)
+		// A sandbox whose /workspace is not guest-owned was created by a
+		// pre-P22 version: it exposes the checkout to the guest, which the
+		// sealed model forbids. Such an instance is never adopted in place.
+		if err := m.requireSealedWorkspace(ctx); err != nil {
+			return err
+		}
 		// The mode-specific start script is persisted at creation and the SDK
 		// cannot rewrite it, so switching isolation on an existing sandbox
 		// would boot the wrong process (a full-mode sandbox would start
@@ -525,12 +560,12 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 // withHostSecrets.
 func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandboxSpec {
 	return msbSandboxSpec{
-		Name:        m.InstanceName(),
-		Image:       msbImage,
-		Env:         m.sandboxEnv(),
-		Workspace:   m.cfg.WorkspaceDir,
-		Bindings:    bindingsMetadata(bindings),
-		StartScript: msbStartScript(m.cfg.Isolation),
+		Name:            m.InstanceName(),
+		Image:           msbImage,
+		Env:             m.sandboxEnv(),
+		SealedWorkspace: true,
+		Bindings:        bindingsMetadata(bindings),
+		StartScript:     msbStartScript(m.cfg.Isolation),
 	}
 }
 
@@ -546,10 +581,13 @@ func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
 	if err != nil {
 		content = opencodeConfigContent
 	}
+	name, email := guestGitIdentity(m.guestGitConfig())
 	return map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 		"OPENCODE_CONFIG_CONTENT":  content,
+		msbGitNameEnv:              name,
+		msbGitEmailEnv:             email,
 	}
 }
 
@@ -565,12 +603,25 @@ func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
 		// rather than losing the provider block entirely.
 		content = opencodeConfigContent
 	}
-	return map[string]string{
+	env := map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 		"OPENCODE_CONFIG_CONTENT":  content,
 	}
+	// The commit identity for guest work (P11 settings, documented defaults
+	// otherwise). It is configuration, not a secret.
+	name, email := guestGitIdentity(m.guestGitConfig())
+	env[msbGitNameEnv] = name
+	env[msbGitEmailEnv] = email
+	return env
 }
+
+// msbGitNameEnv and msbGitEmailEnv carry the guest commit identity into the
+// sandbox environment, where the prep script reads them.
+const (
+	msbGitNameEnv  = "JUST_CODE_GIT_NAME"
+	msbGitEmailEnv = "JUST_CODE_GIT_EMAIL"
+)
 
 // rejectLegacyRawKey refuses to boot a sandbox that persists a plaintext
 // Albert key in its guest environment. Versions before proxy secret injection
@@ -674,31 +725,72 @@ func (m *MicrosandboxRuntime) backendHealthy(ctx context.Context) bool {
 	return probe(ctx, endpoint, m.cfg.Username, m.cfg.Password).Healthy
 }
 
-// warnIfWorkspaceMountIsStale compares the VM's /workspace mount with the
-// configured workspace. Mounts are fixed when a sandbox is created, so a
-// sandbox keeps whichever host directory it was created with.
-func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
+// requireSealedWorkspace proves that the instance's /workspace is guest-owned
+// storage before anything reads or writes it. Every operation that touches the
+// guest workspace calls this first: with a pre-P22 bind mount, /workspace
+// inside the guest IS the host checkout, so a transfer would extract over the
+// user's files and `git add -A` would stage and commit them.
+//
+// The check is positive and fail-closed. Asking "is there a bind mount?" and
+// defaulting to safe when the answer is unclear would let an unrecognized
+// mount shape through; the question that matters is "is this storage owned by
+// the guest?", and anything less than a proven yes is refused.
+//
+// The reading comes from the persisted sandbox configuration, not from
+// just-code's own spec, so a spec the runtime ignored cannot satisfy it.
+func (m *MicrosandboxRuntime) requireSealedWorkspace(ctx context.Context) error {
+	if _, exists, err := m.Client.Lookup(ctx, m.InstanceName()); err != nil {
+		return fmt.Errorf("cannot look up %s to verify its workspace isolation: %w", m.InstanceName(), err)
+	} else if !exists {
+		return fmt.Errorf("%s does not exist yet; run 'just-code start' first", m.InstanceName())
+	}
+	// A recognized bind source is reported by path: naming it is the clearest
+	// way to explain the refusal.
 	mounted, err := m.Client.WorkspaceMount(ctx, m.InstanceName())
-	if err != nil || mounted == "" {
+	if err != nil {
+		return fmt.Errorf("cannot read the /workspace provenance of %s; refusing to use an instance whose workspace isolation cannot be verified. "+
+			"Recreate it with 'just-code clean --microsandbox' then 'just-code start --microsandbox': %w", m.InstanceName(), err)
+	}
+	if mounted != "" {
+		return fmt.Errorf("%s was created with %s mounted from the host at /workspace, which exposes the host checkout to the guest. "+
+			"The sealed workspace model has no host mount, and an existing instance is never converted in place: "+
+			"run 'just-code clean --microsandbox' then 'just-code start --microsandbox' to recreate it, or use an explicit legacy runtime (--tart) for this project",
+			m.InstanceName(), mounted)
+	}
+	// No recognized bind source is not proof either: confirm owned storage.
+	owned, err := m.Client.WorkspaceOwned(ctx, m.InstanceName())
+	if err != nil {
+		return fmt.Errorf("cannot confirm that /workspace of %s is guest-owned storage; refusing to use an instance whose workspace isolation cannot be verified. "+
+			"Recreate it with 'just-code clean --microsandbox' then 'just-code start --microsandbox': %w", m.InstanceName(), err)
+	}
+	if !owned {
+		return fmt.Errorf("/workspace of %s is not guest-owned storage: the persisted configuration shows a workspace this runtime does not recognize as sealed, "+
+			"so the host checkout may be mounted into the guest. The sealed model has no host mount, and an existing instance is never converted in place: "+
+			"run 'just-code clean --microsandbox' then 'just-code start --microsandbox' to recreate it", m.InstanceName())
+	}
+	return nil
+}
+
+// warnWorkspaceHygiene prints host-side advice about secrets sitting in the
+// checkout. It never blocks: the sealed model does not mount the checkout, so
+// these files cannot reach the guest — the transfer filter refuses them — and
+// a block here would be advice pretending to be a security boundary.
+func warnWorkspaceHygiene(ctx context.Context, dir string) {
+	res, err := ScanWorkspace(ctx, dir)
+	if err != nil {
 		return
 	}
-	// Both sides are absolutized: the runtime persists the mount as an
-	// absolute path while WORKSPACE_DIR commonly stays relative ("./workspace"),
-	// so a raw string comparison would warn on every default-config start.
-	mountedClean := filepath.Clean(mounted)
-	if abs, err := filepath.Abs(mountedClean); err == nil {
-		mountedClean = abs
-	}
-	workspaceClean := filepath.Clean(m.cfg.WorkspaceDir)
-	if abs, err := filepath.Abs(workspaceClean); err == nil {
-		workspaceClean = abs
-	}
-	if mountedClean == workspaceClean || (runtime.GOOS == "windows" && strings.EqualFold(mountedClean, workspaceClean)) {
+	if len(res.DotenvFiles) == 0 && len(res.GitleaksFindings) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "Warning: %s was created with /workspace mounted from %s, but the workspace is now %s. "+
-		"Mounts are fixed when a sandbox is created, so /workspace will not reflect the new directory. "+
-		"Run 'just-code restart --microsandbox' to recreate it.\n", m.InstanceName(), mounted, m.cfg.WorkspaceDir)
+	fmt.Fprintf(os.Stderr, "Note: %s carries files that look like secrets in the host checkout. They are NOT mounted into the guest and the transfer filter excludes them"+
+		" (re-include a specific file with 'just-code workspace allow <path>' if the guest genuinely needs it).\n", dir)
+	for _, f := range res.DotenvFiles {
+		fmt.Fprintf(os.Stderr, "  dotenv file (excluded from transfer): %s\n", f)
+	}
+	for _, f := range res.GitleaksFindings {
+		fmt.Fprintf(os.Stderr, "  gitleaks (excluded from transfer): %s\n", f)
+	}
 }
 
 // rejectIsolationMismatch compares the isolation mode the sandbox was
@@ -759,9 +851,7 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
-		return err
-	}
+	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
 	// Detect recreation-only states before stopping: a creation-fixed
 	// isolation mismatch cannot be fixed by restart, and stopping first
 	// would leave a previously usable sandbox down with a looping error.
@@ -779,6 +869,13 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) error {
 	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
 	if err != nil || !exists {
+		return err
+	}
+	// Workspace provenance is a recreation-only state too: Restart runs Stop
+	// before Start's own check, so without this a legacy bind-mounted
+	// instance would be stopped and then refused, leaving a previously
+	// usable sandbox down.
+	if err := m.requireSealedWorkspace(ctx); err != nil {
 		return err
 	}
 	return m.rejectIsolationMismatch(ctx, sandbox)

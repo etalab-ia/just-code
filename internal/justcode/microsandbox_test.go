@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,6 +49,19 @@ type fakeMSBClient struct {
 	// execDefault is returned once execResults is drained; nil means success,
 	// which preserves the fake's historical default.
 	execDefault *fakeMSBExecResult
+	// execCaptureResults drives ExecCapture (stdout is needed by change
+	// delivery and by the guest-repository probes).
+	execCaptureResults []fakeMSBExecCaptureResult
+	execCaptureDefault *fakeMSBExecCaptureResult
+	// written files pushed into the guest through WriteFile (P22 transfer).
+	written  []fakeMSBWrite
+	writeErr error
+	// owned reports the /workspace provenance (P22): true means an owned
+	// volume, i.e. a sealed workspace with no host mount. Nil means "derive
+	// from mount": no host bind source means owned storage, which is what the
+	// runtime actually persists for a sealed sandbox.
+	owned    *bool
+	ownedErr error
 	// listed/listedRunning drive List: the managed sandboxes the fake
 	// runtime knows, and which of them are up.
 	listed        []string
@@ -58,6 +72,18 @@ type fakeMSBExecResult struct {
 	code   int
 	stderr string
 	err    error
+}
+
+type fakeMSBExecCaptureResult struct {
+	stdout string
+	stderr string
+	code   int
+	err    error
+}
+
+type fakeMSBWrite struct {
+	guestPath string
+	data      []byte
 }
 
 func (f *fakeMSBClient) record(call string) { f.calls = append(f.calls, call) }
@@ -83,6 +109,11 @@ func (f *fakeMSBClient) Create(_ context.Context, spec msbSandboxSpec) error {
 	copy.Env = cloneStringMap(spec.Env)
 	copy.Bindings = append([]msbSecretBinding(nil), spec.Bindings...)
 	f.created = &copy
+	// Creating a sandbox makes it exist: the provenance probes that follow
+	// creation (P22) look the instance up.
+	if f.createErr == nil {
+		f.exists = true
+	}
 	return f.createErr
 }
 
@@ -137,6 +168,39 @@ func (f *fakeMSBClient) Remove(_ context.Context, name string) error {
 func (f *fakeMSBClient) WorkspaceMount(_ context.Context, name string) (string, error) {
 	f.record("mount " + name)
 	return f.mount, f.mountErr
+}
+
+func (f *fakeMSBClient) WorkspaceOwned(_ context.Context, name string) (bool, error) {
+	f.record("owned " + name)
+	if f.ownedErr != nil {
+		return false, f.ownedErr
+	}
+	if f.owned != nil {
+		return *f.owned, nil
+	}
+	return f.mount == "", nil
+}
+
+func (f *fakeMSBClient) WriteFile(_ context.Context, name, guestPath string, data []byte) error {
+	f.record("writefile " + name + " " + guestPath)
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	f.written = append(f.written, fakeMSBWrite{guestPath: guestPath, data: append([]byte(nil), data...)})
+	return nil
+}
+
+func (f *fakeMSBClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {
+	f.record("execcapture " + name + " " + command)
+	if len(f.execCaptureResults) == 0 {
+		if f.execCaptureDefault != nil {
+			return f.execCaptureDefault.stdout, f.execCaptureDefault.stderr, f.execCaptureDefault.code, f.execCaptureDefault.err
+		}
+		return "", "", 0, nil
+	}
+	result := f.execCaptureResults[0]
+	f.execCaptureResults = f.execCaptureResults[1:]
+	return result.stdout, result.stderr, result.code, result.err
 }
 
 func (f *fakeMSBClient) StartScript(_ context.Context, name string) (string, error) {
@@ -201,6 +265,12 @@ func newTestMicrosandbox(t *testing.T, client *fakeMSBClient) *MicrosandboxRunti
 	m.launchRetryDelay = time.Millisecond
 	// Default to "backend not healthy" so tests exercise the relaunch path.
 	m.Probe = func(context.Context, string, string, string) HealthProbe { return HealthProbe{} }
+	// A fresh fake reports the guest workspace as already provisioned, so
+	// tests that are not about the sealed transfer do not run it. Tests that
+	// exercise provisioning or refresh set execCaptureResults explicitly.
+	if client.execCaptureDefault == nil {
+		client.execCaptureDefault = &fakeMSBExecCaptureResult{stdout: "yes"}
+	}
 	return m
 }
 
@@ -306,8 +376,14 @@ func TestMicrosandboxStartNew(t *testing.T) {
 		t.Fatalf("sandbox was not created; calls: %v", client.calls)
 	}
 	spec := client.created
-	if spec.Image != msbImage || spec.Workspace != m.cfg.WorkspaceDir {
+	if spec.Image != msbImage {
 		t.Fatalf("created spec = %+v", spec)
+	}
+	// P22: the created spec must select the sealed workspace. The host
+	// checkout is never named in the spec, so there is no host path the
+	// runtime could bind.
+	if !spec.SealedWorkspace {
+		t.Fatalf("the created spec must request the sealed workspace: %+v", spec)
 	}
 	if len(spec.Bindings) != 1 || spec.Bindings[0].GuestEnv != msbAPISecretEnv ||
 		!reflect.DeepEqual(spec.Bindings[0].AllowHosts, []string{msbAllowHost}) {
@@ -378,7 +454,11 @@ func TestMicrosandboxStartRunningHealthy(t *testing.T) {
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	for _, prefix := range []string{"create", "start", "modify", "exec"} {
+	// A healthy running backend must not be relaunched. The provisioning
+	// probe (execcapture) is expected: it is how the runtime learns the
+	// sealed workspace is already in place, and with it reporting "yes" no
+	// transfer follows.
+	for _, prefix := range []string{"create", "start ", "modify", "exec "} {
 		if hasCall(client, prefix) {
 			t.Fatalf("%s must not run for a healthy backend; calls: %v", prefix, client.calls)
 		}
@@ -657,16 +737,32 @@ func TestMicrosandboxIsRunning(t *testing.T) {
 	}
 }
 
-func TestMicrosandboxWarnsOnStaleWorkspaceMount(t *testing.T) {
+// TestMicrosandboxRefusesLegacyBindMount pins the P22 provenance rule: an
+// instance whose /workspace is a host bind mount predates the sealed model
+// and exposes the host checkout to the guest. It is refused, never converted
+// in place — a warning would leave the leak running.
+func TestMicrosandboxRefusesLegacyBindMount(t *testing.T) {
 	client := &fakeMSBClient{exists: true, status: "running", mount: "/somewhere/else"}
 	m := newTestMicrosandbox(t, client)
-	stderr := captureStderr(t, func() {
-		if err := m.Start(context.Background()); err != nil {
-			t.Fatalf("Start: %v", err)
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start must refuse an instance with a host bind mount at /workspace")
+	}
+	for _, want := range []string{"/somewhere/else", "clean --microsandbox", "never converted in place"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal must mention %q: %v", want, err)
 		}
-	})
-	if !strings.Contains(stderr, "/somewhere/else") || !strings.Contains(stderr, "just-code restart --microsandbox") {
-		t.Fatalf("stale-mount warning = %q", stderr)
+	}
+}
+
+// TestMicrosandboxRefusesUnreadableWorkspaceProvenance pins the fail-closed
+// half: when the persisted configuration cannot be read, the runtime cannot
+// prove the workspace is sealed, so it must not boot the instance.
+func TestMicrosandboxRefusesUnreadableWorkspaceProvenance(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "running", mountErr: fmt.Errorf("config unreadable")}
+	m := newTestMicrosandbox(t, client)
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("Start must fail closed when the workspace provenance cannot be read")
 	}
 }
 
@@ -700,11 +796,11 @@ func TestMicrosandboxDelegatesInteractiveCommands(t *testing.T) {
 
 func TestMSBCreateOptions(t *testing.T) {
 	spec := msbSandboxSpec{
-		Image:       msbImage,
-		Env:         map[string]string{"OPENCODE_SERVER_USERNAME": "opencode"},
-		Workspace:   "/workspace-on-host",
-		Bindings:    bindingsMetadata(testBindings("secret-value")),
-		StartScript: "exec opencode serve",
+		Image:           msbImage,
+		Env:             map[string]string{"OPENCODE_SERVER_USERNAME": "opencode"},
+		SealedWorkspace: true,
+		Bindings:        bindingsMetadata(testBindings("secret-value")),
+		StartScript:     "exec opencode serve",
 	}
 	var cfg msb.SandboxConfig
 	for _, option := range msbCreateOptions(spec) {
@@ -719,8 +815,14 @@ func TestMSBCreateOptions(t *testing.T) {
 	if cfg.RootDisk == nil || cfg.RootDisk.SizeMiB != 8*1024 {
 		t.Fatalf("root disk = %+v", cfg.RootDisk)
 	}
-	if cfg.Volumes["/workspace"].Bind != spec.Workspace {
-		t.Fatalf("workspace mount = %+v", cfg.Volumes)
+	// P22: /workspace is owned storage inside the sandbox. There is no host
+	// path in the mount, so no host file is reachable from the guest.
+	ws := cfg.Volumes["/workspace"]
+	if ws.Bind != "" {
+		t.Fatalf("the workspace must not be a host bind mount: %+v", ws)
+	}
+	if ws.Kind() != msb.MountKindOwned {
+		t.Fatalf("workspace mount kind = %v, want Owned", ws.Kind())
 	}
 	for port := uint16(3000); port <= 3010; port++ {
 		if cfg.Ports[port] != port {
@@ -802,24 +904,33 @@ func TestMSBRuntimeBinaryUsesManagedHome(t *testing.T) {
 	}
 }
 
-func TestMicrosandboxRestartPreflightsWorkspace(t *testing.T) {
-	// A rejected workspace must abort restart before the instance is
-	// touched, so the sandbox and its persistent state survive.
+// TestMicrosandboxRestartAdvisesOnDotenvButProceeds pins the P22 change of
+// role for the workspace scan: with no host mount, a .env in the checkout is
+// host hygiene advice, not a blocked start. The file never reaches the guest
+// because the transfer filter refuses it, which is the enforceable boundary.
+func TestMicrosandboxRestartAdvisesOnDotenvButProceeds(t *testing.T) {
 	client := &fakeMSBClient{exists: true}
 	m := newTestMicrosandbox(t, client)
 	if err := os.WriteFile(filepath.Join(m.cfg.WorkspaceDir, ".env"), []byte("X=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := m.Restart(context.Background())
-	if err == nil {
-		t.Fatal("Restart must refuse a workspace containing .env")
+	stderr := captureStderr(t, func() {
+		if err := m.Restart(context.Background()); err != nil {
+			t.Fatalf("Restart must proceed: a host .env is not mounted and cannot reach the guest: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, ".env") || !strings.Contains(stderr, "excluded from transfer") {
+		t.Fatalf("hygiene note must name the excluded file: %q", stderr)
 	}
-	if !strings.Contains(err.Error(), "refusing to start") {
-		t.Fatalf("unexpected error: %v", err)
+	// And the filter really excludes it: the dotenv file is not in the
+	// transferable set.
+	man, err := ResolveTransferSet(context.Background(), m.cfg.WorkspaceDir, TransferOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, call := range client.calls {
-		if strings.HasPrefix(call, "remove") {
-			t.Fatalf("Remove ran before the workspace gate: %v", client.calls)
+	for _, e := range man.Included() {
+		if e.Rel == ".env" {
+			t.Fatal("the .env file must not be in the transfer set")
 		}
 	}
 }

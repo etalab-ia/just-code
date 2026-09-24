@@ -111,11 +111,15 @@ type InstanceState struct {
 	SchemaVersion int `json:"schemaVersion"`
 	// Instance is the instance this state belongs to.
 	Instance string `json:"instance"`
-	// Isolation, WorkspaceDir and Image are the creation-fixed attributes
-	// the instance was created with. A change classifies as recreate.
-	Isolation    string `json:"isolation"`
-	WorkspaceDir string `json:"workspaceDir"`
-	Image        string `json:"image"`
+	// Isolation and Image are the creation-fixed attributes the instance was
+	// created with. A change classifies as recreate.
+	//
+	// The host workspace path is deliberately NOT recorded here: with the
+	// sealed workspace (P22) the sandbox holds no reference to it — the
+	// directory is only the transfer source, read at sync time — so changing
+	// it must not look like a difference the sandbox was created with.
+	Isolation string `json:"isolation"`
+	Image     string `json:"image"`
 	// ConfigRevision is the hash of the non-secret desired config that was
 	// applied. Identical revision + healthy guest = no-op.
 	ConfigRevision string `json:"configRevision"`
@@ -149,10 +153,9 @@ const maxSupportedInstanceStateSchema = 1
 
 // DesiredState is the configuration just-code wants the instance to have.
 type DesiredState struct {
-	Instance     string
-	Isolation    Isolation
-	WorkspaceDir string
-	Image        string
+	Instance  string
+	Isolation Isolation
+	Image     string
 	// CredentialRev is the hash of the desired binding-set descriptor (P09).
 	CredentialRev string
 	// CredentialGeneration is the non-secret rotation marker of the stored
@@ -178,7 +181,6 @@ func (d DesiredState) ConfigRevision() string {
 		"jc-state-v1",
 		d.Instance,
 		string(d.Isolation),
-		filepath.Clean(d.WorkspaceDir),
 		d.Image,
 		d.Username,
 		"rev:" + d.CredentialRev,
@@ -352,9 +354,10 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
-		return err
-	}
+	// The scan is host hygiene advice, not a gate: with the sealed workspace
+	// (P22) the checkout is not mounted, so a secret in it cannot reach the
+	// guest. The transfer filter is the enforceable boundary.
+	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
 
 	path := instanceStatePath(stateDir, m.InstanceName())
 	applied, err := ReadInstanceState(DefaultFS, path)
@@ -441,11 +444,10 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 // the revision cannot leave a stale refresh unperformed.
 func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBinding, applied *InstanceState) DesiredState {
 	d := DesiredState{
-		Instance:     m.InstanceName(),
-		Isolation:    m.cfg.Isolation,
-		WorkspaceDir: m.cfg.WorkspaceDir,
-		Image:        msbImage,
-		Username:     m.cfg.Username,
+		Instance:  m.InstanceName(),
+		Isolation: m.cfg.Isolation,
+		Image:     msbImage,
+		Username:  m.cfg.Username,
 	}
 	if resolved {
 		d.CredentialRev = bindingsRevision(bindings)
@@ -471,7 +473,6 @@ func (d DesiredState) toState() InstanceState {
 		SchemaVersion:    instanceStateSchemaVersion,
 		Instance:         d.Instance,
 		Isolation:        string(d.Isolation),
-		WorkspaceDir:     filepath.Clean(d.WorkspaceDir),
 		Image:            d.Image,
 		ConfigRevision:   d.ConfigRevision(),
 		CredentialRev:    d.CredentialRev,
@@ -503,7 +504,6 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 	// exists; without it, the live checks (isolation script, mount) stand in.
 	if applied != nil {
 		creationFixed := applied.Isolation != string(desired.Isolation) ||
-			applied.WorkspaceDir != filepath.Clean(desired.WorkspaceDir) ||
 			applied.Image != desired.Image
 		if creationFixed {
 			facts.CreationFixedChanged = true
@@ -514,28 +514,41 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 		facts.CreationFixedChanged = true
 		return facts, nil
 	}
-	if m.workspaceMountChanged(ctx) {
+	if m.workspaceProvenanceChanged(ctx) {
 		facts.CreationFixedChanged = true
 	}
 	return facts, nil
 }
 
-// workspaceMountChanged reports whether the instance's /workspace mount
-// differs from the configured workspace. Mounts are fixed at creation.
-func (m *MicrosandboxRuntime) workspaceMountChanged(ctx context.Context) bool {
+// workspaceProvenanceChanged reports whether the instance's workspace
+// provenance differs from the sealed model (P22). A /workspace backed by a
+// host path is the pre-P22 bind-mount instance: the guest can read the host
+// checkout, and no in-place change fixes that, so reconciliation must treat
+// the instance as requiring recreation.
+//
+// The old check compared the mounted *path* with the configured workspace,
+// which asked the wrong question: a mount pointing at the right directory is
+// still a host mount, and a mount pointing elsewhere is not the problem the
+// sealed model exists to remove.
+func (m *MicrosandboxRuntime) workspaceProvenanceChanged(ctx context.Context) bool {
 	mounted, err := m.Client.WorkspaceMount(ctx, m.InstanceName())
-	if err != nil || mounted == "" {
-		return false
+	if err != nil {
+		// Unreadable provenance cannot be proven sealed: require recreation
+		// rather than assuming the safer answer.
+		return true
 	}
-	mountedClean := filepath.Clean(mounted)
-	if abs, err := filepath.Abs(mountedClean); err == nil {
-		mountedClean = abs
+	if mounted != "" {
+		return true
 	}
-	workspaceClean := filepath.Clean(m.cfg.WorkspaceDir)
-	if abs, err := filepath.Abs(workspaceClean); err == nil {
-		workspaceClean = abs
+	// No recognized bind source is not proof of a sealed workspace. Sharing
+	// the guard's question here keeps the plan consistent: a shape the
+	// runtime does not recognize as owned must classify as recreate, or
+	// Reconcile would plan a refresh and then fail mid-apply in Start.
+	owned, err := m.Client.WorkspaceOwned(ctx, m.InstanceName())
+	if err != nil {
+		return true
 	}
-	return mountedClean != workspaceClean
+	return !owned
 }
 
 // applyReconcileOp executes one plan operation. Every operation is
@@ -627,9 +640,7 @@ func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
-		return err
-	}
+	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
 	if err := m.Clean(ctx); err != nil {
 		return err
 	}
