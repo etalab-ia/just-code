@@ -101,6 +101,35 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 			doc:  `{"mounts":[{"type":"Tmpfs","guest":"/tmp"}]}`,
 		},
 		{
+			// The FFI create/restore wire shape: no "type", the host path
+			// under "bind". Before the source-key set covered it, this read
+			// as owned — a host-mounted workspace accepted as sealed.
+			name: "bind source under the wire key, no type",
+			doc:  `{"mounts":[{"bind":"/Users/luis/project","guest":"/workspace"}]}`,
+		},
+		{
+			name: "named source under the wire key, no type",
+			doc:  `{"mounts":[{"named":"vol","guest":"/workspace"}]}`,
+		},
+		{
+			name: "generic source key",
+			doc:  `{"mounts":[{"source":"/host/dir","guest":"/workspace"}]}`,
+		},
+		{
+			name: "path key",
+			doc:  `{"mounts":[{"path":"/host/dir","guest":"/workspace"}]}`,
+		},
+		{
+			// An unrecognized non-empty type must not be assumed owned: a
+			// future host-backed kind would otherwise be read as sealed.
+			name: "unrecognized mount kind",
+			doc:  `{"mounts":[{"type":"Virtiofs","guest":"/workspace"}]}`,
+		},
+		{
+			name: "tmpfs is not owned storage",
+			doc:  `{"mounts":[{"type":"Tmpfs","guest":"/workspace"}]}`,
+		},
+		{
 			name:    "invalid json",
 			doc:     `{not json`,
 			wantErr: true,
@@ -121,13 +150,54 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 			if owned != tc.owned {
 				t.Fatalf("owned = %v, want %v", owned, tc.owned)
 			}
-			// Fail-safe cross-check: the two parsers must never disagree
-			// about the same mount. A host path means not owned, always.
+			// The invariant that matters, in the dangerous direction: no
+			// document may report "no host path" AND "owned" unless the
+			// entry genuinely carries no host source. A host path that
+			// parseWorkspaceMount cannot name (an unparsed spelling) must
+			// still not be accepted as sealed.
 			host, herr := parseWorkspaceMount(tc.doc, "/workspace")
-			if herr == nil && host != "" && owned {
+			if herr != nil {
+				return
+			}
+			if owned && host != "" {
 				t.Fatalf("the parsers disagree: a host path %q was reported as owned storage", host)
 			}
+			if owned && strings.Contains(tc.doc, "/") {
+				// Any document naming a path and still reported as owned must
+				// be one whose path is not a mount source; the fixtures above
+				// are the corpus that proves each spelling is refused.
+				if !strings.Contains(tc.doc, `"owned"`) && !strings.Contains(tc.doc, `"type":"Owned"`) {
+					t.Fatalf("a document naming a path was accepted as owned: %s", tc.doc)
+				}
+			}
 		})
+	}
+}
+
+// TestNoDocumentIsBothUnmountedAndOwned is the directional invariant the
+// per-file fixtures cannot express: for a corpus of documents that DO name a
+// host directory, none may be reported as guest-owned. This is the failure
+// that would put the host checkout inside the guest.
+func TestNoDocumentIsBothUnmountedAndOwned(t *testing.T) {
+	hostBacked := []string{
+		`{"mounts":[{"type":"Bind","host":"/h","guest":"/workspace"}]}`,
+		`{"mounts":[{"bind":"/h","guest":"/workspace"}]}`,
+		`{"mounts":[{"host":"/h","guest":"/workspace"}]}`,
+		`{"mounts":[{"source":"/h","guest":"/workspace"}]}`,
+		`{"mounts":[{"path":"/h","guest":"/workspace"}]}`,
+		`{"mounts":[{"type":"bind","bind":"/h","guest":"/workspace"}]}`,
+		`{"mounts":[{"type":"Bind","guest":"/workspace"}]}`,
+		`{"mounts":[{"type":"Named","named":"vol","guest":"/workspace"}]}`,
+		`{"mounts":[{"type":"Disk","disk":"/d.img","guest":"/workspace"}]}`,
+	}
+	for _, doc := range hostBacked {
+		owned, err := parseOwnedWorkspace(doc, "/workspace")
+		if err != nil {
+			t.Fatalf("%s: %v", doc, err)
+		}
+		if owned {
+			t.Fatalf("%s was reported as guest-owned storage", doc)
+		}
 	}
 }
 

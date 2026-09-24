@@ -412,15 +412,50 @@ func (sdkMSBClient) Remove(ctx context.Context, name string) error {
 // (verified against a live handle — same blind spot as the spec env, see
 // persistedGuestEnv), so the raw document is the only readable source.
 type persistedMounts struct {
-	Mounts []struct {
-		Type  string `json:"type"`
-		Host  string `json:"host"`
-		Guest string `json:"guest"`
-		// Name and Disk carry the non-bind source variants (a named volume,
-		// a raw disk). They are read only to tell "owned" from "host-backed".
-		Name string `json:"name"`
-		Disk string `json:"disk"`
-	} `json:"mounts"`
+	Mounts []persistedMount `json:"mounts"`
+}
+
+// persistedMount is one entry of the persisted mounts section.
+type persistedMount struct {
+	Type  string `json:"type"`
+	Host  string `json:"host"`
+	Guest string `json:"guest"`
+	// Every remaining field that can carry a host source, in any spelling
+	// the runtime's two serializers are known to use: the persisted
+	// document writes host/name/disk, while the FFI create-and-restore
+	// wire shape writes bind/named (internal/ffi MountSpec). A source
+	// key that is not parsed is a host path the provenance check cannot
+	// see, which is the one failure this model must not have.
+	Name   string `json:"name"`
+	Disk   string `json:"disk"`
+	Bind   string `json:"bind"`
+	Named  string `json:"named"`
+	Source string `json:"source"`
+	Path   string `json:"path"`
+	// Owned is the selector the create path emits for owned storage
+	// ("dir"/"disk"), as opposed to the persisted document's
+	// {"type":"Owned"}.
+	Owned string `json:"owned"`
+}
+
+// hasHostSource reports whether the entry names a host-backed source, in any
+// spelling the runtime is known to write. Named volumes and disks count: they
+// are not owned storage, and treating them as sealed would be a silent
+// widening of what the guard accepts.
+func (m persistedMount) hasHostSource() bool {
+	return m.bindSource() != "" || m.Name != "" || m.Disk != "" || m.Named != ""
+}
+
+// bindSource returns the host directory this entry binds, whichever spelling
+// carries it, so a refusal can name the path instead of describing it
+// abstractly.
+func (m persistedMount) bindSource() string {
+	for _, s := range []string{m.Host, m.Bind, m.Source, m.Path} {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // parseWorkspaceMount returns the host path bound at the guest path, or ""
@@ -437,7 +472,7 @@ func parseWorkspaceMount(configJSON, guestPath string) (string, error) {
 	}
 	for _, m := range raw.Mounts {
 		if m.Guest == guestPath && (m.Type == "" || strings.EqualFold(m.Type, "Bind")) {
-			return m.Host, nil
+			return m.bindSource(), nil
 		}
 	}
 	return "", nil
@@ -448,16 +483,23 @@ func parseWorkspaceMount(configJSON, guestPath string) (string, error) {
 // exclusive at the same guest path, so this answers the provenance question
 // the sealed model needs: "does this guest have a host-mounted workspace?".
 //
-// Owned storage is therefore recognized by the ABSENCE of a host source
-// rather than by one expected spelling: the create path emits {"owned":"dir"}
-// (pinned by the SDK's TestOwnedMountWireShape) while the persisted document
-// carries a mount "type", and no single string covers both. Being permissive
-// here costs nothing, whereas a miss would mean refusing to start a
-// legitimate sealed sandbox.
+// Owned storage is recognized by positive evidence, in either spelling the
+// runtime uses: {"type":"Owned"} in the persisted document, or {"owned":"dir"}
+// on the create path (pinned by the SDK's TestOwnedMountWireShape). An entry
+// with no type and no source is also owned: that is the shape a directory
+// mount serializes to once its selector is dropped.
 //
-// What is NOT permissive is host-backed storage: an explicit bind type, or
-// any source field, is not owned even when the source is empty. A miss here
-// is the leak this whole model removes.
+// Everything else is refused, which is the direction that matters. A host
+// source is refused in every spelling known to either serializer, including
+// the FFI wire shape {"bind":"/host/dir"} that carries no "type" at all; a
+// host-backed kind (bind, named, disk) is refused even when its source field
+// is empty; and an unrecognized non-empty type is refused rather than assumed
+// owned, because a future host-backed kind must not be read as sealed.
+//
+// The asymmetry is deliberate: reading an unrecognized shape as "not owned"
+// costs an actionable refusal (recreate the instance), while reading a
+// host-backed shape as owned costs the host checkout — every untracked
+// secret in it included. Confidentiality wins over convenience here.
 func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 	var raw persistedMounts
 	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
@@ -467,12 +509,20 @@ func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 		if m.Guest != guestPath {
 			continue
 		}
-		hostBacked := m.Host != "" || m.Name != "" || m.Disk != "" ||
-			strings.EqualFold(m.Type, "Bind") || strings.EqualFold(m.Type, "Named") || strings.EqualFold(m.Type, "Disk")
-		if hostBacked {
+		if m.hasHostSource() {
 			return false, nil
 		}
-		return true, nil
+		switch {
+		case m.Type == "":
+			// No selector and no source: owned directory storage.
+			return true, nil
+		case strings.EqualFold(m.Type, "Owned"):
+			return true, nil
+		default:
+			// A known host-backed kind (bind/named/disk), or a kind this
+			// build does not recognize. Both are refused.
+			return false, nil
+		}
 	}
 	return false, nil
 }
