@@ -14,7 +14,6 @@ import (
 // Real-store tests are separate and availability-gated. The fake runner
 // itself lives in credentials_fake_runner_test.go (shared across OSes).
 
-
 // TestSecretServicePutKeepsValueOutOfArgs pins the transport contract:
 // the secret is never in argv; it goes through stdin.
 func TestSecretServicePutKeepsValueOutOfArgs(t *testing.T) {
