@@ -290,14 +290,30 @@ Le niveau d'isolation ne détermine pas à lui seul ce qu'un agent peut lire : c
 `just-code auth` stocke les identifiants globaux dans le magasin natif de l'OS — Keychain macOS, Gestionnaire d'identifiants Windows, Secret Service Linux — jamais dans un fichier projet ni un profil shell. Les commandes :
 
 ```bash
-just-code auth add            # saisie masquée interactive (ou --stdin pour un pipe)
-just-code auth status         # état du magasin, jamais les valeurs
-just-code auth remove         # suppression
+just-code auth add [albert|github|context7]   # saisie masquée interactive (ou --stdin pour un pipe)
+just-code auth status                         # état du magasin, jamais les valeurs
+just-code auth remove [albert|github|context7] # révocation puis suppression
 ```
 
 Le secret ne passe jamais par la ligne de commande (argv) : la saisie interactive est masquée, `--stdin` lit une ligne sur l'entrée standard. Sur les hôtes sans magasin natif (Linux headless sans Secret Service), le repli `--fallback` écrit un fichier JSON `0600` dans le répertoire de configuration — **jamais créé implicitement** : sans consentement explicite (`auth add --fallback`), toute écriture échoue. Un magasin natif indisponible ou verrouillé est une erreur explicite, pas un repli silencieux vers ce fichier en clair.
 
-Stocker un identifiant ne lui donne aucun accès : la liaison à un sandbox est le chantier P09. `auth remove` refuse de supprimer un identifiant lié à une instance en cours d'exécution tant que la révocation n'est pas appliquée. Les identifiants restent référencés par nom (`credentialRef`) dans la configuration gérée ; la valeur ne figure jamais dans `settings.json`, `project.json` ni les exports.
+Au démarrage, la clé Albert est résolue dans l'ordre : `credentialRef` (env `JUST_CODE_CREDENTIAL_REF` > manifeste projet > réglages utilisateur), puis la variable d'environnement `ALBERT_API_KEY`, puis l'identifiant `albert` du magasin. Les identifiants restent référencés par nom (`credentialRef`) dans la configuration gérée ; la valeur ne figure jamais dans `settings.json`, `project.json` ni les exports.
+
+### Liaisons d'identifiants (bindings)
+
+Sur Microsandbox, les identifiants sont injectés par le proxy de secrets : la valeur brute n'est jamais persistée (ni dans la base du runtime, ni dans l'environnement invité) — la liaison est une référence à une variable d'environnement hôte, re-résolue à chaque application et à chaque démarrage. La liaison `albert` est obligatoire ; `github` et `context7` sont **optionnelles et approuvées projet par projet** :
+
+```bash
+just-code bindings list              # liaisons connues, approbations, état du magasin
+just-code bindings approve github    # autorise la liaison github pour ce projet
+just-code bindings revoke github     # retire l'approbation et révoque l'instance du projet
+```
+
+L'approbation est un enregistrement local à l'hôte (`~/.local/state/just-code/instances/<instance>/bindings.json`) : elle n'est jamais versionnée et ne voyage pas avec un clone. Les hôtes autorisés sont disjoints entre liaisons, donc une liaison ne peut pas être substituée vers la destination d'une autre.
+
+### Révocation
+
+`just-code auth remove` révoque l'accès avant de supprimer l'identifiant du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. Une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée : cette variable n'appartient pas à just-code. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne, car retirer la copie du magasin ne révoquerait rien.
 
 | Runtime | Injection protégée | Portée |
 |---|---|---|
@@ -307,7 +323,7 @@ Stocker un identifiant ne lui donne aucun accès : la liaison à un sandbox est 
 
 Sur Microsandbox, le secret est déclaré via l'API de secrets du runtime et la substitution réseau se fait à la frontière : passer en `full` place le TUI dans la microVM sans exposer la clé pour autant. Un sandbox créé par une version antérieure, qui persistait la clé en clair dans l'environnement invité, est refusé au démarrage avec la commande de recréation à lancer ; l'ancienne valeur ne peut pas être remplacée sur place. Si l'environnement invité ne peut pas être relu, le démarrage est refusé de la même façon : sans cette lecture, rien ne distingue un sandbox sain d'un sandbox qui expose encore la clé.
 
-Sur Tart et agent-vm, les secrets ne passent jamais par la ligne de commande : en mode `full` ils sont transmis sur l'entrée standard (Tart) ou par un fichier `0600` copié dans l'invité (agent-vm), et le TUI les lit depuis ce fichier. Le fichier porte aussi la configuration du provider Albert, sans quoi le TUI n'aurait pas de modèle à utiliser. Ces deux runtimes n'ont pas de proxy audité : la clé y est en clair dans l'invité, quel que soit le niveau d'isolation, et `just-code` l'annonce au démarrage. Réservez-les aux travaux qui n'ont pas besoin de la clé, ou traitez l'invité comme portant un identifiant vivant.
+Sur Tart et agent-vm, les secrets ne passent jamais par la ligne de commande : en mode `full` ils sont transmis sur l'entrée standard (Tart) ou par un fichier `0600` copié dans l'invité (agent-vm), et le TUI les lit depuis ce fichier. Le fichier porte aussi la configuration du provider Albert, sans quoi le TUI n'aurait pas de modèle à utiliser. Ces deux runtimes n'ont pas de proxy audité : la clé y est en clair dans l'invité, quel que soit le niveau d'isolation. Le démarrage l'exige donc explicitement : sans `--acknowledge-guest-credentials`, `start` est refusé ; avec, l'avertissement reste affiché à chaque démarrage. Réservez-les aux travaux qui n'ont pas besoin de la clé, ou traitez l'invité comme portant un identifiant vivant.
 
 Le niveau d'isolation est fixé à la création du sandbox Microsandbox. Le demander différent sur un sandbox existant est refusé, avec la commande de recréation à lancer ; `just-code restart --<runtime>` recrée l'environnement dans le mode demandé.
 

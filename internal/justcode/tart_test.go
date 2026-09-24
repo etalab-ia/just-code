@@ -77,6 +77,9 @@ func newTestTart(t *testing.T, runner Runner) *Tart {
 			TartMTU:      "1280",
 			WorkspaceDir: t.TempDir(),
 			APIKey:       "key",
+			// Tests exercise the runtime; the P09 acknowledgement gate is
+			// covered by its own test.
+			GuestCredentialsAcknowledged: true,
 		},
 		Runner:           runner,
 		Starter:          &fakeStarter{},
@@ -272,12 +275,13 @@ func TestTartRestartPreflightsWorkspace(t *testing.T) {
 	runner := &fakeRunner{}
 	tt := &Tart{
 		Config: Config{
-			APIKey:       "key",
-			WorkspaceDir: t.TempDir(),
-			Username:     "opencode",
-			Password:     "pw",
-			TartVM:       "opencode-test",
-			TartMTU:      DefaultTartMTU,
+			APIKey:                       "key",
+			WorkspaceDir:                 t.TempDir(),
+			Username:                     "opencode",
+			Password:                     "pw",
+			TartVM:                       "opencode-test",
+			TartMTU:                      DefaultTartMTU,
+			GuestCredentialsAcknowledged: true,
 		},
 		Runner:           runner,
 		Starter:          &fakeStarter{},
@@ -500,5 +504,17 @@ func TestTartIsRunningScopedToProjectVM(t *testing.T) {
 	tt2.Instance = "my-proj"
 	if got, err := tt2.IsRunning(context.Background()); err != nil || !got {
 		t.Fatalf("IsRunning = %v, %v; want true (la VM du projet est running)", got, err)
+	}
+}
+
+// TestTartStartRequiresGuestCredentialsAcknowledgement pins the P09 gate
+// (issue #74): Tart transports the credential into the guest in plaintext,
+// so Start refuses without the explicit acknowledgement flag.
+func TestTartStartRequiresGuestCredentialsAcknowledgement(t *testing.T) {
+	tt := newTestTart(t, &fakeRunner{})
+	tt.Config.GuestCredentialsAcknowledged = false
+	err := tt.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "--acknowledge-guest-credentials") {
+		t.Fatalf("Start must require the acknowledgement: %v", err)
 	}
 }

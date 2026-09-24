@@ -50,6 +50,24 @@ La valeur référencée par `credentialRef` vit dans le magasin natif de l'OS
 `0600` existe mais n'est jamais créé sans consentement explicite
 (`just-code auth add --fallback`).
 
+## Résolution de l'identifiant Albert (P09)
+
+Au démarrage d'un runtime, la clé Albert est résolue dans l'ordre :
+
+1. `credentialRef` : `JUST_CODE_CREDENTIAL_REF` > `credentialRef` du
+   manifeste projet > celui des réglages utilisateur. Une référence qui ne
+   nomme rien dans le magasin est une erreur explicite, jamais un repli
+   silencieux.
+2. La variable legacy `ALBERT_API_KEY` (ou `.env`).
+3. L'identifiant `albert` du magasin.
+
+Sur Microsandbox, la valeur n'est jamais persistée : la liaison est une
+référence à une variable d'environnement hôte re-résolue à chaque démarrage
+(voir `docs/decisions/2026-09-24-microsandbox-credential-transport.md`,
+addendum P09). Les liaisons optionnelles (`github`, `context7`) exigent une
+approbation par projet (`just-code bindings approve`), enregistrée dans
+l'état local de l'hôte — jamais dans le dépôt.
+
 ## `just-code config`
 
 - `just-code config explain` : affiche chaque champ géré avec sa valeur

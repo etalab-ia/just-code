@@ -113,9 +113,9 @@ func TestConfigRevisionExcludesSecrets(t *testing.T) {
 		t.Fatal("revision must be deterministic")
 	}
 	changed := base
-	changed.CredentialGen = 7
+	changed.CredentialRev = "abc123"
 	if base.ConfigRevision() == changed.ConfigRevision() {
-		t.Fatal("credential generation must participate in the revision")
+		t.Fatal("the binding-set revision must participate in the revision")
 	}
 	// Workspace path normalization: the same directory expressed with a
 	// trailing separator or ./ must not look like a change.
@@ -166,7 +166,7 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 	}
 	// Point the state at a temp dir by writing the applied state through
 	// the same path the runtime will read.
-	desired := m.desiredState()
+	desired := m.desiredState(testBindings(m.cfg.APIKey))
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	if err := WriteInstanceState(DefaultFS, path, desired.toState()); err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestReconcileResumesInterruptedApply(t *testing.T) {
 	client := &fakeMSBClient{exists: true, status: "stopped"}
 	m := newTestMicrosandbox(t, client)
 
-	desired := m.desiredState()
+	desired := m.desiredState(testBindings(m.cfg.APIKey))
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	// Simulate a crash after refresh-credentials, with the journal written.
 	st := desired.toState()
@@ -245,7 +245,7 @@ func TestReconcileFinishesPendingJournalDespiteHealthyGuest(t *testing.T) {
 	m.Probe = func(context.Context, string, string, string) HealthProbe {
 		return HealthProbe{Healthy: true}
 	}
-	desired := m.desiredState()
+	desired := m.desiredState(testBindings(m.cfg.APIKey))
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	st := desired.toState()
 	st.Pending = []string{"refresh-credentials", "restart-vm"}
@@ -297,7 +297,7 @@ func TestReconcileSurfacesRecreateAsError(t *testing.T) {
 	m.Probe = func(context.Context, string, string, string) HealthProbe {
 		return HealthProbe{Healthy: true}
 	}
-	desired := m.desiredState()
+	desired := m.desiredState(testBindings(m.cfg.APIKey))
 	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
 	st := desired.toState()
 	st.Isolation = string(IsolationFull) // differs from desired (backend)

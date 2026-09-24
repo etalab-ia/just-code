@@ -76,6 +76,8 @@ func run(args []string) (int, error) {
 	}
 
 	cfg := justcode.LoadConfigEnv()
+	cfg.CredentialRef = resolveCredentialRef()
+	cfg.GuestCredentialsAcknowledged = parsed.ackGuestCreds
 	if parsed.version {
 		printBuildInfo()
 		return 0, nil
@@ -94,6 +96,16 @@ func run(args []string) (int, error) {
 	instance := ""
 	if projErr == nil {
 		instance = pc.InstanceName()
+	}
+
+	// bindings manages the host-local per-project credential binding
+	// approvals (P09). It needs the project instance, so it runs after
+	// discovery and before any runtime is constructed.
+	if parsed.action == "bindings" {
+		if projErr != nil {
+			return 2, fmt.Errorf("bindings requires a project directory: %v", projErr)
+		}
+		return bindingsCmd(parsed.bindingsArgs, instance)
 	}
 
 	// The dispatcher and its backends are built from the resolved config,
@@ -176,11 +188,17 @@ type parsedArgs struct {
 	// stopAll records the explicit --all flag: `stop --all` stops every
 	// managed instance, not just the current project's (P06).
 	stopAll bool
-	version bool
+	// ackGuestCreds records --acknowledge-guest-credentials (P09): required
+	// to start a Tart or agent-vm runtime, which transports the credential
+	// into the guest in plaintext.
+	ackGuestCreds bool
+	version       bool
 	// configArgs holds the words after the config command.
 	configArgs []string
 	// authArgs holds the words after the auth command.
 	authArgs []string
+	// bindingsArgs holds the words after the bindings command.
+	bindingsArgs []string
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -191,7 +209,7 @@ var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
 	"restart": true, "recreate": true, "clean": true, "doctor": true,
 	"help": true, "version": true, "config": true,
-	"auth": true,
+	"auth": true, "bindings": true,
 }
 
 func runtimeFlag(a string) bool {
@@ -242,6 +260,8 @@ func parseArgs(args []string) (parsedArgs, error) {
 				return p, fmt.Errorf("--all may be given only once")
 			}
 			p.stopAll = true
+		case a == "--acknowledge-guest-credentials":
+			p.ackGuestCreds = true
 		case a == "config" && !actionSet:
 			p.action = "config"
 			actionSet = true
@@ -253,6 +273,12 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the auth command belongs to it.
 			p.authArgs = args[i+1:]
+			return p, nil
+		case a == "bindings" && !actionSet:
+			p.action = "bindings"
+			actionSet = true
+			// Everything after the bindings command belongs to it.
+			p.bindingsArgs = args[i+1:]
 			return p, nil
 		case actionNames[a] && !actionSet:
 			p.action = a
@@ -275,6 +301,28 @@ func argOr(args []string, i int, def string) string {
 		return args[i]
 	}
 	return def
+}
+
+// resolveCredentialRef applies the credential-reference precedence (P09):
+// JUST_CODE_CREDENTIAL_REF > project manifest credentialRef > user settings
+// credentialRef. Reads are best-effort: a missing file means "no reference",
+// and a malformed one is reported by `config explain`, not by every command
+// that might start a runtime.
+func resolveCredentialRef() string {
+	if v := strings.TrimSpace(os.Getenv("JUST_CODE_CREDENTIAL_REF")); v != "" {
+		return v
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(cwd)); err == nil && pm.CredentialRef != "" {
+			return pm.CredentialRef
+		}
+	}
+	if path, err := justcode.UserSettingsPath(); err == nil {
+		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil {
+			return us.CredentialRef
+		}
+	}
+	return ""
 }
 
 // configCmd implements `just-code config <subcommand>`. It is read-only: it
@@ -559,13 +607,17 @@ Commands:
   doctor     Check the selected runtime installation
   config     Show or preview managed configuration (explain, import-env)
   auth       Manage global credentials (add, status, remove)
+  bindings   Approve or revoke optional credential bindings for this
+             project (list, approve, revoke)
   version    Print the build identity
   help       Show this help
 
 Runtime selection:
   Pass --microsandbox, --tart or --agent-vm. RUNTIME in .env is used when no
   flag is provided; an explicit flag always takes precedence. On Windows,
-  --microsandbox is the default and the only supported runtime.
+  --microsandbox is the default and the only supported runtime. Tart and
+  agent-vm hand the credential to the guest in plaintext and additionally
+  require --acknowledge-guest-credentials to start.
 
 Isolation:
   --isolation backend (default): the agent runs as a server inside the

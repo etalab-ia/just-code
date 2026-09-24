@@ -24,10 +24,21 @@ import (
 type CredentialKind string
 
 const (
-	// CredentialAlbert is the Albert API key (the only credential the
-	// current runtimes transport).
+	// CredentialAlbert is the Albert API key.
 	CredentialAlbert CredentialKind = "albert"
+	// CredentialGithub is a GitHub token, bound into the guest only after
+	// explicit per-project approval (P09).
+	CredentialGithub CredentialKind = "github"
+	// CredentialContext7 is a Context7 API key, bound like github.
+	CredentialContext7 CredentialKind = "context7"
 )
+
+// KnownCredentialKinds lists the kinds the CLI manages, in display order.
+// The store itself accepts arbitrary service names so a credentialRef can
+// name a non-standard entry (e.g. a second Albert key).
+func KnownCredentialKinds() []CredentialKind {
+	return []CredentialKind{CredentialAlbert, CredentialGithub, CredentialContext7}
+}
 
 // credentialService maps a kind to the native store service name. The
 // prefix keeps just-code's entries distinguishable from other items in a
@@ -142,15 +153,8 @@ func (f *FileCredentialStore) HasCredential(kind CredentialKind) bool {
 	return err == nil && v != ""
 }
 
-// CredentialBoundToRunningInstance reports whether a credential kind is
-// currently bound to a running just-code instance. Until P09 lands, no
-// binding registry exists, so the safe answer is false: removal is
-// allowed, and the P09 boundary note in the plan (refuse when bound)
-// becomes enforceable once bindings are tracked. The function exists now
-// so the CLI's refusal path is wired and P09 only has to fill it in.
-func CredentialBoundToRunningInstance(kind CredentialKind) bool {
-	return false
-}
+// CredentialBoundToRunningInstance is superseded by P09's RevokeCredential
+// (see revoke.go), which revokes live bindings instead of refusing removal.
 
 // isNotFound reports whether err is the not-found outcome, wrapping
 // included.

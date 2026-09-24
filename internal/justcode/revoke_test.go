@@ -1,0 +1,186 @@
+package justcode
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
+
+// The revocation tests pin issue #74's removal semantics: a removed key must
+// stop working — live for a running sandbox, persisted for a stopped one —
+// and a plaintext transport (Tart/agent-vm) blocks the removal outright.
+
+func revokerForTest(client *fakeMSBClient, stateDir string, tartVMs, agentVMs []string) Revoker {
+	return Revoker{
+		MSB:            client,
+		TartRunning:    func(context.Context) ([]string, error) { return tartVMs, nil },
+		AgentVMRunning: func(context.Context) ([]string, error) { return agentVMs, nil },
+		StateDir:       stateDir,
+		FS:             DefaultFS,
+	}
+}
+
+// writeBoundState persists a reconcile record marking kind as store-bound for
+// instance under stateDir.
+func writeBoundState(t *testing.T, stateDir, instance string, bound []string) {
+	t.Helper()
+	st := InstanceState{
+		Instance:         instance,
+		BoundCredentials: bound,
+	}
+	if err := WriteInstanceState(DefaultFS, instanceStatePath(stateDir, instance), st); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRevokeBlockedByPlaintextRuntimes(t *testing.T) {
+	client := &fakeMSBClient{}
+	r := revokerForTest(client, t.TempDir(), []string{"opencode-proj-a1"}, nil)
+	_, err := r.Revoke(context.Background(), CredentialAlbert)
+	var blocked *ErrRevocationBlocked
+	if !errors.As(err, &blocked) {
+		t.Fatalf("a running tart instance must block albert removal: %v", err)
+	}
+	if !reflect.DeepEqual(blocked.Instances, []string{"opencode-proj-a1"}) {
+		t.Fatalf("blocked instances = %v", blocked.Instances)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("no sandbox may be touched once removal is blocked: %v", client.calls)
+	}
+}
+
+func TestRevokeOptionalKindIgnoresPlaintextRuntimes(t *testing.T) {
+	// Tart/agent-vm only ever transport albert; a github removal must not be
+	// blocked by a running tart VM.
+	client := &fakeMSBClient{}
+	r := revokerForTest(client, t.TempDir(), []string{"opencode-proj-a1"}, nil)
+	if _, err := r.Revoke(context.Background(), CredentialGithub); err != nil {
+		t.Fatalf("github removal must not be blocked by tart: %v", err)
+	}
+}
+
+func TestRevokeLiveOnRunningPersistedOnStopped(t *testing.T) {
+	stateDir := t.TempDir()
+	writeBoundState(t, stateDir, "jc-running", []string{"albert"})
+	writeBoundState(t, stateDir, "jc-stopped", []string{"albert"})
+	client := &fakeMSBClient{
+		listed:        []string{"jc-running", "jc-stopped"},
+		listedRunning: map[string]bool{"jc-running": true},
+	}
+	r := revokerForTest(client, stateDir, nil, nil)
+	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.LiveRevoked, []string{"jc-running"}) {
+		t.Fatalf("live revoked = %v", rep.LiveRevoked)
+	}
+	if !reflect.DeepEqual(rep.StoppedCleared, []string{"jc-stopped"}) {
+		t.Fatalf("stopped cleared = %v", rep.StoppedCleared)
+	}
+	if !rep.PlaceholderDangles {
+		t.Fatal("a live revocation must flag the dangling placeholder")
+	}
+	if !hasCall(client, "remove-secrets jc-running") || !hasCall(client, "remove-secrets jc-stopped") {
+		t.Fatalf("both instances must be revoked: %v", client.calls)
+	}
+}
+
+func TestRevokeSkipsEnvSourcedInstances(t *testing.T) {
+	// The persisted BoundCredentials record is the authority: an instance
+	// whose credential came from the environment is not just-code's to
+	// revoke, and touching it would be wrong.
+	stateDir := t.TempDir()
+	writeBoundState(t, stateDir, "jc-env", nil) // env-sourced: no store-bound kinds
+	writeBoundState(t, stateDir, "jc-store", []string{"albert"})
+	client := &fakeMSBClient{listed: []string{"jc-env", "jc-store"}}
+	r := revokerForTest(client, stateDir, nil, nil)
+	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.SkippedEnv, []string{"jc-env"}) {
+		t.Fatalf("env-sourced instance must be skipped: %v", rep.SkippedEnv)
+	}
+	if hasCall(client, "remove-secrets jc-env") {
+		t.Fatalf("env-sourced instance was touched: %v", client.calls)
+	}
+}
+
+func TestRevokeTreatsMissingStateAsBound(t *testing.T) {
+	// An instance that predates state tracking (or lost it) may hold a
+	// store-sourced binding; skipping revocation on a guess could leave it
+	// live, so the safe direction is to revoke.
+	client := &fakeMSBClient{listed: []string{"jc-legacy"}}
+	r := revokerForTest(client, t.TempDir(), nil, nil)
+	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.StoppedCleared, []string{"jc-legacy"}) {
+		t.Fatalf("legacy instance must be revoked: %+v", rep)
+	}
+}
+
+func TestRevokeEnumeratesLegacySingleton(t *testing.T) {
+	// The legacy singleton predates the ownership label and is invisible to
+	// List; it must still be revoked (lookup-driven).
+	client := &fakeMSBClient{exists: true, status: "running"}
+	r := revokerForTest(client, t.TempDir(), nil, nil)
+	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.LiveRevoked, []string{msbSandbox}) {
+		t.Fatalf("legacy singleton must be revoked live: %+v", rep)
+	}
+}
+
+func TestRemoveSecretsOptionsPolicies(t *testing.T) {
+	live := msbRemoveSecretsOptions([]string{"ALBERT_API_KEY"}, true)
+	if live.Policy != "no_restart" || len(live.EnvRemove) != 0 {
+		t.Fatalf("live removal must be NoRestart and leave the guest env alone: %+v", live)
+	}
+	stopped := msbRemoveSecretsOptions([]string{"ALBERT_API_KEY"}, false)
+	if stopped.Policy != "next_start" || !reflect.DeepEqual(stopped.EnvRemove, []string{"ALBERT_API_KEY"}) {
+		t.Fatalf("stopped removal must persist and scrub the guest env: %+v", stopped)
+	}
+}
+
+func TestRotateLiveOptionsCarryNoValues(t *testing.T) {
+	bindings := bindingsMetadata(testBindings("secret-value"))
+	opts := msbRotateLiveOptions(bindings)
+	spec := opts.Secrets[msbAPISecretEnv]
+	if spec.Value != "" || spec.Env == "" {
+		t.Fatalf("rotation must be an env reference, never a value: %+v", spec)
+	}
+	if opts.Policy != "no_restart" {
+		t.Fatalf("rotation must apply live: %+v", opts.Policy)
+	}
+}
+
+// TestRecreateClearsStateDir covers the leftover-state half of revocation:
+// after a recreate, no stale persisted proxy state may keep a removed key
+// working — Recreate removes the instance entirely and drops the journal.
+func TestRecreateClearsBindingApprovals(t *testing.T) {
+	// Binding approvals are host-local and survive a recreate by design
+	// (they are a trust decision, not instance state). The reconcile journal
+	// is dropped (covered by TestMicrosandboxRecreateRebuildsAndDropsJournal).
+	// This test pins that approvals are keyed by instance name, so a
+	// recreated instance with the same name keeps its approvals.
+	dir := t.TempDir()
+	path := bindingApprovalsPath(dir, "jc-x")
+	if err := ApproveBinding(DefaultFS, path, CredentialGithub); err != nil {
+		t.Fatal(err)
+	}
+	a, err := ReadBindingApprovals(DefaultFS, path)
+	if err != nil || !a.Approves(CredentialGithub) {
+		t.Fatalf("approvals must be keyed by instance: %+v, %v", a, err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+}

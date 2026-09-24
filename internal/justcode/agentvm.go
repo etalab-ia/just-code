@@ -319,8 +319,9 @@ func (a *AgentVM) StopBackend(ctx context.Context) error {
 
 // writeSecretsEnv writes the backend secrets to a 0600 host file that is
 // pushed into the guest with limactl copy and sourced by the launch script.
-// Secrets never appear in argv or in the Lima instance config.
-func (a *AgentVM) writeSecretsEnv(dir string) (string, error) {
+// Secrets never appear in argv or in the Lima instance config. The apiKey is
+// resolved by the caller (credentialRef, legacy environment, or store).
+func (a *AgentVM) writeSecretsEnv(dir, apiKey string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -331,7 +332,7 @@ func (a *AgentVM) writeSecretsEnv(dir string) (string, error) {
 	// rides along so the full-mode TUI sees the same Albert provider/model
 	// definition as the backend-mode server.
 	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
-		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(a.Config.APIKey), shellQuote(opencodeConfigContent))
+		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(apiKey), shellQuote(opencodeConfigContent))
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", err
 	}
@@ -354,7 +355,13 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 		return err
 	}
 	stageDir := a.StageDir()
-	secretsPath, err := a.writeSecretsEnv(stageDir)
+	// The credential is resolved at launch time (credentialRef, legacy
+	// environment, or the store).
+	key, _, err := resolveAlbert(ctx, a.Config)
+	if err != nil {
+		return err
+	}
+	secretsPath, err := a.writeSecretsEnv(stageDir, key)
 	if err != nil {
 		return err
 	}
@@ -373,13 +380,33 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 	return a.Starter.Start(nil, a.LogPath(), "limactl", args...)
 }
 
+// validateConfig checks the deterministic start-time configuration
+// (credential, acknowledgement). Restart calls it before stopping so a
+// configuration error cannot stop a VM that Start would then refuse to boot.
+//
+// agent-vm has no secret proxy: the credential travels into the guest in
+// plaintext (a 0600 env file pushed with limactl copy), where any process —
+// the agent included — can read and exfiltrate it. Starting therefore
+// requires the explicit --acknowledge-guest-credentials flag (P09, issue
+// #74); the warning stays so the choice is visible on every start.
+func (a *AgentVM) validateConfig(ctx context.Context) error {
+	if !a.Config.GuestCredentialsAcknowledged {
+		return fmt.Errorf("agent-vm hands the Albert credential to the guest in plaintext, where any process (the agent included) can read it; " +
+			"pass --acknowledge-guest-credentials to accept this, or use --microsandbox, which keeps the credential behind the secret proxy")
+	}
+	if _, _, err := resolveAlbert(ctx, a.Config); err != nil {
+		return err
+	}
+	warnUnprotectedRuntime("agent-vm")
+	return nil
+}
+
 // Start brings the OpenCode backend up on the agent-vm runtime.
 func (a *AgentVM) Start(ctx context.Context) error {
 	cfg := a.Config
-	if cfg.APIKey == "" {
-		return fmt.Errorf("set ALBERT_API_KEY in the environment or .env")
+	if err := a.validateConfig(ctx); err != nil {
+		return err
 	}
-	warnUnprotectedRuntime("agent-vm")
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
@@ -625,10 +652,13 @@ func (a *AgentVM) Recreate(ctx context.Context) error {
 }
 
 // RestartPreflights runs the deterministic prechecks shared by the lifecycle
-// commands: workspace creation and the workspace gate. A rejected workspace
-// must abort before any destructive step, so the VM and its persistent state
-// survive.
+// commands: configuration validation, workspace creation and the workspace
+// gate. A rejected workspace or bad config must abort before any destructive
+// step, so the VM and its persistent state survive.
 func (a *AgentVM) RestartPreflights(ctx context.Context) error {
+	if err := a.validateConfig(ctx); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(a.Config.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
@@ -656,7 +686,11 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}
-	secretsPath, err := a.writeSecretsEnv(a.StageDir())
+	key, _, err := resolveAlbert(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	secretsPath, err := a.writeSecretsEnv(a.StageDir(), key)
 	if err != nil {
 		return err
 	}

@@ -38,8 +38,14 @@ func TestParseAuthArgsDefaultsAndRejects(t *testing.T) {
 	if err != nil || kind != justcode.CredentialAlbert || stdin || fallback {
 		t.Fatalf("defaults = %q, %v, %v, %v", kind, stdin, fallback, err)
 	}
-	if _, _, _, err := parseAuthArgs([]string{"github"}); err == nil {
+	if _, _, _, err := parseAuthArgs([]string{"gitlab"}); err == nil {
 		t.Fatal("unknown kind accepted")
+	}
+	for _, known := range []string{"albert", "github", "context7"} {
+		kind, _, _, err := parseAuthArgs([]string{known})
+		if err != nil || kind != justcode.CredentialKind(known) {
+			t.Fatalf("known kind %q: %q, %v", known, kind, err)
+		}
 	}
 	if _, _, _, err := parseAuthArgs([]string{"albert", "--stdin", "--fallback"}); err != nil {
 		t.Fatalf("valid flags: %v", err)
