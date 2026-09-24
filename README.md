@@ -285,6 +285,20 @@ just-code check --isolation full             # état de la VM, pas de health che
 
 Le niveau d'isolation ne détermine pas à lui seul ce qu'un agent peut lire : c'est le runtime qui décide si la clé Albert est substituée à la frontière réseau ou déposée en clair dans l'invité.
 
+### Stockage global des identifiants (auth)
+
+`just-code auth` stocke les identifiants globaux dans le magasin natif de l'OS — Keychain macOS, Gestionnaire d'identifiants Windows, Secret Service Linux — jamais dans un fichier projet ni un profil shell. Les commandes :
+
+```bash
+just-code auth add            # saisie masquée interactive (ou --stdin pour un pipe)
+just-code auth status         # état du magasin, jamais les valeurs
+just-code auth remove         # suppression
+```
+
+Le secret ne passe jamais par la ligne de commande (argv) : la saisie interactive est masquée, `--stdin` lit une ligne sur l'entrée standard. Sur les hôtes sans magasin natif (Linux headless sans Secret Service), le repli `--fallback` écrit un fichier JSON `0600` dans le répertoire de configuration — **jamais créé implicitement** : sans consentement explicite (`auth add --fallback`), toute écriture échoue. Un magasin natif indisponible ou verrouillé est une erreur explicite, pas un repli silencieux vers ce fichier en clair.
+
+Stocker un identifiant ne lui donne aucun accès : la liaison à un sandbox est le chantier P09. `auth remove` refuse de supprimer un identifiant lié à une instance en cours d'exécution tant que la révocation n'est pas appliquée. Les identifiants restent référencés par nom (`credentialRef`) dans la configuration gérée ; la valeur ne figure jamais dans `settings.json`, `project.json` ni les exports.
+
 | Runtime | Injection protégée | Portée |
 |---|---|---|
 | Microsandbox | Oui, en `backend` **et** en `full` | La clé n'existe que côté hôte ; l'invité reçoit le placeholder `$MSB_ALBERT_API_KEY`, remplacé par le proxy réseau uniquement vers `albert.api.etalab.gouv.fr` |

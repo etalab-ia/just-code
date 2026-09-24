@@ -44,6 +44,12 @@ une lecture approximative. Les champs à allure de secret (`apiKey`, `token`,
 `password`, `secret`, `credentials`) sont rejetés au parse : seule la forme
 `credentialRef` est acceptée. Les écritures sont atomiques (temporaire + rename).
 
+La valeur référencée par `credentialRef` vit dans le magasin natif de l'OS
+(Keychain, Gestionnaire d'identifiants, Secret Service), géré par
+`just-code auth` (P08). Sur les hôtes sans magasin natif, un repli fichier
+`0600` existe mais n'est jamais créé sans consentement explicite
+(`just-code auth add --fallback`).
+
 ## `just-code config`
 
 - `just-code config explain` : affiche chaque champ géré avec sa valeur

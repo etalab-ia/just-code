@@ -1,0 +1,198 @@
+package justcode
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// File fallback tests (P08). They run on every platform: the file store
+// is the portable path. The two properties that matter most are pinned
+// first: no implicit creation, and symlink refusal.
+
+func newFileStore(t *testing.T) *FileCredentialStore {
+	t.Helper()
+	return &FileCredentialStore{Path: filepath.Join(t.TempDir(), "credentials.json")}
+}
+
+// TestFileStorePutWithoutConsentNeverCreates pins the no-silent-plaintext
+// rule: Put on a missing store must fail with ErrFileStoreNotConsented
+// and must not create any file.
+func TestFileStorePutWithoutConsentNeverCreates(t *testing.T) {
+	s := newFileStore(t)
+	err := s.Put(context.Background(), CredentialAlbert, "v1")
+	if !errors.Is(err, ErrFileStoreNotConsented) {
+		t.Fatalf("Put error = %v, want ErrFileStoreNotConsented", err)
+	}
+	if _, serr := os.Lstat(s.Path); serr == nil {
+		t.Fatal("Put created the store file without consent")
+	}
+}
+
+// TestFileStoreConsentedPutCreatesOwnerOnly verifies the consented
+// creation path: 0600 file, 0700 directory, and a readable value.
+func TestFileStoreConsentedPutCreatesOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	// The config directory does not exist yet: creation must make it.
+	s := &FileCredentialStore{Path: filepath.Join(dir, "sub", "credentials.json"), CreateOnConsent: true}
+	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	fi, err := os.Lstat(s.Path)
+	if err != nil {
+		t.Fatalf("store file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("store file mode = %o, want 0600", fi.Mode().Perm())
+	}
+	dirFi, err := os.Lstat(filepath.Dir(s.Path))
+	if err != nil {
+		t.Fatalf("config dir: %v", err)
+	}
+	if dirFi.Mode().Perm() != 0o700 {
+		t.Fatalf("config dir mode = %o, want 0700", dirFi.Mode().Perm())
+	}
+	v, err := s.Get(context.Background(), CredentialAlbert)
+	if err != nil || v != "v1" {
+		t.Fatalf("Get = %q, %v; want v1", v, err)
+	}
+}
+
+// TestFileStoreRotationReplacesValue pins rotation: a second Put of the
+// same kind replaces the first value atomically.
+func TestFileStoreRotationReplacesValue(t *testing.T) {
+	s := newFileStore(t)
+	s.CreateOnConsent = true
+	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err != nil {
+		t.Fatalf("Put v1: %v", err)
+	}
+	if err := s.Put(context.Background(), CredentialAlbert, "rotated"); err != nil {
+		t.Fatalf("Put rotated: %v", err)
+	}
+	v, err := s.Get(context.Background(), CredentialAlbert)
+	if err != nil || v != "rotated" {
+		t.Fatalf("Get = %q, %v; want rotated", v, err)
+	}
+}
+
+// TestFileStoreRemoveAndNotFound verifies Remove deletes the entry and
+// subsequent reads report ErrCredentialNotFound, not an error.
+func TestFileStoreRemoveAndNotFound(t *testing.T) {
+	s := newFileStore(t)
+	s.CreateOnConsent = true
+	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Remove(context.Background(), CredentialAlbert); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := s.Get(context.Background(), CredentialAlbert); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("Get after remove = %v, want ErrCredentialNotFound", err)
+	}
+	if err := s.Remove(context.Background(), CredentialAlbert); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("Remove absent = %v, want ErrCredentialNotFound", err)
+	}
+}
+
+// TestFileStoreRefusesSymlinkedFile pins the symlink defense: a
+// pre-positioned symlink at the store path must not be read through or
+// written through.
+func TestFileStoreRefusesSymlinkedFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "attacker-controlled.json")
+	if err := os.WriteFile(target, []byte(`{"schemaVersion":1,"credentials":{"albert":"leaked"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "credentials.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	s := &FileCredentialStore{Path: link, CreateOnConsent: true}
+	// Get must not follow the link to the attacker's file.
+	if _, err := s.Get(context.Background(), CredentialAlbert); err == nil {
+		t.Fatal("Get followed a symlinked store file")
+	}
+	// Put must not write through the link.
+	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err == nil {
+		t.Fatal("Put wrote through a symlinked store file")
+	}
+	// The attacker's file must be untouched.
+	raw, err := os.ReadFile(target)
+	if err != nil || !strings.Contains(string(raw), "leaked") {
+		t.Fatalf("attacker file was modified: %v", err)
+	}
+}
+
+// TestFileStoreRefusesSymlinkedDirectory pins the directory-level
+// defense: the config directory itself must not be a symlink.
+func TestFileStoreRefusesSymlinkedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	s := &FileCredentialStore{Path: filepath.Join(linkDir, "credentials.json"), CreateOnConsent: true}
+	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err == nil {
+		t.Fatal("Put wrote through a symlinked config directory")
+	}
+	if _, err := os.Lstat(filepath.Join(realDir, "credentials.json")); err == nil {
+		t.Fatal("a file appeared in the symlink target directory")
+	}
+}
+
+// TestFileStoreCorruptJSONReportsCorrupt verifies a corrupt store is
+// reported as corrupt, not silently recreated.
+func TestFileStoreCorruptJSONReportsCorrupt(t *testing.T) {
+	s := newFileStore(t)
+	if err := os.WriteFile(s.Path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Get(context.Background(), CredentialAlbert)
+	var se *StoreError
+	if !errors.As(err, &se) || se.State != "corrupt" {
+		t.Fatalf("Get error = %v, want corrupt StoreError", err)
+	}
+	// Put on a corrupt store must fail, not recreate over it.
+	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err == nil {
+		t.Fatal("Put silently recreated over a corrupt store")
+	}
+}
+
+// TestFileStoreTightensLoosePermissions verifies the write path repairs
+// a pre-existing store created with looser permissions.
+func TestFileStoreTightensLoosePermissions(t *testing.T) {
+	s := newFileStore(t)
+	if err := os.WriteFile(s.Path, []byte(`{"schemaVersion":1,"credentials":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.CreateOnConsent = true
+	if err := s.Put(context.Background(), CredentialAlbert, "v1"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	fi, err := os.Lstat(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want tightened 0600", fi.Mode().Perm())
+	}
+}
+
+// TestFileStoreVerifyNeverCreates verifies the status probe is
+// side-effect free.
+func TestFileStoreVerifyNeverCreates(t *testing.T) {
+	s := newFileStore(t)
+	if err := s.Verify(context.Background()); err != nil {
+		t.Fatalf("Verify on absent store = %v, want nil (absent is valid)", err)
+	}
+	if _, serr := os.Lstat(s.Path); serr == nil {
+		t.Fatal("Verify created the store file")
+	}
+}

@@ -1,0 +1,119 @@
+//go:build linux
+
+package justcode
+
+import (
+	"context"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+)
+
+// Secret Service adapter tests (P08) with a fake Runner: they pin the
+// argv contract (the secret is never an argument) and the error mapping.
+// Real-store tests are separate and availability-gated.
+
+type fakeStoreRunner struct {
+	// calls records each (name, args...) invocation.
+	calls []string
+	// onRun answers each call.
+	onRun func(name string, args []string) (ExecResult, error)
+}
+
+func (f *fakeStoreRunner) Run(ctx context.Context, name string, args ...string) (ExecResult, error) {
+	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	return f.onRun(name, args)
+}
+
+func (f *fakeStoreRunner) RunEnv(ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
+	return f.Run(ctx, name, args...)
+}
+
+func (f *fakeStoreRunner) RunStdin(ctx context.Context, stdin io.Reader, name string, args ...string) (ExecResult, error) {
+	return f.Run(ctx, name, args...)
+}
+
+func hasStoreCall(f *fakeStoreRunner, prefix string) bool {
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSecretServicePutKeepsValueOutOfArgs pins the transport contract:
+// the secret is never in argv; it goes through stdin.
+func TestSecretServicePutKeepsValueOutOfArgs(t *testing.T) {
+	f := &fakeStoreRunner{onRun: func(name string, args []string) (ExecResult, error) {
+		return ExecResult{ExitCode: 0}, nil
+	}}
+	s := &SecretServiceStore{Runner: f}
+	if err := s.Put(context.Background(), CredentialAlbert, "secret-value-123"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	for _, c := range f.calls {
+		if strings.Contains(c, "secret-value-123") {
+			t.Fatalf("secret leaked into argv: %s", c)
+		}
+	}
+	if !hasStoreCall(f, "secret-tool store --label just-code/albert service just-code/albert") {
+		t.Fatalf("unexpected calls: %v", f.calls)
+	}
+}
+
+// TestSecretServiceGetMapsNotFound verifies a missing item (nonzero
+// exit, empty stderr) reports ErrCredentialNotFound.
+func TestSecretServiceGetMapsNotFound(t *testing.T) {
+	f := &fakeStoreRunner{onRun: func(name string, args []string) (ExecResult, error) {
+		return ExecResult{ExitCode: 1}, nil
+	}}
+	s := &SecretServiceStore{Runner: f}
+	if _, err := s.Get(context.Background(), CredentialAlbert); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("Get error = %v, want ErrCredentialNotFound", err)
+	}
+}
+
+// TestSecretServiceGetMapsDeniedToStoreError verifies a locked/refused
+// collection (nonzero exit, stderr present) reports a denied StoreError.
+func TestSecretServiceGetMapsDeniedToStoreError(t *testing.T) {
+	f := &fakeStoreRunner{onRun: func(name string, args []string) (ExecResult, error) {
+		return ExecResult{ExitCode: 1, Stderr: "collection locked"}, nil
+	}}
+	s := &SecretServiceStore{Runner: f}
+	_, err := s.Get(context.Background(), CredentialAlbert)
+	var se *StoreError
+	if !errors.As(err, &se) || se.State != "denied" {
+		t.Fatalf("Get error = %v, want denied StoreError", err)
+	}
+}
+
+// TestSecretServiceMissingToolReportsUnavailable verifies a missing
+// secret-tool binary reports unavailable, not denied.
+func TestSecretServiceMissingToolReportsUnavailable(t *testing.T) {
+	f := &fakeStoreRunner{onRun: func(name string, args []string) (ExecResult, error) {
+		return ExecResult{}, errors.New("exec: not found")
+	}}
+	s := &SecretServiceStore{Runner: f}
+	_, err := s.Get(context.Background(), CredentialAlbert)
+	var se *StoreError
+	if !errors.As(err, &se) || se.State != "unavailable" {
+		t.Fatalf("Get error = %v, want unavailable StoreError", err)
+	}
+}
+
+// TestSecretServiceVerifyReachable verifies the probe: a sentinel
+// lookup that answers not-found proves the service is healthy.
+func TestSecretServiceVerifyReachable(t *testing.T) {
+	f := &fakeStoreRunner{onRun: func(name string, args []string) (ExecResult, error) {
+		return ExecResult{ExitCode: 1}, nil
+	}}
+	s := &SecretServiceStore{Runner: f}
+	if err := s.Verify(context.Background()); err != nil {
+		t.Fatalf("Verify = %v, want nil", err)
+	}
+	if !hasStoreCall(f, "secret-tool lookup service just-code/__verify__") {
+		t.Fatalf("Verify must probe a sentinel, got: %v", f.calls)
+	}
+}
