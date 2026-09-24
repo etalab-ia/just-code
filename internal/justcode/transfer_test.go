@@ -475,17 +475,11 @@ func TestFindingRelPath(t *testing.T) {
 			}
 		})
 	}
-	// A resolved root with an unresolved reported path (the macOS /var case):
-	// the two name the same file, so attribution must succeed.
-	if canon, err := filepath.EvalSymlinks(root); err == nil && canon != root {
-		got := findingRelPath(canon, filepath.Join(root, "src", "config.txt"))
-		if got != "src/config.txt" {
-			t.Fatalf("cross-view attribution = %q, want src/config.txt", got)
-		}
-	}
 	// Exercise the same branch unconditionally on every platform (a symlinked
 	// root and a finding naming the real path), so the macOS-relevant logic is
-	// covered on Linux CI too.
+	// covered on Linux CI too. The reported file must exist: gitleaks only
+	// reports real paths, and the canonicalization that reconciles two views
+	// of a tree resolves the reported path on disk.
 	real := filepath.Join(t.TempDir(), "real")
 	// The reported file must exist: gitleaks only reports real paths, and the
 	// canonicalization that makes cross-view attribution work relies on that.
