@@ -27,6 +27,18 @@ func (s *SecretServiceStore) runner() Runner {
 
 func (s *SecretServiceStore) Kind() string { return "secret-service" }
 
+// secretServiceLocked reports whether a secret-tool stderr indicates a
+// locked collection whose unlock prompt was declined (or timed out).
+// The wording is not stable across gnome-keyring versions, so match the
+// stable fragments: "collection" plus "locked"/"unlock". This keeps the
+// locked state distinguishable from an authorization denial — the two
+// need different recovery (unlock the keyring vs re-grant access).
+func secretServiceLocked(stderr string) bool {
+	l := strings.ToLower(stderr)
+	return strings.Contains(l, "collection") &&
+		(strings.Contains(l, "locked") || strings.Contains(l, "unlock"))
+}
+
 // Put stores the credential, replacing any existing entry of the same
 // kind. secret-tool store replaces an existing matching collection item,
 // so rotation is one operation.
@@ -39,6 +51,9 @@ func (s *SecretServiceStore) Put(ctx context.Context, kind CredentialKind, value
 		return classifyExecError("add", s.Kind(), res, err)
 	}
 	if res.ExitCode != 0 {
+		if secretServiceLocked(res.Stderr) {
+			return storeErrorf("add", s.Kind(), "locked", "exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+		}
 		return storeErrorf("add", s.Kind(), "denied", "exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 	return nil
@@ -60,6 +75,9 @@ func (s *SecretServiceStore) Get(ctx context.Context, kind CredentialKind) (stri
 		if strings.TrimSpace(res.Stderr) == "" {
 			return "", ErrCredentialNotFound
 		}
+		if secretServiceLocked(res.Stderr) {
+			return "", storeErrorf("get", s.Kind(), "locked", "exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+		}
 		return "", storeErrorf("get", s.Kind(), "denied", "exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 	value := strings.TrimSuffix(res.Stdout, "\n")
@@ -77,6 +95,9 @@ func (s *SecretServiceStore) Remove(ctx context.Context, kind CredentialKind) er
 	if res.ExitCode != 0 {
 		if strings.TrimSpace(res.Stderr) == "" {
 			return ErrCredentialNotFound
+		}
+		if secretServiceLocked(res.Stderr) {
+			return storeErrorf("remove", s.Kind(), "locked", "exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 		}
 		return storeErrorf("remove", s.Kind(), "denied", "exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}

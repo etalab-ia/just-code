@@ -34,6 +34,20 @@ func TestSecretServicePutKeepsValueOutOfArgs(t *testing.T) {
 	}
 }
 
+func TestSecretServiceLockedCollectionIsLocked(t *testing.T) {
+	// A declined unlock prompt is a locked collection, not an access
+	// denial: the recovery differs (unlock the keyring vs re-grant).
+	f := &fakeStoreRunner{onRun: func(name string, args []string) (ExecResult, error) {
+		return ExecResult{ExitCode: 1, Stderr: "secret-tool: Failed to unlock the collection\n"}, nil
+	}}
+	s := &SecretServiceStore{Runner: f}
+	_, err := s.Get(context.Background(), CredentialAlbert)
+	var se *StoreError
+	if !errors.As(err, &se) || se.State != "locked" {
+		t.Fatalf("want locked, got %v", err)
+	}
+}
+
 // TestSecretServiceGetMapsNotFound verifies a missing item (nonzero
 // exit, empty stderr) reports ErrCredentialNotFound.
 func TestSecretServiceGetMapsNotFound(t *testing.T) {
