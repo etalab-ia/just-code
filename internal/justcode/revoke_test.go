@@ -98,6 +98,9 @@ func TestRevokeSkipsEnvSourcedInstances(t *testing.T) {
 	writeBoundState(t, stateDir, "jc-store", []string{"albert"})
 	client := &fakeMSBClient{listed: []string{"jc-env", "jc-store"}}
 	r := revokerForTest(client, stateDir, nil, nil)
+	// The env-sourced instance still resolves from the environment, which is
+	// what distinguishes it from an instance whose source is unknown.
+	r.Config = Config{APIKey: "env-key"}
 	rep, err := r.Revoke(context.Background(), CredentialAlbert)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +110,81 @@ func TestRevokeSkipsEnvSourcedInstances(t *testing.T) {
 	}
 	if hasCall(client, "remove-secrets jc-env") {
 		t.Fatalf("env-sourced instance was touched: %v", client.calls)
+	}
+}
+
+// TestRevokeScopedToTheEditedStore pins the Codex P2 on PR #87: the native
+// and fallback stores can both hold the same kind, so removing one must not
+// revoke instances bound to the other.
+func TestRevokeScopedToTheEditedStore(t *testing.T) {
+	stateDir := t.TempDir()
+	writeBoundState(t, stateDir, "jc-native", []string{"albert@native"})
+	writeBoundState(t, stateDir, "jc-file", []string{"albert@file"})
+	client := &fakeMSBClient{listed: []string{"jc-native", "jc-file"}}
+
+	// Removing the fallback entry revokes only the fallback-bound instance.
+	r := revokerForTest(client, stateDir, nil, nil)
+	r.Store = "file"
+	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.StoppedCleared, []string{"jc-file"}) {
+		t.Fatalf("only the fallback-bound instance may be revoked: %+v", rep)
+	}
+	if hasCall(client, "remove-secrets jc-native") {
+		t.Fatalf("the native-bound instance was revoked by a fallback edit: %v", client.calls)
+	}
+	if !reflect.DeepEqual(rep.SkippedEnv, []string{"jc-native"}) {
+		t.Fatalf("the other-store instance must be reported as skipped: %+v", rep)
+	}
+}
+
+// TestRevokeTreatsPreStoreRecordAsBound pins the migration direction: a
+// BoundCredentials entry written before the store was recorded ("albert")
+// names no store, so revoking is the safe reading — skipping it could leave
+// a live binding behind.
+func TestRevokeTreatsPreStoreRecordAsBound(t *testing.T) {
+	stateDir := t.TempDir()
+	writeBoundState(t, stateDir, "jc-old", []string{"albert"}) // legacy format
+	client := &fakeMSBClient{listed: []string{"jc-old"}}
+	r := revokerForTest(client, stateDir, nil, nil)
+	r.Store = "file"
+	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.StoppedCleared, []string{"jc-old"}) {
+		t.Fatalf("a store-less record must be revoked, not skipped: %+v", rep)
+	}
+}
+
+// TestRevokeReportsPendingWhenSourceUnknown pins the honesty requirement: an
+// instance whose source cannot be confirmed is revoked (never skipped) but
+// reported, so a removal that could not verify what it revoked does not
+// silently claim success.
+func TestRevokeReportsPendingWhenSourceUnknown(t *testing.T) {
+	stateDir := t.TempDir()
+	// No state file at all and a credential that does not resolve: neither
+	// the record nor re-resolution can answer.
+	client := &fakeMSBClient{listed: []string{"jc-mystery"}}
+	r := revokerForTest(client, stateDir, nil, nil)
+	r.Config = Config{} // no env key, no credentialRef, no store entry
+	r.ReadCredential = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
+	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.Pending, []string{"jc-mystery"}) {
+		t.Fatalf("an unconfirmable source must be reported as pending: %+v", rep)
+	}
+	if hasCall(client, "remove-secrets jc-mystery") == false {
+		t.Fatalf("an unconfirmable instance is still revoked: %v", client.calls)
+	}
+	if len(rep.SkippedEnv) != 0 {
+		t.Fatalf("an unconfirmable instance must not be skipped: %+v", rep)
 	}
 }
 

@@ -67,7 +67,10 @@ func bindingsApproveCmd(path string, args []string) (int, error) {
 	if len(args) != 1 {
 		return 2, fmt.Errorf("Usage: just-code bindings approve <github|context7>")
 	}
-	kind := justcode.CredentialKind(args[0])
+	kind, err := justcode.ParseOptionalBindingKind(args[0])
+	if err != nil {
+		return 2, err
+	}
 	if err := justcode.ApproveBinding(justcode.DefaultFS, path, kind); err != nil {
 		return 1, err
 	}
@@ -82,7 +85,13 @@ func bindingsRevokeCmd(path, instance string, args []string) (int, error) {
 	if len(args) != 1 {
 		return 2, fmt.Errorf("Usage: just-code bindings revoke <github|context7>")
 	}
-	kind := justcode.CredentialKind(args[0])
+	// Parse the kind through the same validation as approve: an
+	// unvalidated string would let `bindings revoke albert` strip the
+	// mandatory Albert proxy registration from a live sandbox.
+	kind, err := justcode.ParseOptionalBindingKind(args[0])
+	if err != nil {
+		return 2, err
+	}
 	if err := justcode.RevokeBindingApproval(justcode.DefaultFS, path, kind); err != nil {
 		return 1, err
 	}

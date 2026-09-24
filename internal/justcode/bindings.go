@@ -182,6 +182,47 @@ const (
 	bindingSourceEnv bindingSource = "env"
 )
 
+// credentialReader reads a stored credential and reports which store
+// answered. It is the seam through which both resolution and revocation
+// touch the stores, so tests can drive every source without a real keychain.
+type credentialReader func(ctx context.Context, kind CredentialKind, from string) (value, store string, err error)
+
+// readStoredWith reads kind from the requested store only: "native" is the
+// OS-native store (Keychain / Credential Manager / Secret Service), "file"
+// the consented fallback, "" the normal order (native, then fallback). It
+// returns the store that answered. A store operation is scoped to the store
+// being edited; a present-but-failing native store (locked, denied, corrupt)
+// is a hard error for the native choice, never a silent read elsewhere.
+func readStoredWith(ctx context.Context, kind CredentialKind, from string) (string, string, error) {
+	switch from {
+	case "native":
+		s := DefaultCredentialStore()
+		if s == nil {
+			return "", "", ErrCredentialNotFound
+		}
+		v, err := s.Get(ctx, kind)
+		if err != nil {
+			return "", "", err
+		}
+		return v, "native", nil
+	case "file":
+		fs, err := NewFileCredentialStore()
+		if err != nil {
+			return "", "", err
+		}
+		v, err := fs.Get(ctx, kind)
+		if errors.Is(err, ErrFileStoreAbsent) || errors.Is(err, ErrFileStoreNotConsented) {
+			return "", "", ErrCredentialNotFound
+		}
+		if err != nil {
+			return "", "", err
+		}
+		return v, "file", nil
+	default:
+		return readStoredCredential(ctx, kind)
+	}
+}
+
 // resolvedBinding is a binding plus its value at operation time. The value
 // field must never be persisted, logged, or passed to the SDK spec: it only
 // ever transits through withHostSecrets.
@@ -189,6 +230,11 @@ type resolvedBinding struct {
 	msbSecretBinding
 	source bindingSource
 	value  string
+	// store names which credential store the value came from ("native" or
+	// "file"; empty for env-sourced). It is metadata, not a secret, and it is
+	// what makes `auth remove --fallback` revoke only the instances bound to
+	// that store.
+	store string
 }
 
 // metadata drops the value and source, for the SDK-facing spec.
@@ -229,19 +275,58 @@ func bindingsRevision(bindings []resolvedBinding) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// storeBoundKinds lists the kinds whose value came from the credential store,
-// sorted. It is what InstanceState.BoundCredentials persists: revocation can
-// only reach store-bound credentials (an env-sourced value is not just-code's
-// to revoke).
+// storeBoundKinds lists the store-sourced bindings as "kind@store", sorted.
+// It is what InstanceState.BoundCredentials persists: revocation can only
+// reach store-bound credentials (an env-sourced value is not just-code's to
+// revoke), and it must target the store the value was read from — a native
+// and a fallback entry can both exist, and removing one must not revoke
+// sandboxes bound to the other.
 func storeBoundKinds(bindings []resolvedBinding) []string {
 	var out []string
 	for _, b := range bindings {
 		if b.source == bindingSourceStore {
-			out = append(out, string(b.Kind))
+			out = append(out, string(b.Kind)+"@"+b.store)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// pendingBoundEntry is the placeholder written to BoundCredentials for an
+// instance whose binding set could not be resolved at apply time (e.g. the
+// credential was absent). It means "a store-sourced value may be persisted
+// by an earlier apply; do not skip its revocation". Every real entry has a
+// store suffix, so the marker cannot collide with one.
+const pendingBoundEntry = "?@?"
+
+// instanceBoundTo reports whether a persisted BoundCredentials list says the
+// instance's binding of kind should be revoked by an edit of `store`. It
+// matches the exact "kind@store" entry, a bare "kind" entry (written before
+// the store was recorded — its source is unknown, so revoking is the safe
+// direction), and the pending marker. A missing or unreadable record is
+// handled by the caller as "unknown", which also revokes.
+func instanceBoundTo(bound []string, kind CredentialKind, store string) bool {
+	for _, entry := range bound {
+		switch entry {
+		case string(kind) + "@" + store, string(kind), pendingBoundEntry:
+			return true
+		}
+	}
+	return false
+}
+
+// instanceBoundElsewhere reports whether a persisted list names a store for
+// kind that is not `store`. Unlike a bare or missing entry, that is a known
+// answer: the credential came from a different store, and an edit of this one
+// must not touch the instance.
+func instanceBoundElsewhere(bound []string, kind CredentialKind, store string) bool {
+	prefix := string(kind) + "@"
+	for _, entry := range bound {
+		if strings.HasPrefix(entry, prefix) && entry != prefix+store {
+			return true
+		}
+	}
+	return false
 }
 
 // placeholderFor returns the exact value the runtime exposes in the guest for
@@ -254,58 +339,73 @@ func placeholderFor(envVar string) string { return "$MSB_" + envVar }
 // store first, then the consented file fallback when the native store is
 // absent or unavailable. A present-but-failing native store (locked, denied,
 // corrupt) is a hard error — silently falling back would mask it.
-func readStoredCredential(ctx context.Context, kind CredentialKind) (string, error) {
+//
+// The returned store name records which store answered, so the caller can
+// persist it: revocation must target the store it was read from.
+func readStoredCredential(ctx context.Context, kind CredentialKind) (string, string, error) {
 	if s := DefaultCredentialStore(); s != nil {
 		v, err := s.Get(ctx, kind)
 		if err == nil {
-			return v, nil
+			return v, "native", nil
 		}
 		var se *StoreError
 		if !isNotFound(err) && !(errors.As(err, &se) && se.State == "unavailable") {
-			return "", err
+			return "", "", err
 		}
 	}
 	if fs, err := NewFileCredentialStore(); err == nil {
 		if v, gerr := fs.Get(ctx, kind); gerr == nil {
-			return v, nil
+			return v, "file", nil
 		} else if !isNotFound(gerr) && !errors.Is(gerr, ErrFileStoreAbsent) && !errors.Is(gerr, ErrFileStoreNotConsented) {
-			return "", gerr
+			return "", "", gerr
 		}
 	}
-	return "", ErrCredentialNotFound
+	return "", "", ErrCredentialNotFound
 }
 
 // ReadStoredCredential is the exported form of readStoredCredential, for the
 // CLI's status reporting. It never exposes the value beyond the return.
 func ReadStoredCredential(ctx context.Context, kind CredentialKind) (string, error) {
-	return readStoredCredential(ctx, kind)
+	v, _, err := readStoredCredential(ctx, kind)
+	return v, err
 }
 
 // resolveAlbert applies the Albert credential precedence chain: an explicit
 // credentialRef (project manifest over user settings, collapsed into
 // cfg.CredentialRef by the caller; JUST_CODE_CREDENTIAL_REF wins over both),
-// then the legacy ALBERT_API_KEY environment, then the default stored albert
+// then the legacy ALBERT_API_KEY environment, then the stored albert
 // credential. A credentialRef that names a missing credential is a hard
 // error: the user asked for that exact credential.
-func resolveAlbert(ctx context.Context, cfg Config) (string, bindingSource, error) {
+//
+// `from` scopes the store lookup to one store ("" = native then fallback);
+// revocation uses it so a removal targets the instances that actually
+// resolved from the store being edited.
+func resolveAlbert(ctx context.Context, cfg Config, from string) (string, bindingSource, string, error) {
+	return resolveAlbertWith(readStoredWith, ctx, cfg, from)
+}
+
+// resolveAlbertWith is resolveAlbert over an injected reader, so tests can
+// exercise the precedence chain and the store scoping without a real
+// credential store.
+func resolveAlbertWith(read credentialReader, ctx context.Context, cfg Config, from string) (string, bindingSource, string, error) {
 	if ref := strings.TrimSpace(cfg.CredentialRef); ref != "" {
-		v, err := readStoredCredential(ctx, CredentialKind(ref))
+		v, store, err := read(ctx, CredentialKind(ref), from)
 		if err != nil {
-			return "", "", fmt.Errorf("credentialRef %q: %w (store it with 'just-code auth add %s', or fix the reference)", ref, err, ref)
+			return "", "", "", fmt.Errorf("credentialRef %q: %w (store it with 'just-code auth add %s', or fix the reference)", ref, err, ref)
 		}
-		return v, bindingSourceStore, nil
+		return v, bindingSourceStore, store, nil
 	}
 	if cfg.APIKey != "" {
-		return cfg.APIKey, bindingSourceEnv, nil
+		return cfg.APIKey, bindingSourceEnv, "", nil
 	}
-	v, err := readStoredCredential(ctx, CredentialAlbert)
+	v, store, err := read(ctx, CredentialAlbert, from)
 	if err == nil {
-		return v, bindingSourceStore, nil
+		return v, bindingSourceStore, store, nil
 	}
 	if !isNotFound(err) {
-		return "", "", err
+		return "", "", "", err
 	}
-	return "", "", fmt.Errorf("no Albert credential found: set ALBERT_API_KEY in the environment or .env, or store one with 'just-code auth add albert'")
+	return "", "", "", fmt.Errorf("no Albert credential found: set ALBERT_API_KEY in the environment or .env, or store one with 'just-code auth add albert'")
 }
 
 // withHostSecrets publishes each resolved value under its binding's host

@@ -199,7 +199,14 @@ func authRemoveCmd(args []string) (int, error) {
 	// running, persisted when stopped); Tart/agent-vm instances hold the
 	// plaintext credential, so removal while one runs is refused rather than
 	// reported as a revocation it cannot be.
-	report, err := justcode.RevokeCredential(context.Background(), kind)
+	// Revocation is scoped to the store being edited: the native and
+	// fallback stores can both hold the kind, and removing one must not
+	// revoke sandboxes bound to the other.
+	storeName := "native"
+	if fallback {
+		storeName = "file"
+	}
+	report, err := justcode.RevokeCredential(context.Background(), kind, storeName)
 	if err != nil {
 		return 1, err
 	}
@@ -211,6 +218,9 @@ func authRemoveCmd(args []string) (int, error) {
 	}
 	if report.PlaceholderDangles {
 		fmt.Fprintf(os.Stderr, "Warning: a running guest keeps the now-inert %s placeholder in its environment until it restarts; requests to the formerly allowed host will fail, but the placeholder string itself is disclosed. Restart the instance to clear it.\n", kind)
+	}
+	if len(report.Pending) > 0 {
+		fmt.Fprintf(os.Stderr, "Note: the source of %q could not be confirmed for %v; their bindings were revoked rather than left in place. Restart or recreate them to drop any dangling reference.\n", kind, report.Pending)
 	}
 	if err := store.Remove(context.Background(), kind); err != nil {
 		if justcode.IsCredentialNotFound(err) {

@@ -27,6 +27,11 @@ type RevokeReport struct {
 	// (per the persisted BoundCredentials record): just-code cannot revoke a
 	// variable it does not own, so nothing was touched there.
 	SkippedEnv []string
+	// Pending lists instances whose binding was revoked but whose source
+	// could not be confirmed with today's inputs (the credential no longer
+	// resolves and no persisted store marker exists). They are revoked for
+	// safety and reported rather than silently claimed as clean.
+	Pending []string
 	// PlaceholderDangles is set when any live revocation ran: the guest
 	// environment still holds the placeholder, which travels literally to
 	// the formerly allowed host (the request fails server-side, but the
@@ -57,6 +62,18 @@ type Revoker struct {
 	AgentVMRunning func(ctx context.Context) ([]string, error)
 	StateDir       string
 	FS             FS
+	// Store names which credential store is being edited ("native", "file",
+	// or "" for the normal order). Revocation targets the instances whose
+	// persisted binding names that store, so editing the fallback never
+	// revokes instances bound to the native entry and vice versa.
+	Store string
+	// Config supplies the resolution inputs (CredentialRef, legacy env) the
+	// fallback detection needs: an instance whose Albert credential did not
+	// resolve from a store at all must not be revoked by a store edit.
+	Config Config
+	// ReadCredential overrides the store reader (tests). Empty means
+	// readStoredWith.
+	ReadCredential credentialReader
 }
 
 func (r Revoker) withDefaults() Revoker {
@@ -81,9 +98,12 @@ func (r Revoker) withDefaults() Revoker {
 }
 
 // RevokeCredential revokes kind everywhere just-code can reach, ahead of its
-// removal from the store. See the file header for the per-runtime semantics.
-func RevokeCredential(ctx context.Context, kind CredentialKind) (RevokeReport, error) {
-	return (Revoker{}).withDefaults().Revoke(ctx, kind)
+// removal from the store. store names the store being edited ("native",
+// "file", or "" for the normal order); revocation targets only the instances
+// whose credential came from it. See the file header for the per-runtime
+// semantics.
+func RevokeCredential(ctx context.Context, kind CredentialKind, store string) (RevokeReport, error) {
+	return (Revoker{Store: store}).withDefaults().Revoke(ctx, kind)
 }
 
 func (r Revoker) Revoke(ctx context.Context, kind CredentialKind) (RevokeReport, error) {
@@ -121,9 +141,17 @@ func (r Revoker) Revoke(ctx context.Context, kind CredentialKind) (RevokeReport,
 		return rep, err
 	}
 	for _, sb := range sandboxes {
-		if !r.instanceBinds(kind, sb.Name) {
+		switch r.instanceBindingVerdict(ctx, kind, sb.Name) {
+		case bindingOther:
 			rep.SkippedEnv = append(rep.SkippedEnv, sb.Name)
 			continue
+		case bindingPending:
+			// The credential could not be resolved with today's inputs, so
+			// the persisted state cannot be trusted to say which store it
+			// came from. Proceed and record the marker: a removal that
+			// cannot confirm what it revoked must not silently report
+			// success.
+			rep.Pending = append(rep.Pending, sb.Name)
 		}
 		live := sb.Status == "running"
 		if err := r.MSB.RemoveSecrets(ctx, sb.Name, []string{binding.GuestEnv}, live); err != nil {
@@ -162,21 +190,65 @@ func (r Revoker) enumerateSandboxes(ctx context.Context) ([]msbSandboxInfo, erro
 	return out, nil
 }
 
-// instanceBinds reports whether the instance's credential of the given kind
-// came from the store at apply time. The persisted BoundCredentials record is
-// the authority; a missing or unreadable record means "unknown", treated as
-// bound — skipping revocation on a guess could leave a live binding behind.
-func (r Revoker) instanceBinds(kind CredentialKind, instance string) bool {
+// bindingVerdict classifies whether an instance's binding of a kind should be
+// revoked by an edit of the store being removed from.
+type bindingVerdict int
+
+const (
+	// bindingThisStore: the credential came from the store being edited (or
+	// that cannot be ruled out) — revoke it.
+	bindingThisStore bindingVerdict = iota
+	// bindingOther: the credential demonstrably came from somewhere else
+	// (the environment, or the other store) — leave it alone.
+	bindingOther
+	// bindingPending: it cannot be determined — revoke, and report.
+	bindingPending
+)
+
+// instanceBindingVerdict decides the revocation verdict for one instance.
+//
+// The persisted BoundCredentials record is the authority when it carries a
+// store marker ("kind@store"). When it does not — state written before the
+// store was recorded, or lost — the verdict falls back to re-resolving the
+// credential with today's inputs, which is only meaningful once the value
+// itself is gone (the removal path). Any resolution error then means the
+// question cannot be answered: the entry is revoked as pending rather than
+// skipped on a guess, because skipping could leave a live binding behind.
+func (r Revoker) instanceBindingVerdict(ctx context.Context, kind CredentialKind, instance string) bindingVerdict {
 	st, err := ReadInstanceState(r.FS, instanceStatePath(r.StateDir, instance))
 	if err != nil || st == nil {
-		return true
+		return bindingPending
 	}
-	for _, k := range st.BoundCredentials {
-		if k == string(kind) {
-			return true
-		}
+	if instanceBoundTo(st.BoundCredentials, kind, r.Store) {
+		return bindingThisStore
 	}
-	return false
+	// A marker naming the *other* store is a known answer, not an unknown
+	// one: the credential demonstrably came from elsewhere, so an edit of
+	// this store must leave the instance alone.
+	if instanceBoundElsewhere(st.BoundCredentials, kind, r.Store) {
+		return bindingOther
+	}
+	// No marker for this store: either the credential came from elsewhere
+	// (its env source still resolves, so re-resolution succeeds), or the
+	// record predates store tracking. Re-resolve to tell them apart.
+	read := r.ReadCredential
+	if read == nil {
+		read = readStoredWith
+	}
+	if _, _, _, rerr := resolveAlbertWith(read, ctx, r.Config, r.Store); rerr == nil {
+		return bindingOther
+	}
+	return bindingPending
+}
+
+// BoundStoreMarkers returns the persisted "kind@store" markers of an
+// instance, for tests and diagnostics.
+func BoundStoreMarkers(fs FS, stateDir, instance string) []string {
+	st, err := ReadInstanceState(fs, instanceStatePath(stateDir, instance))
+	if err != nil || st == nil {
+		return nil
+	}
+	return st.BoundCredentials
 }
 
 // RevokeInstanceBinding drops kind's proxy binding from a single Microsandbox

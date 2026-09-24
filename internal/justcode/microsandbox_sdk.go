@@ -214,16 +214,23 @@ func (sdkMSBClient) Start(ctx context.Context, name string) error {
 // "var":...}): the raw value is never persisted, and the reference is
 // re-resolved from the just-code process environment at apply/boot time, so a
 // rotated credential is picked up on the next boot without any value crossing
-// the persisted config. EnvRemove scrubs a raw value an earlier version may
-// have persisted under the guest name.
+// the persisted config.
+//
+// EnvRemove names every managed guest variable: it scrubs a raw value an
+// earlier version may have persisted in the guest environment (the secret
+// registration for the same name coexists with it, as it always has).
+// SecretsRemove names the managed variables absent from the desired set: the
+// SDK modification is a patch, so a registration persisted by an earlier
+// apply survives unless it is named explicitly.
 func msbNextStartOptions(env map[string]string, bindings []msbSecretBinding) msb.ModifyOptions {
 	opts := msb.ModifyOptions{
-		Env:     env,
-		Secrets: make(map[string]msb.SecretModifySpec, len(bindings)),
-		Policy:  msb.ModificationPolicyNextStart,
+		Env:           env,
+		EnvRemove:     allBindingGuestEnvs(),
+		Secrets:       make(map[string]msb.SecretModifySpec, len(bindings)),
+		SecretsRemove: staleBindingGuestEnvs(bindings),
+		Policy:        msb.ModificationPolicyNextStart,
 	}
 	for _, b := range bindings {
-		opts.EnvRemove = append(opts.EnvRemove, b.GuestEnv)
 		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, AllowedHosts: b.AllowHosts}
 	}
 	return opts
@@ -251,6 +258,39 @@ func msbRotateLiveOptions(bindings []msbSecretBinding) msb.ModifyOptions {
 		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, AllowedHosts: b.AllowHosts}
 	}
 	return opts
+}
+
+// staleBindingGuestEnvs lists the guest variables of registered bindings that
+// are absent from the desired set. The SDK modification is a patch: omitting a
+// name never removes it, so a registration persisted by an earlier apply
+// survives every later refresh unless it is named explicitly. Without this,
+// an optional binding whose approval is lifted (bindings.json deleted,
+// unreadable, or revoked) would keep its proxy registration — and therefore
+// its credential — through the next refresh and restart, which is exactly the
+// state the per-project approval exists to prevent.
+func staleBindingGuestEnvs(bindings []msbSecretBinding) []string {
+	desired := make(map[string]bool, len(bindings))
+	for _, b := range bindings {
+		desired[b.GuestEnv] = true
+	}
+	var stale []string
+	for _, b := range msbSecretBindings() {
+		if !desired[b.GuestEnv] {
+			stale = append(stale, b.GuestEnv)
+		}
+	}
+	return stale
+}
+
+// allBindingGuestEnvs lists every managed guest variable name, in registry
+// order.
+func allBindingGuestEnvs() []string {
+	registered := msbSecretBindings()
+	out := make([]string, 0, len(registered))
+	for _, b := range registered {
+		out = append(out, b.GuestEnv)
+	}
+	return out
 }
 
 func (sdkMSBClient) RotateSecretsLive(ctx context.Context, name string, bindings []msbSecretBinding) error {

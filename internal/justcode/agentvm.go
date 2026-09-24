@@ -357,7 +357,7 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 	stageDir := a.StageDir()
 	// The credential is resolved at launch time (credentialRef, legacy
 	// environment, or the store).
-	key, _, err := resolveAlbert(ctx, a.Config)
+	key, _, _, err := resolveAlbert(ctx, a.Config, "")
 	if err != nil {
 		return err
 	}
@@ -394,7 +394,7 @@ func (a *AgentVM) validateConfig(ctx context.Context) error {
 		return fmt.Errorf("agent-vm hands the Albert credential to the guest in plaintext, where any process (the agent included) can read it; " +
 			"pass --acknowledge-guest-credentials to accept this, or use --microsandbox, which keeps the credential behind the secret proxy")
 	}
-	if _, _, err := resolveAlbert(ctx, a.Config); err != nil {
+	if _, _, _, err := resolveAlbert(ctx, a.Config, ""); err != nil {
 		return err
 	}
 	warnUnprotectedRuntime("agent-vm")
@@ -686,7 +686,7 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}
-	key, _, err := resolveAlbert(ctx, cfg)
+	key, _, _, err := resolveAlbert(ctx, cfg, "")
 	if err != nil {
 		return err
 	}

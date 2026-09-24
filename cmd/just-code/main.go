@@ -76,7 +76,6 @@ func run(args []string) (int, error) {
 	}
 
 	cfg := justcode.LoadConfigEnv()
-	cfg.CredentialRef = resolveCredentialRef()
 	cfg.GuestCredentialsAcknowledged = parsed.ackGuestCreds
 	if parsed.version {
 		printBuildInfo()
@@ -97,6 +96,14 @@ func run(args []string) (int, error) {
 	if projErr == nil {
 		instance = pc.InstanceName()
 	}
+	// The project credentialRef is read from the discovered root, not from
+	// cwd: invoked from a subdirectory of a worktree, a cwd-relative read
+	// would miss the manifest and silently inject the user-level credential.
+	projectRoot := "."
+	if projErr == nil {
+		projectRoot = pc.Root
+	}
+	cfg.CredentialRef = resolveCredentialRef(projectRoot)
 
 	// bindings manages the host-local per-project credential binding
 	// approvals (P09). It needs the project instance, so it runs after
@@ -305,17 +312,18 @@ func argOr(args []string, i int, def string) string {
 
 // resolveCredentialRef applies the credential-reference precedence (P09):
 // JUST_CODE_CREDENTIAL_REF > project manifest credentialRef > user settings
-// credentialRef. Reads are best-effort: a missing file means "no reference",
-// and a malformed one is reported by `config explain`, not by every command
-// that might start a runtime.
-func resolveCredentialRef() string {
+// credentialRef. The manifest is read from the discovered project root, not
+// from cwd: invoked from a subdirectory of a worktree, a cwd-relative read
+// would miss it and silently inject the user-level credential into that
+// project's sandbox. Reads are best-effort: a missing file means "no
+// reference", and a malformed one is reported by `config explain`, not by
+// every command that might start a runtime.
+func resolveCredentialRef(projectRoot string) string {
 	if v := strings.TrimSpace(os.Getenv("JUST_CODE_CREDENTIAL_REF")); v != "" {
 		return v
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(cwd)); err == nil && pm.CredentialRef != "" {
-			return pm.CredentialRef
-		}
+	if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil && pm.CredentialRef != "" {
+		return pm.CredentialRef
 	}
 	if path, err := justcode.UserSettingsPath(); err == nil {
 		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil {

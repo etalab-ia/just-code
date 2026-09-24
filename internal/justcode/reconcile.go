@@ -293,9 +293,14 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// Resolve the binding set once for the whole apply: the desired state,
 	// the persisted BoundCredentials record, and the refresh operation all
 	// derive from it. Values travel only through withHostSecrets below.
+	// A resolution failure must not block the apply: an instance that only
+	// needs a restart (or a stop/clean) must not become unusable because a
+	// credential is missing. The set is then recorded as unresolved rather
+	// than empty, so revocation cannot mistake it for "nothing was bound".
 	bindings, err := m.resolveBindings(ctx)
+	resolved := err == nil
 	if err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.\n", m.InstanceName(), err)
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
@@ -309,7 +314,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	desired := m.desiredState(bindings)
+	desired := m.desiredState(resolved, bindings, applied)
 	facts, err := m.reconcileFacts(ctx, applied, desired)
 	if err != nil {
 		return err
@@ -367,16 +372,35 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	})
 }
 
-func (m *MicrosandboxRuntime) desiredState(bindings []resolvedBinding) DesiredState {
-	return DesiredState{
-		Instance:         m.InstanceName(),
-		Isolation:        m.cfg.Isolation,
-		WorkspaceDir:     m.cfg.WorkspaceDir,
-		Image:            msbImage,
-		CredentialRev:    bindingsRevision(bindings),
-		BoundCredentials: storeBoundKinds(bindings),
-		Username:         m.cfg.Username,
+// desiredState builds the desired record for an apply. When the binding set
+// could not be resolved, the credential fields are carried over from the
+// applied state rather than computed from an empty set: a refresh built from
+// nothing would strip the references the guest already holds (stale proven
+// only by the empty set itself), and the bound-store markers must survive so
+// a later revocation still knows what the instance resolved from.
+func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBinding, applied *InstanceState) DesiredState {
+	d := DesiredState{
+		Instance:     m.InstanceName(),
+		Isolation:    m.cfg.Isolation,
+		WorkspaceDir: m.cfg.WorkspaceDir,
+		Image:        msbImage,
+		Username:     m.cfg.Username,
 	}
+	if resolved {
+		d.CredentialRev = bindingsRevision(bindings)
+		d.BoundCredentials = storeBoundKinds(bindings)
+		return d
+	}
+	if applied != nil {
+		d.CredentialRev = applied.CredentialRev
+		d.BoundCredentials = append([]string(nil), applied.BoundCredentials...)
+	} else {
+		// Nothing applied to carry over, but an earlier apply outside the
+		// journal may still have left a store-bound secret behind: record
+		// the unknown marker so revocation does not skip this instance.
+		d.BoundCredentials = []string{pendingBoundEntry}
+	}
+	return d
 }
 
 func (d DesiredState) toState() InstanceState {

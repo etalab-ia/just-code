@@ -77,6 +77,23 @@ func (a BindingApprovals) Approves(kind CredentialKind) bool {
 	return false
 }
 
+// ParseOptionalBindingKind validates a kind supplied on the command line as a
+// registered *optional* binding. It is the single gate for the CLI's approve
+// and revoke paths: an unvalidated string would let `bindings revoke albert`
+// strip the mandatory proxy registration from a live sandbox, and an unknown
+// kind would record a name no runtime can bind.
+func ParseOptionalBindingKind(name string) (CredentialKind, error) {
+	kind := CredentialKind(name)
+	b, ok := bindingForKind(kind)
+	if !ok {
+		return "", fmt.Errorf("unknown credential kind %q (expected github or context7)", name)
+	}
+	if !b.Optional {
+		return "", fmt.Errorf("the %s binding is always active and cannot be approved or revoked", name)
+	}
+	return kind, nil
+}
+
 // ApproveBinding adds kind to the record at path. The kind must be a
 // registered optional binding: approving a required binding is meaningless
 // (it is always bound) and approving an unknown kind would record a name no

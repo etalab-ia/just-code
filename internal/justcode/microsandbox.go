@@ -126,9 +126,14 @@ type MicrosandboxRuntime struct {
 	// StateDir is the host state dir the binding approvals are read from;
 	// empty means the default (~/.local/state/just-code).
 	StateDir string
-	// readStored reads a credential from the store. It is a seam for tests;
-	// production uses readStoredCredential.
-	readStored func(ctx context.Context, kind CredentialKind) (string, error)
+	// CredentialStore names the store the credential must resolve from:
+	// "" selects the normal order (native, then file fallback), "native" or
+	// "file" pin one store (revocation uses this).
+	CredentialStore string
+	// credentialRead reads a stored credential; production uses
+	// readStoredWith. It is a seam so tests can drive the store paths
+	// without a real keychain.
+	credentialRead credentialReader
 }
 
 // NewMicrosandboxRuntime builds a Microsandbox backend with production
@@ -276,18 +281,18 @@ func (m *MicrosandboxRuntime) stateDirOrDefault() string {
 // are resolved here, immediately before the runtime operation, and travel
 // only through withHostSecrets.
 func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBinding, error) {
-	readStored := m.readStored
-	if readStored == nil {
-		readStored = readStoredCredential
+	read := m.credentialRead
+	if read == nil {
+		read = readStoredWith
 	}
 	var out []resolvedBinding
 	for _, b := range msbSecretBindings() {
 		if !b.Optional {
-			v, src, err := resolveAlbert(ctx, m.cfg)
+			v, src, store, err := resolveAlbertWith(read, ctx, m.cfg, m.CredentialStore)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, resolvedBinding{b, src, v})
+			out = append(out, resolvedBinding{msbSecretBinding: b, source: src, value: v, store: store})
 			continue
 		}
 		approvals, err := ReadBindingApprovals(DefaultFS, bindingApprovalsPath(m.stateDirOrDefault(), m.InstanceName()))
@@ -298,7 +303,7 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 		if !approvals.Approves(b.Kind) {
 			continue
 		}
-		v, err := readStored(ctx, b.Kind)
+		v, store, err := read(ctx, b.Kind, m.CredentialStore)
 		if err != nil {
 			if isNotFound(err) {
 				fmt.Fprintf(os.Stderr, "Warning: the %s binding is approved for %s but no %q credential is stored; skipping it (just-code auth add %s)\n",
@@ -308,7 +313,7 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 			}
 			continue
 		}
-		out = append(out, resolvedBinding{b, bindingSourceStore, v})
+		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store})
 	}
 	return out, nil
 }
