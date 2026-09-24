@@ -119,8 +119,17 @@ func run(args []string) (int, error) {
 	// behind the host-local trust record.
 	overlay := justcode.ManagedOverlay{Model: resolveModelSelection(projectRoot)}
 	conflictMsg, err := opencodeConfigReview(projectRoot, overlay)
+	startPath := parsed.action == "attach" || parsed.action == "start" || parsed.action == "restart" || parsed.action == "recreate"
 	if err != nil {
-		return 1, err
+		// A malformed project config is fatal only on the paths that would
+		// load it: read-only commands (stop, check, logs, shell) must keep
+		// working on a project whose config is broken — that is exactly when
+		// the user needs them.
+		if !startPath {
+			fmt.Fprintf(os.Stderr, "Warning: the project OpenCode configuration cannot be read (%v); continuing without the conflict review\n", err)
+		} else {
+			return 1, err
+		}
 	}
 	if conflictMsg != "" {
 		fmt.Fprintf(os.Stderr, "Warning: managed OpenCode fields differ from the project configuration:\n%s\n", conflictMsg)
@@ -130,7 +139,7 @@ func run(args []string) (int, error) {
 	// every execution input to be approved at its current content hash. A
 	// changed file is a new decision, not an inherited one. Only start paths
 	// are gated: stop, check, logs and shell operate on an existing guest.
-	if parsed.action == "attach" || parsed.action == "start" || parsed.action == "restart" || parsed.action == "recreate" {
+	if startPath {
 		if err := requireTrustedExecutionInputs(projectRoot); err != nil {
 			return 1, err
 		}

@@ -173,9 +173,23 @@ func ApproveExecutionInputs(fs FS, stateDir, projectRoot string) error {
 	if err != nil {
 		return err
 	}
+	// Start from the currently discovered inputs, not the old record:
+	// approvals for files that no longer exist are dropped (a deleted
+	// plugin's approval must not survive to re-approve a re-created file
+	// of the same name with different content).
+	live := map[string]bool{}
+	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0) {
+		if rel, err := filepath.Rel(projectRoot, inputs.ConfigPath); err == nil {
+			live[rel] = true
+		}
+	}
+	for _, rel := range inputs.AutoDiscoveredPlugins {
+		live[rel] = true
+	}
 	keep := map[string]string{}
 	for _, entry := range record.Approved {
-		if path, hash, ok := strings.Cut(entry, ":"); ok {
+		path, hash, ok := strings.Cut(entry, ":")
+		if ok && live[path] {
 			keep[path] = hash
 		}
 	}

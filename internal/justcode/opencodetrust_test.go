@@ -115,3 +115,41 @@ func TestTrustRecordRefusesSymlink(t *testing.T) {
 		t.Fatal("a symlinked plugin must not be approvable: the path could be repointed after approval")
 	}
 }
+
+// TestApproveDropsStaleEntries pins the re-approve semantics: an approval for
+// a file that no longer exists must not survive to re-approve a re-created
+// file of the same name with different content.
+func TestApproveDropsStaleEntries(t *testing.T) {
+	root := t.TempDir()
+	pluginDir := filepath.Join(root, ".opencode", "plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plugin := filepath.Join(pluginDir, "hook.js")
+	if err := os.WriteFile(plugin, []byte("// v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, stateDir := DefaultFS, t.TempDir()
+	if err := ApproveExecutionInputs(fs, stateDir, root); err != nil {
+		t.Fatal(err)
+	}
+	// Delete the plugin; re-approve (a no-inputs approve) must drop the
+	// stale entry rather than keep it.
+	if err := os.Remove(plugin); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApproveExecutionInputs(fs, stateDir, root); err != nil {
+		t.Fatal(err)
+	}
+	// Re-create the same name with different content: unapproved.
+	if err := os.WriteFile(plugin, []byte("// v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unapproved, err := DiscoverUnapprovedInputs(fs, stateDir, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unapproved) != 1 || unapproved[0].Reason != "unapproved" {
+		t.Fatalf("a re-created file must need a fresh approval: %+v", unapproved)
+	}
+}
