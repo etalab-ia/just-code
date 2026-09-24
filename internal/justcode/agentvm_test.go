@@ -574,3 +574,36 @@ func TestAgentVMRestartCreatesMissingWorkspace(t *testing.T) {
 		t.Fatalf("workspace was not created: %v", err)
 	}
 }
+
+func TestAgentVMRestartIsNonDestructive(t *testing.T) {
+	// P07: restart stops and starts the existing VM. It must never delete
+	// it — the destructive rebuild is the explicit Recreate.
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && len(args) > 0 && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: DefaultAgentVMVM + "|Running\n"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	a := newTestAgentVM(t, runner)
+	a.Config.Isolation = IsolationFull
+	if err := a.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if runner.hasCall("limactl delete") {
+		t.Fatalf("Restart must not delete the VM: %v", runner.calls)
+	}
+	if !runner.hasCall("limactl stop") {
+		t.Fatalf("Restart must stop the VM: %v", runner.calls)
+	}
+}
+
+func TestAgentVMRecreateDeletesAndRecreates(t *testing.T) {
+	runner := &fakeRunner{}
+	a := newTestAgentVM(t, runner)
+	if err := a.Recreate(context.Background()); err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+	if !runner.hasCall("limactl delete") {
+		t.Fatalf("Recreate must delete the VM: %v", runner.calls)
+	}
+}

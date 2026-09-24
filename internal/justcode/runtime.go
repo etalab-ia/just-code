@@ -49,7 +49,14 @@ type Backend interface {
 	ID() Runtime
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
+	// Restart is non-destructive (P07): it stops and starts the existing
+	// instance, preserving disk and guest state. The destructive rebuild is
+	// Recreate, which is the only path that may delete an instance.
 	Restart(ctx context.Context) error
+	// Recreate is the explicit destructive rebuild: it deletes the instance
+	// and creates a fresh one, losing guest sessions, guest-installed tools
+	// and guest-only files. It names that loss in its output.
+	Recreate(ctx context.Context) error
 	Clean(ctx context.Context) error
 	Doctor(ctx context.Context) error
 	// Logs and Shell are interactive and run attached to the terminal.
@@ -65,6 +72,25 @@ type Backend interface {
 	// Status describes the guest's current state for `check` in isolation
 	// full, where there is no health endpoint to probe.
 	Status(ctx context.Context) (string, error)
+}
+
+// Reconciler is the optional backend capability (P07) that applies
+// configuration changes to an existing instance without recreating it,
+// resuming interrupted applies from the persisted journal. Backends
+// without persisted reconciliation state (Tart, agent-vm) do not
+// implement it and keep their plain Start semantics.
+type Reconciler interface {
+	Reconcile(ctx context.Context) error
+}
+
+// StartOrReconcile starts the backend through its reconciliation path
+// when it has one, so an existing instance is classified instead of
+// blindly started. A nil Reconciler falls back to Start.
+func StartOrReconcile(ctx context.Context, b Backend) error {
+	if r, ok := b.(Reconciler); ok {
+		return r.Reconcile(ctx)
+	}
+	return b.Start(ctx)
 }
 
 // ResolveRuntime picks a runtime from an explicit --<runtime> flag and the

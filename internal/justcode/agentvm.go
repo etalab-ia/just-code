@@ -593,22 +593,46 @@ func (a *AgentVM) Doctor(ctx context.Context) error {
 
 func (a *AgentVM) ID() Runtime { return RuntimeAgentVM }
 
-// Restart recreates the VM from scratch.
+// Restart is non-destructive (P07): it stops and starts the existing VM,
+// preserving disk and guest state. The preflights run first so a rejected
+// workspace aborts before anything is touched. The destructive rebuild is
+// Recreate.
 func (a *AgentVM) Restart(ctx context.Context) error {
-	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the VM and its persistent state. Create the
-	// directory first, as Start does, so a workspace that does not exist
-	// yet (default ./workspace) is not an error.
-	if err := os.MkdirAll(a.Config.WorkspaceDir, 0o755); err != nil {
+	if err := a.RestartPreflights(ctx); err != nil {
 		return err
 	}
-	if err := CheckWorkspaceGate(ctx, a.Config.WorkspaceDir); err != nil {
+	if err := a.Stop(ctx); err != nil {
+		return err
+	}
+	return a.Start(ctx)
+}
+
+// Recreate is the explicit destructive rebuild of the VM (P07). It names the
+// loss before and after. No lifecycle path reaches it implicitly.
+func (a *AgentVM) Recreate(ctx context.Context) error {
+	fmt.Printf("Recreating %s. This DESTROYS: guest sessions, tools installed in the guest, and guest-only files.\n", a.VMName())
+	if err := a.RestartPreflights(ctx); err != nil {
 		return err
 	}
 	if err := a.Clean(ctx); err != nil {
 		return err
 	}
-	return a.Start(ctx)
+	if err := a.Start(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s recreated.\n", a.VMName())
+	return nil
+}
+
+// RestartPreflights runs the deterministic prechecks shared by the lifecycle
+// commands: workspace creation and the workspace gate. A rejected workspace
+// must abort before any destructive step, so the VM and its persistent state
+// survive.
+func (a *AgentVM) RestartPreflights(ctx context.Context) error {
+	if err := os.MkdirAll(a.Config.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
+	return CheckWorkspaceGate(ctx, a.Config.WorkspaceDir)
 }
 
 // Logs follows the backend log.

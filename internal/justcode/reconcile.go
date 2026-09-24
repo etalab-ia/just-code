@@ -1,0 +1,512 @@
+package justcode
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+)
+
+// Reconciliation and non-destructive restart (P07). The goal: applying setup
+// changes to an existing instance must not mean recreating it. Changes are
+// classified into a small typed plan; identical desired state is a no-op that
+// writes nothing; an interrupted apply resumes at the unfinished operation;
+// and destruction is never a side effect — it is an explicit, named
+// operation (Recreate).
+
+// ReconcileOp is one operation of a reconciliation plan.
+type ReconcileOp string
+
+const (
+	// OpNoOp: desired state is applied and the guest is healthy. Writes
+	// nothing.
+	OpNoOp ReconcileOp = "noop"
+	// OpCreate: the instance does not exist; the full creation path runs.
+	OpCreate ReconcileOp = "create"
+	// OpRefreshCredentials: persist the proxied credential and server
+	// credentials for the next boot. Idempotent.
+	OpRefreshCredentials ReconcileOp = "refresh-credentials"
+	// OpStartVM: boot a stopped instance.
+	OpStartVM ReconcileOp = "start-vm"
+	// OpRestartBackend: relaunch the in-guest backend process on a running
+	// VM that is up but not serving.
+	OpRestartBackend ReconcileOp = "restart-backend"
+	// OpRestartVM: stop and start the VM. Non-destructive: disk and guest
+	// state survive; this is how a running guest picks up refreshed
+	// credentials without being recreated.
+	OpRestartVM ReconcileOp = "restart-vm"
+	// OpRecreate: creation-fixed attributes changed (isolation, mount,
+	// image). Never executed automatically: the plan surfaces it and the
+	// user runs the explicit recreate.
+	OpRecreate ReconcileOp = "recreate"
+)
+
+// ReconcilePlan is the classified set of operations to apply.
+type ReconcilePlan struct {
+	Ops []ReconcileOp
+	// Reason explains the classification, for logs and errors.
+	Reason string
+}
+
+// IsNoOp reports whether the plan applies nothing.
+func (p ReconcilePlan) IsNoOp() bool {
+	return len(p.Ops) == 0 || (len(p.Ops) == 1 && p.Ops[0] == OpNoOp)
+}
+
+// NeedsRecreate reports whether the plan classifies the change as requiring
+// (explicit) recreation.
+func (p ReconcilePlan) NeedsRecreate() bool {
+	for _, op := range p.Ops {
+		if op == OpRecreate {
+			return true
+		}
+	}
+	return false
+}
+
+// InstanceState is the persisted desired/applied record of one instance
+// (P07). It lives in host state, never in the workspace, and never carries
+// credential values: the config revision is a hash of non-secret fields, and
+// credentials are tracked only through opaque generations (P09 wires real
+// generations; the env-sourced key has none, so its refresh is always
+// planned — idempotent, and the only way to pick up a rotated key without
+// storing anything derived from it).
+type InstanceState struct {
+	SchemaVersion int `json:"schemaVersion"`
+	// Instance is the instance this state belongs to.
+	Instance string `json:"instance"`
+	// Isolation, WorkspaceDir and Image are the creation-fixed attributes
+	// the instance was created with. A change classifies as recreate.
+	Isolation    string `json:"isolation"`
+	WorkspaceDir string `json:"workspaceDir"`
+	Image        string `json:"image"`
+	// ConfigRevision is the hash of the non-secret desired config that was
+	// applied. Identical revision + healthy guest = no-op.
+	ConfigRevision string `json:"configRevision"`
+	// CredentialGen is the opaque credential generation applied (P09).
+	CredentialGen int `json:"credentialGen"`
+	// Pending journals the operations of the current apply that have not
+	// completed yet, so an interrupted apply resumes instead of restarting
+	// from scratch or silently skipping.
+	Pending []string `json:"pending,omitempty"`
+}
+
+const instanceStateSchemaVersion = 1
+
+// maxSupportedInstanceStateSchema is the newest state schema this build can
+// read. A newer schema is an error, never a trigger for deletion: unknown
+// persisted state must not destroy anything.
+const maxSupportedInstanceStateSchema = 1
+
+// DesiredState is the configuration just-code wants the instance to have.
+type DesiredState struct {
+	Instance     string
+	Isolation    Isolation
+	WorkspaceDir string
+	Image        string
+	// CredentialGen is the opaque generation of the credential set (P09).
+	CredentialGen int
+	// Non-secret server credentials participate in the revision.
+	Username string
+}
+
+// ConfigRevision hashes the non-secret configuration. Credential values
+// (API key, server password) are deliberately excluded: the state file must
+// not contain anything derived from a secret.
+func (d DesiredState) ConfigRevision() string {
+	h := sha256.New()
+	for _, part := range []string{
+		"jc-state-v1",
+		d.Instance,
+		string(d.Isolation),
+		filepath.Clean(d.WorkspaceDir),
+		d.Image,
+		d.Username,
+		fmt.Sprintf("gen:%d", d.CredentialGen),
+	} {
+		_, _ = h.Write([]byte(part))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// ReconcileFacts is what the runtime observed about the instance when the
+// plan was requested. The plan function itself stays pure: all interaction
+// with the guest happens in the executor.
+type ReconcileFacts struct {
+	// Exists: the instance is known to the runtime.
+	Exists bool
+	// Running: the VM is up.
+	Running bool
+	// Healthy: the backend answers its health endpoint (backend mode).
+	Healthy bool
+	// CreationFixedChanged: isolation, mount or image differ from what the
+	// instance was created with.
+	CreationFixedChanged bool
+	// CredentialChanged: the credential generation differs from the applied
+	// one (always true for the env-sourced key, which has no generation).
+	CredentialChanged bool
+}
+
+// PlanReconcile classifies the desired change into operations. It is pure:
+// same inputs, same plan, no guest interaction. The classification rules:
+//
+//   - missing instance -> create
+//   - creation-fixed attribute changed -> recreate (explicit, never auto)
+//   - credential change -> refresh credentials; a running VM additionally
+//     restarts (non-destructively) so the change is effective, not just
+//     promised for the next boot
+//   - identical revision: healthy running guest -> no-op; running but not
+//     serving -> restart backend; stopped -> start
+func PlanReconcile(applied *InstanceState, desired DesiredState, facts ReconcileFacts) ReconcilePlan {
+	if !facts.Exists {
+		return ReconcilePlan{Ops: []ReconcileOp{OpCreate}, Reason: "instance does not exist"}
+	}
+	if facts.CreationFixedChanged {
+		return ReconcilePlan{
+			Ops:    []ReconcileOp{OpRecreate},
+			Reason: "isolation, workspace mount or image changed; these are fixed at creation",
+		}
+	}
+	if applied == nil {
+		// The instance exists but predates state tracking. Its creation-fixed
+		// attributes match the facts (no change detected), so the safe
+		// classification is a full non-destructive refresh.
+		if facts.Running {
+			return ReconcilePlan{Ops: []ReconcileOp{OpRefreshCredentials, OpRestartVM}, Reason: "instance predates reconciliation state; refreshing"}
+		}
+		return ReconcilePlan{Ops: []ReconcileOp{OpRefreshCredentials, OpStartVM}, Reason: "instance predates reconciliation state; refreshing for the next boot"}
+	}
+	revChanged := applied.ConfigRevision != desired.ConfigRevision()
+	if revChanged || facts.CredentialChanged {
+		if facts.Running {
+			return ReconcilePlan{
+				Ops:    []ReconcileOp{OpRefreshCredentials, OpRestartVM},
+				Reason: "configuration changed; restarting the VM (non-destructive) to apply it",
+			}
+		}
+		return ReconcilePlan{
+			Ops:    []ReconcileOp{OpRefreshCredentials, OpStartVM},
+			Reason: "configuration changed; refreshing for the next boot",
+		}
+	}
+	switch {
+	case facts.Running && facts.Healthy:
+		return ReconcilePlan{Ops: []ReconcileOp{OpNoOp}, Reason: "desired state already applied"}
+	case facts.Running:
+		return ReconcilePlan{Ops: []ReconcileOp{OpRestartBackend}, Reason: "VM is up but the backend is not serving"}
+	default:
+		return ReconcilePlan{Ops: []ReconcileOp{OpStartVM}, Reason: "instance is stopped"}
+	}
+}
+
+// ErrRecreateNeeded is the typed refusal returned when a change classifies
+// as recreation. It carries the loss summary; the caller surfaces it and the
+// user decides. No code path may turn this into an automatic Clean.
+type ErrRecreateNeeded struct {
+	Instance string
+	Reason   string
+}
+
+func (e *ErrRecreateNeeded) Error() string {
+	return fmt.Sprintf("%s cannot apply this change in place: %s. "+
+		"Recreating is destructive and loses guest sessions, tools installed in the guest, and guest-only files; "+
+		"run 'just-code recreate --microsandbox' if that is acceptable",
+		e.Instance, e.Reason)
+}
+
+// instanceStatePath is the per-instance reconcile state file, in host state.
+func instanceStatePath(stateDir, instance string) string {
+	return filepath.Join(InstanceStateDir(stateDir, instance), "reconcile.json")
+}
+
+// ReadInstanceState loads the persisted state. A missing file is not an
+// error: it returns (nil, nil), meaning the instance predates state
+// tracking. A newer schema is an error — never a deletion trigger.
+func ReadInstanceState(fs FS, path string) (*InstanceState, error) {
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var st InstanceState
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, fmt.Errorf("instance state %s: %w", path, err)
+	}
+	if st.SchemaVersion > maxSupportedInstanceStateSchema {
+		return nil, fmt.Errorf("instance state %s: schemaVersion %d is newer than this build supports (%d); "+
+			"refusing to touch the instance rather than guess at unknown state", path, st.SchemaVersion, maxSupportedInstanceStateSchema)
+	}
+	return &st, nil
+}
+
+// WriteInstanceState atomically persists the state, with a sorted pending
+// list for stable diffs.
+func WriteInstanceState(fs FS, path string, st InstanceState) error {
+	st.SchemaVersion = instanceStateSchemaVersion
+	pending := append([]string(nil), st.Pending...)
+	sort.Strings(pending)
+	st.Pending = pending
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return atomicWrite(fs, path, append(data, '\n'), 0o600)
+}
+
+// Reconcile applies the desired configuration to this backend's instance
+// through the typed plan, journaling progress so an interruption resumes.
+// It is the P07 apply mechanism; the destructive path (Recreate) is never
+// taken implicitly — a recreate classification is surfaced as an error for
+// the user to act on.
+func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
+	stateDir := DefaultStateDir()
+	lock := &ProjectLock{Path: SetupLockPath(stateDir, m.InstanceName()), FS: DefaultFS}
+	release, err := lock.Acquire()
+	if err != nil {
+		return fmt.Errorf("another just-code setup is running for %s: %w", m.InstanceName(), err)
+	}
+	defer release()
+
+	if err := m.validateConfig(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
+	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
+		return err
+	}
+
+	path := instanceStatePath(stateDir, m.InstanceName())
+	applied, err := ReadInstanceState(DefaultFS, path)
+	if err != nil {
+		return err
+	}
+	desired := m.desiredState()
+	facts, err := m.reconcileFacts(ctx, applied, desired)
+	if err != nil {
+		return err
+	}
+	plan := PlanReconcile(applied, desired, facts)
+	if plan.NeedsRecreate() {
+		return &ErrRecreateNeeded{Instance: m.InstanceName(), Reason: plan.Reason}
+	}
+
+	// Resume support: a journal of pending ops from an interrupted run of
+	// the same revision is honored; a journal from a different revision is
+	// stale and replaced by the fresh plan. This check precedes the no-op
+	// return on purpose: a failed op journals the desired revision with
+	// Pending set, and the next run must finish that journal even when the
+	// guest currently looks healthy — otherwise a failed credential or
+	// configuration update is never retried.
+	pending := plan.Ops
+	if applied != nil && applied.ConfigRevision == desired.ConfigRevision() && len(applied.Pending) > 0 {
+		// The journal is authoritative for this revision: a fresh plan of
+		// [noop] must not override it, or a failed update is never retried.
+		pending = journalToOps(applied.Pending)
+		fmt.Printf("Resuming interrupted apply for %s at: %s\n", m.InstanceName(), joinOps(pending))
+	} else if plan.IsNoOp() {
+		return nil
+	}
+
+	// Persist the journal before the first side effect and advance it after
+	// each successful operation: an abrupt kill between ops must leave a
+	// progress record, or the next run would replay completed mutations.
+	st := desired.toState()
+	st.Pending = opsToJournal(pending)
+	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+		return fmt.Errorf("persisting reconcile journal for %s: %w", m.InstanceName(), err)
+	}
+	for i, op := range pending {
+		if err := m.applyReconcileOp(ctx, op); err != nil {
+			// Journal the remaining ops: the next run resumes here.
+			st.Pending = opsToJournal(pending[i:])
+			_ = WriteInstanceState(DefaultFS, path, st)
+			return fmt.Errorf("reconcile %s failed at %s (will resume there): %w", m.InstanceName(), op, err)
+		}
+		if i < len(pending)-1 {
+			st.Pending = opsToJournal(pending[i+1:])
+			if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+				return fmt.Errorf("advancing reconcile journal for %s: %w", m.InstanceName(), err)
+			}
+		}
+	}
+	st.Pending = nil
+	return WriteInstanceState(DefaultFS, path, st)
+}
+
+func (m *MicrosandboxRuntime) desiredState() DesiredState {
+	return DesiredState{
+		Instance:      m.InstanceName(),
+		Isolation:     m.cfg.Isolation,
+		WorkspaceDir:  m.cfg.WorkspaceDir,
+		Image:         msbImage,
+		CredentialGen: 0, // env-sourced key has no generation (P09 wires one)
+		Username:      m.cfg.Username,
+	}
+}
+
+func (d DesiredState) toState() InstanceState {
+	return InstanceState{
+		SchemaVersion:  instanceStateSchemaVersion,
+		Instance:       d.Instance,
+		Isolation:      string(d.Isolation),
+		WorkspaceDir:   filepath.Clean(d.WorkspaceDir),
+		Image:          d.Image,
+		ConfigRevision: d.ConfigRevision(),
+		CredentialGen:  d.CredentialGen,
+	}
+}
+
+// reconcileFacts gathers what the plan needs from the guest. All guest
+// interaction lives here and in applyReconcileOp; the plan itself is pure.
+func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *InstanceState, desired DesiredState) (ReconcileFacts, error) {
+	// The env-sourced key has no generation of its own (P09 wires one), so
+	// the credential generation travels inside the config revision. When
+	// the applied revision matches the desired one, the credential set is
+	// by definition unchanged; without this, every reconcile would take the
+	// refresh+restart path and a true no-op would be unreachable.
+	facts := ReconcileFacts{CredentialChanged: applied == nil || applied.ConfigRevision != desired.ConfigRevision()}
+	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
+	if err != nil {
+		return facts, err
+	}
+	facts.Exists = exists
+	if !exists {
+		return facts, nil
+	}
+	facts.Running = sandbox.Status == "running"
+	facts.Healthy = facts.Running && m.backendHealthy(ctx)
+
+	// Creation-fixed comparison. The applied state is the authority when it
+	// exists; without it, the live checks (isolation script, mount) stand in.
+	if applied != nil {
+		creationFixed := applied.Isolation != string(desired.Isolation) ||
+			applied.WorkspaceDir != filepath.Clean(desired.WorkspaceDir) ||
+			applied.Image != desired.Image
+		if creationFixed {
+			facts.CreationFixedChanged = true
+			return facts, nil
+		}
+	}
+	if err := m.rejectIsolationMismatch(ctx, sandbox); err != nil {
+		facts.CreationFixedChanged = true
+		return facts, nil
+	}
+	if m.workspaceMountChanged(ctx) {
+		facts.CreationFixedChanged = true
+	}
+	return facts, nil
+}
+
+// workspaceMountChanged reports whether the instance's /workspace mount
+// differs from the configured workspace. Mounts are fixed at creation.
+func (m *MicrosandboxRuntime) workspaceMountChanged(ctx context.Context) bool {
+	mounted, err := m.Client.WorkspaceMount(ctx, m.InstanceName())
+	if err != nil || mounted == "" {
+		return false
+	}
+	mountedClean := filepath.Clean(mounted)
+	if abs, err := filepath.Abs(mountedClean); err == nil {
+		mountedClean = abs
+	}
+	workspaceClean := filepath.Clean(m.cfg.WorkspaceDir)
+	if abs, err := filepath.Abs(workspaceClean); err == nil {
+		workspaceClean = abs
+	}
+	return mountedClean != workspaceClean
+}
+
+// applyReconcileOp executes one plan operation. Every operation is
+// idempotent, which is what makes the journal safe to replay.
+func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op ReconcileOp) error {
+	switch op {
+	case OpCreate, OpStartVM:
+		return m.Start(ctx)
+	case OpRefreshCredentials:
+		return m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), m.cfg.APIKey)
+	case OpRestartBackend:
+		return m.launchBackend(ctx)
+	case OpRestartVM:
+		if err := m.Stop(ctx); err != nil {
+			return err
+		}
+		return m.Start(ctx)
+	default:
+		return fmt.Errorf("unsupported reconcile op %q", op)
+	}
+}
+
+func opsToJournal(ops []ReconcileOp) []string {
+	out := make([]string, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, string(op))
+	}
+	return out
+}
+
+func journalToOps(journal []string) []ReconcileOp {
+	out := make([]ReconcileOp, 0, len(journal))
+	for _, s := range journal {
+		out = append(out, ReconcileOp(s))
+	}
+	return out
+}
+
+func sameOps(a, b []ReconcileOp) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func joinOps(ops []ReconcileOp) string {
+	parts := make([]string, 0, len(ops))
+	for _, op := range ops {
+		parts = append(parts, string(op))
+	}
+	return fmt.Sprint(parts)
+}
+
+// Recreate is the explicit, destructive rebuild of the instance. It names
+// the loss before and after. It is the only path that may invoke the
+// destructive Clean, and no reconcile plan reaches it implicitly
+// (NeedsRecreate is surfaced as an error, never executed).
+func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
+	lossSummary := "guest sessions, tools installed in the guest, and guest-only files"
+	fmt.Printf("Recreating %s. This DESTROYS: %s.\n", m.InstanceName(), lossSummary)
+	if err := m.validateConfig(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
+		return err
+	}
+	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
+		return err
+	}
+	if err := m.Clean(ctx); err != nil {
+		return err
+	}
+	if err := m.Start(ctx); err != nil {
+		return err
+	}
+	// The recreated instance is a new creation: drop any stale journal.
+	_ = DefaultFS.Remove(instanceStatePath(DefaultStateDir(), m.InstanceName()))
+	fmt.Printf("%s recreated.\n", m.InstanceName())
+	return nil
+}

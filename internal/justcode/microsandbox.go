@@ -595,7 +595,7 @@ func (m *MicrosandboxRuntime) rejectIsolationMismatch(ctx context.Context, sandb
 	}
 	return fmt.Errorf("%s was created in isolation %s mode and cannot be switched to %s mode in place: "+
 		"the start script is fixed when the sandbox is created. "+
-		"Run 'just-code restart --microsandbox' (or 'just-code clean --microsandbox') to recreate it in %s mode",
+		"Run 'just-code recreate --microsandbox' to rebuild it in %s mode",
 		sandbox.Name, createdMode, requestedMode, requestedMode)
 }
 
@@ -612,13 +612,11 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 	return m.Client.Stop(ctx, m.InstanceName())
 }
 
+// Restart is non-destructive (P07): it stops and starts the existing
+// sandbox, preserving disk and guest state. The preflights run first so a
+// rejected workspace or a bad config aborts before anything is touched.
+// The destructive rebuild is Recreate.
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
-	// Preflight the workspace before the destructive Clean: a rejected
-	// workspace must not cost the sandbox and its persistent state. Create
-	// the directory first, as Start does, so a workspace that does not
-	// exist yet (default ./workspace) is not an error. The deterministic
-	// configuration checks run first: a bad config must not reach Clean,
-	// which would destroy a sandbox that Start then refuses to recreate.
 	if err := m.validateConfig(); err != nil {
 		return err
 	}
@@ -628,10 +626,26 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	if err := CheckWorkspaceGate(ctx, m.cfg.WorkspaceDir); err != nil {
 		return err
 	}
-	if err := m.Clean(ctx); err != nil {
+	// Detect recreation-only states before stopping: a creation-fixed
+	// isolation mismatch cannot be fixed by restart, and stopping first
+	// would leave a previously usable sandbox down with a looping error.
+	if err := m.rejectRecreationOnlyStates(ctx); err != nil {
+		return err
+	}
+	if err := m.Stop(ctx); err != nil {
 		return err
 	}
 	return m.Start(ctx)
+}
+
+// rejectRecreationOnlyStates inspects an existing sandbox for conditions
+// restart cannot fix. It is a no-op when the sandbox does not exist.
+func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) error {
+	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
+	if err != nil || !exists {
+		return err
+	}
+	return m.rejectIsolationMismatch(ctx, sandbox)
 }
 
 func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {
