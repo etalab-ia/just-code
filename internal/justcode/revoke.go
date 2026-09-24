@@ -49,6 +49,10 @@ type RevokeReport struct {
 type ErrRevocationBlocked struct {
 	Kind      CredentialKind
 	Instances []string
+	// BoundVMs, when non-empty, names the running plaintext VMs whose
+	// persisted record shows the removed entry feeding their Albert
+	// binding — the evidence for the refusal, beyond the general rule.
+	BoundVMs []string
 }
 
 func (e *ErrRevocationBlocked) Error() string {
@@ -154,7 +158,14 @@ func (r Revoker) Revoke(ctx context.Context, entry string) (RevokeReport, error)
 	// The guard keys on the guest binding, not the entry: an Albert binding
 	// fed by `credentialRef: "github"` still sits in cleartext in a running
 	// VM, and removing the "github" entry would otherwise look harmless.
-	if r.entryFeedsAlbert(entry, removals) {
+	//
+	// Every running VM is inspected, each against its OWN persisted binding
+	// record (the VM name is the instance name, so the per-instance state
+	// file applies). The caller's project reference is one input, not the
+	// only one: removing a global entry from project A must still see that
+	// project B's VM resolved Albert from it.
+	boundVMs := r.plaintextVMsFedBy(ctx, entry)
+	if len(boundVMs) > 0 || r.entryFeedsAlbert(entry, removals) {
 		var running []string
 		for _, enumerate := range []func(context.Context) ([]string, error){r.TartRunning, r.AgentVMRunning} {
 			vms, err := enumerate(ctx)
@@ -168,7 +179,8 @@ func (r Revoker) Revoke(ctx context.Context, entry string) (RevokeReport, error)
 		}
 		if len(running) > 0 {
 			sort.Strings(running)
-			return RevokeReport{}, &ErrRevocationBlocked{Kind: CredentialKind(entry), Instances: running}
+			sort.Strings(boundVMs)
+			return RevokeReport{}, &ErrRevocationBlocked{Kind: CredentialKind(entry), Instances: running, BoundVMs: boundVMs}
 		}
 	}
 
@@ -296,6 +308,41 @@ func (r Revoker) entryFeedsAlbert(entry string, removals []pendingRemoval) bool 
 		}
 	}
 	return false
+}
+
+// plaintextVMsFedBy inspects every running Tart/agent-vm VM's persisted
+// binding record for the entry being removed. The VM name is the instance
+// name (ManagedVMName), so the per-instance state file applies to VMs the
+// same way it applies to Microsandbox sandboxes. A VM whose record shows the
+// entry feeding its Albert binding is named; a VM with no record at all is
+// not (the general rule already refuses while any VM runs, so no record
+// means "evidence unknown", which the blanket refusal covers).
+func (r Revoker) plaintextVMsFedBy(ctx context.Context, entry string) []string {
+	var bound []string
+	for _, enumerate := range []func(context.Context) ([]string, error){r.TartRunning, r.AgentVMRunning} {
+		vms, err := enumerate(ctx)
+		if err != nil || len(vms) == 0 {
+			continue
+		}
+		for _, vm := range vms {
+			instance := strings.TrimPrefix(vm, managedVMPrefix)
+			st, err := ReadInstanceState(r.FS, instanceStatePath(r.StateDir, instance))
+			if err != nil || st == nil {
+				continue
+			}
+			verdict, bindings, _ := entryVerdicts(st.BoundCredentials, entry, r.Store)
+			if verdict != bindingThisStore {
+				continue
+			}
+			for _, b := range bindings {
+				if b == CredentialAlbert {
+					bound = append(bound, vm)
+					break
+				}
+			}
+		}
+	}
+	return bound
 }
 
 // guestEnvForEntry returns the guest variable a credential-store entry feeds:

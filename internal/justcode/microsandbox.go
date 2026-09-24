@@ -308,10 +308,15 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 			if isNotFound(err) {
 				fmt.Fprintf(os.Stderr, "Warning: the %s binding is approved for %s but no %q credential is stored; skipping it (just-code auth add %s)\n",
 					b.Kind, m.InstanceName(), b.Kind, b.Kind)
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: cannot read the %s credential (%v); skipping the binding\n", b.Kind, err)
+				continue
 			}
-			continue
+			// A locked, denied, unavailable or corrupt store on an APPROVED
+			// binding is a hard error: dropping the binding here would make
+			// the omission the desired set, and the refresh would strip the
+			// persisted registration (the patch semantics make absence
+			// authoritative). A transient store failure must not become the
+			// loss of a live binding.
+			return nil, fmt.Errorf("cannot read the approved %s credential for %s: %w", b.Kind, m.InstanceName(), err)
 		}
 		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store, entry: string(b.Kind)})
 	}

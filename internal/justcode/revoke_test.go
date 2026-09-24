@@ -334,3 +334,38 @@ func TestRevokeRemoveAllFedBindings(t *testing.T) {
 		t.Fatalf("the report must name both: %+v", rep)
 	}
 }
+
+// TestRevokeBlockedByOtherProjectsVMRecord pins the fourth review's P1: a
+// running Tart VM in ANOTHER project, whose persisted record shows the
+// removed entry feeding its Albert binding, must block the removal even
+// though the caller's own reference names nothing relevant. The VM name is
+// the instance name (opencode-<instance>), so the state file applies.
+func TestRevokeBlockedByOtherProjectsVMRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	// Project B's instance: credentialRef "github" feeds its Albert binding.
+	writeBoundState(t, stateDir, "jc-proj-b1", []string{"github@native#albert"})
+	// Caller (project A) has no credentialRef at all.
+	r := revokerForTest(&fakeMSBClient{}, stateDir, []string{"opencode-jc-proj-b1"}, nil)
+	if _, err := r.Revoke(context.Background(), "github"); err == nil {
+		t.Fatal("removing an entry that feeds another project's plaintext VM Albert binding must be refused")
+	}
+}
+
+// TestRevokeOptionalKindUnblockedByUnrelatedVMRecord is the inverse: a
+// running VM whose record does NOT involve the entry must not block a
+// github removal through the per-VM inspection (the blanket rule only
+// covers the Albert binding).
+func TestRevokeOptionalKindUnblockedByUnrelatedVMRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	// The VM's record binds albert only; the entry "github" feeds nothing
+	// there.
+	writeBoundState(t, stateDir, "jc-proj-b1", []string{"albert@native#albert"})
+	r := revokerForTest(&fakeMSBClient{}, stateDir, []string{"opencode-jc-proj-b1"}, nil)
+	// Note: the VM runs with a plaintext ALBERT credential; removing the
+	// "github" entry does not threaten it.
+	rep, err := r.Revoke(context.Background(), "github")
+	if err != nil {
+		t.Fatalf("an unrelated VM record must not block: %v", err)
+	}
+	_ = rep
+}

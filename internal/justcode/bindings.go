@@ -272,27 +272,35 @@ func (r resolvedBinding) storeEntry() string {
 	return string(r.Kind)
 }
 
-// storeGenerationOf returns the store-local rotation marker for the binding
-// set, preferring the file store's counter and falling back to the host-side
-// counter: whichever the `auth add` path bumps is the one reconcile compares.
-// It is non-secret by construction — a counter, never anything derived from a
-// value.
-func storeGenerationOf(bindings []resolvedBinding) string {
+// storeGenerationOf builds the composite rotation marker for the binding
+// set: every store-sourced binding's entry, store and generation, sorted and
+// joined. Inspecting only the first store-sourced binding would hide a
+// rotation of any later one (an approved GitHub token rotated while Albert is
+// first in the registry), leaving a healthy instance on the no-op path with
+// the old token. The marker is non-secret by construction — counters and
+// names, never anything derived from a value.
+func storeGenerationOf(fs FS, stateDir string, bindings []resolvedBinding) string {
+	var parts []string
 	for _, b := range bindings {
 		if b.source != bindingSourceStore {
 			continue
 		}
-		if fs, err := NewFileCredentialStore(); err == nil {
-			if gen, gerr := fs.Generation(context.Background(), CredentialKind(b.storeEntry())); gerr == nil && gen != "" {
-				return gen
+		entry := b.storeEntry()
+		gen := ""
+		if fstore, err := NewFileCredentialStore(); err == nil {
+			if g, gerr := fstore.Generation(context.Background(), CredentialKind(entry)); gerr == nil {
+				gen = g
 			}
 		}
-		if n, nerr := CredentialGeneration(CredentialKind(b.storeEntry())); nerr == nil {
-			return strconv.Itoa(n)
+		if gen == "" {
+			if n, nerr := credentialGenerationIn(fs, stateDir, CredentialKind(entry)); nerr == nil {
+				gen = strconv.Itoa(n)
+			}
 		}
-		return ""
+		parts = append(parts, entry+"@"+b.store+":"+gen)
 	}
-	return ""
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
 }
 
 // metadata drops the value and source, for the SDK-facing spec.

@@ -319,6 +319,9 @@ func TestResolveBindingsApprovedOptionalIsBound(t *testing.T) {
 
 func TestResolveBindingsApprovedButUnstoredIsSkipped(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	m.credentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
 	path := bindingApprovalsPath(m.StateDir, m.InstanceName())
 	if err := ApproveBinding(DefaultFS, path, CredentialContext7); err != nil {
 		t.Fatal(err)
@@ -508,5 +511,61 @@ func TestReadStoredWithNoSilentFallback(t *testing.T) {
 		func(context.Context, CredentialKind) (string, error) { return "fallback-value", nil })
 	if err == nil || !strings.Contains(err.Error(), "locked") {
 		t.Fatalf("a locked native store must surface: %v", err)
+	}
+}
+
+// TestResolveBindingsApprovedOptionalHardError pins the fourth review's P2:
+// a locked/denied/unavailable/corrupt store on an APPROVED optional binding
+// aborts the resolution. Skipping it would make the omission the desired
+// set, and the refresh would strip the persisted registration.
+func TestResolveBindingsApprovedOptionalHardError(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	m.credentialRead = func(_ context.Context, kind CredentialKind, from string) (string, string, error) {
+		if kind == CredentialGithub {
+			return "", "", storeErrorf("get", "secret-service", "locked", "collection locked")
+		}
+		return "value", "native", nil
+	}
+	path := bindingApprovalsPath(m.StateDir, m.InstanceName())
+	if err := ApproveBinding(DefaultFS, path, CredentialGithub); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.resolveBindings(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("a locked store on an approved binding must abort, not skip: %v", err)
+	}
+}
+
+// TestStoreGenerationComposite pins the fourth review's P1: the rotation
+// marker must cover EVERY store-sourced binding, so rotating an approved
+// optional credential moves the composite even though Albert resolves first.
+func TestStoreGenerationComposite(t *testing.T) {
+	fs, stateDir := DefaultFS, t.TempDir()
+	// Albert store-sourced (generation 1) + github approved (generation 5).
+	albert := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore,
+		value: "k", store: "native", entry: "albert",
+	}}
+	github := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[1], source: bindingSourceStore,
+		value: "tok", store: "native", entry: "github",
+	}}
+	both := append(append([]resolvedBinding{}, albert...), github...)
+
+	base := storeGenerationOf(fs, stateDir, both)
+	if base == "" || !strings.Contains(base, "albert@native") || !strings.Contains(base, "github@native") {
+		t.Fatalf("the composite must cover every store-sourced binding: %q", base)
+	}
+	// Bumping only the github generation must move the composite.
+	if err := writeCredentialGeneration(fs, stateDir, CredentialGithub); err != nil {
+		t.Fatal(err)
+	}
+	rotated := storeGenerationOf(fs, stateDir, both)
+	if base == rotated {
+		t.Fatal("rotating a non-first binding must move the composite marker")
+	}
+	// Removing the github binding changes the composite too.
+	if storeGenerationOf(fs, stateDir, albert) == base {
+		t.Fatal("dropping a binding must change the composite marker")
 	}
 }

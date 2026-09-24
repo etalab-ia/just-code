@@ -416,7 +416,7 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 	if resolved {
 		d.CredentialRev = bindingsRevision(bindings)
 		d.BoundCredentials = storeBoundEntries(bindings)
-		d.CredentialGeneration = storeGenerationOf(bindings)
+		d.CredentialGeneration = storeGenerationOf(DefaultFS, DefaultStateDir(), bindings)
 		return d
 	}
 	if applied != nil {
