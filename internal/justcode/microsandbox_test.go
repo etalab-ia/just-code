@@ -131,18 +131,18 @@ func (f *fakeMSBClient) Env(_ context.Context, name string) (map[string]string, 
 	return cloneStringMap(f.env), f.envErr
 }
 
-func (f *fakeMSBClient) Logs() error {
-	f.record("logs")
+func (f *fakeMSBClient) Logs(name string) error {
+	f.record("logs " + name)
 	return f.logsErr
 }
 
-func (f *fakeMSBClient) Shell() error {
-	f.record("shell")
+func (f *fakeMSBClient) Shell(name string) error {
+	f.record("shell " + name)
 	return f.shellErr
 }
 
-func (f *fakeMSBClient) AttachInteractive(_ context.Context, cmd, cwd string) (int, error) {
-	f.record("attach " + cmd + " " + cwd)
+func (f *fakeMSBClient) AttachInteractive(_ context.Context, name, cmd, cwd string) (int, error) {
+	f.record("attach " + name + " " + cmd + " " + cwd)
 	return 0, f.attachErr
 }
 
@@ -621,7 +621,7 @@ func TestMicrosandboxDelegatesInteractiveCommands(t *testing.T) {
 	if err := m.Shell(); err != nil {
 		t.Fatalf("Shell: %v", err)
 	}
-	if !hasCall(client, "logs") || !hasCall(client, "shell") {
+	if !hasCall(client, "logs "+msbSandbox) || !hasCall(client, "shell "+msbSandbox) {
 		t.Fatalf("interactive calls = %v", client.calls)
 	}
 }
@@ -1326,7 +1326,7 @@ func TestMicrosandboxRunAgentAttachesTUI(t *testing.T) {
 	if err := m.RunAgent(context.Background()); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
-	if !hasCall(client, "attach opencode /workspace") {
+	if !hasCall(client, "attach "+msbSandbox+" opencode /workspace") {
 		t.Fatalf("RunAgent must attach opencode at /workspace; calls: %v", client.calls)
 	}
 }

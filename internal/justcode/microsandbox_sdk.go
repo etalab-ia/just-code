@@ -135,7 +135,7 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 }
 
 func (sdkMSBClient) Create(ctx context.Context, spec msbSandboxSpec) error {
-	sb, err := msb.CreateSandbox(ctx, msbSandbox, msbCreateOptions(spec)...)
+	sb, err := msb.CreateSandbox(ctx, spec.Name, msbCreateOptions(spec)...)
 	if err != nil {
 		return err
 	}
@@ -334,10 +334,10 @@ func (sdkMSBClient) Env(ctx context.Context, name string) (map[string]string, er
 	return guestEnvFromHandle(h)
 }
 
-func (sdkMSBClient) Logs() error {
+func (sdkMSBClient) Logs(name string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	h, err := msb.GetSandbox(ctx, msbSandbox)
+	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -363,9 +363,9 @@ func (sdkMSBClient) Logs() error {
 	}
 }
 
-func (sdkMSBClient) Shell() (err error) {
+func (sdkMSBClient) Shell(name string) (err error) {
 	ctx := context.Background()
-	sb, err := connectMSBSandbox(ctx, msbSandbox)
+	sb, err := connectMSBSandbox(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -383,8 +383,8 @@ func (sdkMSBClient) Shell() (err error) {
 // AttachInteractive runs cmd interactively in the sandbox with cwd as the
 // working directory, blocking until it exits. It is the isolation-full TUI
 // channel; the host terminal is passed through by the SDK attach stream.
-func (sdkMSBClient) AttachInteractive(ctx context.Context, cmd, cwd string) (int, error) {
-	sb, err := connectMSBSandbox(ctx, msbSandbox)
+func (sdkMSBClient) AttachInteractive(ctx context.Context, name, cmd, cwd string) (int, error) {
+	sb, err := connectMSBSandbox(ctx, name)
 	if err != nil {
 		return 0, err
 	}

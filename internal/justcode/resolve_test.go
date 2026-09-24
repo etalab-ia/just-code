@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -11,6 +12,9 @@ import (
 // contract exactly: WriteTemp creates a temp entry, RenameTmp moves it, and
 // failRename simulates a crash between write and rename.
 type mapFS struct {
+	// mu guards the maps: tests exercise cross-process locking through
+	// mapFS, so concurrent goroutines hit it from multiple registry objects.
+	mu         sync.Mutex
 	files      map[string][]byte
 	perms      map[string]os.FileMode
 	failRename bool
@@ -21,6 +25,8 @@ func newMapFS() *mapFS {
 }
 
 func (m *mapFS) ReadFile(path string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if data, ok := m.files[path]; ok {
 		return data, nil
 	}
@@ -28,6 +34,8 @@ func (m *mapFS) ReadFile(path string) ([]byte, error) {
 }
 
 func (m *mapFS) WriteFile(path string, data []byte, perm os.FileMode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.files[path] = data
 	m.perms[path] = perm
 	return nil
@@ -36,11 +44,15 @@ func (m *mapFS) WriteFile(path string, data []byte, perm os.FileMode) error {
 func (m *mapFS) MkdirAll(path string, perm os.FileMode) error { return nil }
 
 func (m *mapFS) Remove(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.files, path)
 	return nil
 }
 
 func (m *mapFS) RenameTmp(oldPath, newPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.failRename {
 		return os.ErrPermission
 	}
@@ -56,10 +68,23 @@ func (m *mapFS) RenameTmp(oldPath, newPath string) error {
 }
 
 func (m *mapFS) WriteTemp(dir, base string, data []byte, perm os.FileMode) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	name := dir + string(filepath.Separator) + "." + base + ".tmp-1"
 	m.files[name] = data
 	m.perms[name] = perm
 	return name, nil
+}
+
+func (m *mapFS) CreateExclusive(path string, data []byte, perm os.FileMode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.files[path]; exists {
+		return os.ErrExist
+	}
+	m.files[path] = data
+	m.perms[path] = perm
+	return nil
 }
 
 func TestResolvePrecedence(t *testing.T) {
@@ -242,7 +267,7 @@ func TestReadUserSettingsRoundTrip(t *testing.T) {
 
 func TestReadUserSettingsNewerSchemaRejected(t *testing.T) {
 	fs := newMapFS()
-	fs.files["/x/settings.json"] = []byte(`{"schemaVersion": 99, "defaultRuntime": "tart"}`)
+	fs.WriteFile("/x/settings.json", []byte(`{"schemaVersion": 99, "defaultRuntime": "tart"}`), 0o600)
 	_, err := ReadUserSettings(fs, "/x/settings.json")
 	if err == nil || !strings.Contains(err.Error(), "newer than this build supports") {
 		t.Fatalf("err = %v, want unsupported-schema error", err)
@@ -251,7 +276,7 @@ func TestReadUserSettingsNewerSchemaRejected(t *testing.T) {
 
 func TestReadUserSettingsMissingSchemaVersionRejected(t *testing.T) {
 	fs := newMapFS()
-	fs.files["/x/settings.json"] = []byte(`{"defaultRuntime": "tart"}`)
+	fs.WriteFile("/x/settings.json", []byte(`{"defaultRuntime": "tart"}`), 0o600)
 	_, err := ReadUserSettings(fs, "/x/settings.json")
 	if err == nil || !strings.Contains(err.Error(), "schemaVersion missing or invalid") {
 		t.Fatalf("err = %v, want missing-schema error", err)
@@ -260,7 +285,7 @@ func TestReadUserSettingsMissingSchemaVersionRejected(t *testing.T) {
 
 func TestReadUserSettingsSecretFieldRejected(t *testing.T) {
 	fs := newMapFS()
-	fs.files["/x/settings.json"] = []byte(`{"schemaVersion": 1, "apiKey": "sk-literal"}`)
+	fs.WriteFile("/x/settings.json", []byte(`{"schemaVersion": 1, "apiKey": "sk-literal"}`), 0o600)
 	_, err := ReadUserSettings(fs, "/x/settings.json")
 	if err == nil || !strings.Contains(err.Error(), "credentialRef") {
 		t.Fatalf("err = %v, want secret-field rejection pointing at credentialRef", err)

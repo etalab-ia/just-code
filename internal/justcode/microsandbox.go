@@ -13,7 +13,12 @@ import (
 )
 
 const (
-	msbImage   = "ghcr.io/anomalyco/opencode:latest"
+	msbImage = "ghcr.io/anomalyco/opencode:latest"
+
+	// msbSandbox is the legacy singleton instance name, used before project
+	// identity (P05). It is kept only to recognize the legacy instance: an
+	// existing sandbox with this name is discovered as legacy, never renamed
+	// or deleted automatically, and never adopted for a project.
 	msbSandbox = "albert-opencode-sandbox"
 
 	// msbGuestEntrypoint is the container entrypoint inside the microVM. It is
@@ -102,6 +107,10 @@ const (
 // the microVM, and only for the Albert API host.
 type MicrosandboxRuntime struct {
 	cfg Config
+	// instance is the sandbox name this backend operates on. It is the
+	// project-derived instance name (P05); when Instance is empty the
+	// backend stays on the legacy singleton name for compatibility.
+	instance string
 	// Client is the Microsandbox seam. Tests inject a fake; production uses the
 	// SDK adapter (see microsandbox_sdk.go).
 	Client msbClient
@@ -115,14 +124,36 @@ type MicrosandboxRuntime struct {
 	toolchainPollDelay time.Duration
 }
 
-// NewMicrosandboxRuntime builds a Microsandbox backend with production defaults.
+// NewMicrosandboxRuntime builds a Microsandbox backend with production
+// defaults. Without a project context it operates on the legacy singleton
+// instance name, so existing behavior is unchanged until callers pass an
+// instance (P06 wires the CLI).
 func NewMicrosandboxRuntime(cfg Config) *MicrosandboxRuntime {
 	return &MicrosandboxRuntime{
 		cfg:                cfg,
+		instance:           msbSandbox,
 		Client:             sdkMSBClient{},
 		launchRetryDelay:   msbLaunchRetryDelay,
 		toolchainPollDelay: msbLaunchRetryDelay,
 	}
+}
+
+// NewMicrosandboxRuntimeForInstance builds a backend bound to a
+// project-derived instance name (P05).
+func NewMicrosandboxRuntimeForInstance(cfg Config, instance string) *MicrosandboxRuntime {
+	m := NewMicrosandboxRuntime(cfg)
+	if instance != "" {
+		m.instance = instance
+	}
+	return m
+}
+
+// InstanceName returns the sandbox name this backend operates on.
+func (m *MicrosandboxRuntime) InstanceName() string {
+	if m.instance != "" {
+		return m.instance
+	}
+	return msbSandbox
 }
 
 func (m *MicrosandboxRuntime) ID() Runtime { return RuntimeMicrosandbox }
@@ -161,13 +192,13 @@ type msbClient interface {
 	// version; they are never copied into a new sandbox.
 	Env(ctx context.Context, name string) (map[string]string, error)
 	// Logs streams sandbox logs to the terminal until interrupted.
-	Logs() error
+	Logs(name string) error
 	// Shell opens an interactive shell in the sandbox.
-	Shell() error
+	Shell(name string) error
 	// AttachInteractive runs a command interactively in the sandbox with a
 	// working directory, blocking until it exits. It is the TUI channel used
 	// by isolation full; Shell() is the /bin/bash special case of it.
-	AttachInteractive(ctx context.Context, name, cwd string) (int, error)
+	AttachInteractive(ctx context.Context, name, cmd, cwd string) (int, error)
 }
 
 // msbSandboxInfo is the status snapshot of the managed sandbox.
@@ -178,6 +209,7 @@ type msbSandboxInfo struct {
 
 // msbSandboxSpec is the full sandbox configuration passed to the SDK.
 type msbSandboxSpec struct {
+	Name        string // instance name (P05); empty means the legacy singleton
 	Image       string
 	Env         map[string]string
 	Workspace   string   // host path bind-mounted at /workspace
@@ -218,7 +250,7 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 		return err
 	}
 
-	sandbox, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
 	if err != nil {
 		return err
 	}
@@ -249,25 +281,25 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 			if err := m.waitForToolchain(ctx); err != nil {
 				return err
 			}
-			fmt.Printf("%s is running (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
+			fmt.Printf("%s is running (isolation full; the TUI runs inside the microVM).\n", m.InstanceName())
 			return nil
 		}
 		if m.backendHealthy(ctx) {
-			fmt.Printf("%s is running with a healthy OpenCode backend.\n", msbSandbox)
+			fmt.Printf("%s is running with a healthy OpenCode backend.\n", m.InstanceName())
 			return nil
 		}
-		fmt.Printf("%s is running but the OpenCode backend is not responding; restarting it inside the microVM...\n", msbSandbox)
+		fmt.Printf("%s is running but the OpenCode backend is not responding; restarting it inside the microVM...\n", m.InstanceName())
 		return m.launchBackend(ctx)
 	}
 
 	if exists {
-		fmt.Printf("Starting %s...\n", msbSandbox)
+		fmt.Printf("Starting %s...\n", m.InstanceName())
 		// Both isolation modes use the same secret-proxy configuration: the
 		// guest environment carries the placeholder, never the real key.
-		if err := m.Client.ModifyNextStart(ctx, msbSandbox, m.nextStartEnv(), m.cfg.APIKey); err != nil {
+		if err := m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), m.cfg.APIKey); err != nil {
 			return err
 		}
-		if err := m.Client.Start(ctx, msbSandbox); err != nil {
+		if err := m.Client.Start(ctx, m.InstanceName()); err != nil {
 			return err
 		}
 		if m.cfg.Isolation == IsolationFull {
@@ -281,16 +313,16 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 			if err := m.waitForToolchain(ctx); err != nil {
 				return err
 			}
-			fmt.Printf("%s started (isolation full; the TUI runs inside the microVM).\n", msbSandbox)
+			fmt.Printf("%s started (isolation full; the TUI runs inside the microVM).\n", m.InstanceName())
 			return nil
 		}
 		// Booting a stopped VM does not re-run the container entrypoint, so the
 		// backend has to be launched explicitly.
-		fmt.Printf("Launching OpenCode inside %s...\n", msbSandbox)
+		fmt.Printf("Launching OpenCode inside %s...\n", m.InstanceName())
 		return m.launchBackend(ctx)
 	}
 
-	fmt.Printf("Creating %s microVM...\n", msbSandbox)
+	fmt.Printf("Creating %s microVM...\n", m.InstanceName())
 	fmt.Println("First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.")
 	if err := m.Client.Create(ctx, m.sandboxSpec()); err != nil {
 		return err
@@ -300,7 +332,7 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	// (which installs the toolchain and then execs `opencode serve`, or keeps
 	// the VM alive in full mode) is never run by creation itself. Launch it
 	// explicitly, the same way a restarted VM would.
-	fmt.Printf("Launching the start script inside %s...\n", msbSandbox)
+	fmt.Printf("Launching the start script inside %s...\n", m.InstanceName())
 	if err := m.launchBackend(ctx); err != nil {
 		return err
 	}
@@ -333,7 +365,7 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 	defer cancel()
 	relaunches := 0
 	for first := true; ; first = false {
-		code, _, err := m.Client.Exec(ctx, msbSandbox, msbGuestPrepareProbe)
+		code, _, err := m.Client.Exec(ctx, m.InstanceName(), msbGuestPrepareProbe)
 		if err == nil {
 			switch {
 			case code == msbPrepareReady:
@@ -342,7 +374,7 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 				// The installer is alive; keep waiting.
 			case code == msbPrepareIdle && relaunches < msbToolchainRelaunchLimit:
 				relaunches++
-				fmt.Printf("Nothing is preparing the guest in %s; launching the start script...\n", msbSandbox)
+				fmt.Printf("Nothing is preparing the guest in %s; launching the start script...\n", m.InstanceName())
 				if err := m.launchBackend(ctx); err != nil {
 					return err
 				}
@@ -369,6 +401,7 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 // change whether credentials are protected.
 func (m *MicrosandboxRuntime) sandboxSpec() msbSandboxSpec {
 	return msbSandboxSpec{
+		Name:        m.InstanceName(),
 		Image:       msbImage,
 		Env:         m.sandboxEnv(),
 		Workspace:   m.cfg.WorkspaceDir,
@@ -416,12 +449,12 @@ func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
 // the unreadable case as safe would let exactly the case this guard exists for
 // slip through.
 func (m *MicrosandboxRuntime) rejectLegacyRawKey(ctx context.Context) error {
-	env, err := m.Client.Env(ctx, msbSandbox)
+	env, err := m.Client.Env(ctx, m.InstanceName())
 	if err != nil {
 		return fmt.Errorf("cannot read the guest environment of %s to check whether it stores a plaintext %s; "+
 			"refusing to boot a sandbox whose credentials cannot be verified. "+
 			"Run 'just-code restart --microsandbox' to recreate it with the key behind the secret proxy: %w",
-			msbSandbox, msbAPISecretEnv, err)
+			m.InstanceName(), msbAPISecretEnv, err)
 	}
 	value, ok := env[msbAPISecretEnv]
 	if !ok {
@@ -436,7 +469,7 @@ func (m *MicrosandboxRuntime) rejectLegacyRawKey(ctx context.Context) error {
 	return fmt.Errorf("%s was created before proxy secret injection and stores a plaintext %s in its guest environment; "+
 		"the value cannot be replaced in place. "+
 		"Run 'just-code restart --microsandbox' to recreate the sandbox with the key behind the secret proxy: %w",
-		msbSandbox, msbAPISecretEnv, errLegacyRawKeySandbox)
+		m.InstanceName(), msbAPISecretEnv, errLegacyRawKeySandbox)
 }
 
 // warnUnprotectedRuntime tells the user that a runtime without a secret proxy
@@ -468,7 +501,7 @@ func (m *MicrosandboxRuntime) launchBackend(ctx context.Context) error {
 	}
 	var last error
 	for attempt := 1; attempt <= msbLaunchAttempts; attempt++ {
-		code, stderr, err := m.Client.Exec(ctx, msbSandbox, msbRelaunchCommand)
+		code, stderr, err := m.Client.Exec(ctx, m.InstanceName(), msbRelaunchCommand)
 		if err == nil && code == 0 {
 			return nil
 		}
@@ -486,7 +519,7 @@ func (m *MicrosandboxRuntime) launchBackend(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-	return fmt.Errorf("failed to launch OpenCode inside %s: %w", msbSandbox, last)
+	return fmt.Errorf("failed to launch OpenCode inside %s: %w", m.InstanceName(), last)
 }
 
 // backendHealthy probes the backend that should be listening in the VM.
@@ -508,7 +541,7 @@ func (m *MicrosandboxRuntime) backendHealthy(ctx context.Context) bool {
 // configured workspace. Mounts are fixed when a sandbox is created, so a
 // sandbox keeps whichever host directory it was created with.
 func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
-	mounted, err := m.Client.WorkspaceMount(ctx, msbSandbox)
+	mounted, err := m.Client.WorkspaceMount(ctx, m.InstanceName())
 	if err != nil || mounted == "" {
 		return
 	}
@@ -528,7 +561,7 @@ func (m *MicrosandboxRuntime) warnIfWorkspaceMountIsStale(ctx context.Context) {
 	}
 	fmt.Fprintf(os.Stderr, "Warning: %s was created with /workspace mounted from %s, but the workspace is now %s. "+
 		"Mounts are fixed when a sandbox is created, so /workspace will not reflect the new directory. "+
-		"Run 'just-code restart --microsandbox' to recreate it.\n", msbSandbox, mounted, m.cfg.WorkspaceDir)
+		"Run 'just-code restart --microsandbox' to recreate it.\n", m.InstanceName(), mounted, m.cfg.WorkspaceDir)
 }
 
 // rejectIsolationMismatch compares the isolation mode the sandbox was
@@ -566,11 +599,11 @@ func (m *MicrosandboxRuntime) Stop(ctx context.Context) error {
 		return err
 	}
 	if !running {
-		fmt.Printf("%s is not running.\n", msbSandbox)
+		fmt.Printf("%s is not running.\n", m.InstanceName())
 		return nil
 	}
-	fmt.Printf("Stopping %s...\n", msbSandbox)
-	return m.Client.Stop(ctx, msbSandbox)
+	fmt.Printf("Stopping %s...\n", m.InstanceName())
+	return m.Client.Stop(ctx, m.InstanceName())
 }
 
 func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
@@ -596,21 +629,21 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 }
 
 func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {
-	_, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	_, exists, err := m.Client.Lookup(ctx, m.InstanceName())
 	if err != nil {
 		return err
 	}
 	if !exists {
-		fmt.Printf("%s does not exist.\n", msbSandbox)
+		fmt.Printf("%s does not exist.\n", m.InstanceName())
 		return nil
 	}
 	// Disposing is destructive: say so before and after, so a silent success
 	// can never be mistaken for "nothing happened".
-	fmt.Printf("Removing %s (sandbox and local state)...\n", msbSandbox)
-	if err := m.Client.Remove(ctx, msbSandbox); err != nil {
+	fmt.Printf("Removing %s (sandbox and local state)...\n", m.InstanceName())
+	if err := m.Client.Remove(ctx, m.InstanceName()); err != nil {
 		return err
 	}
-	fmt.Printf("%s removed.\n", msbSandbox)
+	fmt.Printf("%s removed.\n", m.InstanceName())
 	return nil
 }
 
@@ -640,23 +673,23 @@ func (m *MicrosandboxRuntime) Doctor(ctx context.Context) error {
 }
 
 func (m *MicrosandboxRuntime) Logs() error {
-	return m.Client.Logs()
+	return m.Client.Logs(m.InstanceName())
 }
 
 func (m *MicrosandboxRuntime) Shell() error {
-	return m.Client.Shell()
+	return m.Client.Shell(m.InstanceName())
 }
 
 // RunAgent launches the OpenCode TUI in the foreground inside the microVM,
 // with /workspace as its working directory (isolation full). The SDK attach
 // channel passes the host terminal through.
 func (m *MicrosandboxRuntime) RunAgent(ctx context.Context) error {
-	code, err := m.Client.AttachInteractive(ctx, "opencode", "/workspace")
+	code, err := m.Client.AttachInteractive(ctx, m.InstanceName(), "opencode", "/workspace")
 	if err != nil {
 		return err
 	}
 	if code != 0 {
-		return fmt.Errorf("opencode TUI exited %d inside %s", code, msbSandbox)
+		return fmt.Errorf("opencode TUI exited %d inside %s", code, m.InstanceName())
 	}
 	return nil
 }
@@ -664,18 +697,18 @@ func (m *MicrosandboxRuntime) RunAgent(ctx context.Context) error {
 // Status describes the sandbox's current state, for `check` in isolation
 // full where there is no health endpoint to probe.
 func (m *MicrosandboxRuntime) Status(ctx context.Context) (string, error) {
-	sandbox, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
 	if err != nil {
 		return "", err
 	}
 	if !exists {
-		return fmt.Sprintf("%s does not exist", msbSandbox), nil
+		return fmt.Sprintf("%s does not exist", m.InstanceName()), nil
 	}
-	return fmt.Sprintf("%s is %s", msbSandbox, sandbox.Status), nil
+	return fmt.Sprintf("%s is %s", m.InstanceName(), sandbox.Status), nil
 }
 
 func (m *MicrosandboxRuntime) IsRunning(ctx context.Context) (bool, error) {
-	sandbox, exists, err := m.Client.Lookup(ctx, msbSandbox)
+	sandbox, exists, err := m.Client.Lookup(ctx, m.InstanceName())
 	if err != nil {
 		return false, err
 	}
