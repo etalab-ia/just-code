@@ -100,6 +100,8 @@ type CredentialStore interface {
 // returns nil and the caller reports the file-fallback plan.
 func DefaultCredentialStore() CredentialStore {
 	switch runtime.GOOS {
+	case "darwin":
+		return &KeychainStore{}
 	case "windows":
 		return &WinCredStore{}
 	case "linux":

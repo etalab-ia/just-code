@@ -53,10 +53,10 @@ public static class Cred {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
   public struct CREDENTIAL {
     public uint Flags; public uint Type; public string TargetName;
-    public string Comment; System.Runtime.InteropServices.CriticalHandle Unused1;
-    public IntPtr Unused2; public uint AttributeCount; public IntPtr Attributes;
-    public IntPtr TargetAlias; public IntPtr UserName;
+    public string Comment; public long LastWritten;
     public uint CredentialBlobSize; public IntPtr CredentialBlob;
+    public uint Persist; public uint AttributeCount; public IntPtr Attributes;
+    public string TargetAlias; public string UserName;
   }
 }
 "@
@@ -70,8 +70,8 @@ $secret = [Console]::In.ReadLine()
 $blob = [System.Text.Encoding]::Unicode.GetBytes($secret)
 $cred = New-Object Cred+CREDENTIAL
 $cred.Flags = 0; $cred.Type = 1; $cred.TargetName = $args[1]
-$cred.Comment = ''; $cred.AttributeCount = 0; $cred.TargetAlias = [IntPtr]::Zero
-$cred.UserName = [IntPtr]::Zero
+$cred.Comment = ''; $cred.Persist = 2
+$cred.AttributeCount = 0; $cred.TargetAlias = $null; $cred.UserName = $null
 $cred.CredentialBlobSize = $blob.Length
 $cred.CredentialBlob = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($blob.Length)
 [System.Runtime.InteropServices.Marshal]::Copy($blob, 0, $cred.CredentialBlob, $blob.Length)
