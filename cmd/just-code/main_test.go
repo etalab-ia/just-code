@@ -140,3 +140,30 @@ func TestApplyIsolationPrecedence(t *testing.T) {
 		t.Errorf("applyIsolation(valid env, full) = (%q, %v)", got.Isolation, err)
 	}
 }
+
+// TestParseArgsStopAll pins the --all flag: it parses on the stop command and
+// is rejected as a duplicate.
+func TestParseArgsStopAll(t *testing.T) {
+	p, err := parseArgs([]string{"stop", "--all"})
+	if err != nil {
+		t.Fatalf("parseArgs(stop --all): %v", err)
+	}
+	if p.action != "stop" || !p.stopAll {
+		t.Fatalf("parseArgs(stop --all) = %+v, want stop with stopAll", p)
+	}
+	if _, err := parseArgs([]string{"stop", "--all", "--all"}); err == nil {
+		t.Fatal("duplicate --all must be rejected")
+	}
+}
+
+// TestParseArgsAllAcceptedAnywhere pins that --all, like the runtime flags,
+// may appear in any position.
+func TestParseArgsAllAcceptedAnywhere(t *testing.T) {
+	p, err := parseArgs([]string{"--all", "stop"})
+	if err != nil {
+		t.Fatalf("parseArgs(--all stop): %v", err)
+	}
+	if p.action != "stop" || !p.stopAll {
+		t.Fatalf("parseArgs(--all stop) = %+v", p)
+	}
+}

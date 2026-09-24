@@ -45,6 +45,10 @@ type fakeMSBClient struct {
 	// execDefault is returned once execResults is drained; nil means success,
 	// which preserves the fake's historical default.
 	execDefault *fakeMSBExecResult
+	// listed/listedRunning drive List: the managed sandboxes the fake
+	// runtime knows, and which of them are up.
+	listed        []string
+	listedRunning map[string]bool
 }
 
 type fakeMSBExecResult struct {
@@ -129,6 +133,19 @@ func (f *fakeMSBClient) StartScript(_ context.Context, name string) (string, err
 func (f *fakeMSBClient) Env(_ context.Context, name string) (map[string]string, error) {
 	f.record("readenv " + name)
 	return cloneStringMap(f.env), f.envErr
+}
+
+func (f *fakeMSBClient) List(_ context.Context) ([]msbSandboxInfo, error) {
+	f.record("list")
+	var out []msbSandboxInfo
+	for _, name := range f.listed {
+		status := "stopped"
+		if f.listedRunning[name] {
+			status = "running"
+		}
+		out = append(out, msbSandboxInfo{Name: name, Status: status})
+	}
+	return out, nil
 }
 
 func (f *fakeMSBClient) Logs(name string) error {

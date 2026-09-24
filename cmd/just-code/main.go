@@ -81,8 +81,26 @@ func run(args []string) (int, error) {
 	// afterwards would leave them in the wrong mode.
 	cfg, isoErr := applyIsolation(cfg, parsed.isolation)
 
-	// The dispatcher and its backends are built from the resolved config.
-	d := justcode.NewDispatcher(cfg)
+	// Project identity (P05/P06): the backends are bound to the current
+	// project's instance so lifecycle operations are project-scoped. A
+	// missing registry entry is not an error here — discovery derives the
+	// deterministic instance name; registration happens at first start.
+	pc, projErr := justcode.DiscoverProject(".")
+	instance := ""
+	if projErr == nil {
+		instance = pc.InstanceName()
+	}
+
+	// The dispatcher and its backends are built from the resolved config,
+	// bound to the project instance when discovery succeeded. Discovery
+	// failure falls back to the legacy singleton rather than blocking
+	// lifecycle commands on a non-Git directory.
+	var d *justcode.Dispatcher
+	if projErr == nil {
+		d = justcode.NewDispatcherForInstance(cfg, instance)
+	} else {
+		d = justcode.NewDispatcher(cfg)
+	}
 
 	// These actions resolve their own target (or need none), so they must not be
 	// gated on a configured runtime. check consumes the isolation level, so it
@@ -95,7 +113,10 @@ func run(args []string) (int, error) {
 		printBuildInfo()
 		return 0, nil
 	case "stop":
-		return 0, d.StopAll(context.Background())
+		if parsed.stopAll {
+			return 0, d.StopAll(context.Background())
+		}
+		return 0, d.Stop(context.Background())
 	case "check":
 		if isoErr != nil {
 			return 2, isoErr
@@ -147,7 +168,10 @@ type parsedArgs struct {
 	runtime string
 	// isolation is the raw --isolation value (backend or full), or "".
 	isolation string
-	version   bool
+	// stopAll records the explicit --all flag: `stop --all` stops every
+	// managed instance, not just the current project's (P06).
+	stopAll bool
+	version bool
 	// configArgs holds the words after the config command.
 	configArgs []string
 }
@@ -205,6 +229,11 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 		case a == "-V" || a == "--version" || a == "-v":
 			p.version = true
+		case a == "--all":
+			if p.stopAll {
+				return p, fmt.Errorf("--all may be given only once")
+			}
+			p.stopAll = true
 		case a == "config" && !actionSet:
 			p.action = "config"
 			actionSet = true
@@ -405,6 +434,13 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 	case "start":
 		err = b.Start(ctx)
 	case "restart":
+		// restart is destructive today: it recreates the environment and
+		// loses guest sessions, installed tools and guest-only files. P07
+		// replaces its semantics with non-destructive reconciliation; until
+		// then the destruction is named and confirmed (P06).
+		if code, cerr := confirmDestructiveRestart(rt); cerr != nil {
+			return code, cerr
+		}
 		err = b.Restart(ctx)
 	case "clean":
 		err = b.Clean(ctx)
@@ -418,6 +454,23 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 		err = fmt.Errorf("unsupported action %q", action)
 	}
 	return 0, err
+}
+
+// confirmDestructiveRestart asks the user to name what restart destroys. On
+// a non-TTY (CI, scripts) it refuses rather than destroying silently: the
+// explicit replacement is `just-code clean --<runtime>` followed by start,
+// which names the instance and the loss in its own output.
+func confirmDestructiveRestart(rt justcode.Runtime) (int, error) {
+	fmt.Fprintf(os.Stderr, "Warning: restart --%s recreates the %s environment and DESTROYS: guest sessions, tools installed in the guest, and guest-only files.\n", rt, rt)
+	if !isTTY() {
+		return 1, fmt.Errorf("restart is destructive and requires an interactive confirmation; run 'just-code clean --%s' then 'just-code start --%s' if you really want to recreate", rt, rt)
+	}
+	fmt.Print("Recreate and lose that state? Type the runtime name to confirm: ")
+	reply, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if strings.TrimSpace(reply) != string(rt) {
+		return 1, fmt.Errorf("not confirmed; nothing was destroyed")
+	}
+	return 0, nil
 }
 
 func askToStop(ctx context.Context, d *justcode.Dispatcher, rt justcode.Runtime) {
@@ -470,9 +523,10 @@ native OpenCode TUI.
 
 Commands:
   start      Start a backend without attaching the TUI
-  stop       Stop every running just-code runtime
+  stop       Stop the current project's instance (stop --all for every
+             just-code instance)
   check      Check the active backend and Albert provider
-  restart    Recreate the selected sandbox (destructive)
+  restart    Recreate the selected sandbox (destructive; asks to confirm)
   logs       Follow logs for the selected runtime
   shell      Open a shell inside the selected runtime
   clean      Remove the selected sandbox and its local state

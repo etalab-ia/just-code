@@ -52,6 +52,11 @@ func msbPortMappings() map[uint16]uint16 {
 	return ports
 }
 
+// msbManagedLabel is the ownership label attached to every sandbox just-code
+// creates (P06). The lifecycle sweeps enumerate managed sandboxes by this
+// label; the legacy singleton (created before labels) is recognized by name.
+const msbManagedLabel = "justcode.managed"
+
 type sdkMSBClient struct{}
 
 var _ msbClient = sdkMSBClient{}
@@ -108,6 +113,30 @@ func (sdkMSBClient) Lookup(ctx context.Context, name string) (msbSandboxInfo, bo
 	return msbSandboxInfo{Name: h.Name(), Status: string(h.Status())}, true, nil
 }
 
+// List enumerates managed sandboxes by the ownership label, following the
+// SDK's cursor pagination.
+func (sdkMSBClient) List(ctx context.Context) ([]msbSandboxInfo, error) {
+	var out []msbSandboxInfo
+	cursor := ""
+	for {
+		opts := []msb.SandboxListOption{msb.WithListLabels(map[string]string{msbManagedLabel: "true"})}
+		if cursor != "" {
+			opts = append(opts, msb.WithListCursor(cursor))
+		}
+		page, err := msb.ListSandboxesWith(ctx, opts...)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range page.Sandboxes {
+			out = append(out, msbSandboxInfo{Name: h.Name(), Status: string(h.Status())})
+		}
+		if page.NextCursor == nil || *page.NextCursor == "" {
+			return out, nil
+		}
+		cursor = *page.NextCursor
+	}
+}
+
 // Kept separate from Create so tests can verify the actual SDK options without
 // loading native code or creating a VM.
 func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
@@ -131,6 +160,10 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 			Allow: spec.AllowHosts,
 		})),
 		msb.WithScripts(map[string]string{"start": spec.StartScript}),
+		// Ownership label (P06): the lifecycle sweeps list managed sandboxes
+		// by this label rather than by name guessing, and the legacy singleton
+		// is recognized separately.
+		msb.WithLabel(msbManagedLabel, "true"),
 	}
 }
 

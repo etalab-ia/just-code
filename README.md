@@ -248,11 +248,12 @@ just-code --tart                 # démarre Tart et attache le TUI
 just-code --microsandbox         # démarre Microsandbox et attache le TUI
 just-code --agent-vm             # démarre agent-vm et attache le TUI
 just-code start --tart           # démarre un backend sans attacher le TUI
-just-code stop                   # arrête tout runtime just-code actif
+just-code stop                   # arrête l'instance du projet courant
+just-code stop --all             # arrête toutes les instances just-code
 just-code check                  # santé du backend actif + provider Albert
 just-code logs --tart            # logs d'un runtime explicite
 just-code shell --tart           # shell dans un runtime explicite
-just-code restart --tart         # recrée le sandbox (destructif)
+just-code restart --tart         # recrée le sandbox (destructif, demande confirmation)
 just-code clean --tart            # supprime le sandbox et son état local
 just-code doctor --tart           # vérifie l'installation du runtime
 just-code version                # identifie le binaire (version, commit, plateforme)
@@ -261,7 +262,9 @@ just-code help                   # liste les commandes
 
 Lancer `just-code` sans commande démarre le backend sélectionné et attache le TUI natif OpenCode. Les commandes et les flags de runtime peuvent être donnés dans n'importe quel ordre (`just-code --microsandbox start` et `just-code start --microsandbox` sont équivalents). La commande `code` n'existe pas : la taper renvoie une erreur explicite.
 
-Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code stop` détecte l'état réel et ignore volontairement `RUNTIME`.
+Les environnements sont identifiés par projet (répertoire racine du worktree Git) : chaque projet a sa propre instance `jc-<nom>-<suffixe>`, et les commandes `stop`, `logs`, `shell`, `clean` et `check` ciblent le projet courant. `just-code stop` n'arrête que l'instance du projet courant ; `just-code stop --all` arrête toutes les instances just-code, tous runtimes confondus. Les instances legacy (singleton d'avant l'identification par projet) restent découvrables pour les opérations explicites et ne sont jamais renommées ni supprimées automatiquement.
+
+Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code restart` est destructif : il recrée l'environnement et perd les sessions, les outils installés dans l'invité et les fichiers propres à l'invité ; la commande demande une confirmation interactive (refusée hors TTY, pour CI et scripts).
 
 ### Niveaux d'isolation
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -199,6 +200,11 @@ type msbClient interface {
 	// working directory, blocking until it exits. It is the TUI channel used
 	// by isolation full; Shell() is the /bin/bash special case of it.
 	AttachInteractive(ctx context.Context, name, cmd, cwd string) (int, error)
+	// List returns every managed sandbox known to the runtime, in
+	// deterministic order. Managed means carrying the ownership label; the
+	// legacy singleton is reported separately by the runtime (it predates
+	// labels).
+	List(ctx context.Context) ([]msbSandboxInfo, error)
 }
 
 // msbSandboxInfo is the status snapshot of the managed sandbox.
@@ -713,6 +719,52 @@ func (m *MicrosandboxRuntime) IsRunning(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return exists && sandbox.Status == "running", nil
+}
+
+// RunningInstances returns the names of all managed Microsandbox sandboxes
+// that are up, plus the legacy singleton when it is up (it predates the
+// ownership label, so it is invisible to List). The order is deterministic.
+func (m *MicrosandboxRuntime) RunningInstances(ctx context.Context) ([]string, error) {
+	var names []string
+	sandboxes, err := m.Client.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, sb := range sandboxes {
+		if sb.Status == "running" {
+			names = append(names, sb.Name)
+		}
+	}
+	// The legacy singleton is enumerated by name: it was created before the
+	// ownership label existed.
+	if m.InstanceName() == msbSandbox || m.instance != "" {
+		if legacy, exists, err := m.Client.Lookup(ctx, msbSandbox); err == nil && exists && legacy.Status == "running" {
+			names = append(names, msbSandbox)
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// StopInstance stops a named managed instance. It is the per-project form of
+// Stop: stopping project A's instance never touches project B's.
+func (m *MicrosandboxRuntime) StopInstance(ctx context.Context, name string) error {
+	sandbox, exists, err := m.Client.Lookup(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		fmt.Printf("%s does not exist.\n", name)
+		return nil
+	}
+	if sandbox.Status != "running" {
+		fmt.Printf("%s is not running.\n", name)
+		return nil
+	}
+	fmt.Printf("Stopping %s...\n", name)
+	return m.Client.Stop(ctx, name)
 }
 
 func (m *MicrosandboxRuntime) Endpoint(context.Context) (string, error) {
