@@ -69,6 +69,11 @@ func run(args []string) (int, error) {
 	if parsed.action == "config" {
 		return configCmd(parsed)
 	}
+	// auth runs before any config load: credential operations must not
+	// depend on a workspace, a .env or a resolved runtime.
+	if parsed.action == "auth" {
+		return authCmd(parsed.authArgs)
+	}
 
 	cfg := justcode.LoadConfigEnv()
 	if parsed.version {
@@ -174,6 +179,8 @@ type parsedArgs struct {
 	version bool
 	// configArgs holds the words after the config command.
 	configArgs []string
+	// authArgs holds the words after the auth command.
+	authArgs []string
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -184,6 +191,7 @@ var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
 	"restart": true, "recreate": true, "clean": true, "doctor": true,
 	"help": true, "version": true, "config": true,
+	"auth": true,
 }
 
 func runtimeFlag(a string) bool {
@@ -239,6 +247,12 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the config command belongs to it.
 			p.configArgs = args[i+1:]
+			return p, nil
+		case a == "auth" && !actionSet:
+			p.action = "auth"
+			actionSet = true
+			// Everything after the auth command belongs to it.
+			p.authArgs = args[i+1:]
 			return p, nil
 		case actionNames[a] && !actionSet:
 			p.action = a
@@ -544,6 +558,7 @@ Commands:
   clean      Remove the selected sandbox and its local state
   doctor     Check the selected runtime installation
   config     Show or preview managed configuration (explain, import-env)
+  auth       Manage global credentials (add, status, remove)
   version    Print the build identity
   help       Show this help
 
