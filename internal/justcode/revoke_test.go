@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -39,7 +40,7 @@ func writeBoundState(t *testing.T, stateDir, instance string, bound []string) {
 func TestRevokeBlockedByPlaintextRuntimes(t *testing.T) {
 	client := &fakeMSBClient{}
 	r := revokerForTest(client, t.TempDir(), []string{"opencode-proj-a1"}, nil)
-	_, err := r.Revoke(context.Background(), CredentialAlbert)
+	_, err := r.Revoke(context.Background(), "albert")
 	var blocked *ErrRevocationBlocked
 	if !errors.As(err, &blocked) {
 		t.Fatalf("a running tart instance must block albert removal: %v", err)
@@ -47,8 +48,11 @@ func TestRevokeBlockedByPlaintextRuntimes(t *testing.T) {
 	if !reflect.DeepEqual(blocked.Instances, []string{"opencode-proj-a1"}) {
 		t.Fatalf("blocked instances = %v", blocked.Instances)
 	}
-	if len(client.calls) != 0 {
-		t.Fatalf("no sandbox may be touched once removal is blocked: %v", client.calls)
+	// Enumeration is read-only; what must not happen is a mutation.
+	for _, call := range client.calls {
+		if strings.HasPrefix(call, "remove-secrets") {
+			t.Fatalf("no sandbox may be mutated once removal is blocked: %v", client.calls)
+		}
 	}
 }
 
@@ -57,7 +61,7 @@ func TestRevokeOptionalKindIgnoresPlaintextRuntimes(t *testing.T) {
 	// blocked by a running tart VM.
 	client := &fakeMSBClient{}
 	r := revokerForTest(client, t.TempDir(), []string{"opencode-proj-a1"}, nil)
-	if _, err := r.Revoke(context.Background(), CredentialGithub); err != nil {
+	if _, err := r.Revoke(context.Background(), "github"); err != nil {
 		t.Fatalf("github removal must not be blocked by tart: %v", err)
 	}
 }
@@ -71,7 +75,7 @@ func TestRevokeLiveOnRunningPersistedOnStopped(t *testing.T) {
 		listedRunning: map[string]bool{"jc-running": true},
 	}
 	r := revokerForTest(client, stateDir, nil, nil)
-	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	rep, err := r.Revoke(context.Background(), "albert")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +105,7 @@ func TestRevokeSkipsEnvSourcedInstances(t *testing.T) {
 	// The env-sourced instance still resolves from the environment, which is
 	// what distinguishes it from an instance whose source is unknown.
 	r.Config = Config{APIKey: "env-key"}
-	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	rep, err := r.Revoke(context.Background(), "albert")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,14 +122,14 @@ func TestRevokeSkipsEnvSourcedInstances(t *testing.T) {
 // revoke instances bound to the other.
 func TestRevokeScopedToTheEditedStore(t *testing.T) {
 	stateDir := t.TempDir()
-	writeBoundState(t, stateDir, "jc-native", []string{"albert@native"})
-	writeBoundState(t, stateDir, "jc-file", []string{"albert@file"})
+	writeBoundState(t, stateDir, "jc-native", []string{"albert@native#albert"})
+	writeBoundState(t, stateDir, "jc-file", []string{"albert@file#albert"})
 	client := &fakeMSBClient{listed: []string{"jc-native", "jc-file"}}
 
 	// Removing the fallback entry revokes only the fallback-bound instance.
 	r := revokerForTest(client, stateDir, nil, nil)
 	r.Store = "file"
-	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	rep, err := r.Revoke(context.Background(), "albert")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +154,7 @@ func TestRevokeTreatsPreStoreRecordAsBound(t *testing.T) {
 	client := &fakeMSBClient{listed: []string{"jc-old"}}
 	r := revokerForTest(client, stateDir, nil, nil)
 	r.Store = "file"
-	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	rep, err := r.Revoke(context.Background(), "albert")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +177,7 @@ func TestRevokeReportsPendingWhenSourceUnknown(t *testing.T) {
 	r.ReadCredential = func(context.Context, CredentialKind, string) (string, string, error) {
 		return "", "", ErrCredentialNotFound
 	}
-	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	rep, err := r.Revoke(context.Background(), "albert")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,13 +192,60 @@ func TestRevokeReportsPendingWhenSourceUnknown(t *testing.T) {
 	}
 }
 
+// TestRevokeCredentialRefEntryDropsItsGuestBinding pins the Codex P1 on the
+// second review: an Albert binding fed by `credentialRef: "github"` is guest
+// binding ALBERT_API_KEY resolved from store entry "github". Removing the
+// entry must drop ALBERT_API_KEY — not GITHUB_TOKEN, which is a different
+// binding — and must still hit the plaintext-runtime guard.
+func TestRevokeCredentialRefEntryDropsItsGuestBinding(t *testing.T) {
+	stateDir := t.TempDir()
+	// The persisted record names both the entry and the guest binding it fed.
+	writeBoundState(t, stateDir, "jc-ref", []string{"github@native#albert"})
+	client := &fakeMSBClient{listed: []string{"jc-ref"}}
+	r := revokerForTest(client, stateDir, nil, nil)
+	rep, err := r.Revoke(context.Background(), "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(client.removedSecrets, []string{msbAPISecretEnv}) {
+		t.Fatalf("the entry's guest binding (ALBERT_API_KEY) must be dropped, got %v", client.removedSecrets)
+	}
+	if !reflect.DeepEqual(rep.Revolved, []string{msbAPISecretEnv}) {
+		t.Fatalf("the report must name the guest binding removed: %+v", rep)
+	}
+
+	// The plaintext guard keys on the guest binding, not the entry name: a
+	// running Tart VM holds ALBERT_API_KEY in cleartext regardless of which
+	// store entry resolved it.
+	blocked := revokerForTest(&fakeMSBClient{listed: []string{"jc-ref"}}, stateDir, []string{"opencode-vm"}, nil)
+	blocked.Config = Config{CredentialRef: "github"}
+	if _, err := blocked.Revoke(context.Background(), "github"); err == nil {
+		t.Fatal("removing a credentialRef that feeds the Albert binding must be blocked by a running plaintext runtime")
+	}
+}
+
+// TestRevokeUnknownEntryTouchesNoSandbox is the other half: an entry that
+// names nothing just-code ever proxied has no guest binding to drop, so
+// deleting it from the store is the whole revocation.
+func TestRevokeUnknownEntryTouchesNoSandbox(t *testing.T) {
+	client := &fakeMSBClient{listed: []string{"jc-ref"}}
+	r := revokerForTest(client, t.TempDir(), nil, nil)
+	rep, err := r.Revoke(context.Background(), "some-other-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Revolved) != 0 || hasCall(client, "remove-secrets") {
+		t.Fatalf("an unproxied entry must touch no sandbox: %+v", rep)
+	}
+}
+
 func TestRevokeTreatsMissingStateAsBound(t *testing.T) {
 	// An instance that predates state tracking (or lost it) may hold a
 	// store-sourced binding; skipping revocation on a guess could leave it
 	// live, so the safe direction is to revoke.
 	client := &fakeMSBClient{listed: []string{"jc-legacy"}}
 	r := revokerForTest(client, t.TempDir(), nil, nil)
-	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	rep, err := r.Revoke(context.Background(), "albert")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +259,7 @@ func TestRevokeEnumeratesLegacySingleton(t *testing.T) {
 	// List; it must still be revoked (lookup-driven).
 	client := &fakeMSBClient{exists: true, status: "running"}
 	r := revokerForTest(client, t.TempDir(), nil, nil)
-	rep, err := r.Revoke(context.Background(), CredentialAlbert)
+	rep, err := r.Revoke(context.Background(), "albert")
 	if err != nil {
 		t.Fatal(err)
 	}

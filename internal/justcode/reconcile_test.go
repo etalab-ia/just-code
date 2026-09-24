@@ -379,3 +379,61 @@ func errorsAs(err error, target **ErrRecreateNeeded) bool {
 	}
 	return false
 }
+
+// TestReconcileRefusesCredentialOpsWhenUnresolved pins the Codex P2 on the
+// second review: with an unresolved binding set, the desired secret set is
+// empty, and applying it would turn "reuse the persisted references" into
+// their removal — the patch semantics make an empty set authoritative.
+// Nothing may be changed, and the journal must survive so a later run with a
+// resolvable credential resumes here.
+func TestReconcileRefusesCredentialOpsWhenUnresolved(t *testing.T) {
+	client := &fakeMSBClient{exists: true, status: "stopped"}
+	m := newTestMicrosandbox(t, client)
+	// No resolvable credential: neither the env key nor a stored entry.
+	m.cfg.APIKey = ""
+	m.cfg.CredentialRef = "missing-ref"
+	m.credentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
+	// Point the state at a temp dir by writing the applied state through
+	// the same path the runtime reads.
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	// A journal left by a failed SDK refresh: the retry must not replay it
+	// against an empty desired set.
+	st := m.desiredState(false, nil, nil).toState()
+	st.Pending = []string{"refresh-credentials", "start-vm"}
+	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Remove(path)
+		_ = os.RemoveAll(filepath.Dir(path))
+	}()
+
+	err := m.Reconcile(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "credential set could not be resolved") {
+		t.Fatalf("an unresolved credential set must refuse the credential ops: %v", err)
+	}
+	for _, call := range client.calls {
+		switch {
+		case strings.HasPrefix(call, "modify "), strings.HasPrefix(call, "start "), strings.HasPrefix(call, "create"):
+			t.Fatalf("no credential-dependent operation may run: %q", call)
+		}
+	}
+	// The journal survives, so the apply resumes once the credential is back.
+	after, rerr := ReadInstanceState(DefaultFS, path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(after.Pending) == 0 {
+		t.Fatal("the journal must survive a refused apply")
+	}
+	// The operations that do not need the credential set stay available: a
+	// plan of restart/relaunch only must not be blocked.
+	if containsCredentialOps([]ReconcileOp{OpRestartBackend}) || containsCredentialOps([]ReconcileOp{OpRestartVM}) {
+		t.Fatal("restart and backend-relaunch do not depend on the credential set")
+	}
+	if !containsCredentialOps([]ReconcileOp{OpRefreshCredentials}) || !containsCredentialOps([]ReconcileOp{OpStartVM}) {
+		t.Fatal("refresh-credentials and start-vm do depend on the credential set")
+	}
+}

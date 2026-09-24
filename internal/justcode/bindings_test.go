@@ -69,19 +69,106 @@ func TestBindingsRevisionIgnoresValues(t *testing.T) {
 	}
 }
 
-func TestStoreBoundKinds(t *testing.T) {
+func TestStoreBoundEntries(t *testing.T) {
+	// github, store-sourced from the native store; its entry is its own kind.
 	bindings := append(testBindings("k"), resolvedBinding{
 		msbSecretBinding: msbSecretBindings()[1], source: bindingSourceStore, value: "tok", store: "native",
 	})
-	// albert is env-sourced here, github store-sourced.
-	if got := storeBoundKinds(bindings); !reflect.DeepEqual(got, []string{"github@native"}) {
-		t.Fatalf("storeBoundKinds = %v", got)
+	if got := storeBoundEntries(bindings); !reflect.DeepEqual(got, []string{"github@native#github"}) {
+		t.Fatalf("storeBoundEntries = %v", got)
 	}
-	// A store-sourced binding with no recorded store still names its store
-	// as ""; only "native"/"file" are ever recorded by the resolver.
+	// An Albert binding fed by a differently-named credentialRef records the
+	// entry it was read from *and* the guest binding it fed: revocation
+	// addresses entries, and "github" here must drop ALBERT_API_KEY, not
+	// GITHUB_TOKEN.
+	ref := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore,
+		value: "k", store: "file", entry: "github",
+	}}
+	if got := storeBoundEntries(ref); !reflect.DeepEqual(got, []string{"github@file#albert"}) {
+		t.Fatalf("credentialRef entry must be recorded with its guest binding: %v", got)
+	}
 	envOnly := testBindings("k")
-	if got := storeBoundKinds(envOnly); got != nil {
-		t.Fatalf("env-sourced set must yield no store-bound markers: %v", got)
+	if got := storeBoundEntries(envOnly); got != nil {
+		t.Fatalf("env-sourced set must yield no store-bound records: %v", got)
+	}
+}
+
+func TestParseBoundStoreEntryFormats(t *testing.T) {
+	cases := []struct {
+		record  string
+		form    boundRecordForm
+		entry   string
+		store   string
+		binding CredentialKind
+	}{
+		{"github@native#albert", boundRecordFull, "github", "native", CredentialAlbert},
+		{"albert@file#albert", boundRecordFull, "albert", "file", CredentialAlbert},
+		{"albert@native", boundRecordInterim, "albert", "native", CredentialAlbert},
+		{"albert", boundRecordLegacy, "albert", "", CredentialAlbert},
+		{pendingBoundEntry, boundRecordPending, "", "", ""},
+	}
+	for _, c := range cases {
+		got, form := parseBoundStoreEntry(c.record)
+		if form != c.form {
+			t.Fatalf("%q: form = %v, want %v", c.record, form, c.form)
+		}
+		if form == boundRecordPending {
+			continue
+		}
+		if got.Entry != c.entry || got.Store != c.store || got.Binding != c.binding {
+			t.Fatalf("%q: %+v", c.record, got)
+		}
+	}
+}
+
+// TestEntryVerdictMapsEntryToGuestBinding pins the Codex P1 on the second
+// review: revocation addresses credential-store entries, but what it must
+// drop is the guest binding the entry fed — not the binding sharing the
+// entry's name.
+func TestEntryVerdictMapsEntryToGuestBinding(t *testing.T) {
+	// credentialRef "github" feeds ALBERT_API_KEY from the fallback store.
+	bound := []string{"github@file#albert"}
+	verdict, binding, known := entryVerdict(bound, "github", "file")
+	if !known || verdict != bindingThisStore || binding != CredentialAlbert {
+		t.Fatalf("removing the entry must drop the guest binding it fed: %v, %q, %v", verdict, binding, known)
+	}
+	// Editing the native store must not touch a fallback-bound instance.
+	verdict, _, known = entryVerdict(bound, "github", "native")
+	if !known || verdict != bindingOther {
+		t.Fatalf("another store's entry must be left alone: %v, %v", verdict, known)
+	}
+	// A record for a different entry does not mention this one.
+	if _, _, known := entryVerdict([]string{"albert@native#albert"}, "github", "native"); known {
+		t.Fatal("an unrelated record must not answer for this entry")
+	}
+	// A legacy bare record has no store, so it cannot be ruled out.
+	verdict, binding, known = entryVerdict([]string{"albert"}, "albert", "file")
+	if !known || verdict != bindingThisStore || binding != CredentialAlbert {
+		t.Fatalf("a store-less record must be revoked: %v, %q, %v", verdict, binding, known)
+	}
+}
+
+// TestBindingsRevisionIncludesStore pins the second review's P2: when both
+// stores hold the same entry, losing the native one changes only which store
+// answers, so the revision must move or a healthy instance takes the no-op
+// path and never rebinds from the fallback.
+func TestBindingsRevisionIncludesStore(t *testing.T) {
+	fromNative := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore, value: "k", store: "native", entry: "albert",
+	}}
+	fromFile := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore, value: "k", store: "file", entry: "albert",
+	}}
+	if bindingsRevision(fromNative) == bindingsRevision(fromFile) {
+		t.Fatal("a native-to-fallback transition must move the revision")
+	}
+	// A different entry feeding the same binding is also a different state.
+	otherEntry := []resolvedBinding{{
+		msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore, value: "k", store: "native", entry: "github",
+	}}
+	if bindingsRevision(fromNative) == bindingsRevision(otherEntry) {
+		t.Fatal("a different credentialRef entry must move the revision")
 	}
 }
 
@@ -119,13 +206,25 @@ func TestWithHostSecretsPublishesAndRestores(t *testing.T) {
 func TestResolveAlbertPrecedence(t *testing.T) {
 	// The legacy environment wins over the default stored credential and
 	// loses to an explicit credentialRef.
-	v, src, _, err := resolveAlbert(context.Background(), Config{APIKey: "env-key"}, "")
+	v, src, _, entry, err := resolveAlbert(context.Background(), Config{APIKey: "env-key"}, "")
 	if err != nil || v != "env-key" || src != bindingSourceEnv {
 		t.Fatalf("env source: %q, %q, %v", v, src, err)
 	}
+	if entry != "" {
+		t.Fatalf("an env-sourced value has no store entry: %q", entry)
+	}
+	// A credentialRef records the entry it named, so revocation can address
+	// it even when it differs from the binding's own kind.
+	ref := Config{CredentialRef: "my-albert"}
+	v, src, _, entry, err = resolveAlbertWith(func(context.Context, CredentialKind, string) (string, string, error) {
+		return "ref-value", "file", nil
+	}, context.Background(), ref, "")
+	if err != nil || v != "ref-value" || src != bindingSourceStore || entry != "my-albert" {
+		t.Fatalf("credentialRef resolution: %q, %q, %q, %v", v, src, entry, err)
+	}
 	// An explicit credentialRef that names nothing stored is a hard error
 	// naming the reference, never a silent fallback to another source.
-	_, _, _, err = resolveAlbert(context.Background(), Config{
+	_, _, _, _, err = resolveAlbert(context.Background(), Config{
 		APIKey:        "env-key",
 		CredentialRef: "definitely-not-stored-anywhere",
 	}, "")

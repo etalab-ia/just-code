@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // This file implements P09 revocation: removing a credential from the store
@@ -27,6 +28,9 @@ type RevokeReport struct {
 	// (per the persisted BoundCredentials record): just-code cannot revoke a
 	// variable it does not own, so nothing was touched there.
 	SkippedEnv []string
+	// Revolved lists the guest bindings actually dropped, by guest variable
+	// name, so the caller can name what a removal reached.
+	Revolved []string
 	// Pending lists instances whose binding was revoked but whose source
 	// could not be confirmed with today's inputs (the credential no longer
 	// resolves and no persisted store marker exists). They are revoked for
@@ -97,20 +101,52 @@ func (r Revoker) withDefaults() Revoker {
 	return r
 }
 
-// RevokeCredential revokes kind everywhere just-code can reach, ahead of its
-// removal from the store. store names the store being edited ("native",
-// "file", or "" for the normal order); revocation targets only the instances
-// whose credential came from it. See the file header for the per-runtime
-// semantics.
-func RevokeCredential(ctx context.Context, kind CredentialKind, store string) (RevokeReport, error) {
-	return (Revoker{Store: store}).withDefaults().Revoke(ctx, kind)
+// RevokeCredential revokes the guest bindings fed by a credential-store entry
+// everywhere just-code can reach, ahead of its removal from the store. entry
+// is the store entry being deleted (usually a credential kind, but an Albert
+// binding may resolve from a credentialRef naming something else); store names
+// the store being edited ("native", "file", or "" for the normal order).
+// Revocation targets only the instances bound to that entry in that store.
+// See the file header for the per-runtime semantics.
+func RevokeCredential(ctx context.Context, entry string, store string) (RevokeReport, error) {
+	return (Revoker{Store: store}).withDefaults().Revoke(ctx, entry)
 }
 
-func (r Revoker) Revoke(ctx context.Context, kind CredentialKind) (RevokeReport, error) {
+func (r Revoker) Revoke(ctx context.Context, entry string) (RevokeReport, error) {
 	var rep RevokeReport
 
+	sandboxes, err := r.enumerateSandboxes(ctx)
+	if err != nil {
+		return rep, err
+	}
+	// Decide the guest binding each instance will lose before touching
+	// anything, because the plaintext guard depends on it and must fail
+	// closed ahead of the first removal.
+	var removals []pendingRemoval
+	for _, sb := range sandboxes {
+		verdict, guestEnv := r.instanceEntryVerdict(ctx, entry, sb.Name)
+		switch verdict {
+		case bindingOther:
+			rep.SkippedEnv = append(rep.SkippedEnv, sb.Name)
+			continue
+		case bindingPending:
+			// The source could not be confirmed, so the persisted state
+			// cannot be trusted to say which binding the entry fed. Proceed
+			// and record the marker: a removal that cannot confirm what it
+			// revoked must not silently report success.
+			rep.Pending = append(rep.Pending, sb.Name)
+		}
+		if guestEnv == "" {
+			continue // an entry just-code never proxied: nothing to drop
+		}
+		removals = append(removals, pendingRemoval{instance: sb.Name, guestEnv: guestEnv, live: sb.Status == "running"})
+	}
+
 	// Tart and agent-vm transport only the Albert credential, in plaintext.
-	if kind == CredentialAlbert {
+	// The guard keys on the guest binding, not the entry: an Albert binding
+	// fed by `credentialRef: "github"` still sits in cleartext in a running
+	// VM, and removing the "github" entry would otherwise look harmless.
+	if r.entryFeedsAlbert(entry, removals) {
 		var running []string
 		for _, enumerate := range []func(context.Context) ([]string, error){r.TartRunning, r.AgentVMRunning} {
 			vms, err := enumerate(ctx)
@@ -124,44 +160,20 @@ func (r Revoker) Revoke(ctx context.Context, kind CredentialKind) (RevokeReport,
 		}
 		if len(running) > 0 {
 			sort.Strings(running)
-			return rep, &ErrRevocationBlocked{Kind: kind, Instances: running}
+			return RevokeReport{}, &ErrRevocationBlocked{Kind: CredentialKind(entry), Instances: running}
 		}
 	}
 
-	binding, known := bindingForKind(kind)
-	if !known {
-		// A credential just-code never binds into a guest (e.g. an arbitrary
-		// credentialRef target): removing it from the store is the whole
-		// revocation.
-		return rep, nil
-	}
-
-	sandboxes, err := r.enumerateSandboxes(ctx)
-	if err != nil {
-		return rep, err
-	}
-	for _, sb := range sandboxes {
-		switch r.instanceBindingVerdict(ctx, kind, sb.Name) {
-		case bindingOther:
-			rep.SkippedEnv = append(rep.SkippedEnv, sb.Name)
-			continue
-		case bindingPending:
-			// The credential could not be resolved with today's inputs, so
-			// the persisted state cannot be trusted to say which store it
-			// came from. Proceed and record the marker: a removal that
-			// cannot confirm what it revoked must not silently report
-			// success.
-			rep.Pending = append(rep.Pending, sb.Name)
+	for _, rm := range removals {
+		if err := r.MSB.RemoveSecrets(ctx, rm.instance, []string{rm.guestEnv}, rm.live); err != nil {
+			return rep, fmt.Errorf("revoking %s from %s: %w", entry, rm.instance, err)
 		}
-		live := sb.Status == "running"
-		if err := r.MSB.RemoveSecrets(ctx, sb.Name, []string{binding.GuestEnv}, live); err != nil {
-			return rep, fmt.Errorf("revoking %s from %s: %w", kind, sb.Name, err)
-		}
-		if live {
-			rep.LiveRevoked = append(rep.LiveRevoked, sb.Name)
+		rep.Revolved = appendUniqueString(rep.Revolved, rm.guestEnv)
+		if rm.live {
+			rep.LiveRevoked = append(rep.LiveRevoked, rm.instance)
 			rep.PlaceholderDangles = true
 		} else {
-			rep.StoppedCleared = append(rep.StoppedCleared, sb.Name)
+			rep.StoppedCleared = append(rep.StoppedCleared, rm.instance)
 		}
 	}
 	return rep, nil
@@ -205,40 +217,108 @@ const (
 	bindingPending
 )
 
-// instanceBindingVerdict decides the revocation verdict for one instance.
+// instanceEntryVerdict decides the revocation verdict and guest binding for
+// one instance, given the store entry being removed.
 //
-// The persisted BoundCredentials record is the authority when it carries a
-// store marker ("kind@store"). When it does not — state written before the
-// store was recorded, or lost — the verdict falls back to re-resolving the
-// credential with today's inputs, which is only meaningful once the value
-// itself is gone (the removal path). Any resolution error then means the
-// question cannot be answered: the entry is revoked as pending rather than
-// skipped on a guess, because skipping could leave a live binding behind.
-func (r Revoker) instanceBindingVerdict(ctx context.Context, kind CredentialKind, instance string) bindingVerdict {
+// The persisted BoundCredentials record is the authority. When it names the
+// entry, it also names the guest binding that entry fed, which is what
+// revocation must drop. When every record is the original bare form the store
+// is unknown, so the entry is revoked (safe direction) by its own name. When
+// no record mentions the entry at all — state written before entry tracking,
+// or lost — the verdict falls back to re-resolving the credential: an env
+// key still resolves, which proves the instance did not come from the store.
+// Any resolution error then means the question cannot be answered, so the
+// entry is revoked as pending rather than skipped on a guess.
+func (r Revoker) instanceEntryVerdict(ctx context.Context, entry, instance string) (bindingVerdict, string) {
 	st, err := ReadInstanceState(r.FS, instanceStatePath(r.StateDir, instance))
 	if err != nil || st == nil {
-		return bindingPending
+		return bindingPending, guestEnvForEntry(entry)
 	}
-	if instanceBoundTo(st.BoundCredentials, kind, r.Store) {
-		return bindingThisStore
+	verdict, binding, known := entryVerdict(st.BoundCredentials, entry, r.Store)
+	if known {
+		return verdict, guestEnvForBinding(binding)
 	}
-	// A marker naming the *other* store is a known answer, not an unknown
-	// one: the credential demonstrably came from elsewhere, so an edit of
-	// this store must leave the instance alone.
-	if instanceBoundElsewhere(st.BoundCredentials, kind, r.Store) {
-		return bindingOther
-	}
-	// No marker for this store: either the credential came from elsewhere
-	// (its env source still resolves, so re-resolution succeeds), or the
-	// record predates store tracking. Re-resolve to tell them apart.
+	// No record names the entry: either the credential came from elsewhere
+	// (its env source still resolves, or a credentialRef points at another
+	// entry), or the record predates entry tracking. Re-resolve to tell them
+	// apart.
 	read := r.ReadCredential
 	if read == nil {
 		read = readStoredWith
 	}
-	if _, _, _, rerr := resolveAlbertWith(read, ctx, r.Config, r.Store); rerr == nil {
-		return bindingOther
+	_, _, _, resolvedEntry, rerr := resolveAlbertWith(read, ctx, r.Config, r.Store)
+	if rerr == nil && resolvedEntry != entry {
+		return bindingOther, ""
 	}
-	return bindingPending
+	return bindingPending, guestEnvForEntry(entry)
+}
+
+// pendingRemoval is one queued revocation: the instance, the guest binding it
+// will lose, and whether it is running.
+type pendingRemoval struct {
+	instance string
+	guestEnv string
+	live     bool
+}
+
+// entryFeedsAlbert reports whether removing the entry threatens the Albert
+// credential: either the entry names the albert binding itself, or a bound
+// instance's record shows the entry resolving into it (the credentialRef
+// case). Without the second test, removing a non-"albert" entry that feeds the
+// Albert binding would bypass the plaintext-runtime guard.
+func (r Revoker) entryFeedsAlbert(entry string, removals []pendingRemoval) bool {
+	if b, ok := bindingForEntry(CredentialKind(entry)); ok && b.Kind == CredentialAlbert {
+		return true
+	}
+	// The project's own credentialRef naming this entry is direct evidence
+	// that the entry feeds the Albert binding, even before any instance
+	// records it.
+	if ref := strings.TrimSpace(r.Config.CredentialRef); ref != "" && ref == entry {
+		return true
+	}
+	for _, rm := range removals {
+		if rm.guestEnv == msbAPISecretEnv {
+			return true
+		}
+	}
+	return false
+}
+
+// guestEnvForEntry returns the guest variable a credential-store entry feeds:
+// the registered binding of the same name, or "" when the entry names
+// something just-code never proxied.
+func guestEnvForEntry(entry string) string {
+	b, ok := bindingForEntry(CredentialKind(entry))
+	if !ok {
+		return ""
+	}
+	return b.GuestEnv
+}
+
+// guestEnvForBinding returns the guest variable of a guest binding kind.
+func guestEnvForBinding(kind CredentialKind) string {
+	b, ok := bindingForKind(kind)
+	if !ok {
+		return ""
+	}
+	return b.GuestEnv
+}
+
+// bindingForEntry returns the binding a credential-store entry feeds when the
+// entry names a registered kind. A credentialRef can point the Albert binding
+// at a differently-named entry, which this cannot see; the persisted record is
+// what carries that case.
+func bindingForEntry(kind CredentialKind) (msbSecretBinding, bool) {
+	return bindingForKind(kind)
+}
+
+func appendUniqueString(list []string, value string) []string {
+	for _, v := range list {
+		if v == value {
+			return list
+		}
+	}
+	return append(list, value)
 }
 
 // BoundStoreMarkers returns the persisted "kind@store" markers of an

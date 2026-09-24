@@ -206,7 +206,7 @@ func authRemoveCmd(args []string) (int, error) {
 	if fallback {
 		storeName = "file"
 	}
-	report, err := justcode.RevokeCredential(context.Background(), kind, storeName)
+	report, err := justcode.RevokeCredential(context.Background(), string(kind), storeName)
 	if err != nil {
 		return 1, err
 	}
@@ -215,6 +215,9 @@ func authRemoveCmd(args []string) (int, error) {
 	}
 	for _, name := range report.StoppedCleared {
 		fmt.Printf("Cleared the persisted %q reference from %s (effective at its next start).\n", kind, name)
+	}
+	if len(report.Revolved) > 0 {
+		fmt.Printf("Guest bindings revoked: %s.\n", strings.Join(report.Revolved, ", "))
 	}
 	if report.PlaceholderDangles {
 		fmt.Fprintf(os.Stderr, "Warning: a running guest keeps the now-inert %s placeholder in its environment until it restarts; requests to the formerly allowed host will fail, but the placeholder string itself is disclosed. Restart the instance to clear it.\n", kind)

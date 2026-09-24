@@ -235,6 +235,21 @@ type resolvedBinding struct {
 	// what makes `auth remove --fallback` revoke only the instances bound to
 	// that store.
 	store string
+	// entry is the credential-store entry name the value was read from, when
+	// it is not the binding's own kind. An Albert binding fed by
+	// `credentialRef: "github"` is guest binding ALBERT_API_KEY resolved from
+	// store entry "github": revocation addresses entries, so it must know
+	// which entry to match and which guest binding that entry fed.
+	entry string
+}
+
+// storeEntry is the credential-store entry a resolved binding addresses:
+// the explicit entry name when set (a credentialRef), otherwise the kind.
+func (r resolvedBinding) storeEntry() string {
+	if r.entry != "" {
+		return r.entry
+	}
+	return string(r.Kind)
 }
 
 // metadata drops the value and source, for the SDK-facing spec.
@@ -253,10 +268,16 @@ func bindingsMetadata(bindings []resolvedBinding) []msbSecretBinding {
 }
 
 // bindingsRevision hashes the non-secret descriptor of a binding set: kind,
-// source, guest variable and allowed hosts per binding. Values are excluded
-// by construction, so the revision is safe to persist; a value rotation
-// within an unchanged set does not move it (rotation applies at the next
-// boot, which re-resolves the reference).
+// source, guest variable, allowed hosts, and — for store-sourced bindings —
+// the store entry and the store it was read from. Values are excluded by
+// construction, so the revision is safe to persist; a value rotation within
+// an unchanged set does not move it (rotation applies at the next boot,
+// which re-resolves the reference).
+//
+// Including the store matters: when both stores hold the same entry, losing
+// the native one changes nothing but which store answers, so a revision that
+// hashed only the generic "store" source would match and a healthy running
+// instance would take the no-op path, never rebinding from the fallback.
 func bindingsRevision(bindings []resolvedBinding) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte("jc-bindings-v1"))
@@ -267,7 +288,7 @@ func bindingsRevision(bindings []resolvedBinding) string {
 	for _, b := range sorted {
 		hosts := append([]string(nil), b.AllowHosts...)
 		sort.Strings(hosts)
-		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv}, hosts...) {
+		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv, b.store, b.storeEntry()}, hosts...) {
 			_, _ = h.Write([]byte(part))
 			_, _ = h.Write([]byte{0})
 		}
@@ -275,17 +296,80 @@ func bindingsRevision(bindings []resolvedBinding) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// storeBoundKinds lists the store-sourced bindings as "kind@store", sorted.
-// It is what InstanceState.BoundCredentials persists: revocation can only
+// boundStoreEntry is one persisted record of a store-sourced binding:
+// "entry@store#binding". The entry is the credential-store entry the value
+// came from (usually the kind, but a credentialRef can name another), the
+// store is where it was read, and the binding is the guest secret it fed.
+// Revocation addresses entries, so it needs all three: which entry to match,
+// which store to edit, and which guest binding to drop.
+type boundStoreEntry struct {
+	Entry   string
+	Store   string
+	Binding CredentialKind
+}
+
+func formatBoundStoreEntry(e boundStoreEntry) string {
+	return e.Entry + "@" + e.Store + "#" + string(e.Binding)
+}
+
+// boundRecordForm distinguishes the persisted record generations, because
+// each carries a different amount of knowledge about a binding's origin.
+type boundRecordForm int
+
+const (
+	// boundRecordPending is the "?" marker: a store-sourced value may exist
+	// but nothing about it is known.
+	boundRecordPending boundRecordForm = iota
+	// boundRecordLegacy is the original bare "entry": the store is unknown,
+	// so the record's entry name is all there is to go on.
+	boundRecordLegacy
+	// boundRecordInterim is "entry@store": no binding recorded, so the entry
+	// fed the guest binding of the same name.
+	boundRecordInterim
+	// boundRecordFull is "entry@store#binding": complete.
+	boundRecordFull
+)
+
+// parseBoundStoreEntry reads a persisted record into its parts. Every record
+// names the credential-store entry the value came from; the store and the
+// guest binding it fed are known only in the newer forms.
+func parseBoundStoreEntry(record string) (boundStoreEntry, boundRecordForm) {
+	if record == pendingBoundEntry {
+		return boundStoreEntry{}, boundRecordPending
+	}
+	entry, rest, hasStore := strings.Cut(record, "@")
+	if entry == "" {
+		return boundStoreEntry{}, boundRecordPending
+	}
+	if !hasStore || rest == "" || entry == "?" || rest == "?" {
+		return boundStoreEntry{Entry: entry, Binding: CredentialKind(entry)}, boundRecordLegacy
+	}
+	store, binding, hasBinding := strings.Cut(rest, "#")
+	if store == "" {
+		return boundStoreEntry{}, boundRecordPending
+	}
+	if !hasBinding || binding == "" {
+		return boundStoreEntry{Entry: entry, Store: store, Binding: CredentialKind(entry)}, boundRecordInterim
+	}
+	return boundStoreEntry{Entry: entry, Store: store, Binding: CredentialKind(binding)}, boundRecordFull
+}
+
+// storeBoundEntries lists a resolved set's store-sourced bindings, sorted.
+// It is what InstanceState.BoundCredentials persists. Revocation can only
 // reach store-bound credentials (an env-sourced value is not just-code's to
-// revoke), and it must target the store the value was read from — a native
-// and a fallback entry can both exist, and removing one must not revoke
-// sandboxes bound to the other.
-func storeBoundKinds(bindings []resolvedBinding) []string {
+// revoke), and it must target both the store and the entry the value was
+// read from — a native and a fallback entry can both exist, and a
+// credentialRef can make an Albert binding come from a differently-named
+// entry.
+func storeBoundEntries(bindings []resolvedBinding) []string {
 	var out []string
 	for _, b := range bindings {
 		if b.source == bindingSourceStore {
-			out = append(out, string(b.Kind)+"@"+b.store)
+			out = append(out, formatBoundStoreEntry(boundStoreEntry{
+				Entry:   b.storeEntry(),
+				Store:   b.store,
+				Binding: b.Kind,
+			}))
 		}
 	}
 	sort.Strings(out)
@@ -299,34 +383,35 @@ func storeBoundKinds(bindings []resolvedBinding) []string {
 // store suffix, so the marker cannot collide with one.
 const pendingBoundEntry = "?@?"
 
-// instanceBoundTo reports whether a persisted BoundCredentials list says the
-// instance's binding of kind should be revoked by an edit of `store`. It
-// matches the exact "kind@store" entry, a bare "kind" entry (written before
-// the store was recorded — its source is unknown, so revoking is the safe
-// direction), and the pending marker. A missing or unreadable record is
-// handled by the caller as "unknown", which also revokes.
-func instanceBoundTo(bound []string, kind CredentialKind, store string) bool {
-	for _, entry := range bound {
-		switch entry {
-		case string(kind) + "@" + store, string(kind), pendingBoundEntry:
-			return true
+// entryVerdict reports what a persisted BoundCredentials list says about a
+// credential-store entry being edited. A record naming the entry in this
+// store means "revoke the guest binding it fed"; naming it in the other store
+// is a known "elsewhere"; a legacy bare record (no store) means "revoke by
+// the entry name". Records for other entries are ignored. binding is the
+// guest binding to drop, and known is false when no record mentions the
+// entry.
+//
+// An empty store means the normal lookup order (native, then fallback): a
+// removal on that path addresses whichever store answered, so any store in
+// the record matches.
+func entryVerdict(bound []string, entry, store string) (verdict bindingVerdict, binding CredentialKind, known bool) {
+	for _, record := range bound {
+		parsed, form := parseBoundStoreEntry(record)
+		if form == boundRecordPending || parsed.Entry != entry {
+			continue
+		}
+		switch form {
+		case boundRecordLegacy:
+			// No store recorded: the store being edited cannot be ruled out.
+			return bindingThisStore, parsed.Binding, true
+		case boundRecordInterim, boundRecordFull:
+			if store == "" || parsed.Store == store {
+				return bindingThisStore, parsed.Binding, true
+			}
+			return bindingOther, parsed.Binding, true
 		}
 	}
-	return false
-}
-
-// instanceBoundElsewhere reports whether a persisted list names a store for
-// kind that is not `store`. Unlike a bare or missing entry, that is a known
-// answer: the credential came from a different store, and an edit of this one
-// must not touch the instance.
-func instanceBoundElsewhere(bound []string, kind CredentialKind, store string) bool {
-	prefix := string(kind) + "@"
-	for _, entry := range bound {
-		if strings.HasPrefix(entry, prefix) && entry != prefix+store {
-			return true
-		}
-	}
-	return false
+	return bindingThisStore, "", false
 }
 
 // placeholderFor returns the exact value the runtime exposes in the guest for
@@ -379,33 +464,35 @@ func ReadStoredCredential(ctx context.Context, kind CredentialKind) (string, err
 //
 // `from` scopes the store lookup to one store ("" = native then fallback);
 // revocation uses it so a removal targets the instances that actually
-// resolved from the store being edited.
-func resolveAlbert(ctx context.Context, cfg Config, from string) (string, bindingSource, string, error) {
+// resolved from the store being edited. It returns the value, its source, the
+// store that answered, and the credential-store entry it was read from.
+func resolveAlbert(ctx context.Context, cfg Config, from string) (string, bindingSource, string, string, error) {
 	return resolveAlbertWith(readStoredWith, ctx, cfg, from)
 }
 
 // resolveAlbertWith is resolveAlbert over an injected reader, so tests can
 // exercise the precedence chain and the store scoping without a real
-// credential store.
-func resolveAlbertWith(read credentialReader, ctx context.Context, cfg Config, from string) (string, bindingSource, string, error) {
+// credential store. It returns the resolved value, its source, the store it
+// came from, and the credential-store entry it was read from.
+func resolveAlbertWith(read credentialReader, ctx context.Context, cfg Config, from string) (value string, source bindingSource, store, entry string, err error) {
 	if ref := strings.TrimSpace(cfg.CredentialRef); ref != "" {
-		v, store, err := read(ctx, CredentialKind(ref), from)
-		if err != nil {
-			return "", "", "", fmt.Errorf("credentialRef %q: %w (store it with 'just-code auth add %s', or fix the reference)", ref, err, ref)
+		v, s, rerr := read(ctx, CredentialKind(ref), from)
+		if rerr != nil {
+			return "", "", "", "", fmt.Errorf("credentialRef %q: %w (store it with 'just-code auth add %s', or fix the reference)", ref, rerr, ref)
 		}
-		return v, bindingSourceStore, store, nil
+		return v, bindingSourceStore, s, ref, nil
 	}
 	if cfg.APIKey != "" {
-		return cfg.APIKey, bindingSourceEnv, "", nil
+		return cfg.APIKey, bindingSourceEnv, "", "", nil
 	}
-	v, store, err := read(ctx, CredentialAlbert, from)
-	if err == nil {
-		return v, bindingSourceStore, store, nil
+	v, s, rerr := read(ctx, CredentialAlbert, from)
+	if rerr == nil {
+		return v, bindingSourceStore, s, string(CredentialAlbert), nil
 	}
-	if !isNotFound(err) {
-		return "", "", "", err
+	if !isNotFound(rerr) {
+		return "", "", "", "", rerr
 	}
-	return "", "", "", fmt.Errorf("no Albert credential found: set ALBERT_API_KEY in the environment or .env, or store one with 'just-code auth add albert'")
+	return "", "", "", "", fmt.Errorf("no Albert credential found: set ALBERT_API_KEY in the environment or .env, or store one with 'just-code auth add albert'")
 }
 
 // withHostSecrets publishes each resolved value under its binding's host

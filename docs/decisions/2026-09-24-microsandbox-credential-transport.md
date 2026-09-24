@@ -213,6 +213,27 @@ source `Value` du SDK.
   Tart et agent-vm, sans proxy, bloquent la suppression tant qu'une
   instance tourne et exigent `--acknowledge-guest-credentials` au
   démarrage.
+
+  **Révocation par entrée, pas par nom de liaison (ajouté après revue Codex).**
+  Un `credentialRef` peut faire résoudre la liaison Albert depuis une entrée
+  de magasin nommée autrement (`credentialRef: "github"` → `ALBERT_API_KEY`
+  côté invité). La révocation adresse donc des entrées : l'état persiste
+  `entrée@magasin#liaison`, et c'est la liaison invitée effectivement
+  alimentée qui est retirée. Le garde-fou des runtimes en clair (Tart,
+  agent-vm) se déclenche sur la **liaison** et non sur le nom de l'entrée :
+  supprimer une entrée qui alimente Albert est bloqué même si elle ne
+  s'appelle pas `albert`.
+  - Le magasin qui a répondu fait partie de l'empreinte du jeu de liaisons :
+    sans lui, perdre l'entrée native alors que le repli la détient encore
+    laisserait la révision inchangée et l'instance saine prendrait le chemin
+    no-op, sans jamais se relier au repli.
+  - Une opération de réconciliation dépendante des identifiants
+    (`refresh-credentials`, `create`, `start-vm`) est **refusée** quand le
+    jeu n'a pas pu être résolu : dériver l'ensemble désiré du vide et
+    l'appliquer transformerait « réutiliser les références persistées » en
+    leur suppression. Le journal est conservé pour reprendre après
+    résolution ; `restart-vm` et le relancement du backend restent
+    disponibles, leurs démarrages re-résolvant les références persistées.
 - Les tests de contrat P02 qui épinglaient l'écart (persistance de la
   valeur brute) ont été basculés en tests P09 qui épinglent l'absence de
   valeur brute.

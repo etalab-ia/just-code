@@ -341,6 +341,18 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 		return nil
 	}
 
+	// A credential-dependent operation cannot run on an unresolved binding
+	// set. Deriving the desired secret set from nothing and applying it would
+	// turn "reuse the persisted references" into their removal — the patch
+	// semantics make the empty set authoritative. Stop before the first side
+	// effect, with the journal intact, so a later run with a resolvable
+	// credential resumes here.
+	if !resolved && containsCredentialOps(pending) {
+		return fmt.Errorf("cannot apply the credential operations of %s (%s): the credential set could not be resolved (%v). "+
+			"Store or restore the credential, then retry; nothing was changed",
+			m.InstanceName(), joinOps(pending), err)
+	}
+
 	// Persist the journal before the first side effect and advance it after
 	// each successful operation: an abrupt kill between ops must leave a
 	// progress record, or the next run would replay completed mutations.
@@ -374,10 +386,12 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 
 // desiredState builds the desired record for an apply. When the binding set
 // could not be resolved, the credential fields are carried over from the
-// applied state rather than computed from an empty set: a refresh built from
-// nothing would strip the references the guest already holds (stale proven
-// only by the empty set itself), and the bound-store markers must survive so
-// a later revocation still knows what the instance resolved from.
+// applied state rather than computed from an empty set: the bound-entry
+// markers must survive so a later revocation still knows what the instance
+// resolved from, and the revision must not appear to change for a reason that
+// is only a missing credential. The apply itself refuses the
+// credential-dependent operations in that case (see Reconcile), so carrying
+// the revision cannot leave a stale refresh unperformed.
 func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBinding, applied *InstanceState) DesiredState {
 	d := DesiredState{
 		Instance:     m.InstanceName(),
@@ -388,7 +402,7 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 	}
 	if resolved {
 		d.CredentialRev = bindingsRevision(bindings)
-		d.BoundCredentials = storeBoundKinds(bindings)
+		d.BoundCredentials = storeBoundEntries(bindings)
 		return d
 	}
 	if applied != nil {
@@ -492,6 +506,21 @@ func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op Reconcile
 	default:
 		return fmt.Errorf("unsupported reconcile op %q", op)
 	}
+}
+
+// containsCredentialOps reports whether a plan depends on the resolved
+// credential set. OpRefreshCredentials persists the secret references;
+// OpCreate and OpStartVM resolve them while starting. The restart and
+// backend-relaunch operations do not (their boots re-resolve whatever the
+// persisted references name), so an unresolved set can still serve them.
+func containsCredentialOps(ops []ReconcileOp) bool {
+	for _, op := range ops {
+		switch op {
+		case OpRefreshCredentials, OpCreate, OpStartVM:
+			return true
+		}
+	}
+	return false
 }
 
 func opsToJournal(ops []ReconcileOp) []string {

@@ -288,11 +288,11 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 	var out []resolvedBinding
 	for _, b := range msbSecretBindings() {
 		if !b.Optional {
-			v, src, store, err := resolveAlbertWith(read, ctx, m.cfg, m.CredentialStore)
+			v, src, store, entry, err := resolveAlbertWith(read, ctx, m.cfg, m.CredentialStore)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, resolvedBinding{msbSecretBinding: b, source: src, value: v, store: store})
+			out = append(out, resolvedBinding{msbSecretBinding: b, source: src, value: v, store: store, entry: entry})
 			continue
 		}
 		approvals, err := ReadBindingApprovals(DefaultFS, bindingApprovalsPath(m.stateDirOrDefault(), m.InstanceName()))
@@ -313,7 +313,7 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 			}
 			continue
 		}
-		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store})
+		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store, entry: string(b.Kind)})
 	}
 	return out, nil
 }
