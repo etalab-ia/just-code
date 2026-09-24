@@ -5,43 +5,15 @@ package justcode
 import (
 	"context"
 	"errors"
-	"io"
 	"strings"
 	"testing"
 )
 
 // Secret Service adapter tests (P08) with a fake Runner: they pin the
 // argv contract (the secret is never an argument) and the error mapping.
-// Real-store tests are separate and availability-gated.
+// Real-store tests are separate and availability-gated. The fake runner
+// itself lives in credentials_fake_runner_test.go (shared across OSes).
 
-type fakeStoreRunner struct {
-	// calls records each (name, args...) invocation.
-	calls []string
-	// onRun answers each call.
-	onRun func(name string, args []string) (ExecResult, error)
-}
-
-func (f *fakeStoreRunner) Run(ctx context.Context, name string, args ...string) (ExecResult, error) {
-	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
-	return f.onRun(name, args)
-}
-
-func (f *fakeStoreRunner) RunEnv(ctx context.Context, env []string, name string, args ...string) (ExecResult, error) {
-	return f.Run(ctx, name, args...)
-}
-
-func (f *fakeStoreRunner) RunStdin(ctx context.Context, stdin io.Reader, name string, args ...string) (ExecResult, error) {
-	return f.Run(ctx, name, args...)
-}
-
-func hasStoreCall(f *fakeStoreRunner, prefix string) bool {
-	for _, c := range f.calls {
-		if strings.HasPrefix(c, prefix) {
-			return true
-		}
-	}
-	return false
-}
 
 // TestSecretServicePutKeepsValueOutOfArgs pins the transport contract:
 // the secret is never in argv; it goes through stdin.
