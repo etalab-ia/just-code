@@ -605,7 +605,10 @@ func (t *Tart) Status(ctx context.Context) (string, error) {
 	return fmt.Sprintf("%s does not exist", t.VMName()), nil
 }
 
-// IsRunning reports whether any managed Tart VM is running.
+// IsRunning reports whether the VM bound to this project is running.
+// Scope la vérification à la VM du projet (t.VMName()) : compter toutes les
+// VM gérées ferait dire « running » pour un projet sans VM dès qu'un autre
+// projet en a une d'active.
 func (t *Tart) IsRunning(ctx context.Context) (bool, error) {
 	vms, err := t.RunningVMs(ctx)
 	if err != nil {
@@ -614,7 +617,12 @@ func (t *Tart) IsRunning(ctx context.Context) (bool, error) {
 		}
 		return false, err
 	}
-	return len(vms) > 0, nil
+	for _, vm := range vms {
+		if vm == t.VMName() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Endpoint returns the backend URL for the managed VM.

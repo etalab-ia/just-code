@@ -56,12 +56,21 @@ func run(args []string) (int, error) {
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
 
-	cfg := justcode.LoadConfigEnv()
-
+	// Parse arguments before the legacy dotenv load: `config explain`
+	// reports the new resolver's view (flags > JUST_CODE_* env > project >
+	// user > default), and a legacy .env must not leak into that view as
+	// pseudo-env. The config command dispatches with the process
+	// environment exactly as the user set it.
 	parsed, err := parseArgs(args)
 	if err != nil {
 		return 2, err
 	}
+
+	if parsed.action == "config" {
+		return configCmd(parsed)
+	}
+
+	cfg := justcode.LoadConfigEnv()
 	if parsed.version {
 		printBuildInfo()
 		return 0, nil
@@ -103,8 +112,6 @@ func run(args []string) (int, error) {
 	case "version":
 		printBuildInfo()
 		return 0, nil
-	case "config":
-		return configCmd(parsed.configArgs)
 	case "stop":
 		if parsed.stopAll {
 			return 0, d.StopAll(context.Background())
@@ -262,14 +269,15 @@ func argOr(args []string, i int, def string) string {
 // its winning source (flags > JUST_CODE_* env > project > user > default),
 // secrets never included; `import-env` previews a bounded legacy .env import
 // without touching the original file.
-func configCmd(args []string) (int, error) {
+func configCmd(parsed parsedArgs) (int, error) {
+	args := parsed.configArgs
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: just-code config explain | import-env <path>")
 		return 2, nil
 	}
 	switch args[0] {
 	case "explain":
-		return configExplainCmd()
+		return configExplainCmd(parsed)
 	case "import-env":
 		if len(args) < 2 {
 			return 2, fmt.Errorf("Usage: just-code config import-env <path-to-.env>")
@@ -284,7 +292,9 @@ func configCmd(args []string) (int, error) {
 // provenance. The legacy environment variables (RUNTIME, ISOLATION, ...) are
 // NOT part of the new resolution: explain reports the new-path view only,
 // so the two paths cannot be confused during the deprecation interval.
-func configExplainCmd() (int, error) {
+// Invocation flags are the highest-precedence source and are passed through
+// from parseArgs, so `just-code --tart config explain` reports the flag.
+func configExplainCmd(parsed parsedArgs) (int, error) {
 	settingsPath, err := justcode.UserSettingsPath()
 	if err != nil {
 		return 0, err
@@ -306,29 +316,38 @@ func configExplainCmd() (int, error) {
 	if us.CredentialRef != "" {
 		user["credential_ref"] = us.CredentialRef
 	}
+	flag := map[string]string{}
+	if parsed.runtime != "" {
+		flag["runtime"] = parsed.runtime
+	}
+	if parsed.isolation != "" {
+		flag["isolation"] = parsed.isolation
+	}
 	env := justcode.EnvSettings(os.LookupEnv)
 	cwd, _ := os.Getwd()
 	proj := map[string]string{}
 	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(cwd))
 	if err == nil {
-		for field, v := range map[string]string{
-			"runtime":        pm.Runtime,
-			"isolation":      pm.Isolation,
-			"model":          pm.Model,
-			"credential_ref": pm.CredentialRef,
-		} {
-			if v != "" {
-				proj[field] = v
-			}
-		}
+		// Field presence is preserved even for explicit empty strings: an
+		// empty project value means "turn this field off", which must win
+		// over a lower-precedence user value.
+		proj["runtime"] = pm.Runtime
+		proj["isolation"] = pm.Isolation
+		proj["model"] = pm.Model
+		proj["credential_ref"] = pm.CredentialRef
 		if pm.CPUs > 0 {
 			proj["cpus"] = fmt.Sprintf("%d", pm.CPUs)
 		}
 		if pm.MemoryMB > 0 {
 			proj["memory_mb"] = fmt.Sprintf("%d", pm.MemoryMB)
 		}
+	} else if !os.IsNotExist(err) {
+		// A present-but-invalid manifest is a configuration problem, not an
+		// absent one: report it rather than silently showing defaults.
+		return 0, err
 	}
 	entries := justcode.Explain(justcode.Settings{
+		Flag:    flag,
 		Env:     env,
 		Project: proj,
 		User:    user,

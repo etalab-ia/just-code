@@ -195,33 +195,9 @@ func (d *Dispatcher) Prepare(ctx context.Context, requested Runtime) error {
 	if err := d.clearLegacyDocker(ctx); err != nil {
 		return err
 	}
-	var conflicts []string
-	for _, rt := range supportedRuntimes() {
-		if rt == requested {
-			continue
-		}
-		b := d.backends[rt]
-		ib, ok := b.(instanceBackend)
-		if !ok {
-			running, err := b.IsRunning(ctx)
-			if err != nil {
-				return err
-			}
-			if running {
-				conflicts = append(conflicts, string(rt))
-			}
-			continue
-		}
-		instances, err := ib.RunningInstances(ctx)
-		if err != nil {
-			if commandNotFound(err) {
-				continue
-			}
-			return err
-		}
-		for _, name := range instances {
-			conflicts = append(conflicts, name)
-		}
+	conflicts, err := d.otherRunningInstances(ctx, requested)
+	if err != nil {
+		return err
 	}
 	if len(conflicts) == 0 {
 		return nil
@@ -236,38 +212,104 @@ func (d *Dispatcher) Prepare(ctx context.Context, requested Runtime) error {
 	reply, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(reply)) {
 	case "y", "yes":
-		for _, rt := range supportedRuntimes() {
-			if rt == requested {
-				continue
-			}
-			b := d.backends[rt]
-			ib, ok := b.(instanceBackend)
+		for _, name := range conflicts {
+			ib, ok := d.instanceBackendFor(name)
 			if !ok {
-				running, err := b.IsRunning(ctx)
-				if err != nil {
-					return err
-				}
-				if running {
-					if err := b.Stop(ctx); err != nil {
-						return err
-					}
-				}
 				continue
 			}
-			instances, err := ib.RunningInstances(ctx)
-			if err != nil {
+			if err := ib.StopInstance(ctx, name); err != nil {
 				return err
-			}
-			for _, name := range instances {
-				if err := ib.StopInstance(ctx, name); err != nil {
-					return err
-				}
 			}
 		}
 		return nil
 	default:
 		return fmt.Errorf("keeping %s running", names)
 	}
+}
+
+// otherRunningInstances enumerates every managed instance running on the
+// host, across runtimes and projects, except the current project's instance
+// of the requested runtime (that is the instance Prepare is about to start;
+// reusing it is legitimate). Only the current project's own instance is
+// ignored: another project's instance of the SAME runtime is a conflict,
+// both for the one-active-instance policy and because the per-project
+// backends can contend for the same host ports.
+func (d *Dispatcher) otherRunningInstances(ctx context.Context, requested Runtime) ([]string, error) {
+	own := d.ownInstanceName(requested)
+	var conflicts []string
+	for _, rt := range supportedRuntimes() {
+		b := d.backends[rt]
+		ib, ok := b.(instanceBackend)
+		if !ok {
+			// Backend without per-instance enumeration (none today outside
+			// tests): its project-scoped IsRunning is the only signal.
+			if rt == requested {
+				continue
+			}
+			running, err := b.IsRunning(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if running {
+				conflicts = append(conflicts, string(rt))
+			}
+			continue
+		}
+		instances, err := ib.RunningInstances(ctx)
+		if err != nil {
+			if commandNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, name := range instances {
+			if rt == requested && name == own {
+				// The current project's own instance of the requested
+				// runtime: not a conflict, Prepare reuses it.
+				continue
+			}
+			conflicts = append(conflicts, name)
+		}
+	}
+	return conflicts, nil
+}
+
+// ownInstanceName returns the current project's instance name for a runtime,
+// or "" when the backend is not instance-bound.
+func (d *Dispatcher) ownInstanceName(rt Runtime) string {
+	switch b := d.backends[rt].(type) {
+	case *Tart:
+		return b.VMName()
+	case *AgentVM:
+		return b.VMName()
+	case *MicrosandboxRuntime:
+		return b.InstanceName()
+	}
+	return ""
+}
+
+// instanceBackendFor returns the backend able to stop the named instance.
+func (d *Dispatcher) instanceBackendFor(name string) (instanceBackend, bool) {
+	for _, rt := range supportedRuntimes() {
+		ib, ok := d.backends[rt].(instanceBackend)
+		if !ok {
+			continue
+		}
+		if d.ownInstanceName(rt) == name {
+			return ib, true
+		}
+		// Names not bound to this project may belong to this runtime's
+		// global namespace; probe by enumeration.
+		instances, err := ib.RunningInstances(context.Background())
+		if err == nil {
+			for _, n := range instances {
+				if n == name {
+					return ib, true
+				}
+			}
+		}
+	}
+	return nil, false
 }
 
 // Check verifies the single running backend and reports its Albert provider

@@ -333,15 +333,14 @@ func Explain(s Settings) []ExplainEntry {
 	return out
 }
 
-// FormatExplain renders explain entries as stable text rows.
+// FormatExplain renders explain entries as stable text rows. Unset fields
+// still show their effective value — the built-in default — with source
+// "default"; the Set flag distinguishes explicit values (explicit empty
+// included) from defaults.
 func FormatExplain(entries []ExplainEntry) string {
 	var b strings.Builder
 	for _, e := range entries {
-		value := e.Value
-		if !e.Set {
-			value = "" // unset fields show the default with its source
-		}
-		fmt.Fprintf(&b, "%-16s %-8s %s\n", e.Field, e.Source, value)
+		fmt.Fprintf(&b, "%-16s %-8s %s\n", e.Field, e.Source, e.Value)
 	}
 	return b.String()
 }

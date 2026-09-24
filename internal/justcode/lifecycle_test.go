@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -339,5 +340,32 @@ func TestPrepareDetectsConflictsInOtherProjects(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "opencode-jc-b-22222") {
 		t.Errorf("conflict message should name the running instance, got: %v", err)
+	}
+}
+
+func TestPrepareDetectsSameRuntimeOtherProject(t *testing.T) {
+	withGOOS(t, "linux")
+	if isTerminal(os.Stdin) {
+		t.Skip("stdin is a TTY; the non-interactive refusal path is not testable here")
+	}
+	// Observation Codex PR #81 : une instance du MÊME runtime dans un autre
+	// projet doit compter comme conflit — l'ancien code sautait tout le
+	// runtime demandé et ne la voyait jamais.
+	surface := newFakeInstanceSurface()
+	d := NewDispatcherForInstance(Config{}, "jc-a-11111")
+	d.backends[RuntimeTart] = &fakeInstanceBackend{surface: surface, id: RuntimeTart, instance: "opencode-jc-a-11111"}
+
+	surface.running["opencode-jc-b-22222"] = true // autre projet, même runtime
+
+	err := d.Prepare(context.Background(), RuntimeTart)
+	if err == nil || !strings.Contains(err.Error(), "opencode-jc-b-22222") {
+		t.Fatalf("expected conflict on the other project's instance, got %v", err)
+	}
+
+	// L'instance du projet courant ne doit PAS être un conflit (réutilisation).
+	surface.running["opencode-jc-a-11111"] = true
+	surface.running["opencode-jc-b-22222"] = false
+	if err := d.Prepare(context.Background(), RuntimeTart); err != nil {
+		t.Fatalf("own instance must not be a conflict: %v", err)
 	}
 }
