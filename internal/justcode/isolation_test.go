@@ -12,7 +12,9 @@ func TestResolveIsolation(t *testing.T) {
 		flag, pref string
 		want       Isolation
 	}{
-		{"default is backend", "", "", IsolationBackend},
+		// P12: the zero-flag default is full, so the agent (and its provider
+		// credentials) lives in the sandbox unless the user asks otherwise.
+		{"default is full", "", "", IsolationFull},
 		{"flag backend", "backend", "", IsolationBackend},
 		{"flag full", "full", "", IsolationFull},
 		{"flag beats preference", "full", "backend", IsolationFull},
@@ -48,12 +50,13 @@ func TestResolveIsolationRejectsUnknown(t *testing.T) {
 }
 
 func TestLoadConfigIsolation(t *testing.T) {
-	if got := LoadConfig(lookupFrom(nil)).Isolation; got != IsolationBackend {
-		t.Errorf("default Isolation = %q, want backend", got)
+	// P12: the zero-flag default is full.
+	if got := LoadConfig(lookupFrom(nil)).Isolation; got != IsolationFull {
+		t.Errorf("default Isolation = %q, want full", got)
 	}
-	cfg := LoadConfig(lookupFrom(map[string]string{"ISOLATION": "full"}))
-	if cfg.Isolation != IsolationFull {
-		t.Errorf("Isolation = %q, want full", cfg.Isolation)
+	cfg := LoadConfig(lookupFrom(map[string]string{"ISOLATION": "backend"}))
+	if cfg.Isolation != IsolationBackend {
+		t.Errorf("Isolation = %q, want backend (the explicit escape still works)", cfg.Isolation)
 	}
 	if cfg.IsolationErr != nil {
 		t.Fatalf("unexpected IsolationErr: %v", cfg.IsolationErr)
@@ -100,7 +103,7 @@ func TestLoadConfigInvalidIsolationIsNotFatal(t *testing.T) {
 	if cfg.IsolationErr == nil {
 		t.Fatal("expected IsolationErr for an invalid value")
 	}
-	if cfg.Isolation != IsolationBackend {
-		t.Errorf("Isolation = %q, want the backend default despite the error", cfg.Isolation)
+	if cfg.Isolation != IsolationFull {
+		t.Errorf("Isolation = %q, want the full default despite the error", cfg.Isolation)
 	}
 }

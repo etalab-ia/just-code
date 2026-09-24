@@ -3,6 +3,7 @@ package justcode
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,5 +255,60 @@ func TestApplyDotenvDoesNotOverrideExisting(t *testing.T) {
 	}
 	if got := os.Getenv("NEWKEY"); got != "newval" {
 		t.Errorf("NEWKEY = %q, want newval", got)
+	}
+}
+
+// TestWorkspaceDirSetRecordsExplicitConfiguration pins the provenance the
+// launch path depends on: only an explicit WORKSPACE_DIR (or the legacy
+// PROJECT_DIR) may suppress the project-root default.
+func TestWorkspaceDirSetRecordsExplicitConfiguration(t *testing.T) {
+	if LoadConfig(lookupFrom(nil)).WorkspaceDirSet {
+		t.Fatal("an unset WORKSPACE_DIR must not be reported as explicit")
+	}
+	if now := LoadConfig(lookupFrom(map[string]string{"WORKSPACE_DIR": "./w"})).WorkspaceDirSet; !now {
+		t.Fatal("WORKSPACE_DIR must be recorded as explicit")
+	}
+	if legacy := LoadConfig(lookupFrom(map[string]string{"PROJECT_DIR": "./w"})).WorkspaceDirSet; !legacy {
+		t.Fatal("the legacy PROJECT_DIR must be recorded as explicit too")
+	}
+	// An explicitly empty value has no meaning: it must not suppress the
+	// project-root default while also being unusable as a path.
+	if empty := LoadConfig(lookupFrom(map[string]string{"WORKSPACE_DIR": ""})).WorkspaceDirSet; empty {
+		t.Fatal("an empty WORKSPACE_DIR must not count as explicit")
+	}
+}
+
+// TestLoadConfigEnvDoesNotApplyDotenvImplicitly pins the P12 change: a .env in
+// the working directory is no longer read behind the user's back, and its
+// presence is reported with the migration command instead of being ignored
+// silently.
+func TestLoadConfigEnvDoesNotApplyDotenvImplicitly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("JUST_CODE_HIDDEN=from-dotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	// The .env also sets a value the loader reads, so "not applied" is
+	// observable rather than merely claimed.
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("JUST_CODE_MODEL=from-dotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JUST_CODE_MODEL", "")
+
+	stderr := captureStderr(t, func() {
+		_ = LoadConfigEnv()
+	})
+	if !strings.Contains(stderr, "was NOT read") || !strings.Contains(stderr, "config import-env") {
+		t.Fatalf("the skipped .env must be reported with the migration path: %q", stderr)
+	}
+	if os.Getenv("JUST_CODE_MODEL") != "" {
+		t.Fatalf("the .env must not be applied to the environment, got %q", os.Getenv("JUST_CODE_MODEL"))
 	}
 }

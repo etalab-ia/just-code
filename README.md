@@ -105,7 +105,9 @@ $env:ALBERT_API_KEY = "ta-clé"
 just-code --microsandbox
 ```
 
-Sur macOS et Linux, sans autre configuration, chaque commande qui cible un runtime exige `--microsandbox`, `--tart` ou `--agent-vm`. Sur Windows, Microsandbox est le seul runtime pris en charge et il est sélectionné par défaut. La commande `just-code` démarre le backend, attend qu'il soit prêt, puis attache le TUI OpenCode natif.
+`just-code` sans argument utilise **Microsandbox en isolation `full`** : l'agent, sa TUI et ses identifiants tournent dans la microVM, dont l'espace de travail est scellé (aucun fichier de l'hôte n'y est monté). `--tart` et `--agent-vm` restent disponibles explicitement, par flag ou via `RUNTIME`.
+
+La commande prépare l'espace de travail de l'invité, démarre l'agent et attache la TUI OpenCode native.
 
 Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la section [Configuration](#configuration).
 
@@ -179,9 +181,9 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 | Variable | Requise | Valeur par défaut | Rôle |
 | --- | --- | --- | --- |
 | `ALBERT_API_KEY` | oui | aucune | Clé utilisée par le provider Albert API. Ne la commite jamais. |
-| `RUNTIME` | non | aucun sur macOS/Linux ; `microsandbox` sur Windows | Runtime préféré : `microsandbox`, `tart` ou `agent-vm`. Un flag explicite reste prioritaire. |
-| `ISOLATION` | non | `backend` | Frontière d'exécution de l'agent : `backend` (le serveur tourne dans le sandbox, le TUI s'y attache depuis l'hôte) ou `full` (tout l'agent, TUI compris, tourne dans l'invité). Un flag explicite reste prioritaire. |
-| `WORKSPACE_DIR` | non | `./workspace` | Répertoire hôte monté sur `/workspace` dans l'invité. Un chemin relatif est résolu depuis le répertoire de lancement. |
+| `RUNTIME` | non | `microsandbox` | Runtime préféré : `microsandbox`, `tart` ou `agent-vm`. Un flag explicite reste prioritaire. Microsandbox est le défaut sur toutes les plateformes depuis P12, parce que c'est le runtime à espace de travail scellé. |
+| `ISOLATION` | non | `full` | Frontière d'exécution de l'agent : `full` (tout l'agent, TUI et identifiants compris, tourne dans l'invité) ou `backend` (le serveur tourne dans le sandbox et le TUI s'y attache depuis l'hôte). Le défaut est `full` depuis P12 : le parcours à zéro option est celui où l'agent reste dans le sandbox. Un flag explicite reste prioritaire. |
+| `WORKSPACE_DIR` | non | racine du projet (Microsandbox) ; `./workspace` sinon | **Source** du contenu transféré vers l'invité en Microsandbox (voir [Sécurité du workspace](#sécurité-du-workspace)) ; répertoire monté sur `/workspace` pour Tart et agent-vm. Un chemin relatif est résolu depuis le répertoire de lancement. |
 | `PROJECT_DIR` | non | — | Ancien nom de `WORKSPACE_DIR`, encore accepté avec un avertissement. Ne pas utiliser dans une nouvelle configuration. |
 | `OPENCODE_SERVER_USERNAME` | non | `opencode` | Nom d'utilisateur de l'authentification HTTP du backend. |
 | `OPENCODE_SERVER_PASSWORD` | non | `albert-dev-pass` | Mot de passe HTTP du backend. Une valeur explicitement vide (`OPENCODE_SERVER_PASSWORD=`) désactive l'authentification. |
@@ -200,11 +202,11 @@ Vérifie que `.env` est ignoré par Git avant d'y enregistrer ta clé. Si ton pr
 
 ### Priorité et prise d'effet
 
-- Une variable déjà exportée dans l'environnement prime sur toute valeur du fichier `.env`.
-- Le `.env` du répertoire de lancement prime sur un éventuel `.env` placé à côté de l'exécutable.
+- **Le `.env` n'est plus lu implicitement** (P12). Lancher dépendait d'un fichier non versionné du répertoire courant — exactement le genre de fichier qui porte des secrets et que l'espace scellé existe pour tenir hors de l'invité — et deux invocations du même binaire pouvaient se comporter différemment. Les variables **exportées** restent honorées ; un `.env` présent est signalé avec la commande qui l'adopte explicitement (`just-code config import-env`). Pour ne rien casser le temps de migrer, `JUST_CODE_LOAD_DOTENV=1` rétablit l'ancien chargement, en le signalant.
 - `--microsandbox`, `--tart` ou `--agent-vm` prime sur `RUNTIME`.
 - `--isolation backend|full` prime sur `ISOLATION` ; un flag explicite reste utilisable même si `ISOLATION` contient une valeur invalide.
-- Le montage `WORKSPACE_DIR` est figé à la création du sandbox ou de la VM. Le modifier impose `just-code restart --<runtime>`, qui recrée l'environnement.
+- Sans `WORKSPACE_DIR`, la **racine du projet** est la source du transfert (Microsandbox). Un `WORKSPACE_DIR` explicite est toujours honoré tel quel.
+- Le montage `WORKSPACE_DIR` est figé à la création du sandbox ou de la VM **pour Tart et agent-vm**. Le modifier y impose `just-code restart --<runtime>`, qui recrée l'environnement. En Microsandbox il n'y a pas de montage : changer la source prend effet au `workspace sync` suivant, sans recréation.
 - Le niveau d'isolation est figé à la création du sandbox Microsandbox : ses scripts de démarrage sont persistés et ne peuvent pas être réécrits. Basculer `ISOLATION` sur un sandbox existant est refusé avec un message ; `just-code restart --microsandbox` le recrée dans le mode demandé.
 - Une modification des identifiants HTTP nécessite `just-code stop`, puis un nouveau lancement pour redémarrer le backend avec les nouvelles valeurs.
 - Une modification de `TART_MTU` nécessite `just-code stop`, puis `just-code --tart`. Elle ne nécessite pas de recréer la VM.

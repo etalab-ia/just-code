@@ -90,10 +90,16 @@ func TestResolveRuntimeErrors(t *testing.T) {
 			t.Errorf("resolveRuntimeOn(%q, %q, linux): expected error", c.flag, c.pref)
 		}
 	}
-	// The empty-selection error only exists off Windows; there the default is
-	// microsandbox (covered by TestResolveRuntimeOnWindows).
-	if _, err := resolveRuntimeOn("", "", "linux"); err == nil {
-		t.Errorf("resolveRuntimeOn(\"\", \"\", linux): expected error")
+	// An empty selection is never an error: Microsandbox is the built-in
+	// default on every platform (P12).
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		got, err := resolveRuntimeOn("", "", goos)
+		if err != nil {
+			t.Errorf("resolveRuntimeOn(\"\", \"\", %s): %v", goos, err)
+		}
+		if got != RuntimeMicrosandbox {
+			t.Errorf("resolveRuntimeOn(\"\", \"\", %s) = %q, want microsandbox", goos, got)
+		}
 	}
 }
 
