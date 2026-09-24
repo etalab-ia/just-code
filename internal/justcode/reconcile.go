@@ -537,7 +537,18 @@ func (m *MicrosandboxRuntime) workspaceProvenanceChanged(ctx context.Context) bo
 		// rather than assuming the safer answer.
 		return true
 	}
-	return mounted != ""
+	if mounted != "" {
+		return true
+	}
+	// No recognized bind source is not proof of a sealed workspace. Sharing
+	// the guard's question here keeps the plan consistent: a shape the
+	// runtime does not recognize as owned must classify as recreate, or
+	// Reconcile would plan a refresh and then fail mid-apply in Start.
+	owned, err := m.Client.WorkspaceOwned(ctx, m.InstanceName())
+	if err != nil {
+		return true
+	}
+	return !owned
 }
 
 // applyReconcileOp executes one plan operation. Every operation is

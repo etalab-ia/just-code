@@ -565,15 +565,34 @@ func TestStructuralExclusionsCannotBeOverridden(t *testing.T) {
 		}
 	}
 	// And the manifest says so, so the CLI can refuse the decision instead of
-	// recording a rule that never applies.
+	// recording a rule that never applies. The overridable side is checked on
+	// a dotenv file, which is a content exclusion the user may genuinely
+	// revisit (a .gitignore would be included, not excluded, and so could not
+	// exercise this).
+	writeFile(t, dir, ".env", "SECRET=1\n")
+	man, err = ResolveTransferSet(context.Background(), dir, TransferOptions{
+		OptIn:        map[string]bool{"link": true, "big.bin": true, ".env": true},
+		MaxFileBytes: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range man.Excluded() {
 		if e.Rel == "link" || e.Rel == "big.bin" {
 			if e.Overridable {
 				t.Fatalf("%s must be reported as not overridable: %+v", e.Rel, e)
 			}
 		}
-		if e.Rel == ".gitignore" && !e.Overridable {
-			t.Fatalf("a content exclusion must stay overridable: %+v", e)
+	}
+	// A content exclusion stays overridable, and the recorded decision is
+	// honoured (this is what makes 'workspace allow' meaningful).
+	var envIncluded bool
+	for _, e := range man.Included() {
+		if e.Rel == ".env" {
+			envIncluded = e.OptIn
 		}
+	}
+	if !envIncluded {
+		t.Fatalf("a dotenv exclusion must remain overridable by an explicit decision: %+v", man.Entries)
 	}
 }

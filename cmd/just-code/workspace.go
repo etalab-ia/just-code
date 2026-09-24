@@ -54,13 +54,13 @@ func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRo
 		}
 		return 0, nil
 	case "allow":
-		if len(args) < 2 {
-			return 2, fmt.Errorf("workspace allow needs a path relative to the project root")
+		if len(args) != 2 {
+			return 2, fmt.Errorf("workspace allow takes exactly one path relative to the project root")
 		}
 		return workspaceAllowCmd(store, projectRoot, args[1])
 	case "deny":
-		if len(args) < 2 {
-			return 2, fmt.Errorf("workspace deny needs a path relative to the project root")
+		if len(args) != 2 {
+			return 2, fmt.Errorf("workspace deny takes exactly one path relative to the project root")
 		}
 		if err := store.Revoke(justcode.NormalizeTransferPath(args[1])); err != nil {
 			return 1, err

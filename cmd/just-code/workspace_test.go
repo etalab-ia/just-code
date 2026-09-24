@@ -147,3 +147,15 @@ func TestWorkspaceSyncRejectsUnknownOption(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkspaceAllowDenyTakeExactlyOnePath pins the argument strictness: an
+// extra word must not be silently ignored, or a mistyped path reads as "the
+// decision was recorded" while nothing was.
+func TestWorkspaceAllowDenyTakeExactlyOnePath(t *testing.T) {
+	for _, args := range [][]string{{"allow"}, {"allow", "a", "b"}, {"deny"}, {"deny", "a", "b"}} {
+		code, err := workspaceCmd(args, justcode.Config{}, "jc-x", t.TempDir())
+		if code != 2 || err == nil {
+			t.Fatalf("%v must be a usage error: code=%d err=%v", args, code, err)
+		}
+	}
+}

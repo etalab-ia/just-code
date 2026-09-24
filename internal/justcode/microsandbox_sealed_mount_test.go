@@ -45,6 +45,15 @@ func TestMSBCreateOptionsNeverBindMountAWorkspace(t *testing.T) {
 // reading the provenance check depends on. The sealed model needs the
 // question "does this guest have a host-mounted workspace?", which the raw
 // document answers even when the SDK's typed view cannot see the mounts.
+//
+// Fixture provenance: the bind shapes are the live-captured document shape
+// (see persistedWorkspaceBindMount, captured from a real sandbox); the owned
+// spellings include the selector the SDK's create path emits, pinned by
+// upstream's TestOwnedMountWireShape. The persisted spelling of an owned
+// mount has NOT been captured from a live sealed sandbox yet (this
+// environment cannot boot one: no /dev/kvm), which is why the parser accepts
+// every plausible variant and why a live `start` + `workspace sync` against a
+// real sandbox remains the confirmation step before release.
 func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -53,8 +62,18 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:  "owned dir",
+			name:  "owned type",
 			doc:   `{"mounts":[{"type":"Owned","guest":"/workspace"}]}`,
+			owned: true,
+		},
+		{
+			name:  "owned selector without a type, as the create path emits",
+			doc:   `{"mounts":[{"owned":"dir","guest":"/workspace","quota_mib":null}]}`,
+			owned: true,
+		},
+		{
+			name:  "owned with the options blob a persisted entry carries",
+			doc:   `{"mounts":[{"type":"Owned","guest":"/workspace","options":{"readonly":false,"noexec":false,"nosuid":false,"nodev":false},"stat_virtualization":"strict","host_permissions":"private","follow_root_symlinks":false,"quota_mib":null}]}`,
 			owned: true,
 		},
 		{
@@ -64,6 +83,14 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 		{
 			name: "bind with implicit type",
 			doc:  `{"mounts":[{"host":"/home/u/p","guest":"/workspace"}]}`,
+		},
+		{
+			name: "bind type with no host recorded is still host-backed",
+			doc:  `{"mounts":[{"type":"Bind","guest":"/workspace"}]}`,
+		},
+		{
+			name: "lowercase bind spelling",
+			doc:  `{"mounts":[{"type":"bind","host":"/host/p","guest":"/workspace"}]}`,
 		},
 		{
 			name: "named volume is not a host path",
@@ -93,6 +120,12 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 			}
 			if owned != tc.owned {
 				t.Fatalf("owned = %v, want %v", owned, tc.owned)
+			}
+			// Fail-safe cross-check: the two parsers must never disagree
+			// about the same mount. A host path means not owned, always.
+			host, herr := parseWorkspaceMount(tc.doc, "/workspace")
+			if herr == nil && host != "" && owned {
+				t.Fatalf("the parsers disagree: a host path %q was reported as owned storage", host)
 			}
 		})
 	}

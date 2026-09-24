@@ -156,7 +156,26 @@ func TestInstanceStateRoundTripAndSchemaGuard(t *testing.T) {
 	}
 }
 
+// isolateHostState points the host state directory at a disposable HOME.
+//
+// Reconcile reads and writes DefaultStateDir(), which on a developer's machine
+// is the real ~/.local/state/just-code — holding live bindings, transfer
+// decisions and journals for their actual instances. A test that reaches
+// Reconcile must never read or remove that, so every such test isolates HOME
+// first.
+func isolateHostState(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+}
+
 func TestReconcileNoOpWritesNothing(t *testing.T) {
+	isolateHostState(t)
 	// Identical desired state with a healthy guest must not touch the
 	// guest or rewrite the state file (mtime included).
 	client := &fakeMSBClient{exists: true, status: "running"}
@@ -187,12 +206,15 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 		t.Fatal("no-op reconcile must not rewrite the state file")
 	}
 	// A no-op still inspects the instance (lookup, config read, mount
-	// check) to classify; what it must not do is mutate the guest.
+	// and workspace-provenance reads) to classify; what it must not do is
+	// mutate the guest.
 	for _, call := range client.calls[callsBefore:] {
 		switch {
 		case strings.HasPrefix(call, "lookup "),
 			strings.HasPrefix(call, "readconfig "),
-			strings.HasPrefix(call, "mount "):
+			strings.HasPrefix(call, "mount "),
+			strings.HasPrefix(call, "owned "),
+			strings.HasPrefix(call, "readenv "):
 		default:
 			t.Fatalf("no-op reconcile mutated the guest: %q", call)
 		}
@@ -202,6 +224,7 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 }
 
 func TestReconcileResumesInterruptedApply(t *testing.T) {
+	isolateHostState(t)
 	// An interrupted apply journals its remaining ops; the next run of the
 	// same revision resumes at the unfinished operation instead of
 	// restarting from scratch.
@@ -236,6 +259,7 @@ func TestReconcileResumesInterruptedApply(t *testing.T) {
 }
 
 func TestReconcileFinishesPendingJournalDespiteHealthyGuest(t *testing.T) {
+	isolateHostState(t)
 	// A failed op journals the desired revision with Pending set. On the
 	// next run the guest may look healthy (the failed refresh never took
 	// effect), but the journal must still be executed — returning no-op
@@ -270,6 +294,7 @@ func TestReconcileFinishesPendingJournalDespiteHealthyGuest(t *testing.T) {
 }
 
 func TestReconcilePersistsJournalBeforeFirstSideEffect(t *testing.T) {
+	isolateHostState(t)
 	// An abrupt kill after an op produced side effects but before the
 	// error-path journal write must not replay completed mutations. The
 	// journal is persisted before execution and advanced after each op.
@@ -290,6 +315,7 @@ func TestReconcilePersistsJournalBeforeFirstSideEffect(t *testing.T) {
 }
 
 func TestReconcileSurfacesRecreateAsError(t *testing.T) {
+	isolateHostState(t)
 	// A creation-fixed change must come back as a typed error, never as an
 	// automatic Clean. The instance is untouched.
 	client := &fakeMSBClient{exists: true, status: "running"}
@@ -322,6 +348,7 @@ func TestReconcileSurfacesRecreateAsError(t *testing.T) {
 }
 
 func TestReconcileJournalsOnFailure(t *testing.T) {
+	isolateHostState(t)
 	// When an op fails, the remaining ops are journaled so the next run
 	// resumes there.
 	client := &fakeMSBClient{exists: true, status: "stopped", startErr: assertErr("boom")}
@@ -342,6 +369,7 @@ func TestReconcileJournalsOnFailure(t *testing.T) {
 }
 
 func TestReconcileBreaksStaleSetupLock(t *testing.T) {
+	isolateHostState(t)
 	// Reconcile serializes through the per-instance setup lock. A lock
 	// left by a dead process is stale and must be broken so reconcile
 	// proceeds; a live holder blocks (the Acquire contract), which is why
@@ -387,6 +415,7 @@ func errorsAs(err error, target **ErrRecreateNeeded) bool {
 // Nothing may be changed, and the journal must survive so a later run with a
 // resolvable credential resumes here.
 func TestReconcileRefusesCredentialOpsWhenUnresolved(t *testing.T) {
+	isolateHostState(t)
 	client := &fakeMSBClient{exists: true, status: "stopped"}
 	m := newTestMicrosandbox(t, client)
 	// No resolvable credential: neither the env key nor a stored entry.
@@ -472,6 +501,7 @@ func TestInstanceStateReadsLegacyNumericCredentialGen(t *testing.T) {
 // .env, because with the sealed workspace that file is not mounted. The scan's
 // finding is hygiene advice; the transfer filter is the boundary.
 func TestReconcileProceedsWithDotenvInTheCheckout(t *testing.T) {
+	isolateHostState(t)
 	client := &fakeMSBClient{exists: true, status: "running"}
 	m := newTestMicrosandbox(t, client)
 	m.Probe = func(context.Context, string, string, string) HealthProbe {

@@ -445,12 +445,19 @@ func parseWorkspaceMount(configJSON, guestPath string) (string, error) {
 
 // parseOwnedWorkspace reports whether the document mounts guestPath as owned
 // storage (no host source). A bind mount and an owned volume are mutually
-// exclusive at the same guest path, so this is the provenance question the
-// sealed model needs: "does this guest have a host-mounted workspace?".
+// exclusive at the same guest path, so this answers the provenance question
+// the sealed model needs: "does this guest have a host-mounted workspace?".
 //
-// The mount source fields are matched case-insensitively because the
-// runtime's serializer has emitted both spellings across versions; the
-// absence of any host source is what makes the mount owned.
+// Owned storage is therefore recognized by the ABSENCE of a host source
+// rather than by one expected spelling: the create path emits {"owned":"dir"}
+// (pinned by the SDK's TestOwnedMountWireShape) while the persisted document
+// carries a mount "type", and no single string covers both. Being permissive
+// here costs nothing, whereas a miss would mean refusing to start a
+// legitimate sealed sandbox.
+//
+// What is NOT permissive is host-backed storage: an explicit bind type, or
+// any source field, is not owned even when the source is empty. A miss here
+// is the leak this whole model removes.
 func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 	var raw persistedMounts
 	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
@@ -460,12 +467,12 @@ func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 		if m.Guest != guestPath {
 			continue
 		}
-		if strings.EqualFold(m.Type, "Owned") {
-			return true, nil
+		hostBacked := m.Host != "" || m.Name != "" || m.Disk != "" ||
+			strings.EqualFold(m.Type, "Bind") || strings.EqualFold(m.Type, "Named") || strings.EqualFold(m.Type, "Disk")
+		if hostBacked {
+			return false, nil
 		}
-		// No declared host source on a workspace mount means owned storage;
-		// any host source means the legacy bind model.
-		return m.Host == "" && m.Name == "" && m.Disk == "", nil
+		return true, nil
 	}
 	return false, nil
 }
