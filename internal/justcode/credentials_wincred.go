@@ -33,9 +33,11 @@ func (w *WinCredStore) Kind() string { return "credential-manager" }
 
 // wincredScript is the P/Invoke surface. It reads one line from stdin
 // (the secret, without its newline), then performs the operation named
-// in $args[0] against the target name in $args[1]. CRED_TYPE_GENERIC=1,
-// CRED_PERSIST_LOCAL_MACHINE=2. The value is written to stdout only for
-// the "get" operation.
+// in $op against the target name in $target — both set as assignments
+// prepended to the script by the caller, because `powershell -Command`
+// joins everything after the flag into one command string and never
+// populates $args. CRED_TYPE_GENERIC=1, CRED_PERSIST_LOCAL_MACHINE=2.
+// The value is written to stdout only for the "get" operation.
 const wincredScript = `
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
@@ -60,6 +62,7 @@ public static class Cred {
   }
 }
 "@
+` + "$op = '%s'; $target = '%s'\n" + `
 `
 
 // Put stores the credential. The secret is the stdin line; the operation
@@ -69,7 +72,7 @@ func (w *WinCredStore) Put(ctx context.Context, kind CredentialKind, value strin
 $secret = [Console]::In.ReadLine()
 $blob = [System.Text.Encoding]::Unicode.GetBytes($secret)
 $cred = New-Object Cred+CREDENTIAL
-$cred.Flags = 0; $cred.Type = 1; $cred.TargetName = $args[1]
+$cred.Flags = 0; $cred.Type = 1; $cred.TargetName = $target
 $cred.Comment = ''; $cred.Persist = 2
 $cred.AttributeCount = 0; $cred.TargetAlias = $null; $cred.UserName = $null
 $cred.CredentialBlobSize = $blob.Length
@@ -78,8 +81,9 @@ $cred.CredentialBlob = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($b
 if (-not [Cred]::CredWriteW([ref]$cred, 0)) { exit 2 }
 exit 0
 `
+	script = fmt.Sprintf(script, "put", credentialService(kind))
 	res, err := w.runner().RunStdin(ctx, strings.NewReader(value+"\n"),
-		"powershell", "-NoProfile", "-NonInteractive", "-Command", script, "put", credentialService(kind))
+		"powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	if err != nil {
 		return classifyExecError("add", w.Kind(), res, err)
 	}
@@ -98,7 +102,7 @@ exit 0
 func (w *WinCredStore) Get(ctx context.Context, kind CredentialKind) (string, error) {
 	script := wincredScript + `
 $ptr = [IntPtr]::Zero
-if (-not [Cred]::CredReadW($args[1], 1, 0, [ref]$ptr)) {
+if (-not [Cred]::CredReadW($target, 1, 0, [ref]$ptr)) {
   $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
   if ($err -eq 1168) { exit 1 }  # ERROR_NOT_FOUND
   exit 2
@@ -110,8 +114,9 @@ $bytes = New-Object byte[] $cred.CredentialBlobSize
 [System.Text.Encoding]::Unicode.GetString($bytes)
 exit 0
 `
+	script = fmt.Sprintf(script, "get", credentialService(kind))
 	res, err := w.runner().Run(ctx, "powershell", "-NoProfile", "-NonInteractive",
-		"-Command", script, "get", credentialService(kind))
+		"-Command", script)
 	if err != nil {
 		return "", classifyExecError("get", w.Kind(), res, err)
 	}
@@ -132,15 +137,16 @@ exit 0
 
 func (w *WinCredStore) Remove(ctx context.Context, kind CredentialKind) error {
 	script := wincredScript + `
-if (-not [Cred]::CredDeleteW($args[1], 1, 0)) {
+if (-not [Cred]::CredDeleteW($target, 1, 0)) {
   $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
   if ($err -eq 1168) { exit 1 }  # ERROR_NOT_FOUND
   exit 2
 }
 exit 0
 `
+	script = fmt.Sprintf(script, "remove", credentialService(kind))
 	res, err := w.runner().Run(ctx, "powershell", "-NoProfile", "-NonInteractive",
-		"-Command", script, "remove", credentialService(kind))
+		"-Command", script)
 	if err != nil {
 		return classifyExecError("remove", w.Kind(), res, err)
 	}
@@ -160,7 +166,7 @@ exit 0
 func (w *WinCredStore) Verify(ctx context.Context) error {
 	script := wincredScript + `
 $ptr = [IntPtr]::Zero
-if (-not [Cred]::CredReadW($args[1], 1, 0, [ref]$ptr)) {
+if (-not [Cred]::CredReadW($target, 1, 0, [ref]$ptr)) {
   $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
   if ($err -eq 1168) { exit 0 }  # not found: store reachable
   exit 2
@@ -168,8 +174,9 @@ if (-not [Cred]::CredReadW($args[1], 1, 0, [ref]$ptr)) {
 [Cred]::CredFree($ptr)
 exit 3  # sentinel unexpectedly present
 `
+	script = fmt.Sprintf(script, "verify", credentialService("__verify__"))
 	res, err := w.runner().Run(ctx, "powershell", "-NoProfile", "-NonInteractive",
-		"-Command", script, "verify", credentialService("__verify__"))
+		"-Command", script)
 	if err != nil {
 		return classifyExecError("verify", w.Kind(), res, err)
 	}

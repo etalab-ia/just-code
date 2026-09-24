@@ -28,6 +28,12 @@ import (
 // It is the guard against silent plaintext creation.
 var ErrFileStoreNotConsented = fmt.Errorf("file credential store not created: run 'just-code auth add --fallback' once to consent to an owner-only plaintext store")
 
+// ErrFileStoreAbsent is the read-side twin of ErrFileStoreNotConsented:
+// the fallback file does not exist, so there is nothing to report or
+// remove. Callers use it to distinguish "never consented, absent" from
+// an existing (possibly empty) store.
+var ErrFileStoreAbsent = fmt.Errorf("file credential store absent: no fallback file was ever created")
+
 // fileStoreSchemaVersion is the store file format version.
 const fileStoreSchemaVersion = 1
 
@@ -204,6 +210,12 @@ func (f *FileCredentialStore) Get(ctx context.Context, kind CredentialKind) (str
 func (f *FileCredentialStore) Remove(ctx context.Context, kind CredentialKind) error {
 	data, err := f.read()
 	if err != nil {
+		if err == ErrFileStoreNotConsented {
+			// No fallback file was ever created: there is
+			// nothing to remove. Idempotent, same outcome as
+			// removing an absent credential.
+			return ErrCredentialNotFound
+		}
 		return err
 	}
 	if _, ok := data.Credentials[string(kind)]; !ok {
@@ -218,7 +230,7 @@ func (f *FileCredentialStore) Remove(ctx context.Context, kind CredentialKind) e
 func (f *FileCredentialStore) Verify(ctx context.Context) error {
 	_, err := f.read()
 	if err == ErrFileStoreNotConsented {
-		return nil // absent store is a valid state, not a failure
+		return ErrFileStoreAbsent // absent store is a valid state, not a failure
 	}
 	return err
 }

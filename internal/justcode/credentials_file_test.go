@@ -197,10 +197,20 @@ func TestFileStoreTightensLoosePermissions(t *testing.T) {
 // side-effect free.
 func TestFileStoreVerifyNeverCreates(t *testing.T) {
 	s := newFileStore(t)
-	if err := s.Verify(context.Background()); err != nil {
-		t.Fatalf("Verify on absent store = %v, want nil (absent is valid)", err)
+	if err := s.Verify(context.Background()); !errors.Is(err, ErrFileStoreAbsent) {
+		t.Fatalf("Verify on absent store = %v, want ErrFileStoreAbsent", err)
 	}
 	if _, serr := os.Lstat(s.Path); serr == nil {
 		t.Fatal("Verify created the store file")
+	}
+}
+
+func TestFileStoreRemoveAbsentIsNotFound(t *testing.T) {
+	s := newFileStore(t)
+	if err := s.Remove(context.Background(), CredentialAlbert); !IsCredentialNotFound(err) {
+		t.Fatalf("Remove on never-created store = %v, want not-found", err)
+	}
+	if _, serr := os.Lstat(s.Path); serr == nil {
+		t.Fatal("Remove created the store file")
 	}
 }

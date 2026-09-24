@@ -155,6 +155,10 @@ func authStatusCmd() (int, error) {
 	fileStore, err := justcode.NewFileCredentialStore()
 	if err == nil {
 		if err := fileStore.Verify(ctx); err != nil {
+			if errors.Is(err, justcode.ErrFileStoreAbsent) {
+				fmt.Println("File fallback: absent (never created; 'auth add --fallback' consents to it)")
+				return 0, nil
+			}
 			var se *justcode.StoreError
 			if errors.As(err, &se) {
 				fmt.Printf("File fallback: %s (%s)\n", se.State, se.Err)
