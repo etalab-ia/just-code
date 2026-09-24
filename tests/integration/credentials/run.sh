@@ -21,6 +21,7 @@ check() { # check <nom> <attendu> <obtenu>
 MSB="${MSB_BIN:-$HOME/.microsandbox/bin/msb}"
 LAB="${MSB_CREDENTIAL_LAB:-/tmp/p02-lab}"
 SB="p02-cred-harness"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Préambule: environnement et versions ------------------------------------
 if [ ! -x "$MSB" ]; then
@@ -28,7 +29,7 @@ if [ ! -x "$MSB" ]; then
   exit 2
 fi
 
-WANT_CLI="$(node -e "console.log(require('$(dirname "$0")/pin.json').msb_cli_version)")"
+WANT_CLI="$(node -e "console.log(require('$HERE/pin.json').msb_cli_version)")"
 GOT_CLI="$("$MSB" --version 2>/dev/null | awk '{print $2}')"
 check "CLI msb épinglée" "$WANT_CLI" "$GOT_CLI"
 
@@ -38,9 +39,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- Cas non réseau: persistance de la référence (chemin CLI) ----------------
-# Le chemin CLI (--secret ENV@HOST) ne persiste que la référence source,
-# jamais la valeur brute. Reproduit sans réseau: création, inspection DB.
+# --- Préambule réseau: laboratoire requis ------------------------------------
+# T1/T2 (persistance) exigent une sandbox : elles sont des cas réseau.
 if [ "${MSB_CREDENTIAL_INTEGRATION_NETWORK:-0}" != "1" ]; then
   echo "cas réseau ignorés (MSB_CREDENTIAL_INTEGRATION_NETWORK=1 pour les activer)"
   echo
@@ -49,7 +49,6 @@ if [ "${MSB_CREDENTIAL_INTEGRATION_NETWORK:-0}" != "1" ]; then
   exit 0
 fi
 
-# --- Préambule réseau: laboratoire requis -------------------------------------
 for f in "$LAB/ca.crt" "$LAB/ca.key" "$LAB/srv.crt" "$LAB/srv.key"; do
   if [ ! -f "$f" ]; then
     echo "laboratoire incomplet: $f manquant (voir README.md)" >&2
@@ -63,8 +62,39 @@ if [ -z "$HOST_IP" ]; then
   exit 2
 fi
 
+# Prévol: les services du laboratoire répondent, sinon c'est un échec de
+# préparation (code 2), pas une régression de transport (T1-T11).
+if ! nc -z -w 5 127.0.0.1 8443 >/dev/null 2>&1; then
+  echo "laboratoire: serveur TLS echo absent sur 127.0.0.1:8443" >&2
+  exit 2
+fi
+if ! curl -s -m 10 --cacert "$LAB/ca.crt" -o /dev/null "https://127.0.0.1:8443/preflight" 2>/dev/null; then
+  echo "laboratoire: serveur TLS ne répond pas (certificat CA refusé)" >&2
+  exit 2
+fi
+if ! nslookup -timeout=5 -port=5354 p02lab.test 127.0.0.1 >/dev/null 2>&1 && \
+   ! dig +time=5 +short p02lab.test @127.0.0.1 -p 5354 >/dev/null 2>&1; then
+  echo "laboratoire: serveur DNS absent (p02lab.test non résolu sur 5354)" >&2
+  exit 2
+fi
+
 CANARY="p02-harness-canary-$RANDOM"
 export P02_CANARY="$CANARY"
+
+# Journal scopé à l'exécution courante : le serveur écho écrit dans
+# requests.log ; on bascule sur un journal frais par exécution en redémarrant
+# le serveur (évite à la fois l'historique et la corruption d'une troncature
+# sous un serveur actif).
+if [ -n "${MSB_CREDENTIAL_LAB_RESTART:-1}" ] && [ -f "$LAB/server.py" ]; then
+  pkill -f "server.py 8443" >/dev/null 2>&1 || true
+  sleep 1
+  (cd "$LAB" && python3 server.py 8443 > requests.log 2>&1 &)
+  sleep 12
+fi
+if [ ! -f "$LAB/requests.log" ]; then
+  echo "laboratoire: requests.log absent après préparation" >&2
+  exit 2
+fi
 
 # --- Création avec interception TLS sur 443 et 8443 ---------------------------
 "$MSB" create \
