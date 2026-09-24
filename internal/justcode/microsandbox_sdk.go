@@ -156,16 +156,14 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		msb.WithImage(spec.Image),
 		msb.WithCPUs(2),
 		msb.WithMemory(4096),
-		msb.WithWorkdir("/workspace"),
+		msb.WithWorkdir(msbGuestWorkspace),
 		msb.WithShell("/bin/sh"),
 		msb.WithEntrypoint("/bin/sh", "-c"),
 		msb.WithCmd("exec " + msbGuestEntrypoint),
 		msb.WithDetached(),
 		msb.WithRootDisk(msb.RootDisk.Managed(8 * 1024)),
 		msb.WithEnv(spec.Env),
-		msb.WithMounts(map[string]msb.MountConfig{
-			"/workspace": msb.Mount.Bind(spec.Workspace, msb.MountOptions{}),
-		}),
+		msb.WithMounts(msbWorkspaceMounts(spec)),
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
 		msb.WithPorts(msbPortMappings()),
 		msb.WithSecrets(secrets...),
@@ -174,6 +172,29 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		// by this label rather than by name guessing, and the legacy singleton
 		// is recognized separately.
 		msb.WithLabel(msbManagedLabel, "true"),
+	}
+}
+
+// msbGuestWorkspace is the guest path of the project working tree.
+const msbGuestWorkspace = "/workspace"
+
+// msbWorkspaceMounts returns the /workspace mount for a spec. The sealed
+// model (P22) is the only supported one: an owned volume lives inside the
+// sandbox, so no host file — a developer .env, an untracked secret, anything
+// ignored — is reachable from the guest. Project content arrives only through
+// the filtered transfer (transfer.go), never through a bind mount.
+//
+// A spec without Sealed set is rejected rather than silently bind-mounted:
+// the sealed boundary is all-or-nothing per project, and a fallback bind
+// mount would be the leak this design removes.
+func msbWorkspaceMounts(spec msbSandboxSpec) map[string]msb.MountConfig {
+	if !spec.SealedWorkspace {
+		// The runtime refuses such a spec before reaching here; this guard
+		// keeps the mount table from ever carrying a host bind.
+		return map[string]msb.MountConfig{}
+	}
+	return map[string]msb.MountConfig{
+		msbGuestWorkspace: msb.Mount.Owned(msb.OwnedVolumeOptions{Kind: msb.VolumeKindDir}),
 	}
 }
 
@@ -351,6 +372,19 @@ func (sdkMSBClient) Exec(ctx context.Context, name, command string) (code int, s
 	return out.ExitCode(), out.Stderr(), nil
 }
 
+func (sdkMSBClient) ExecCapture(ctx context.Context, name, command string) (stdout, stderr string, code int, err error) {
+	sb, err := connectMSBSandbox(ctx, name)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer func() { err = errors.Join(err, sb.Close()) }()
+	out, err := sb.Shell(ctx, command)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return out.Stdout(), out.Stderr(), out.ExitCode(), nil
+}
+
 func (sdkMSBClient) Stop(ctx context.Context, name string) error {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {
@@ -379,6 +413,10 @@ type persistedMounts struct {
 		Type  string `json:"type"`
 		Host  string `json:"host"`
 		Guest string `json:"guest"`
+		// Name and Disk carry the non-bind source variants (a named volume,
+		// a raw disk). They are read only to tell "owned" from "host-backed".
+		Name string `json:"name"`
+		Disk string `json:"disk"`
 	} `json:"mounts"`
 }
 
@@ -397,12 +435,67 @@ func parseWorkspaceMount(configJSON, guestPath string) (string, error) {
 	return "", nil
 }
 
+// parseOwnedWorkspace reports whether the document mounts guestPath as owned
+// storage (no host source). A bind mount and an owned volume are mutually
+// exclusive at the same guest path, so this is the provenance question the
+// sealed model needs: "does this guest have a host-mounted workspace?".
+//
+// The mount source fields are matched case-insensitively because the
+// runtime's serializer has emitted both spellings across versions; the
+// absence of any host source is what makes the mount owned.
+func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
+	var raw persistedMounts
+	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
+		return false, fmt.Errorf("decode persisted sandbox config: %w", err)
+	}
+	for _, m := range raw.Mounts {
+		if m.Guest != guestPath {
+			continue
+		}
+		if strings.EqualFold(m.Type, "Owned") {
+			return true, nil
+		}
+		// No declared host source on a workspace mount means owned storage;
+		// any host source means the legacy bind model.
+		return m.Host == "" && m.Name == "" && m.Disk == "", nil
+	}
+	return false, nil
+}
+
 func (sdkMSBClient) WorkspaceMount(ctx context.Context, name string) (string, error) {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {
 		return "", err
 	}
-	return parseWorkspaceMount(h.ConfigJSON(), "/workspace")
+	return parseWorkspaceMount(h.ConfigJSON(), msbGuestWorkspace)
+}
+
+// WorkspaceOwned reports whether the sandbox's /workspace is an owned volume
+// (the sealed model) rather than a host bind mount. It reads the persisted
+// sandbox configuration, which is the authority for what the guest can
+// actually reach — not just-code's own spec.
+func (sdkMSBClient) WorkspaceOwned(ctx context.Context, name string) (bool, error) {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return parseOwnedWorkspace(h.ConfigJSON(), msbGuestWorkspace)
+}
+
+// WriteFile writes data to a file inside the running sandbox, creating it.
+//
+// This is the host->guest transfer channel (P22). It is deliberately the only
+// way bytes cross into the guest: the caller writes files resolved by the
+// transfer filter, one payload at a time, instead of handing the runtime a
+// host directory to copy. CopyFromHost exists in the SDK and is NOT used
+// here, because it would move a tree without the filter seeing each file.
+func (sdkMSBClient) WriteFile(ctx context.Context, name, guestPath string, data []byte) error {
+	sb, err := connectMSBSandbox(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sb.Close() }()
+	return sb.FS().Write(ctx, guestPath, data)
 }
 
 func (sdkMSBClient) StartScript(ctx context.Context, name string) (string, error) {

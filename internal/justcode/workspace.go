@@ -13,9 +13,15 @@ import (
 	"strings"
 )
 
-// The workspace is bind-mounted into the sandbox, so anything readable in it is
-// readable by the agent. The startup scan refuses to expose a workspace that
-// carries dotenv files or (when gitleaks is installed) detectable secrets.
+// Workspace secret scanning.
+//
+// Before P22 the workspace was bind-mounted into the sandbox, and this scan
+// was the (attempted) security boundary. It could not be one: a secret added
+// after startup, in an undetected format, or written by the agent itself
+// stays readable. The sealed workspace removes the mount, so this scan is no
+// longer a mount gate — it is host-side hygiene advice, and its detection
+// logic is reused at the actual boundary by the P22 transfer filter
+// (transfer.go), where a refusal is enforceable.
 
 // dotenvSafeSuffixes are .env file suffixes that never carry real values.
 var dotenvSafeSuffixes = map[string]bool{
@@ -124,10 +130,11 @@ type gitleaksFinding struct {
 	Match  string `json:"Match"` // redacted by --redact
 }
 
-// runGitleaks runs `gitleaks detect --no-git` over the working tree (what the
-// sandbox will see, not git history) with findings redacted. Gitleaks exits 1
-// on leaks and 0 when clean; both are normal outcomes here.
-func runGitleaks(ctx context.Context, dir string) ([]string, error) {
+// runGitleaksFindings runs `gitleaks detect --no-git` over the working tree
+// (the files that can cross into the guest, not git history) with findings
+// redacted. Gitleaks exits 1 on leaks and 0 when clean; both are normal
+// outcomes here.
+func runGitleaksFindings(ctx context.Context, dir string) ([]gitleaksFinding, error) {
 	cmd := exec.CommandContext(ctx, "gitleaks", "detect",
 		"--no-banner", "--no-git", "--redact",
 		"--report-format", "json", "--report-path", "-",
@@ -143,6 +150,15 @@ func runGitleaks(ctx context.Context, dir string) ([]string, error) {
 	var findings []gitleaksFinding
 	if err := json.Unmarshal(out, &findings); err != nil {
 		return nil, fmt.Errorf("parsing gitleaks report for %s: %w", dir, err)
+	}
+	return findings, nil
+}
+
+// runGitleaks formats the findings for display.
+func runGitleaks(ctx context.Context, dir string) ([]string, error) {
+	findings, err := runGitleaksFindings(ctx, dir)
+	if err != nil {
+		return nil, err
 	}
 	var lines []string
 	for _, f := range findings {

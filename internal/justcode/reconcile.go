@@ -514,28 +514,30 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 		facts.CreationFixedChanged = true
 		return facts, nil
 	}
-	if m.workspaceMountChanged(ctx) {
+	if m.workspaceProvenanceChanged(ctx) {
 		facts.CreationFixedChanged = true
 	}
 	return facts, nil
 }
 
-// workspaceMountChanged reports whether the instance's /workspace mount
-// differs from the configured workspace. Mounts are fixed at creation.
-func (m *MicrosandboxRuntime) workspaceMountChanged(ctx context.Context) bool {
+// workspaceProvenanceChanged reports whether the instance's workspace
+// provenance differs from the sealed model (P22). A /workspace backed by a
+// host path is the pre-P22 bind-mount instance: the guest can read the host
+// checkout, and no in-place change fixes that, so reconciliation must treat
+// the instance as requiring recreation.
+//
+// The old check compared the mounted *path* with the configured workspace,
+// which asked the wrong question: a mount pointing at the right directory is
+// still a host mount, and a mount pointing elsewhere is not the problem the
+// sealed model exists to remove.
+func (m *MicrosandboxRuntime) workspaceProvenanceChanged(ctx context.Context) bool {
 	mounted, err := m.Client.WorkspaceMount(ctx, m.InstanceName())
-	if err != nil || mounted == "" {
-		return false
+	if err != nil {
+		// Unreadable provenance cannot be proven sealed: require recreation
+		// rather than assuming the safer answer.
+		return true
 	}
-	mountedClean := filepath.Clean(mounted)
-	if abs, err := filepath.Abs(mountedClean); err == nil {
-		mountedClean = abs
-	}
-	workspaceClean := filepath.Clean(m.cfg.WorkspaceDir)
-	if abs, err := filepath.Abs(workspaceClean); err == nil {
-		workspaceClean = abs
-	}
-	return mountedClean != workspaceClean
+	return mounted != ""
 }
 
 // applyReconcileOp executes one plan operation. Every operation is
