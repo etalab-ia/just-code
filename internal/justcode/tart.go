@@ -619,11 +619,15 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	}
 	model := t.OpenCodeOverlay.EffectiveOverlay().Model
 	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key),
-		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand, model); err != nil {
+		// argv: __guest-secrets <username> <model> — the consumer reads
+		// Username at position 1 and Model at position 2.
+		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand, cfg.Username, model); err != nil {
 		return err
 	}
 	name, email := hostGitIdentity()
-	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand, name, email); err != nil {
+	// argv: __guest-prepare <username> <gitName> <gitEmail> — the consumer
+	// reads Username at 1, GitName at 2, GitEmail at 3.
+	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand, cfg.Username, name, email); err != nil {
 		return err
 	}
 	interactive := t.Interactive
