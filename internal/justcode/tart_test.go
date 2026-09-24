@@ -426,3 +426,35 @@ func TestTartStartFullModeSkipsServerLaunch(t *testing.T) {
 		}
 	}
 }
+
+func TestTartIsRunningScopedToProjectVM(t *testing.T) {
+	// Un autre projet a une VM running ; ce projet n'en a pas : IsRunning
+	// doit répondre false (portée à t.VMName(), pas « toute VM gérée »).
+	other := "opencode-justcode-other"
+	list := "local " + other + " 1.2.3.4 50G running\n"
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "tart" && len(args) > 0 && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: list}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	tt := newTestTart(t, r)
+	tt.Instance = "my-proj"
+	if got, err := tt.IsRunning(context.Background()); err != nil || got {
+		t.Fatalf("IsRunning = %v, %v; want false (une VM d'un autre projet ne compte pas)", got, err)
+	}
+
+	// La VM de ce projet est running : true.
+	list = "local " + tt.VMName() + " 1.2.3.4 50G running\n"
+	r2 := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "tart" && len(args) > 0 && args[0] == "list" {
+			return ExecResult{ExitCode: 0, Stdout: list}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
+	tt2 := newTestTart(t, r2)
+	tt2.Instance = "my-proj"
+	if got, err := tt2.IsRunning(context.Background()); err != nil || !got {
+		t.Fatalf("IsRunning = %v, %v; want true (la VM du projet est running)", got, err)
+	}
+}
