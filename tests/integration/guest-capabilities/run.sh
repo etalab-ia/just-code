@@ -27,7 +27,8 @@ if [ ! -x "$MSB" ]; then
   exit 2
 fi
 
-WANT_CLI="$(node -e "console.log(require('$(dirname "$0")/pin.json').msb_cli_version)")"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+WANT_CLI="$(node -e "console.log(require('$HERE/pin.json').msb_cli_version)")"
 GOT_CLI="$("$MSB" --version 2>/dev/null | awk '{print $2}')"
 check "CLI msb épinglée" "$WANT_CLI" "$GOT_CLI"
 
@@ -49,17 +50,19 @@ DEBIAN_SIZE="$("$MSB" image inspect debian:bookworm-slim --format json 2>/dev/nu
 ok "T1 images présentes (alpine et debian:bookworm-slim)" # sizes checked in decision record
 
 # --- T2: création à froid des deux invités ------------------------------------
-START=$(date +%s%N)
+# Horloge en millisecondes compatible macOS (BSD date n'a pas %N).
+now_ms() { node -e "console.log(Date.now())"; }
+START=$(now_ms)
 "$MSB" create --name "$SB_PREFIX-alpine" alpine >/dev/null
 "$MSB" exec "$SB_PREFIX-alpine" -- sh -c 'echo up' >/dev/null 2>&1
-END=$(date +%s%N)
-ALPINE_COLD_MS=$(( (END-START)/1000000 ))
+END=$(now_ms)
+ALPINE_COLD_MS=$(( END-START ))
 
-START=$(date +%s%N)
+START=$(now_ms)
 "$MSB" create --name "$SB_PREFIX-debian" debian:bookworm-slim >/dev/null
 "$MSB" exec "$SB_PREFIX-debian" -- sh -c 'echo up' >/dev/null 2>&1
-END=$(date +%s%N)
-DEBIAN_COLD_MS=$(( (END-START)/1000000 ))
+END=$(now_ms)
+DEBIAN_COLD_MS=$(( END-START ))
 ok "T2 démarrage à froid (alpine=${ALPINE_COLD_MS}ms debian=${DEBIAN_COLD_MS}ms)"
 
 # --- T3: cycle de vie stop/start + persistance invité -------------------------
@@ -70,14 +73,14 @@ sleep 3
 PERSIST="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c 'cat /tmp/p03-persist' 2>/dev/null || true)"
 check "T3 état invité persiste après redémarrage" "persist-marker" "$PERSIST"
 
-# --- T4: PTY — taille propagée sous un vrai terminal --------------------------
-# Sous `script` (pty hôte), stty size doit refléter la taille du terminal.
-PTY_OUT="$(script -q /dev/null "$MSB" run --tty alpine -- sh -c 'stty size; echo PTYPROBE' 2>/dev/null | grep -a 'PTYPROBE' || true)"
-if [ -n "$PTY_OUT" ]; then
-  ok "T4a run --tty ouvre un PTY"
-else
-  fail "T4a run --tty: PTYPROBE absent"
-fi
+# --- T4: PTY — taille propagée sous un terminal de taille connue --------------
+# Configure un pty hôte en 120x40 via script, puis vérifie que stty size invité
+# reflète cette taille (la propagation PTY est une preuve du gate P22).
+PTY_LOG="$(mktemp /tmp/p03-pty.XXXXXX)"
+script -q "$PTY_LOG" sh -c "stty cols 120 rows 40; \"$MSB\" run --tty alpine -- sh -c 'stty size; echo PTYPROBE'" >/dev/null 2>&1 || true
+PTY_SIZE="$(grep -a 'PTYPROBE' -B1 "$PTY_LOG" | grep -aoE '[0-9]+ [0-9]+' | tail -1)"
+rm -f "$PTY_LOG"
+check "T4a PTY propage la taille 40x120" "40 120" "$PTY_SIZE"
 
 # --- T5: exec sans TTY ---------------------------------------------------------
 EXEC_SIZE="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c 'stty size 2>&1 || echo no-tty' 2>/dev/null | tail -1)"
@@ -117,8 +120,9 @@ check "T7a navigation + DOM (h1)" "1" "$DOM_H1"
 SHOT_OK="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c 'test -s /tmp/p03.png && echo shot-ok' 2>/dev/null)"
 check "T7b capture d'écran non vide" "shot-ok" "$SHOT_OK"
 
-# T8: Playwright MCP (chromium système via --executable-path).
-"$MSB" exec "$SB_PREFIX-debian" -- sh -c 'npm install -g @playwright/mcp@latest >/dev/null 2>&1' >/dev/null 2>&1
+# T8: Playwright MCP (chromium système via --executable-path), version épinglée.
+PW_MCP_VERSION="$(node -e "console.log(require('$HERE/pin.json').playwright_mcp_version)")"
+"$MSB" exec "$SB_PREFIX-debian" -- sh -c "npm install -g @playwright/mcp@$PW_MCP_VERSION >/dev/null 2>&1" >/dev/null 2>&1
 PW_NAV="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c '
 CHROME=$(command -v chromium)
 node -e "
@@ -136,36 +140,52 @@ else
 fi
 
 # T9: clone invité depuis l'origine distante (entrée de conception P22).
-START=$(date +%s%N)
+# Le clone lui-même prouve le transport ; on valide HEAD/arbre de travail,
+# pas le message de commit (instable).
+START=$(now_ms)
 "$MSB" exec "$SB_PREFIX-debian" -- sh -c \
   'git clone --depth 1 https://github.com/etalab-ia/just-code.git /tmp/jc-remote >/dev/null 2>&1' >/dev/null 2>&1
-END=$(date +%s%N)
-CLONE_MS=$(( (END-START)/1000000 ))
-CLONE_OK="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c \
-  'git -C /tmp/jc-remote log --oneline -1 | grep -c "Merge" || true' 2>/dev/null)"
-if [ "$CLONE_OK" -ge 1 ]; then
-  ok "T9a clone origine distante (${CLONE_MS}ms)"
-else
-  fail "T9a clone origine distante"
-fi
+END=$(now_ms)
+CLONE_MS=$(( END-START ))
+CLONE_HEAD="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c \
+  'git -C /tmp/jc-remote rev-parse HEAD 2>/dev/null; test -f /tmp/jc-remote/README.md && echo wt-ok' 2>/dev/null | tail -1)"
+check "T9a clone origine distante valide (${CLONE_MS}ms)" "wt-ok" "$CLONE_HEAD"
 CLONE_SIZE="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c 'du -sm /tmp/jc-remote/.git | cut -f1' 2>/dev/null)"
 ok "T9b empreinte .git clone profondeur 1 (${CLONE_SIZE} Mo)"
 
-# T10: clone local (chemin hôte monté / invité) + worktree lié invité.
-START=$(date +%s%N)
-"$MSB" exec "$SB_PREFIX-debian" -- sh -c 'git clone /tmp/jc-remote /tmp/jc-local >/dev/null 2>&1' >/dev/null 2>&1
-END=$(date +%s%N)
-LOCAL_CLONE_MS=$(( (END-START)/1000000 ))
-LOCAL_ORIGIN="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c \
-  'git -C /tmp/jc-local remote get-url origin' 2>/dev/null)"
-check "T10a origine d'un clone local = chemin source" "/tmp/jc-remote" "$LOCAL_ORIGIN"
-ok "T10b clone local (${LOCAL_CLONE_MS}ms, réécriture d'origine requise)"
+# T10: clone depuis un vrai chemin hôte monté + worktree lié invité.
+# On monte le checkout PRINCIPAL (pas le worktree: son .git est un fichier
+# pointeur, non clonable) en lecture seule dans l'invité, puis on clone
+# depuis ce chemin — c'est le cas « host-path » que P22 doit refuser/remplacer.
+HOST_REPO="$(git -C "$HERE/../../.." rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname)"
+"$MSB" stop "$SB_PREFIX-debian" >/dev/null
+# recrée avec un montage hôte en lecture seule
+"$MSB" remove "$SB_PREFIX-debian" >/dev/null
+"$MSB" create --name "$SB_PREFIX-debian" --mount-dir "$HOST_REPO:/hostrepo" debian:bookworm-slim >/dev/null 2>&1 || \
+"$MSB" create --name "$SB_PREFIX-debian" debian:bookworm-slim >/dev/null
+"$MSB" exec "$SB_PREFIX-debian" -- sh -c 'echo up' >/dev/null 2>&1
+HOST_MOUNT_OK="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c 'test -d /hostrepo/.git && echo mounted' 2>/dev/null)"
+if [ "$HOST_MOUNT_OK" = "mounted" ]; then
+  # l'invité T10 est recréé nu : git doit être réinstallé pour le clone
+  "$MSB" exec "$SB_PREFIX-debian" -- sh -c \
+    'apt-get update >/dev/null 2>&1; apt-get install -y --no-install-recommends git ca-certificates >/dev/null 2>&1' >/dev/null 2>&1
+  START=$(now_ms)
+  "$MSB" exec "$SB_PREFIX-debian" -- sh -c 'git clone /hostrepo /tmp/jc-local >/dev/null 2>&1' >/dev/null 2>&1
+  END=$(now_ms)
+  LOCAL_CLONE_MS=$(( END-START ))
+  LOCAL_ORIGIN="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c \
+    'git -C /tmp/jc-local remote get-url origin' 2>/dev/null)"
+  check "T10a origine d'un clone host-path = chemin monté" "/hostrepo" "$LOCAL_ORIGIN"
+  ok "T10b clone host-path (${LOCAL_CLONE_MS}ms, réécriture d'origine requise)"
+else
+  fail "T10 montage hôte impossible (msb create --mount non supporté ?)"
+fi
 
 "$MSB" exec "$SB_PREFIX-debian" -- sh -c \
-  'git -C /tmp/jc-remote worktree add /tmp/jc-linked HEAD >/dev/null 2>&1; git -C /tmp/jc-linked status >/dev/null 2>&1 && echo linked-ok' \
-  >/dev/null 2>&1
+  'git -C /tmp/jc-local worktree add /tmp/jc-linked HEAD >/dev/null 2>&1; true' \
+  >/dev/null 2>&1 || true
 LINKED_OK="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c \
-  'git -C /tmp/jc-linked status >/dev/null 2>&1 && echo linked-ok' 2>/dev/null)"
+  'git -C /tmp/jc-linked status >/dev/null 2>&1 && echo linked-ok' 2>/dev/null || true)"
 check "T10c worktree lié fonctionnel dans un clone invité" "linked-ok" "$LINKED_OK"
 
 echo
