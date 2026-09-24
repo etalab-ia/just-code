@@ -95,6 +95,14 @@ func (m *MicrosandboxRuntime) transferIntoGuest(ctx context.Context, opts SyncOp
 		return err
 	}
 	opts.print(manifest.Summary())
+	// Fail closed on an unattributable finding: a flagged file that cannot be
+	// named cannot be excluded, and proceeding would mean guessing that it is
+	// harmless.
+	if len(manifest.UnmappedFindings) > 0 {
+		return fmt.Errorf("gitleaks reported %d finding(s) whose paths could not be matched to a file in %s, so the filter cannot tell which candidate to exclude: "+
+			"resolve the report by hand ('gitleaks detect --no-git --source %s'), then retry",
+			len(manifest.UnmappedFindings), manifest.Root, manifest.Root)
+	}
 	included := manifest.Included()
 	if len(included) == 0 {
 		if manifest.CandidateCount() == 0 {

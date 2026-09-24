@@ -17,11 +17,20 @@ func TestIsDotenvName(t *testing.T) {
 		{".env", true},
 		{".env.local", true},
 		{".env.production", true},
+		// P22 widened the family: `<prefix>.env` (docker.env, prod.env) is a
+		// real dotenv file, and the earlier name-only rule let it cross.
+		{"app.env", true},
+		{"docker.env", true},
+		// Case-insensitive: macOS and Windows filesystems are, so `.ENV` IS
+		// `.env` there and a case-sensitive rule would exclude nothing.
+		{".ENV", true},
+		{".Env.Staging", true},
 		{".env.example", false},
 		{".env.sample", false},
+		{".ENV.EXAMPLE", false},
 		{"env", false},
-		{"app.env", false},
 		{".envrc", false},
+		{"environment.md", false},
 		{"README.md", false},
 	}
 	for _, c := range cases {

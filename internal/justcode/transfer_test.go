@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -315,4 +316,99 @@ func archiveNames(t *testing.T, payload []byte) map[string]bool {
 		}
 	}
 	return names
+}
+
+// fakeGitleaks installs a stub `gitleaks` on PATH that emits report, so the
+// finding→path mapping is exercised without depending on the real tool's
+// presence (and without depending on its current path convention).
+func fakeGitleaks(t *testing.T, report string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncat <<'REPORT'\n" + report + "\nREPORT\n"
+	if err := os.WriteFile(filepath.Join(dir, "gitleaks"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestTransferFindingPathMappingHandlesBothConventions pins the mapping for a
+// gitleaks report whose File is relative (current versions) and absolute
+// (observed in other builds). Either way the flagged file must be excluded:
+// dropping the finding would let it cross.
+func TestTransferFindingPathMappingHandlesBothConventions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file func(root string) string
+	}{
+		{"relative", func(string) string { return "src/config.txt" }},
+		{"absolute", func(root string) string { return filepath.Join(root, "src", "config.txt") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "src/config.txt", "password: \"hunter2correcthorsebatterystaple12345\"\n")
+			writeFile(t, dir, "src/other.go", "package main\n")
+			gitInitForTransfer(t, dir)
+			fakeGitleaks(t, fmt.Sprintf(`[{"RuleID":"generic-api-key","File":%q,"StartLine":1,"Match":"REDACTED"}]`, tc.file(dir)))
+
+			man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(man.UnmappedFindings) != 0 {
+				t.Fatalf("a mappable finding must not be reported as unmapped: %v", man.UnmappedFindings)
+			}
+			for _, e := range man.Included() {
+				if e.Rel == "src/config.txt" {
+					t.Fatalf("a flagged file must not cross: %v", man.Included())
+				}
+			}
+			var reason string
+			for _, e := range man.Excluded() {
+				if e.Rel == "src/config.txt" {
+					reason = e.Reason
+				}
+			}
+			if !strings.Contains(reason, "gitleaks") || !strings.Contains(reason, "generic-api-key") {
+				t.Fatalf("exclusion reason = %q", reason)
+			}
+			// An unflagged sibling still crosses: the filter is precise.
+			var crossed bool
+			for _, e := range man.Included() {
+				if e.Rel == "src/other.go" {
+					crossed = true
+				}
+			}
+			if !crossed {
+				t.Fatalf("an unflagged file must still cross: %v", man.Included())
+			}
+		})
+	}
+}
+
+// TestTransferRefusesUnattributableFinding pins the fail-closed rule: a
+// finding whose path cannot be matched to a candidate blocks the transfer
+// instead of being dropped.
+func TestTransferRefusesUnattributableFinding(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n")
+	gitInitForTransfer(t, dir)
+	// A path outside the source root cannot be attributed to any candidate.
+	fakeGitleaks(t, `[{"RuleID":"generic-api-key","File":"/elsewhere/other/config.txt","StartLine":1,"Match":"REDACTED"}]`)
+
+	man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.UnmappedFindings) == 0 {
+		t.Fatal("an unattributable finding must be recorded")
+	}
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{stdout: "no"}}}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.WorkspaceDir = dir
+	if err := m.ProvisionGuestWorkspace(context.Background(), SyncOptions{Print: func(string) {}}); err == nil {
+		t.Fatal("provisioning must refuse while a finding cannot be attributed")
+	}
+	if len(client.written) != 0 {
+		t.Fatal("nothing may be written when the filter cannot decide")
+	}
 }

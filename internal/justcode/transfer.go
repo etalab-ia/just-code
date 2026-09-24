@@ -84,6 +84,11 @@ type TransferManifest struct {
 	// Warnings are non-fatal resolution notes (an unreadable path, a
 	// skipped directory).
 	Warnings []string
+	// UnmappedFindings lists gitleaks findings whose reported path could not
+	// be attributed to a candidate. They cannot be matched to a file, so the
+	// transfer must refuse rather than proceed without knowing what was
+	// flagged (fail closed: see UnmappedFindingsError).
+	UnmappedFindings []string
 }
 
 // Included returns the entries that cross into the guest.
@@ -139,6 +144,12 @@ func (m TransferManifest) Summary() string {
 	if m.GitleaksMissing {
 		b.WriteString("Warning: gitleaks is not installed, so secret detection did not run; the dotenv name filter still applied.\n")
 	}
+	if len(m.UnmappedFindings) > 0 {
+		b.WriteString("Warning: these gitleaks findings could not be attributed to a file; the transfer is refused while they are unresolved:\n")
+		for _, f := range m.UnmappedFindings {
+			fmt.Fprintf(&b, "  %s\n", f)
+		}
+	}
 	for _, w := range m.Warnings {
 		fmt.Fprintf(&b, "Note: %s\n", w)
 	}
@@ -183,7 +194,11 @@ func ResolveTransferSet(ctx context.Context, root string, opts TransferOptions) 
 			return man, err
 		}
 		for _, f := range findings {
-			rel := filepath.ToSlash(filepath.Clean(f.File))
+			rel := findingRelPath(abs, f.File)
+			if rel == "" {
+				man.UnmappedFindings = append(man.UnmappedFindings, fmt.Sprintf("%s:%d (%s)", f.File, f.Line, f.RuleID))
+				continue
+			}
 			findingsByPath[rel] = append(findingsByPath[rel], f)
 		}
 	}
@@ -333,6 +348,27 @@ func gitListFiles(ctx context.Context, root string, flags ...string) ([]string, 
 func gitAvailable() bool {
 	_, err := exec.LookPath("git")
 	return err == nil
+}
+
+// findingRelPath maps a gitleaks report path onto the manifest's relative
+// form. Current gitleaks versions report the path relative to --source, but
+// an absolute path has been observed in other builds; both are normalized
+// here so the mapping cannot silently miss. A path that cannot be attributed
+// returns "" and the caller fails closed: dropping a finding would let the
+// flagged file cross.
+func findingRelPath(root, reported string) string {
+	if strings.TrimSpace(reported) == "" {
+		return ""
+	}
+	p := filepath.FromSlash(reported)
+	if filepath.IsAbs(p) {
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return ""
+		}
+		p = rel
+	}
+	return NormalizeTransferPath(filepath.ToSlash(p))
 }
 
 // FormatByteSize renders a byte count for the review screen. The justcode

@@ -111,15 +111,26 @@ func ScanWorkspace(ctx context.Context, dir string) (ScanResult, error) {
 }
 
 // isDotenvName reports whether name is a dotenv file that can carry real
-// values: .env, or .env.<something> other than the safe example suffixes.
+// values: `.env`, `.env.<something>`, or `<prefix>.env` (docker.env,
+// prod.env, …), excluding the safe example/sample suffixes.
+//
+// The comparison is case-insensitive because the filesystems just-code runs
+// on are mostly case-insensitive (macOS, Windows): `.ENV` IS `.env` there, so
+// matching only the lowercase spelling would exclude nothing while the file
+// still crossed into the guest.
 func isDotenvName(name string) bool {
-	if name == ".env" {
-		return true
-	}
-	if !strings.HasPrefix(name, ".env.") {
+	lower := strings.ToLower(name)
+	if dotenvSafeSuffixes[filepath.Ext(lower)] {
+		// .env.example / .env.sample: a document, not a value.
 		return false
 	}
-	return !dotenvSafeSuffixes[filepath.Ext(name)]
+	if lower == ".env" {
+		return true
+	}
+	if strings.HasPrefix(lower, ".env.") {
+		return true
+	}
+	return strings.HasSuffix(lower, ".env")
 }
 
 // gitleaksFinding is the subset of a gitleaks JSON report that the gate shows.
