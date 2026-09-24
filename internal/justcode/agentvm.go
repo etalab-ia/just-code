@@ -35,6 +35,8 @@ type AgentVM struct {
 	// Interactive runs a foreground command attached to the terminal. It is a
 	// seam for tests; production uses RunInteractive.
 	Interactive func(name string, args ...string) error
+	// OpenCodeOverlay is the managed OpenCode configuration layer (P10).
+	OpenCodeOverlay ManagedOverlay
 }
 
 // NewAgentVM builds an agent-vm orchestrator with production defaults.
@@ -331,8 +333,12 @@ func (a *AgentVM) writeSecretsEnv(dir, apiKey string) (string, error) {
 	// semicolons would break parsing or be evaluated. The provider config
 	// rides along so the full-mode TUI sees the same Albert provider/model
 	// definition as the backend-mode server.
+	configContent, cerr := ComposeConfigContent(a.OpenCodeOverlay)
+	if cerr != nil {
+		configContent = opencodeConfigContent
+	}
 	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
-		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(apiKey), shellQuote(opencodeConfigContent))
+		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(apiKey), shellQuote(configContent))
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", err
 	}

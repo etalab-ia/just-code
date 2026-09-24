@@ -68,6 +68,29 @@ addendum P09). Les liaisons optionnelles (`github`, `context7`) exigent une
 approbation par projet (`just-code bindings approve`), enregistrée dans
 l'état local de l'hôte — jamais dans le dépôt.
 
+## Modèle et configuration OpenCode (P10)
+
+La couche gérée de la configuration OpenCode (`OPENCODE_CONFIG_CONTENT`)
+porte uniquement les champs managés : `model` et `small_model`. Précédence de
+la sélection : `JUST_CODE_MODEL` > `model` du manifeste projet >
+`defaultModel` des réglages utilisateur > valeur intégrée
+(`albert/deepseek-v4-flash`). Le contenu composé fusionne l'asset embarqué
+(provider, permissions) avec la sélection ; OpenCode applique ensuite sa
+propre fusion finale, la config projet et la config utilisateur survivant
+champ par champ en dessous. Un conflit entre un champ managé et la config
+projet est affiché en diff avant lancement (la valeur gérée gagne).
+
+`just-code models` valide la sélection contre le catalogue Albert
+(`text-generation` uniquement) ; le catalogue en échec réseau retombe sur le
+dernier-known-good persisté dans l'état hôte. Une sélection absente du
+catalogue est signalée, jamais effacée.
+
+Les entrées de projet exécutant du code au chargement d'OpenCode (plugins
+déclarés et auto-découverts, commandes MCP locales) sont approuvées par
+contenu via `just-code trust approve` (enregistrement hôte, hors dépôt) ;
+`start` refuse tant qu'une entrée est non approuvée ou modifiée depuis
+l'approbation.
+
 ## `just-code config`
 
 - `just-code config explain` : affiche chaque champ géré avec sa valeur

@@ -34,6 +34,8 @@ type Tart struct {
 	// CredentialRead reads a stored credential; production uses
 	// readStoredWith. It is a test seam.
 	CredentialRead credentialReader
+	// OpenCodeOverlay is the managed OpenCode configuration layer (P10).
+	OpenCodeOverlay ManagedOverlay
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
@@ -282,10 +284,11 @@ func (t *Tart) guestRun(ctx context.Context, args ...string) error {
 }
 
 // BackendArgs returns the argv for the detached bootstrap invocation:
-// `tart exec -i <vm> <local binary> __guest-bootstrap <port> <username> <mtu>`.
-// Secrets are deliberately absent: they travel on stdin only.
-func BackendArgs(vm, localBinary, port, username, mtu string) []string {
-	return []string{"exec", "-i", vm, localBinary, GuestBootstrapCommand, port, username, mtu}
+// `tart exec -i <vm> <local binary> __guest-bootstrap <port> <username> <mtu> <model>`.
+// Secrets are deliberately absent: they travel on stdin only. The model
+// selection (P10) rides argv: it is non-secret managed configuration.
+func BackendArgs(vm, localBinary, port, username, mtu, model string) []string {
+	return []string{"exec", "-i", vm, localBinary, GuestBootstrapCommand, port, username, mtu, model}
 }
 
 // SecretsReader returns the bootstrap stdin payload: password on line 1, API
@@ -323,7 +326,7 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 		return err
 	}
 	stdin := SecretsReader(cfg.Password, key)
-	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU)
+	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model)
 	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
 }
 
@@ -596,7 +599,7 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 		return err
 	}
 	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key),
-		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand); err != nil {
+		"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand, t.OpenCodeOverlay.EffectiveOverlay().Model); err != nil {
 		return err
 	}
 	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand); err != nil {

@@ -130,6 +130,12 @@ type MicrosandboxRuntime struct {
 	// "" selects the normal order (native, then file fallback), "native" or
 	// "file" pin one store (revocation uses this).
 	CredentialStore string
+	// OpenCodeOverlay is the managed OpenCode configuration layer (P10):
+	// the model selection resolved from the project/user config. The
+	// composed OPENCODE_CONFIG_CONTENT replaces the raw embedded asset at
+	// every launch, so a model change is effective at the next restart
+	// without recreating the sandbox.
+	OpenCodeOverlay ManagedOverlay
 	// credentialRead reads a stored credential; production uses
 	// readStoredWith. It is a seam so tests can drive the store paths
 	// without a real keychain.
@@ -399,6 +405,9 @@ func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBind
 		// reference re-resolves from this process's environment at boot, so a
 		// rotated credential is picked up here without any value being
 		// persisted.
+		// The composed OPENCODE_CONFIG_CONTENT (managed model selection over
+		// the base asset) rides the same modification, so a model change is
+		// effective on the next boot of a stopped sandbox.
 		if err := m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings)); err != nil {
 			return err
 		}
@@ -529,12 +538,18 @@ func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandbox
 // existing stopped sandbox. The real ALBERT_API_KEY is deliberately absent:
 // it travels as the proxy secret passed to ModifyNextStart, and the guest
 // reads the placeholder Microsandbox exposes under the same variable name.
-// ModifyNextStart merges, so the OpenCode config persisted at creation stays
-// in place and only the server credentials need refreshing here.
+// ModifyNextStart merges, so only the fields that change need refreshing
+// here: the server credentials, and the composed OpenCode config (a managed
+// model selection is effective at the next boot).
 func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
+	content, err := ComposeConfigContent(m.OpenCodeOverlay)
+	if err != nil {
+		content = opencodeConfigContent
+	}
 	return map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
+		"OPENCODE_CONFIG_CONTENT":  content,
 	}
 }
 
@@ -542,10 +557,18 @@ func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
 // nextStartEnv, the Albert key is provided by the secret proxy rather than
 // the environment.
 func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
+	content, err := ComposeConfigContent(m.OpenCodeOverlay)
+	if err != nil {
+		// The embedded asset parses at init (mustAsset panics otherwise);
+		// a failure here means the overlay itself was malformed, which the
+		// composed document cannot represent. Fall back to the base asset
+		// rather than losing the provider block entirely.
+		content = opencodeConfigContent
+	}
 	return map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
-		"OPENCODE_CONFIG_CONTENT":  opencodeConfigContent,
+		"OPENCODE_CONFIG_CONTENT":  content,
 	}
 }
 

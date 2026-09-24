@@ -319,6 +319,23 @@ L'approbation est un enregistrement local à l'hôte (`~/.local/state/just-code/
 
 `just-code auth remove` révoque l'accès avant de supprimer l'entrée du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. La révocation raisonne par **entrée de magasin**, pas par nom de liaison : un `credentialRef` peut alimenter la liaison Albert depuis une entrée nommée autrement, et c'est la liaison invitée effectivement alimentée qui est retirée (l'instantané le consigne sous la forme `entrée@magasin#liaison`). Supprimer l'entrée d'un magasin ne touche pas les instances liées à l'autre magasin ; une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée, cette variable n'appartenant pas à just-code ; une source non confirmable est révoquée puis signalée. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne — y compris lorsque l'entrée supprimée n'est pas nommée `albert` mais alimente la liaison Albert — car retirer la copie du magasin ne révoquerait rien.
 
+### Configuration OpenCode composée et confiance locale (P10)
+
+La configuration OpenCode effective est composée au lancement : l'asset embarqué (provider Albert, permissions) fusionné avec la **couche gérée** (`OPENCODE_CONFIG_CONTENT`), qui ne porte que les champs managés — aujourd'hui `model` et `small_model`. OpenCode fusionne le contenu inline **en dernier** (contrat D-001), donc la couche gérée gagne champ par champ contre la config projet et la config utilisateur, sans jamais réécrire un fichier JSONC utilisateur.
+
+La sélection du modèle suit la précédence `JUST_CODE_MODEL` > manifeste projet (`model`) > réglages utilisateur (`defaultModel`) > valeur intégrée. `just-code models` liste les modèles text-generation du catalogue Albert (validés, limites de contexte incluses, jamais fabriquées) ; un échec réseau retombe sur le **dernier-known-good** mis en cache — une erreur réseau n'efface jamais le modèle en service, et une sélection absente du catalogue est signalée plutôt que silencieusement conservée.
+
+Les conflits de champs managés sont signalés **en diff** avant lancement : si la config projet définit `model` différemment, les deux valeurs sont affichées et la valeur gérée gagne (l'inverse serait un écrasement invisible).
+
+**Confiance locale :** les entrées de projet qui exécutent du code au chargement d'OpenCode — plugins déclarés, plugins auto-découverts (`.opencode/plugin/*.js|ts` — ils s'exécutent **sans déclaration**), commandes MCP locales — exigent une approbation locale avant le premier `start` du projet :
+
+```bash
+just-code trust status   # ce que le projet déclare, ce qui est approuvé, ce qui a changé
+just-code trust approve  # approuve le contenu actuel de chaque entrée
+```
+
+L'approbation est liée au **contenu** (hachage par fichier) : un fichier modifié est de nouveau non approuvé, un nouveau plugin apparaissant nécessite sa propre approbation. L'enregistrement vit dans l'état hôte (`~/.local/state/just-code/projects/<projet>/opencode-trust.json`), jamais dans le dépôt — un clone n'apporte pas sa confiance avec lui. Les liens symboliques sont refusés à l'approbation (un chemin repointable n'est pas un contenu épinglé).
+
 | Runtime | Injection protégée | Portée |
 |---|---|---|
 | Microsandbox | Oui, en `backend` **et** en `full` | La clé n'existe que côté hôte ; l'invité reçoit le placeholder `$MSB_ALBERT_API_KEY`, remplacé par le proxy réseau uniquement vers `albert.api.etalab.gouv.fr` |

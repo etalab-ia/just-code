@@ -209,13 +209,13 @@ func TestStopBackendRefusesWhenStillRunning(t *testing.T) {
 
 func TestBackendArgsExcludeSecrets(t *testing.T) {
 	args := BackendArgs("opencode-tahoe-base-latest",
-		"/tmp/just-code-guest", "4096", "opencode", "1280")
+		"/tmp/just-code-guest", "4096", "opencode", "1280", "albert/deepseek-v4-flash")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
 		t.Fatalf("secrets leaked into argv: %v", args)
 	}
 	want := []string{"exec", "-i", "opencode-tahoe-base-latest",
-		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280"}
+		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280", "albert/deepseek-v4-flash"}
 	if len(args) != len(want) {
 		t.Fatalf("BackendArgs = %v, want %v", args, want)
 	}

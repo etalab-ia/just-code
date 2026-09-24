@@ -40,6 +40,9 @@ func run(args []string) (int, error) {
 			Port:     argOr(args, 1, ""),
 			Username: argOr(args, 2, ""),
 			MTU:      argOr(args, 3, ""),
+			// The model selection (P10) is non-secret managed configuration
+			// and rides argv; secrets never do.
+			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, "")},
 		}
 		return 0, justcode.RunGuestBootstrap(context.Background(), cfg)
 	}
@@ -52,7 +55,11 @@ func run(args []string) (int, error) {
 		return exitCodeOf(nil), justcode.RunGuestPrepare(context.Background(), cfg)
 	}
 	if len(args) > 0 && args[0] == justcode.GuestSecretsCommand {
-		cfg := justcode.GuestConfig{Username: argOr(args, 1, "")}
+		// The model selection (P10) is the one managed field the in-guest
+		// secrets file must reflect; argv carries no secrets, and the
+		// overlay is non-secret configuration.
+		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, "")}
+		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: overlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
 
@@ -105,6 +112,30 @@ func run(args []string) (int, error) {
 	}
 	cfg.CredentialRef = resolveCredentialRef(projectRoot)
 
+	// Managed OpenCode configuration (P10): the model selection from the
+	// typed resolver (JUST_CODE_MODEL > manifest > user settings), the
+	// composed OPENCODE_CONFIG_CONTENT carrying it, field conflicts
+	// surfaced against the project config, and execution inputs gated
+	// behind the host-local trust record.
+	overlay := justcode.ManagedOverlay{Model: resolveModelSelection(projectRoot)}
+	conflictMsg, err := opencodeConfigReview(projectRoot, overlay)
+	if err != nil {
+		return 1, err
+	}
+	if conflictMsg != "" {
+		fmt.Fprintf(os.Stderr, "Warning: managed OpenCode fields differ from the project configuration:\n%s\n", conflictMsg)
+	}
+	// Trust gate (P10): project plugins and MCP commands execute code at
+	// OpenCode config load, so starting a runtime for this project requires
+	// every execution input to be approved at its current content hash. A
+	// changed file is a new decision, not an inherited one. Only start paths
+	// are gated: stop, check, logs and shell operate on an existing guest.
+	if parsed.action == "attach" || parsed.action == "start" || parsed.action == "restart" || parsed.action == "recreate" {
+		if err := requireTrustedExecutionInputs(projectRoot); err != nil {
+			return 1, err
+		}
+	}
+
 	// bindings manages the host-local per-project credential binding
 	// approvals (P09). It needs the project instance, so it runs after
 	// discovery and before any runtime is constructed.
@@ -113,6 +144,21 @@ func run(args []string) (int, error) {
 			return 2, fmt.Errorf("bindings requires a project directory: %v", projErr)
 		}
 		return bindingsCmd(parsed.bindingsArgs, instance)
+	}
+
+	// models shows the validated Albert catalogue (P10). It runs before
+	// any runtime is constructed and needs no project.
+	if parsed.action == "models" {
+		return modelsCmd(parsed.modelsArgs)
+	}
+
+	// trust manages the host-local approval of execution-relevant project
+	// OpenCode inputs (P10). It runs before any runtime is constructed.
+	if parsed.action == "trust" {
+		if projErr != nil {
+			return 2, fmt.Errorf("trust requires a project directory: %v", projErr)
+		}
+		return trustCmd(parsed.trustArgs, pc.Root)
 	}
 
 	// The dispatcher and its backends are built from the resolved config,
@@ -125,6 +171,7 @@ func run(args []string) (int, error) {
 	} else {
 		d = justcode.NewDispatcher(cfg)
 	}
+	d.SetOpenCodeOverlay(overlay)
 
 	// These actions resolve their own target (or need none), so they must not be
 	// gated on a configured runtime. check consumes the isolation level, so it
@@ -206,6 +253,10 @@ type parsedArgs struct {
 	authArgs []string
 	// bindingsArgs holds the words after the bindings command.
 	bindingsArgs []string
+	// trustArgs holds the words after the trust command.
+	trustArgs []string
+	// modelsArgs holds the words after the models command.
+	modelsArgs []string
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -287,6 +338,18 @@ func parseArgs(args []string) (parsedArgs, error) {
 			// Everything after the bindings command belongs to it.
 			p.bindingsArgs = args[i+1:]
 			return p, nil
+		case a == "trust" && !actionSet:
+			p.action = "trust"
+			actionSet = true
+			// Everything after the trust command belongs to it.
+			p.trustArgs = args[i+1:]
+			return p, nil
+		case a == "models" && !actionSet:
+			p.action = "models"
+			actionSet = true
+			// Everything after the models command belongs to it.
+			p.modelsArgs = args[i+1:]
+			return p, nil
 		case actionNames[a] && !actionSet:
 			p.action = a
 			actionSet = true
@@ -331,6 +394,63 @@ func resolveCredentialRef(projectRoot string) string {
 		}
 	}
 	return ""
+}
+
+// resolveModelSelection applies the model precedence (P10):
+// JUST_CODE_MODEL > project manifest > user settings. Empty means the
+// embedded default, which the overlay applies itself.
+func resolveModelSelection(projectRoot string) string {
+	if v := strings.TrimSpace(os.Getenv("JUST_CODE_MODEL")); v != "" {
+		return v
+	}
+	if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil && pm.Model != "" {
+		return pm.Model
+	}
+	if path, err := justcode.UserSettingsPath(); err == nil {
+		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil && us.DefaultModel != "" {
+			return us.DefaultModel
+		}
+	}
+	return ""
+}
+
+// opencodeConfigReview surfaces managed-field conflicts between the overlay
+// and the project's OpenCode configuration (D-001: OpenCode ignores unknown
+// keys and never exposes a merge diff, so just-code must detect them). The
+// overlay still wins (final merge), so the message says so.
+func opencodeConfigReview(projectRoot string, overlay justcode.ManagedOverlay) (string, error) {
+	cfgPath := justcode.FindProjectOpenCodeConfig(projectRoot)
+	if cfgPath == "" {
+		return "", nil
+	}
+	project, err := justcode.ParseProjectOpenCodeConfig(cfgPath)
+	if err != nil {
+		return "", err
+	}
+	conflicts := justcode.DetectOverlayConflicts(project, overlay)
+	return justcode.FormatConflicts(conflicts), nil
+}
+
+// requireTrustedExecutionInputs blocks the launch when the project carries
+// execution-relevant OpenCode inputs that are unapproved or changed since
+// approval. Read-only commands (stop, check, status, logs, shell on an
+// already-running guest) are not gated here; only paths that start a
+// runtime.
+func requireTrustedExecutionInputs(projectRoot string) error {
+	unapproved, err := justcode.DiscoverUnapprovedInputs(justcode.DefaultFS, justcode.DefaultStateDir(), projectRoot)
+	if err != nil {
+		return err
+	}
+	if len(unapproved) == 0 {
+		return nil
+	}
+	var lines []string
+	for _, u := range unapproved {
+		lines = append(lines, fmt.Sprintf("  %s (%s)", u.Path, u.Reason))
+	}
+	return fmt.Errorf("this project declares OpenCode inputs that execute code or launch processes, and they are not approved at their current content:\n%s\n"+
+		"Review them, then run 'just-code trust approve' to record approval for the current content",
+		strings.Join(lines, "\n"))
 }
 
 // configCmd implements `just-code config <subcommand>`. It is read-only: it
@@ -617,6 +737,9 @@ Commands:
   auth       Manage global credentials (add, status, remove)
   bindings   Approve or revoke optional credential bindings for this
              project (list, approve, revoke)
+  trust      Approve execution-relevant project OpenCode inputs (status,
+             approve)
+  models     List the validated Albert models (live, or last-known-good)
   version    Print the build identity
   help       Show this help
 

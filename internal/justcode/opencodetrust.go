@@ -1,0 +1,208 @@
+package justcode
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// This file implements the P10 host-local trust record for
+// execution-relevant project inputs. OpenCode loads project plugins and MCP
+// commands as executable code at config load (D-001), so a cloned repository
+// can execute code on first start without any declaration. Approval is a
+// host-local decision keyed by the canonical project and the CONTENT hash
+// of the approved inputs: a changed file is unapproved again until the user
+// re-approves. The record never travels in the repository.
+
+// TrustRecord is the persisted per-project approval of execution inputs.
+type TrustRecord struct {
+	SchemaVersion int `json:"schemaVersion"`
+	// Project is the canonical project root (absolute, symlink-resolved).
+	Project string `json:"project"`
+	// Approved lists one entry per approved input, as "path:sha256" — the
+	// path relative to the project root and the content hash at approval
+	// time. A mismatch on recheck means the input changed: approval is stale
+	// and just-code must refuse to run it without a new approval.
+	Approved []string `json:"approved,omitempty"`
+}
+
+const trustRecordSchemaVersion = 1
+
+// opencodeTrustPath is the trust record location for a project root, in
+// host state (never in the repository).
+func opencodeTrustPath(stateDir, projectRoot string) string {
+	return filepath.Join(stateDir, "projects", safeFileName(projectRoot), "opencode-trust.json")
+}
+
+// OpenCodeTrustPath exposes the trust record path for the CLI.
+func OpenCodeTrustPath(stateDir, projectRoot string) string {
+	return opencodeTrustPath(stateDir, projectRoot)
+}
+
+// ReadTrustRecord loads the record for a project root. A missing file is
+// not an error: nothing is approved.
+func ReadTrustRecord(fs FS, stateDir, projectRoot string) (TrustRecord, error) {
+	data, err := fs.ReadFile(opencodeTrustPath(stateDir, projectRoot))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return TrustRecord{SchemaVersion: trustRecordSchemaVersion, Project: projectRoot}, nil
+		}
+		return TrustRecord{}, err
+	}
+	var r TrustRecord
+	if err := json.Unmarshal(data, &r); err != nil {
+		return TrustRecord{}, fmt.Errorf("trust record %s: %w", opencodeTrustPath(stateDir, projectRoot), err)
+	}
+	if r.SchemaVersion > trustRecordSchemaVersion {
+		return TrustRecord{}, fmt.Errorf("trust record %s: schemaVersion %d is newer than this build supports (%d)",
+			opencodeTrustPath(stateDir, projectRoot), r.SchemaVersion, trustRecordSchemaVersion)
+	}
+	return r, nil
+}
+
+// WriteTrustRecord atomically persists the record.
+func WriteTrustRecord(fs FS, stateDir, projectRoot string, r TrustRecord) error {
+	r.SchemaVersion = trustRecordSchemaVersion
+	r.Project = projectRoot
+	approved := append([]string(nil), r.Approved...)
+	sort.Strings(approved)
+	r.Approved = approved
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := fs.MkdirAll(filepath.Dir(opencodeTrustPath(stateDir, projectRoot)), 0o755); err != nil {
+		return err
+	}
+	return atomicWrite(fs, opencodeTrustPath(stateDir, projectRoot), append(data, '\n'), 0o600)
+}
+
+// hashFileContent returns the sha256 of the file's content, hex-encoded.
+// Symlinks are refused: an approval record must pin actual content, not a
+// path that can be repointed after approval.
+func hashFileContent(path string) (string, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s is a symlink; refusing to approve a repointable path", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// UnapprovedInputs computes the execution-relevant inputs of a project that
+// are NOT covered by the current trust record: unapproved files, and
+// approved files whose content hash no longer matches (the recheck the plan
+// requires — approval is tied to content, and a changed file is a new
+// decision). Config-declared entries (plugins, MCP commands) hash the whole
+// config file: they are defined inside it, so any edit that changes them
+// changes the file hash.
+type UnapprovedInput struct {
+	// Path is the input's path relative to the project root.
+	Path string
+	// Reason is "unapproved" or "changed".
+	Reason string
+}
+
+func DiscoverUnapprovedInputs(fs FS, stateDir, projectRoot string) ([]UnapprovedInput, error) {
+	inputs, err := DiscoverProjectExecutionInputs(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	record, err := ReadTrustRecord(fs, stateDir, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	approved := map[string]string{}
+	for _, entry := range record.Approved {
+		path, hash, ok := strings.Cut(entry, ":")
+		if ok {
+			approved[path] = hash
+		}
+	}
+	var out []UnapprovedInput
+	check := func(rel string) {
+		hash, err := hashFileContent(filepath.Join(projectRoot, rel))
+		if err != nil {
+			out = append(out, UnapprovedInput{Path: rel, Reason: "unreadable: " + err.Error()})
+			return
+		}
+		prior, was := approved[rel]
+		switch {
+		case !was:
+			out = append(out, UnapprovedInput{Path: rel, Reason: "unapproved"})
+		case prior != hash:
+			out = append(out, UnapprovedInput{Path: rel, Reason: "changed since approval"})
+		}
+	}
+	// The config file (when it declares plugins or MCP commands) is itself
+	// an execution input: its content hash covers every declaration inside.
+	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0) {
+		rel, err := filepath.Rel(projectRoot, inputs.ConfigPath)
+		if err == nil {
+			check(rel)
+		}
+	}
+	for _, rel := range inputs.AutoDiscoveredPlugins {
+		check(rel)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// ApproveExecutionInputs records approval for every currently discovered
+// execution input, at its current content hash. The project config (when it
+// carries plugins or MCP commands) is approved with its own hash.
+func ApproveExecutionInputs(fs FS, stateDir, projectRoot string) error {
+	inputs, err := DiscoverProjectExecutionInputs(projectRoot)
+	if err != nil {
+		return err
+	}
+	record, err := ReadTrustRecord(fs, stateDir, projectRoot)
+	if err != nil {
+		return err
+	}
+	keep := map[string]string{}
+	for _, entry := range record.Approved {
+		if path, hash, ok := strings.Cut(entry, ":"); ok {
+			keep[path] = hash
+		}
+	}
+	add := func(rel string) error {
+		hash, err := hashFileContent(filepath.Join(projectRoot, rel))
+		if err != nil {
+			return fmt.Errorf("approve %s: %w", rel, err)
+		}
+		keep[rel] = hash
+		return nil
+	}
+	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0) {
+		if rel, err := filepath.Rel(projectRoot, inputs.ConfigPath); err == nil {
+			if err := add(rel); err != nil {
+				return err
+			}
+		}
+	}
+	for _, rel := range inputs.AutoDiscoveredPlugins {
+		if err := add(rel); err != nil {
+			return err
+		}
+	}
+	entries := make([]string, 0, len(keep))
+	for path, hash := range keep {
+		entries = append(entries, path+":"+hash)
+	}
+	record.Approved = entries
+	return WriteTrustRecord(fs, stateDir, projectRoot, record)
+}
