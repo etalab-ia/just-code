@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 )
 
 // This file implements the P11 setup journal: the persisted progress record
@@ -24,21 +23,11 @@ const (
 	StagePreflight SetupStage = "preflight"
 	// StageCredential stores the Albert credential (and optionally GitHub).
 	StageCredential SetupStage = "credential"
-	// StageIdentity records the git identity.
-	StageIdentity SetupStage = "identity"
-	// StageSettings writes the resolved global settings.
-	StageSettings SetupStage = "settings"
-	// StageRuntime installs the managed Microsandbox runtime.
-	StageRuntime SetupStage = "runtime"
-	// StageDone marks a completed setup (the journal is removed).
-	StageDone SetupStage = "done"
+	// The remaining stages of the plan (identity, settings, runtime, done)
+	// are not journaled as Stage values: the flow is field-driven (a stage
+	// is done when its journal field is set), so no constants exist for
+	// them. Stage is the coarse "where did it stop" marker only.
 )
-
-// setupStageOrder is the execution order; the journal resumes at the first
-// incomplete stage.
-var setupStageOrder = []SetupStage{
-	StagePreflight, StageCredential, StageIdentity, StageSettings, StageRuntime,
-}
 
 // SetupJournal is the persisted wizard state.
 type SetupJournal struct {
@@ -50,6 +39,13 @@ type SetupJournal struct {
 	Preflight SetupPreflight `json:"preflight,omitempty"`
 	// CredentialKinds lists the kinds stored so far (never values).
 	CredentialKinds []string `json:"credentialKinds,omitempty"`
+	// StoreKind records which store the credentials went into (native or
+	// file), so a resumed run reuses the same store instead of silently
+	// switching to the native one.
+	StoreKind string `json:"storeKind,omitempty"`
+	// SkipGitHub records an explicit "no" to the optional GitHub prompt, so
+	// a resumed run does not re-ask.
+	SkipGitHub bool `json:"skipGitHub,omitempty"`
 	// GitName and GitEmail are the chosen identity.
 	GitName  string `json:"gitName,omitempty"`
 	GitEmail string `json:"gitEmail,omitempty"`
@@ -106,7 +102,7 @@ func ReadSetupJournal(fs FS, stateDir string) (SetupJournal, error) {
 	}
 	var j SetupJournal
 	if err := json.Unmarshal(data, &j); err != nil {
-		return SetupJournal{}, fmt.Errorf("setup journal: %w", err)
+		return SetupJournal{}, fmt.Errorf("setup journal %s is corrupt (%w): remove it and re-run 'just-code setup' to start over", setupJournalPath(stateDir), err)
 	}
 	if j.SchemaVersion > setupJournalSchemaVersion {
 		return SetupJournal{}, fmt.Errorf("setup journal: schemaVersion %d is newer than this build supports (%d)", j.SchemaVersion, setupJournalSchemaVersion)
@@ -134,13 +130,6 @@ func RemoveSetupJournal(fs FS, stateDir string) error {
 		return nil
 	}
 	return err
-}
-
-// sortedCredentialKinds returns the stored kinds in stable order.
-func (j SetupJournal) sortedCredentialKinds() []string {
-	out := append([]string(nil), j.CredentialKinds...)
-	sort.Strings(out)
-	return out
 }
 
 // ContainsCredentialKind reports whether the journal has stored the kind.

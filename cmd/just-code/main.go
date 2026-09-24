@@ -44,6 +44,7 @@ func run(args []string) (int, error) {
 			// and rides argv; secrets never do.
 			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, "")},
 		}
+		applyGuestIdentity(&cfg)
 		return 0, justcode.RunGuestBootstrap(context.Background(), cfg)
 	}
 
@@ -52,6 +53,7 @@ func run(args []string) (int, error) {
 	// writes the 0600 env file from stdin.
 	if len(args) > 0 && args[0] == justcode.GuestPrepareCommand {
 		cfg := justcode.GuestConfig{Username: argOr(args, 1, "")}
+		applyGuestIdentity(&cfg)
 		return exitCodeOf(nil), justcode.RunGuestPrepare(context.Background(), cfg)
 	}
 	if len(args) > 0 && args[0] == justcode.GuestSecretsCommand {
@@ -393,6 +395,22 @@ func argOr(args []string, i int, def string) string {
 		return args[i]
 	}
 	return def
+}
+
+// applyGuestIdentity loads the git identity from the user settings (written
+// by setup) onto a guest config. The in-VM helper commands run with no host
+// config, so the identity travels explicitly; empty keeps the defaults.
+func applyGuestIdentity(cfg *justcode.GuestConfig) {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return
+	}
+	cfg.GitName = us.GitName
+	cfg.GitEmail = us.GitEmail
 }
 
 // resolveCredentialRef applies the credential-reference precedence (P09):

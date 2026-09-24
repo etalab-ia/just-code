@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // diskFree reports the free bytes of the filesystem containing path, via
@@ -14,7 +15,11 @@ import (
 // Windows pattern (PowerShell for system surfaces), and this keeps one FFI
 // style instead of introducing raw syscall plumbing.
 func diskFree(path string) (int64, error) {
-	res, err := OSRunner{}.Run(context.Background(), "powershell", "-NoProfile", "-NonInteractive",
+	// Bounded like the other probes: a hung PowerShell must not hang the
+	// preflight.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	res, err := OSRunner{}.Run(ctx, "powershell", "-NoProfile", "-NonInteractive",
 		"-Command", "(Get-PSDrive (Get-Item -LiteralPath '"+escapePowerShellString(path)+"').PSDrive.Name.ToString()).Free")
 	if err != nil {
 		return 0, err

@@ -1,12 +1,17 @@
 package justcode
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // fakeSetupStore is an in-memory SetupStore for wizard tests.
@@ -53,6 +58,20 @@ func TestSetupJournalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetupJournalCorruptFileNamesPathAndRemedy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(SetupJournalPath(dir), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ReadSetupJournal(DefaultFS, dir)
+	if err == nil {
+		t.Fatal("a corrupt journal must fail")
+	}
+	if !stringsContainsLower(err.Error(), "remove") || !stringsContainsLower(err.Error(), SetupJournalPath(dir)) {
+		t.Fatalf("the error must name the path and the remedy: %v", err)
+	}
+}
+
 func TestStoreCredentialJournalsKindNeverValue(t *testing.T) {
 	dir := t.TempDir()
 	store := &fakeSetupStore{}
@@ -63,15 +82,23 @@ func TestStoreCredentialJournalsKindNeverValue(t *testing.T) {
 	if err != nil || probe.Rejected || probe.Unreachable {
 		t.Fatalf("store: %+v, %v", probe, err)
 	}
+	got := mustJournal(t, dir)
+	for _, k := range got.CredentialKinds {
+		if k == "the-secret-value" {
+			t.Fatal("the journal must never contain the credential value")
+		}
+	}
+	if len(got.CredentialKinds) != 1 || got.CredentialKinds[0] != "albert" {
+		t.Fatalf("the kind must be journaled: %+v", got.CredentialKinds)
+	}
+	// Structural check too: the raw file must not embed the value anywhere
+	// (not just in the kinds field).
 	raw, err := os.ReadFile(SetupJournalPath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if containsStr([]string{string(raw)}, "the-secret-value") {
-		t.Fatal("the journal must never contain the credential value")
-	}
-	if !ContainsCredentialKind(mustJournal(t, dir).CredentialKinds, "albert") {
-		t.Fatal("the kind must be journaled")
+	if bytes.Contains(raw, []byte("the-secret-value")) {
+		t.Fatal("the journal file must never contain the credential value")
 	}
 }
 
@@ -127,6 +154,38 @@ func TestStoreCredentialDistinguishesRejectionFromNetwork(t *testing.T) {
 	}
 }
 
+func TestValidateAlbertKeyRejectsRedirectsAndNonCatalogueBodies(t *testing.T) {
+	// A redirect must never be followed: the Authorization header would be
+	// replayed to another host. It reports unreachable, not valid.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.invalid/", http.StatusFound)
+	}))
+	defer srv.Close()
+	probe := validateAlbertKeyAt(context.Background(), srv.Client(), "k", srv.URL)
+	if !probe.Unreachable || probe.Rejected {
+		t.Fatalf("redirect probe = %+v", probe)
+	}
+	// A 200 with a non-catalogue body (captive portal, HTML error page) is
+	// not a validated key.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<html>login</html>")
+	}))
+	defer srv2.Close()
+	probe = validateAlbertKeyAt(context.Background(), nil, "k", srv2.URL)
+	if !probe.Unreachable || probe.Rejected {
+		t.Fatalf("non-catalogue probe = %+v", probe)
+	}
+	// A 200 with a real catalogue listing validates.
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"m"}]}`)
+	}))
+	defer srv3.Close()
+	probe = validateAlbertKeyAt(context.Background(), nil, "k", srv3.URL)
+	if probe.Unreachable || probe.Rejected {
+		t.Fatalf("catalogue probe = %+v", probe)
+	}
+}
+
 func TestPreflightFatalWithoutKVM(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the /dev/kvm probe is Linux-specific")
@@ -150,7 +209,26 @@ func TestPreflightFatalWithoutKVM(t *testing.T) {
 	}
 }
 
-func TestPreflightWithDoctorSuccess(t *testing.T) {
+func TestPreflightKVMInaccessibleNamesTheGroupRemedy(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the /dev/kvm probe is Linux-specific")
+	}
+	fi, err := os.Stat("/dev/kvm")
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		t.Skip("host has no KVM device; the existence path is covered elsewhere")
+	}
+	if err := unix.Access("/dev/kvm", unix.R_OK|unix.W_OK); err == nil {
+		t.Skip("this user can open /dev/kvm; the accessibility failure cannot be exercised")
+	}
+	// The device exists but this user cannot open it: the detail must say
+	// so (the kvm group), not the generic missing-device message.
+	detail := probeKVMFailure()
+	if !stringsContainsLower(detail, "kvm group") {
+		t.Fatalf("detail must name the kvm group remedy: %q", detail)
+	}
+}
+
+func TestPreflightDiskProbeSeam(t *testing.T) {
 	p := SetupPreflighter{
 		Doctor: func(context.Context) (string, error) { return "KVM: available", nil },
 		StatFS: func(string) (int64, error) { return 4 << 30, nil },

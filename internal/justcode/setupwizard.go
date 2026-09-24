@@ -2,10 +2,11 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -38,6 +39,23 @@ type SetupWizard struct {
 	EnsureRuntime func(ctx context.Context) error
 }
 
+// ResolveStore resolves and verifies the credential store without storing
+// anything, so the CLI can fail on a locked or unavailable store BEFORE the
+// user types a secret. A consented-but-absent file store is the normal
+// first-run state and passes: the first Put creates it.
+func (w SetupWizard) ResolveStore(ctx context.Context) (SetupStore, error) {
+	store, err := w.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Verify(ctx); err != nil {
+		if !errors.Is(err, ErrFileStoreAbsent) && !errors.Is(err, ErrFileStoreNotConsented) {
+			return nil, err
+		}
+	}
+	return store, nil
+}
+
 // CredentialProbe distinguishes the validation outcomes the plan requires:
 // a rejected key is reported as rejected (the user retries), an unreachable
 // endpoint is reported as network trouble (the user may continue or stop),
@@ -50,13 +68,30 @@ type CredentialProbe struct {
 
 // ValidateAlbertKey probes the models endpoint with the key: a 401/403 is a
 // rejection (the key is wrong or revoked), other transport errors are
-// unreachable, and a 200 means the key is valid. No chat completion is ever
-// performed — validating with a catalogue listing never spends inference.
+// unreachable, and a 200 with a models listing means the key is valid.
+// Redirects are NOT followed: the Authorization header must never be replayed
+// to another host, so a 3xx is reported as unreachable (the endpoint moved
+// or is misconfigured, which is a configuration problem, not a key problem).
+// No chat completion is ever performed — validating with a catalogue listing
+// never spends inference.
 func ValidateAlbertKey(ctx context.Context, client *http.Client, key string) CredentialProbe {
+	return validateAlbertKeyAt(ctx, client, key, albertCatalogueURL)
+}
+
+// validateAlbertKeyAt is ValidateAlbertKey against an explicit URL (tests).
+func validateAlbertKeyAt(ctx context.Context, client *http.Client, key, url string) CredentialProbe {
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+	} else if client.CheckRedirect == nil {
+		// A caller-supplied client without a redirect policy gets the same
+		// no-follow policy; an explicit caller policy is respected.
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, albertCatalogueURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return CredentialProbe{Unreachable: true, Detail: err.Error()}
 	}
@@ -68,7 +103,18 @@ func ValidateAlbertKey(ctx context.Context, client *http.Client, key string) Cre
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusOK:
+		// Sniff the body: the models endpoint returns a JSON object with a
+		// "data" array. A 200 with anything else (a captive portal, an HTML
+		// error page) is not a validated key.
+		var raw struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
+			return CredentialProbe{Unreachable: true, Detail: "HTTP 200 with a non-catalogue body (endpoint misconfigured?)"}
+		}
 		return CredentialProbe{}
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return CredentialProbe{Unreachable: true, Detail: fmt.Sprintf("HTTP %d (redirect not followed; the Authorization header is never replayed to another host)", resp.StatusCode)}
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return CredentialProbe{Rejected: true, Detail: fmt.Sprintf("HTTP %d: the key was not accepted", resp.StatusCode)}
 	default:
@@ -98,7 +144,8 @@ func (w SetupWizard) StoreCredential(ctx context.Context, kind CredentialKind, v
 	probe := CredentialProbe{}
 	if kind == CredentialAlbert && w.ValidateAlbert != nil {
 		if verr := w.ValidateAlbert(ctx, value); verr != nil {
-			if rejected, ok := verr.(RejectedCredentialError); ok {
+			var rejected RejectedCredentialError
+			if errors.As(verr, &rejected) {
 				return CredentialProbe{Rejected: true, Detail: rejected.Detail}, nil
 			}
 			probe = CredentialProbe{Unreachable: true, Detail: verr.Error()}
@@ -127,6 +174,23 @@ func (e RejectedCredentialError) Error() string {
 
 // SaveIdentity journals the git identity (no store involvement).
 func (w SetupWizard) SaveIdentity(name, email string) error {
+	// The identity is persisted in the durable user settings, not just the
+	// journal: the journal is removed at completion, and the guest
+	// bootstrap reads the settings to configure git. The journal copy
+	// tracks wizard progress for the review display.
+	path, err := UserSettingsPath()
+	if err != nil {
+		return err
+	}
+	us, err := ReadUserSettings(w.FS, path)
+	if err != nil {
+		return err
+	}
+	us.GitName = name
+	us.GitEmail = email
+	if err := WriteUserSettings(w.FS, path, us); err != nil {
+		return err
+	}
 	j, err := ReadSetupJournal(w.FS, w.StateDir)
 	if err != nil {
 		return err
@@ -188,6 +252,3 @@ func (w SetupWizard) store(ctx context.Context) (SetupStore, error) {
 	}
 	return s, nil
 }
-
-// TrimmedNonEmpty reports whether s has non-space content.
-func TrimmedNonEmpty(s string) bool { return strings.TrimSpace(s) != "" }

@@ -99,14 +99,28 @@ func humanBytes(n int64) string {
 // empty + Ctrl-D (EOF) cancels the current stage, and "cancel" at the first
 // prompt of the flow exits with the journal preserved for a later resume.
 func setupRunCmd(fallback bool) (int, error) {
+	return setupWizardRun(fallback, bufio.NewReader(os.Stdin), nil, nil)
+}
+
+// setupWizardRun is the testable core of the wizard: input comes from in,
+// and the network-facing seams (Albert validation, runtime installation)
+// are injectable so tests never hit the network or download anything. A nil
+// validate uses the real endpoint probe; a nil ensure installs the real
+// managed runtime.
+func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Context, string) error, ensure func(context.Context) error) (int, error) {
 	ctx := context.Background()
 	stateDir := justcode.DefaultStateDir()
 	fs := justcode.DefaultFS
-	in := bufio.NewReader(os.Stdin)
 
 	j, err := justcode.ReadSetupJournal(fs, stateDir)
 	if err != nil {
 		return 1, err
+	}
+	// A resumed run reuses the store the interrupted run used (journal
+	// StoreKind), so credentials never split across two stores. An
+	// explicit --fallback flag still wins.
+	if !fallback && j.StoreKind == "file" {
+		fallback = true
 	}
 	if j.Stage == justcode.StagePreflight && len(j.CredentialKinds) == 0 && j.GitName == "" {
 		// Fresh start: preflight first, so a fatal blocker surfaces before
@@ -135,6 +149,9 @@ func setupRunCmd(fallback bool) (int, error) {
 			return authStore(fallback)
 		},
 		ValidateAlbert: func(ctx context.Context, key string) error {
+			if validate != nil {
+				return validate(ctx, key)
+			}
 			probe := justcode.ValidateAlbertKey(ctx, nil, key)
 			switch {
 			case probe.Rejected:
@@ -144,25 +161,33 @@ func setupRunCmd(fallback bool) (int, error) {
 			}
 			return nil
 		},
+		EnsureRuntime: ensure,
 	}
 
 	// Stage: Albert credential (skipped when already stored this run).
 	if !justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
 		fmt.Println("just-code setup — global configuration")
 		fmt.Println()
+		// Resolve and verify the store BEFORE prompting: a locked or
+		// unavailable store must fail before the user types anything (the
+		// auth add contract). A consented-but-absent file store is the
+		// normal first-run state and passes.
+		if _, err := w.ResolveStore(ctx); err != nil {
+			return 1, err
+		}
 		key, ok := promptSecret(in, "Enter your Albert API key (input hidden where the terminal supports it; empty to cancel): ")
 		if !ok || key == "" {
 			return 1, fmt.Errorf("%s", cancelMsg(stateDir))
 		}
 		probe, err := w.StoreCredential(ctx, justcode.CredentialAlbert, key)
 		if err != nil {
-			var rejected justcode.RejectedCredentialError
-			if probe.Rejected || strings.Contains(err.Error(), "rejected") {
-				_ = rejected
-				fmt.Fprintf(os.Stderr, "The key was rejected (%s). Re-run 'just-code setup' and re-enter it.\n", probe.Detail)
-				return 1, nil
-			}
 			return 1, err
+		}
+		// Rejection is a probe outcome, not an error: handle it on the
+		// success path (the engine returns nil error for a rejection).
+		if probe.Rejected {
+			fmt.Fprintf(os.Stderr, "The key was rejected (%s). Re-run 'just-code setup' and re-enter it.\n", probe.Detail)
+			return 1, nil
 		}
 		if probe.Unreachable {
 			fmt.Fprintf(os.Stderr, "Warning: the Albert endpoint could not be reached (%s); the key was stored without validation. 'just-code models' will confirm it when the network recovers.\n", probe.Detail)
@@ -170,28 +195,45 @@ func setupRunCmd(fallback bool) (int, error) {
 			fmt.Println("Albert credential validated and stored.")
 		}
 		j.CredentialKinds = append(j.CredentialKinds, "albert")
+		if j.StoreKind == "" {
+			if store, err := w.ResolveStore(ctx); err == nil {
+				j.StoreKind = store.Kind()
+			}
+		}
+		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+			return 1, err
+		}
 	} else {
 		fmt.Println("Albert credential: already stored.")
 	}
 
 	// Stage: optional GitHub credential. Skipping is penalty-free.
 	if !justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
-		fmt.Println()
-		fmt.Println("GitHub credential (optional — used by the guest GitHub workflow; can be added later with 'just-code auth add github').")
-		answer, _ := promptLine(in, "Add a GitHub token now? [y/N]: ")
-		if strings.EqualFold(strings.TrimSpace(answer), "y") {
-			token, ok := promptSecret(in, "Enter the GitHub token (input hidden; empty to skip): ")
-			if ok && token != "" {
-				if _, err := w.StoreCredential(ctx, justcode.CredentialGithub, token); err != nil {
-					return 1, err
+		if j.SkipGitHub {
+			// A resumed run keeps the earlier "no" without re-asking.
+		} else {
+			fmt.Println()
+			fmt.Println("GitHub credential (optional — used by the guest GitHub workflow; can be added later with 'just-code auth add github').")
+			answer, _ := promptLine(in, "Add a GitHub token now? [y/N]: ")
+			if strings.EqualFold(strings.TrimSpace(answer), "y") {
+				token, ok := promptSecret(in, "Enter the GitHub token (input hidden; empty to skip): ")
+				if ok && token != "" {
+					if _, err := w.StoreCredential(ctx, justcode.CredentialGithub, token); err != nil {
+						return 1, err
+					}
+					j.CredentialKinds = append(j.CredentialKinds, "github")
+					fmt.Println("GitHub credential stored. It is NOT activated for any project; per-project approval comes with the GitHub workflow (bindings approve github).")
+				} else {
+					fmt.Println("Skipped GitHub.")
+					j.SkipGitHub = true
 				}
-				j.CredentialKinds = append(j.CredentialKinds, "github")
-				fmt.Println("GitHub credential stored. It is NOT activated for any project; per-project approval comes with the GitHub workflow (bindings approve github).")
 			} else {
 				fmt.Println("Skipped GitHub.")
+				j.SkipGitHub = true
 			}
-		} else {
-			fmt.Println("Skipped GitHub.")
+		}
+		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+			return 1, err
 		}
 	}
 
@@ -224,8 +266,13 @@ func setupRunCmd(fallback bool) (int, error) {
 			model = chosen
 		}
 	}
-	if err := w.SaveSettings(model); err != nil {
-		return 1, err
+	// Validate against the P10 catalogue when it is reachable; an
+	// unreachable catalogue (first run offline, or the endpoint down) is a
+	// warning, not a blocker — the key itself was already validated above.
+	if model != "" {
+		if warn := validateModelAgainstCatalogue(model); warn != "" {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
+		}
 	}
 
 	// Review.
@@ -249,7 +296,11 @@ func setupRunCmd(fallback bool) (int, error) {
 		return 1, fmt.Errorf("%s", cancelMsg(stateDir))
 	}
 
-	// Apply: settings are already written; install the runtime.
+	// Apply: write the settings (only now — a cancelled apply must leave
+	// the settings untouched), then install the runtime.
+	if err := w.SaveSettings(model); err != nil {
+		return 1, err
+	}
 	fmt.Println()
 	fmt.Println("Installing the managed Microsandbox runtime (downloaded and digest-verified)...")
 	if err := w.InstallRuntime(ctx); err != nil {
@@ -268,6 +319,32 @@ func storeLabel(fallback bool) string {
 	return "native"
 }
 
+// validateModelAgainstCatalogue checks the chosen model against the P10
+// catalogue (cache-first, network when reachable). It returns a warning
+// string; catalogue unavailability is NOT a warning (the model is still
+// written, and 'just-code models' re-checks later).
+func validateModelAgainstCatalogue(model string) string {
+	apiKey, err := resolveAlbertKeyForCatalogue()
+	if err != nil {
+		return "" // no key resolvable yet: nothing to validate against
+	}
+	cache := justcode.CatalogueCache{
+		FS:  justcode.DefaultFS,
+		Dir: justcode.DefaultStateDir(),
+		Fetch: func(ctx context.Context) (justcode.Catalogue, error) {
+			return justcode.FetchCatalogue(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
+		},
+	}
+	catalogue, _, err := cache.Load(context.Background())
+	if err != nil {
+		return "" // catalogue unreachable and no cache: not a validation failure
+	}
+	if _, ok := catalogue.Find(model); !ok {
+		return fmt.Sprintf("the model %q is not in the catalogue; it may have been removed. 'just-code models' lists the valid ids.", model)
+	}
+	return ""
+}
+
 func cancelMsg(stateDir string) string {
 	return fmt.Sprintf("setup cancelled; run 'just-code setup' to resume from where it stopped (journal: %s)", justcode.SetupJournalPath(stateDir))
 }
@@ -277,7 +354,10 @@ func printPreflight(res justcode.SetupPreflight) {
 	if !res.VirtualizationOK {
 		fmt.Printf("  Virtualization: %s\n", res.VirtualizationDetail)
 	}
-	if !res.DiskOK && res.DiskFreeBytes >= 0 {
+	if res.DiskDetail != "" {
+		// A probe ran and failed: report the failure, never a fabricated 0.
+		fmt.Printf("  Disk free: probe failed (%s)\n", res.DiskDetail)
+	} else if !res.DiskOK && res.DiskFreeBytes >= 0 {
 		fmt.Printf("  Disk free: %s (need at least 1 GiB)\n", humanBytes(res.DiskFreeBytes))
 	}
 }
@@ -292,10 +372,24 @@ func promptLine(in *bufio.Reader, prompt string) (string, bool) {
 	return line, true
 }
 
+// stdinIsTTYFn is the TTY probe used by the wizard's promptSecret. It is a
+// package variable so tests can force the non-TTY piped path regardless of
+// what the test binary's stdin is (go test runs with stdin on a character
+// device, which the probe would call a TTY).
+var stdinIsTTYFn = isTTY
+
 // promptSecret reads a secret with echo disabled where supported.
 func promptSecret(in *bufio.Reader, prompt string) (string, bool) {
 	fmt.Print(prompt)
-	if isTTY() {
+	if stdinIsTTYFn() {
+		// Typed-ahead input: a line the user pasted before the prompt
+		// appeared sits in the bufio buffer, and readPassword reads the
+		// terminal directly — the buffered line would be lost or misread by
+		// the NEXT prompt. Consume it first.
+		if in.Buffered() > 0 {
+			line, _ := promptLine(in, "")
+			_ = line
+		}
 		value, err := readPassword()
 		fmt.Println()
 		if err != nil {
@@ -303,5 +397,12 @@ func promptSecret(in *bufio.Reader, prompt string) (string, bool) {
 		}
 		return strings.TrimSpace(value), true
 	}
-	return promptLine(in, "")
+	// Non-TTY (piped answers): read a line and TRIM it. The raw line keeps
+	// its newline, and a secret with a trailing newline both fails header
+	// validation (net/http rejects it) and is stored corrupted.
+	line, ok := promptLine(in, "")
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(line), true
 }

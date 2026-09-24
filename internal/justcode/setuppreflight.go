@@ -106,24 +106,27 @@ func (p SetupPreflighter) RunPreflight(ctx context.Context) SetupPreflight {
 		}
 	} else {
 		out.Fatal = true
+		out.DiskDetail = "the runtime state home could not be resolved (HOME is unset); set HOME and re-run"
 	}
 	return out
 }
 
 // probeVirtualizationPrimitive checks the host's virtualization primitive
-// without the runtime. Linux needs /dev/kvm accessible; macOS needs the
-// Apple framework (present on all supported hardware, so the check is
-// existence of /System/Library/Frameworks/Hypervisor.framework). Windows
+// without the runtime. Linux needs /dev/kvm accessible (existence alone is
+// not enough: the user must be able to open it, i.e. be in the kvm group);
+// macOS needs the Apple framework (present on all supported hardware, so
+// the check is existence of
+// /System/Library/Frameworks/Hypervisor.framework). Windows
 // needs Hyper-V, checked by the WHP availability of the virtualization
 // instruction; without the runtime this is reported as unknown rather than
 // fatal, because the runtime's doctor is the authority there.
 func probeVirtualizationPrimitive() (bool, string) {
 	switch runtime.GOOS {
 	case "linux":
-		if fi, err := os.Stat("/dev/kvm"); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-			return true, "/dev/kvm present"
+		if ok, detail := probeKVM(); ok {
+			return true, detail
 		}
-		return false, "/dev/kvm is missing or inaccessible: install KVM support (on a VM host, enable nested virtualization)"
+		return false, probeKVMFailure()
 	case "darwin":
 		if _, err := os.Stat("/System/Library/Frameworks/Hypervisor.framework"); err == nil {
 			return true, "Hypervisor framework present"
@@ -148,10 +151,11 @@ func runRuntimeDoctor(ctx context.Context, path string) (string, error) {
 	return res.Stdout, nil
 }
 
-// freeDiskBytes reports the free bytes of the filesystem containing path.
+// freeDiskBytes reports the free bytes available to the calling user on the
+// filesystem containing path (Bavail, not the raw free blocks: the
+// filesystem's reserved blocks are not usable).
 func freeDiskBytes(path string) (int64, error) {
-	// statfs differs per platform; the portable lower bound is the stat of
-	// the directory itself, which reports no free space. Use the OS-specific
-	// helpers when present.
+	// statfs/statvfs differ per platform; the OS-specific helpers implement
+	// the probe.
 	return diskFree(path)
 }
