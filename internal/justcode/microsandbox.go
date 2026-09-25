@@ -913,7 +913,14 @@ func (m *MicrosandboxRuntime) rejectResourceSizingChange() error {
 	// this reads the record Reconcile writes, so the two must agree even when
 	// a caller overrides StateDir.
 	applied, err := ReadInstanceState(DefaultFS, instanceStatePath(DefaultStateDir(), m.InstanceName()))
-	if err != nil || applied == nil {
+	if err != nil {
+		// An unreadable record cannot answer the question. Fail closed, as the
+		// reconcile path does with the same file: booting on a guess would be
+		// the silent case this guard exists to prevent.
+		return fmt.Errorf("cannot read the recorded state of %s to check its guest sizing; refusing to restart on an unverifiable record. "+
+			"Recreate it with 'just-code recreate --microsandbox' if the record cannot be recovered: %w", m.InstanceName(), err)
+	}
+	if applied == nil {
 		return nil
 	}
 	changed := (applied.CPUs != 0 && applied.CPUs != m.cfg.CPUs) ||
@@ -921,7 +928,7 @@ func (m *MicrosandboxRuntime) rejectResourceSizingChange() error {
 	if !changed {
 		return nil
 	}
-	return fmt.Errorf("%s was created with %d CPUs and %d MiB, and a running guest cannot be resized (now %d CPUs and %d MiB). "+
+	return fmt.Errorf("%s was created with %d CPUs and %d MiB, and a microVM cannot be resized after creation (now %d CPUs and %d MiB). "+
 		"Run 'just-code recreate --microsandbox' to apply the new sizing, or restore the previous value",
 		m.InstanceName(), applied.CPUs, applied.MemoryMB, m.cfg.CPUs, m.cfg.MemoryMB)
 }

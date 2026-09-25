@@ -125,8 +125,10 @@ const (
 	// MaxSandboxMemoryMB is the largest memory size the SDK can carry (it
 	// takes a uint32 of MiB). Unreachable in practice, but the bound is the
 	// same representation limit as MaxSandboxCPUs: wrapping silently is the
-	// failure mode being avoided, not the magnitude.
-	MaxSandboxMemoryMB = 1<<32 - 1
+	// failure mode being avoided, not the magnitude. The value is the largest
+	// the configuration's int can hold on every supported architecture, so the
+	// bound itself cannot overflow a 32-bit build.
+	MaxSandboxMemoryMB = 1<<31 - 1
 )
 
 // LoadConfigEnv resolves configuration from the process environment.
