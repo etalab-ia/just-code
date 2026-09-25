@@ -211,8 +211,9 @@ type ReconcileFacts struct {
 	Running bool
 	// Healthy: the backend answers its health endpoint (backend mode).
 	Healthy bool
-	// CreationFixedChanged: isolation, mount or image differ from what the
-	// instance was created with.
+	// CreationFixedChanged: a creation-fixed attribute differs from what the
+	// instance was created with — isolation, image, workspace provenance, or
+	// guest sizing.
 	CreationFixedChanged bool
 	// CredentialChanged: the desired binding-set revision differs from the
 	// applied one (a value rotation within an unchanged set does NOT set it:
@@ -236,8 +237,13 @@ func PlanReconcile(applied *InstanceState, desired DesiredState, facts Reconcile
 	}
 	if facts.CreationFixedChanged {
 		return ReconcilePlan{
-			Ops:    []ReconcileOp{OpRecreate},
-			Reason: "isolation, workspace mount or image changed; these are fixed at creation",
+			Ops: []ReconcileOp{OpRecreate},
+			// The reason enumerates what can actually change. It must not
+			// name a cause the runtime no longer has (a "workspace mount"
+			// became a provenance check in P22) or omit one it does (guest
+			// sizing), because it is the only thing the user sees before
+			// deciding whether to lose the guest's state.
+			Reason: "the isolation level, the image, the workspace provenance or the guest sizing changed; these are fixed at creation",
 		}
 	}
 	if applied == nil {
