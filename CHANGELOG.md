@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.5.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.4.2...just-code-v0.5.0) (2026-09-25)
+
+
+### Features
+
+* **auth:** stocker les identifiants hors des projets (P08, en cours) ([7bf35b5](https://github.com/etalab-ia/just-code/commit/7bf35b59af060897b6d62419c6eda7ee109c96a4))
+* **auth:** stocker les identifiants hors des projets (P08) ([4103ff5](https://github.com/etalab-ia/just-code/commit/4103ff505656cc46b54bc45e0419f72fa8c5cea5))
+* **auth:** stocker les identifiants hors des projets (P08) ([b3357d1](https://github.com/etalab-ia/just-code/commit/b3357d12a963bc19b8f1ad22fea93f0b92db4316))
+* **config:** résolution typée, schémas et provenance (P04) ([abbc6ef](https://github.com/etalab-ia/just-code/commit/abbc6ef54ea0a843b6dfd9dc7a19ae71391d7268))
+* **config:** résolution typée, schémas et provenance (P04) ([24e9869](https://github.com/etalab-ia/just-code/commit/24e98693a78892c94ae0f1a0c8927581d8b98eb2))
+* **init:** commande just-code init et contrat non-TTY (P12b-3) ([#97](https://github.com/etalab-ia/just-code/issues/97)) ([651d22d](https://github.com/etalab-ia/just-code/commit/651d22d2fcbb659baa0b7df937d0cd54493be483))
+* **init:** moteur de configuration minimale d'un projet (P12b-2) ([#96](https://github.com/etalab-ia/just-code/issues/96)) ([2c88b55](https://github.com/etalab-ia/just-code/commit/2c88b55d42a7241f986a90b906302bd3bef20e3a))
+* **init:** proposer la configuration au lancement nu (P12b-4) ([#98](https://github.com/etalab-ia/just-code/issues/98)) ([b7cd92a](https://github.com/etalab-ia/just-code/commit/b7cd92aad59bf6686a4e176d69b73ff11727ff79))
+* Microsandbox en isolation complète par défaut (P12a) ([#94](https://github.com/etalab-ia/just-code/issues/94)) ([c4a0ec4](https://github.com/etalab-ia/just-code/commit/c4a0ec4ab9e84b3039def633ebfb98d0d49cfcb7))
+* **msb:** honorer le dimensionnement invité du projet (P12b-1) ([#95](https://github.com/etalab-ia/just-code/issues/95)) ([e801216](https://github.com/etalab-ia/just-code/commit/e801216b7f7da2f253be6badd4d22234a34c9bd7))
+* **runtime:** réconciliation et redémarrage non destructif (P07) ([bd4e068](https://github.com/etalab-ia/just-code/commit/bd4e06882f812754331ba033b565966f4606beca))
+* **runtime:** réconciliation et redémarrage non destructif (P07) ([a7e1e79](https://github.com/etalab-ia/just-code/commit/a7e1e79cd4f44d5b163898d148439c31b52c0687))
+* **workspace:** clone invité scellé, transfert filtré et retour revu (P22) ([#91](https://github.com/etalab-ia/just-code/issues/91)) ([b8ce092](https://github.com/etalab-ia/just-code/commit/b8ce0922e92e08c6001c8a097c76a1bd2ec14fe8))
+
+
+### Bug Fixes
+
+* **auth:** assouplir l'assertion de permissions pour Windows (PR [#86](https://github.com/etalab-ia/just-code/issues/86)) ([643743d](https://github.com/etalab-ia/just-code/commit/643743d94dc8b41cdef41f5fdc3629bd5ded893a))
+* **auth:** baseline Go 1.22 preserve et collections Secret Service verrouillees (revue Codex PR [#86](https://github.com/etalab-ia/just-code/issues/86)) ([cb7b10d](https://github.com/etalab-ia/just-code/commit/cb7b10d1d6cbddcd29895b03a2cc8ef1c395b034))
+* **auth:** branche darwin et disposition CREDENTIALW exacte (revue Codex PR [#86](https://github.com/etalab-ia/just-code/issues/86)) ([f97f4b0](https://github.com/etalab-ia/just-code/commit/f97f4b0b046292e0d4ad4e66903e132f38d5931b))
+* **auth:** fake Runner partage entre les tests d'adaptateurs (PR [#86](https://github.com/etalab-ia/just-code/issues/86)) ([05ff75a](https://github.com/etalab-ia/just-code/commit/05ff75acf91fc9a43baa33b4a648d4cb241daa21))
+* **auth:** fixture denied distinct de locked (PR [#86](https://github.com/etalab-ia/just-code/issues/86)) ([3ad0696](https://github.com/etalab-ia/just-code/commit/3ad0696ff100ee942eb4320aa8e51ab7e876592d))
+* **auth:** injection op/cible dans le script wincred, statut et remove honnetes (revue Codex PR [#86](https://github.com/etalab-ia/just-code/issues/86)) ([ac6ffac](https://github.com/etalab-ia/just-code/commit/ac6ffac66c64bd98d58ffd3abd34c4b93afc45df))
+* **config:** traversée des flags, erreurs de manifeste et valeurs par défaut dans explain ([bbe2e80](https://github.com/etalab-ia/just-code/commit/bbe2e802bec496df2be6ddfcc116367c05472672))
+* **lifecycle:** balayages globaux par instance (revue Codex PR [#81](https://github.com/etalab-ia/just-code/issues/81)) ([7fa14a4](https://github.com/etalab-ia/just-code/commit/7fa14a47821a3b6842dab2bc88efd5bda0e2d125))
+* **registry:** verrouiller les mutations entre processus (revue Codex PR [#80](https://github.com/etalab-ia/just-code/issues/80)) ([908b9d6](https://github.com/etalab-ia/just-code/commit/908b9d6444fe31b2a640e191f6a92eb866b4e138))
+* **runtime:** brancher la réconciliation et durcir le journal (revue Codex PR [#82](https://github.com/etalab-ia/just-code/issues/82)) ([0a5fa3b](https://github.com/etalab-ia/just-code/commit/0a5fa3bf88def3afc9427f40dffa08a5ac259a91))
+
 ## [0.4.2](https://github.com/etalab-ia/just-code/compare/just-code-v0.4.1...just-code-v0.4.2) (2026-09-22)
 
 
