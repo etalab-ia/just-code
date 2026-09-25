@@ -98,11 +98,6 @@ func run(args []string) (int, error) {
 		return 0, nil
 	}
 
-	// Resolve the isolation level before any backend is constructed: the
-	// backends read cfg.Isolation at construction time, so applying the flag
-	// afterwards would leave them in the wrong mode.
-	cfg, isoErr := applyIsolation(cfg, parsed.isolation)
-
 	// Project identity (P05/P06): the backends are bound to the current
 	// project's instance so lifecycle operations are project-scoped. A
 	// missing registry entry is not an error here — discovery derives the
@@ -121,6 +116,16 @@ func run(args []string) (int, error) {
 	}
 	// The sealed transfer source (P22/P12).
 	cfg = withProjectRootAsWorkspaceSource(cfg, pc, projErr)
+	// The project manifest's runtime and isolation choices (P12b). They are
+	// applied here, after discovery, because they are resolved from the
+	// discovered root; the flag and the exported variable still win, per the
+	// configuration contract (#29). Resolving them before any backend is
+	// constructed is what makes them effective rather than merely displayed.
+	manifestRuntime, manifestIsolation := projectRuntimeIsolation(projectRoot)
+	// Resolve the isolation level before any backend is constructed: the
+	// backends read cfg.Isolation at construction time, so applying the flag
+	// afterwards would leave them in the wrong mode.
+	cfg, isoErr := applyIsolation(cfg, parsed.isolation, manifestIsolation)
 	// Guest sizing from the project manifest (P12b). A malformed value is
 	// fatal only where the guest would actually be created; read-only
 	// commands keep working, which is when the user needs them.
@@ -236,7 +241,13 @@ func run(args []string) (int, error) {
 		return 0, d.Check(context.Background(), nil)
 	}
 
-	rt, err := justcode.ResolveRuntime(parsed.runtime, os.Getenv("RUNTIME"))
+	// Precedence: an explicit flag, then an exported RUNTIME, then the project
+	// manifest's choice, then the built-in default (P12b).
+	runtimePreference := os.Getenv("RUNTIME")
+	if runtimePreference == "" {
+		runtimePreference = string(manifestRuntime)
+	}
+	rt, err := justcode.ResolveRuntime(parsed.runtime, runtimePreference)
 	if err != nil {
 		return 2, err
 	}
@@ -273,12 +284,26 @@ func withProjectRootAsWorkspaceSource(cfg justcode.Config, pc justcode.ProjectCo
 	return cfg
 }
 
-// applyIsolation returns cfg with the effective isolation level applied, plus
-// any deferred error. It exists as a separate step because the backends read
+// applyIsolation resolves the effective isolation level: an explicit flag
+// wins, then an exported ISOLATION, then the project manifest's choice, then
+// the built-in default. A project value only decides when nothing higher does,
+// so a one-off `--isolation backend` still overrides what the project
+// recorded. It exists as a separate step because the backends read
 // cfg.Isolation when they are constructed: resolving the level after building
 // the dispatcher would leave them in the wrong mode.
-func applyIsolation(cfg justcode.Config, flag string) (justcode.Config, error) {
-	iso, err := justcode.ResolveIsolationLevel(flag, cfg.Isolation, cfg.IsolationErr)
+func applyIsolation(cfg justcode.Config, flag string, project justcode.Isolation) (justcode.Config, error) {
+	preference, preferenceErr := cfg.Isolation, cfg.IsolationErr
+	if project != "" {
+		// An exported but EMPTY value is treated as "not set" for both
+		// ISOLATION and RUNTIME: an empty string selects nothing, so it must
+		// not silently suppress the project's choice.
+		if strings.TrimSpace(os.Getenv("ISOLATION")) == "" {
+			// The project choice replaces the built-in default, not an
+			// exported value: env beats project.
+			preference, preferenceErr = project, nil
+		}
+	}
+	iso, err := justcode.ResolveIsolationLevel(flag, preference, preferenceErr)
 	if err != nil {
 		return cfg, err
 	}
@@ -286,6 +311,18 @@ func applyIsolation(cfg justcode.Config, flag string) (justcode.Config, error) {
 	// The level is resolved now, so a deferred env error would be stale.
 	cfg.IsolationErr = nil
 	return cfg, nil
+}
+
+// projectRuntimeIsolation reads the project manifest's runtime and isolation
+// choices, returning empty values when there is no manifest. A malformed value
+// is left for the consumer to reject: ResolveRuntime and ResolveIsolation
+// already produce the messages for an unknown name.
+func projectRuntimeIsolation(projectRoot string) (justcode.Runtime, justcode.Isolation) {
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot))
+	if err != nil {
+		return "", ""
+	}
+	return justcode.Runtime(pm.Runtime), justcode.Isolation(pm.Isolation)
 }
 
 // parsedArgs is the result of a single pass over argv. Commands, runtime flags,
