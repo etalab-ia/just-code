@@ -49,6 +49,18 @@ func TestParseInitArgs(t *testing.T) {
 // missing, so a script can supply it next time.
 func TestInitNonTTYNamesWhatIsMissing(t *testing.T) {
 	root := initTestProject(t)
+	// Run FROM the project so the "nothing was written" assertion checks the
+	// directory a regressed run would actually write to, instead of the test
+	// package directory inside the real checkout.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+
 	// No --root: the one answer that cannot be defaulted from nothing.
 	code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader("")), false)
 	if code != 1 || err == nil {
@@ -96,7 +108,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 // engine's defaults are what get written.
 func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	root := initTestProject(t)
-	input := root + "\n\n\n\n\n\n\n" // root, then empty answers, then apply
+	input := root + "\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, apply
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -161,5 +173,94 @@ func TestInitHelpNeedsNoTerminal(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("the help must document %q: %q", want, out)
 		}
+	}
+}
+
+// TestIsTTYTreatsDevNullAsNonInteractive pins the script idiom: /dev/null is a
+// character device, so a naive check calls it a terminal, and
+// `init --yes < /dev/null` would then silently configure whatever directory
+// the script happened to run from.
+func TestIsTTYTreatsDevNullAsNonInteractive(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	orig := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = orig }()
+	if isTTY() {
+		t.Fatalf("%s must not be reported as a terminal", os.DevNull)
+	}
+}
+
+// TestInitSkipsQuestionsAnsweredByFlags pins that the flag surface and the
+// prompts are one coherent path: a supplied flag is not re-asked, and the
+// displayed default is the value that will actually be used.
+func TestInitSkipsQuestionsAnsweredByFlags(t *testing.T) {
+	root := initTestProject(t)
+	input := "\n" // only the apply confirmation is left to answer
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{
+			Root: root, Runtime: "microsandbox", Isolation: "backend", Model: "albert/x",
+			CPUs: 4, MemoryMB: 2048, CredentialRef: "work",
+			Set: map[string]bool{"root": true, "runtime": true, "isolation": true, "model": true, "cpus": true, "memory-mb": true, "credential-ref": true},
+		}, bufio.NewReader(strings.NewReader(input)), true)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	for _, asked := range []string{"root:", "runtime [", "isolation [", "model:", "cpus:", "memory MiB:", "reference:"} {
+		if strings.Contains(out, asked) {
+			t.Fatalf("a question already answered by a flag must not be asked (%q): %q", asked, out)
+		}
+	}
+	if !strings.Contains(out, "Apply?") {
+		t.Fatalf("the confirmation must still be asked: %q", out)
+	}
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The flag values are what got written: the prompt must not have been able
+	// to override them, and no engine default may have leaked in.
+	if pm.Isolation != "backend" || pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.CredentialRef != "work" {
+		t.Fatalf("manifest = %+v", pm)
+	}
+}
+
+// TestInitValidatesFlagsBeforeAsking pins that a bad flag value is reported
+// immediately: making someone answer six prompts to learn about a typo is a
+// needless cost.
+func TestInitValidatesFlagsBeforeAsking(t *testing.T) {
+	root := initTestProject(t)
+	for _, tc := range []struct {
+		name string
+		opts initOptions
+		want string
+	}{
+		{"bad runtime", initOptions{Root: root, Runtime: "podman", Set: map[string]bool{"root": true, "runtime": true}}, "microsandbox"},
+		{"bad isolation", initOptions{Root: root, Isolation: "sometimes", Set: map[string]bool{"root": true, "isolation": true}}, "isolation"},
+		{"zero cpus", initOptions{Root: root, CPUs: 0, Set: map[string]bool{"root": true, "cpus": true}}, "--cpus must be 1"},
+		{"huge memory", initOptions{Root: root, MemoryMB: justcode.MaxSandboxMemoryMB + 1, Set: map[string]bool{"root": true, "memory-mb": true}}, "--memory-mb must be 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var err error
+			_ = captureStdout(t, func() {
+				_, err = initRun(tc.opts, bufio.NewReader(strings.NewReader("")), true)
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseInitArgsRejectsAFlagAsValue pins that `--root --yes` is a missing
+// value, not a directory named "--yes".
+func TestParseInitArgsRejectsAFlagAsValue(t *testing.T) {
+	_, err := parseInitArgs([]string{"--root", "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "needs a value") {
+		t.Fatalf("error = %v, want a missing-value error", err)
 	}
 }

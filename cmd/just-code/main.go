@@ -824,9 +824,25 @@ func askToStop(ctx context.Context, d *justcode.Dispatcher, rt justcode.Runtime)
 	}
 }
 
+// isTTY reports whether stdin can actually carry an interactive answer.
+//
+// A character device is not sufficient: /dev/null is one, and
+// `something < /dev/null` is exactly how a script says "never wait on input".
+// Reporting it as a terminal made the non-interactive paths take the
+// interactive branch, which ranges from a confusing failure to silently
+// accepting a default the caller meant to be asked about.
 func isTTY() bool {
 	info, err := os.Stdin.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if devNull, err := os.Open(os.DevNull); err == nil {
+		defer func() { _ = devNull.Close() }()
+		if nullInfo, err := devNull.Stat(); err == nil && os.SameFile(info, nullInfo) {
+			return false
+		}
+	}
+	return true
 }
 
 func exitCodeOf(err error) int {

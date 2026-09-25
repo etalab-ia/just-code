@@ -65,6 +65,12 @@ func parseInitArgs(args []string) (initOptions, error) {
 			if i+1 >= len(args) {
 				return "", fmt.Errorf("%s needs a value", a)
 			}
+			// A following flag is not a value: `init --root --yes` must be
+			// reported as a missing value rather than as a root named
+			// "--yes", which would fail later as an incomprehensible path.
+			if strings.HasPrefix(args[i+1], "-") {
+				return "", fmt.Errorf("%s needs a value, got the flag %q", a, args[i+1])
+			}
 			i++
 			return args[i], nil
 		}
@@ -154,7 +160,16 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --replace, --yes")
 	}
 
-	wizard := justcode.InitWizard{ValidateModel: catalogueModelWarning}
+	// The catalogue check reads the credential reference of the project being
+	// configured, not of whatever directory the caller happens to run from.
+	wizard := justcode.InitWizard{ValidateModel: func(model string) (string, error) {
+		return catalogueModelWarningForRoot(answers.Root, model)
+	}}
+	// Flags are validated before any question: a typo on the command line must
+	// not send the user through six prompts to learn about it.
+	if err := validateInitOptions(opts); err != nil {
+		return 2, err
+	}
 	if tty && !opts.Yes {
 		var err error
 		answers, err = askInitQuestions(in, opts, answers)
@@ -187,60 +202,127 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	return 0, nil
 }
 
-// askInitQuestions prompts for the decisions the command line did not supply,
-// offering the engine's defaults so an empty answer is always meaningful.
+// validateInitOptions rejects a bad flag value before any prompt runs. The
+// engine validates everything again; this is only about failing early with the
+// message a command-line user expects.
+func validateInitOptions(opts initOptions) error {
+	if opts.Set["runtime"] {
+		if _, err := justcode.ResolveRuntime(opts.Runtime, ""); err != nil {
+			return err
+		}
+	}
+	if opts.Set["isolation"] {
+		if _, err := justcode.ResolveIsolation(opts.Isolation, ""); err != nil {
+			return err
+		}
+	}
+	// An explicit zero is not "use the default": the flag being present means
+	// the caller wants to set the value, and 0 is outside the supported range.
+	if opts.Set["cpus"] && (opts.CPUs < 1 || opts.CPUs > justcode.MaxSandboxCPUs) {
+		return fmt.Errorf("--cpus must be 1 to %d, got %d", justcode.MaxSandboxCPUs, opts.CPUs)
+	}
+	if opts.Set["memory-mb"] && (opts.MemoryMB < 1 || opts.MemoryMB > justcode.MaxSandboxMemoryMB) {
+		return fmt.Errorf("--memory-mb must be 1 to %d, got %d", justcode.MaxSandboxMemoryMB, opts.MemoryMB)
+	}
+	return nil
+}
+
+// askInitQuestions prompts only for the decisions the command line did not
+// supply, showing the value that will be used if the answer is empty — which
+// is the flag's value when one was given, not the engine default.
 func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitAnswers) (justcode.InitAnswers, error) {
 	fmt.Println("just-code init — project configuration")
 	fmt.Println()
-	fmt.Printf("Project root [%s]:\n", answers.Root)
-	if answer, ok := promptLine(in, "  root: "); ok && strings.TrimSpace(answer) != "" {
-		answers.Root = strings.TrimSpace(answer)
-	}
-
-	fmt.Println()
-	fmt.Println("Sharing mode — where the agent and its credentials run:")
-	fmt.Println("  full (default): inside the guest; your machine is only a terminal")
-	fmt.Println("  backend: the TUI runs here and attaches to the guest")
-	if answer, ok := promptLine(in, "  isolation [full]: "); ok && strings.TrimSpace(answer) != "" {
-		answers.Isolation = justcode.Isolation(strings.TrimSpace(answer))
-	}
-
-	fmt.Println()
-	fmt.Println("Model — leave empty for the built-in default ('just-code models' lists the catalogue):")
-	if answer, ok := promptLine(in, "  model: "); ok && strings.TrimSpace(answer) != "" {
-		answers.Model = strings.TrimSpace(answer)
-	}
-
-	fmt.Println()
-	fmt.Printf("Guest resources [%d CPUs, %d MiB]:\n", justcode.DefaultSandboxCPUs, justcode.DefaultSandboxMemoryMB)
-	if answer, ok := promptLine(in, "  cpus: "); ok && strings.TrimSpace(answer) != "" {
-		n, err := strconv.Atoi(strings.TrimSpace(answer))
-		if err != nil {
-			return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
+	if !opts.Set["root"] {
+		fmt.Printf("Project root [%s]:\n", answers.Root)
+		if answer, ok := promptLine(in, "  root: "); ok && strings.TrimSpace(answer) != "" {
+			answers.Root = strings.TrimSpace(answer)
 		}
-		answers.CPUs = n
-	}
-	if answer, ok := promptLine(in, "  memory MiB: "); ok && strings.TrimSpace(answer) != "" {
-		n, err := strconv.Atoi(strings.TrimSpace(answer))
-		if err != nil {
-			return answers, fmt.Errorf("memory must be a whole number of MiB, got %q", answer)
-		}
-		answers.MemoryMB = n
 	}
 
-	fmt.Println()
-	fmt.Println("Credential — the global Albert credential is used unless you name another (P08 reference):")
-	if answer, ok := promptLine(in, "  reference: "); ok && strings.TrimSpace(answer) != "" {
-		answers.CredentialRef = strings.TrimSpace(answer)
+	if !opts.Set["runtime"] {
+		fmt.Println()
+		fmt.Println("Runtime — where the guest comes from ('just-code doctor' checks the selected one):")
+		fmt.Println("  microsandbox (default): the sealed microVM")
+		fmt.Println("  tart / agent-vm: a full VM that mounts the project (see the review)")
+		if answer, ok := promptLine(in, "  runtime [microsandbox]: "); ok && strings.TrimSpace(answer) != "" {
+			answers.Runtime = justcode.Runtime(strings.TrimSpace(answer))
+		}
+	}
+
+	if !opts.Set["isolation"] {
+		fmt.Println()
+		fmt.Println("Sharing mode — where the agent and its credentials run:")
+		fmt.Println("  full (default): inside the guest; your machine is only a terminal")
+		fmt.Println("  backend: the TUI runs here and attaches to the guest")
+		fmt.Printf("  isolation [%s]: ", isolationOrFull(answers.Isolation))
+		if answer, ok := promptLine(in, ""); ok && strings.TrimSpace(answer) != "" {
+			answers.Isolation = justcode.Isolation(strings.TrimSpace(answer))
+		}
+	}
+
+	if !opts.Set["model"] {
+		fmt.Println()
+		fmt.Println("Model — leave empty for the built-in default ('just-code models' lists the catalogue):")
+		if answer, ok := promptLine(in, "  model: "); ok && strings.TrimSpace(answer) != "" {
+			answers.Model = strings.TrimSpace(answer)
+		}
+	}
+
+	if !opts.Set["cpus"] || !opts.Set["memory-mb"] {
+		fmt.Println()
+		fmt.Printf("Guest resources [%d CPUs, %d MiB]:\n", resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs), resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
+		if !opts.Set["cpus"] {
+			if answer, ok := promptLine(in, "  cpus: "); ok && strings.TrimSpace(answer) != "" {
+				n, err := strconv.Atoi(strings.TrimSpace(answer))
+				if err != nil {
+					return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
+				}
+				answers.CPUs = n
+			}
+		}
+		if !opts.Set["memory-mb"] {
+			if answer, ok := promptLine(in, "  memory MiB: "); ok && strings.TrimSpace(answer) != "" {
+				n, err := strconv.Atoi(strings.TrimSpace(answer))
+				if err != nil {
+					return answers, fmt.Errorf("memory must be a whole number of MiB, got %q", answer)
+				}
+				answers.MemoryMB = n
+			}
+		}
+	}
+
+	if !opts.Set["credential-ref"] {
+		fmt.Println()
+		fmt.Println("Credential — the global Albert credential is used unless you name another (P08 reference):")
+		if answer, ok := promptLine(in, "  reference: "); ok && strings.TrimSpace(answer) != "" {
+			answers.CredentialRef = strings.TrimSpace(answer)
+		}
 	}
 	return answers, nil
+}
+
+func isolationOrFull(iso justcode.Isolation) string {
+	if iso == "" {
+		return string(justcode.IsolationFull)
+	}
+	return string(iso)
+}
+
+// resolvedOrDefault renders the value a reader can reason about: what will
+// actually be used, rather than a zero meaning "unset".
+func resolvedOrDefault(value, fallback int) int {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // catalogueModelWarning validates a model against the P10 catalogue through the
 // same cache the other commands use. An unreachable catalogue is a warning, not
 // a refusal: the model is still recorded and 'just-code models' re-checks it.
-func catalogueModelWarning(model string) (string, error) {
-	apiKey, err := resolveAlbertKeyForCatalogue()
+func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
+	apiKey, err := resolveAlbertKeyForCatalogueAt(projectRoot)
 	if err != nil {
 		return "the model was recorded unverified: no Albert credential is available to check the catalogue", nil
 	}
