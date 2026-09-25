@@ -832,7 +832,7 @@ Isolation:
   --isolation full (default): the whole agent, TUI included, runs inside the
   sandbox; the host is only a terminal passthrough.
   --isolation backend: the agent runs as a server inside the sandbox and the
-  TUI attaches from the host, so the agent process and its credentials live on
-  the host. ISOLATION is used when no flag is provided; the flag always takes
-  precedence.`)
+  TUI attaches from the host. ISOLATION is used when no flag is provided; the
+  flag always takes precedence. How each runtime handles the credential in
+  either mode is stated above.`)
 }
