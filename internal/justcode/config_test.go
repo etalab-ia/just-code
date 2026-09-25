@@ -308,8 +308,21 @@ func TestLoadConfigEnvDoesNotApplyDotenvImplicitly(t *testing.T) {
 	stderr := captureStderr(t, func() {
 		_ = LoadConfigEnv()
 	})
-	if !strings.Contains(stderr, "was NOT read") || !strings.Contains(stderr, "config import-env "+filepath.Join(dir, ".env")) {
+	if !strings.Contains(stderr, "was NOT read") || !strings.Contains(stderr, "config import-env") {
 		t.Fatalf("the skipped .env must be reported with the adoption command: %q", stderr)
+	}
+	// The note names the file by absolute path. Accept either view of it: the
+	// process working directory can be the resolved form of the temp dir
+	// (macOS /var -> /private/var), so comparing raw strings would fail on a
+	// host where the message is still correct.
+	named := strings.Contains(stderr, filepath.Join(dir, ".env"))
+	if !named {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			named = strings.Contains(stderr, filepath.Join(resolved, ".env"))
+		}
+	}
+	if !named {
+		t.Fatalf("the note must name the ignored file: %q", stderr)
 	}
 	// The real property: the file's key did not reach the environment at all.
 	if value, present := os.LookupEnv(probeKey); present {
