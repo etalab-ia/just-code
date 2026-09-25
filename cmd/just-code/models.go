@@ -94,8 +94,15 @@ func sourceLabel(fresh bool) string {
 // the normal resolution chain (credentialRef > legacy env > store), without
 // exposing it.
 func resolveAlbertKeyForCatalogue() (string, error) {
+	return resolveAlbertKeyForCatalogueAt(resolveProjectRootForAux())
+}
+
+// resolveAlbertKeyForCatalogueAt resolves the key for a specific project root,
+// so a command configuring one directory does not read another's
+// credentialRef (the reference lives in the project manifest).
+func resolveAlbertKeyForCatalogueAt(projectRoot string) (string, error) {
 	cfg := justcode.Config{
-		CredentialRef: resolveCredentialRef(resolveProjectRootForAux()),
+		CredentialRef: resolveCredentialRef(projectRoot),
 		APIKey:        os.Getenv("ALBERT_API_KEY"),
 	}
 	v, _, _, _, err := justcode.ResolveAlbert(ctxForCatalogue(), cfg, "")
