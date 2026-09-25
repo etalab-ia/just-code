@@ -1600,3 +1600,50 @@ func TestMicrosandboxStatus(t *testing.T) {
 		t.Fatalf("Status = %q", state)
 	}
 }
+
+// TestMSBRestartRefusesRecordedSizingChange pins that restart does not keep a
+// stale allocation silently: isolation already refuses on this path, and the
+// sizing must not be the one creation-fixed attribute that is quietly kept.
+func TestMSBRestartRefusesRecordedSizingChange(t *testing.T) {
+	isolateHostState(t)
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.CPUs, m.cfg.MemoryMB = 8, 16384
+
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	applied := DesiredState{Instance: m.InstanceName(), Isolation: m.cfg.Isolation, Image: msbImage, CPUs: 4, MemoryMB: 8192}.toState()
+	if err := WriteInstanceState(DefaultFS, path, applied); err != nil {
+		t.Fatal(err)
+	}
+	err := m.rejectResourceSizingChange()
+	if err == nil {
+		t.Fatal("a recorded sizing change must refuse the restart")
+	}
+	for _, want := range []string{"8 CPUs", "16384", "recreate --microsandbox"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal must mention %q: %v", want, err)
+		}
+	}
+	// An unrecorded sizing is not a mismatch: it cannot be compared.
+	legacy := DesiredState{Instance: m.InstanceName(), Isolation: m.cfg.Isolation, Image: msbImage}.toState()
+	if err := WriteInstanceState(DefaultFS, path, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.rejectResourceSizingChange(); err != nil {
+		t.Fatalf("an instance whose sizing was never recorded must restart: %v", err)
+	}
+	_ = os.RemoveAll(filepath.Dir(path))
+}
+
+// TestMSBInvalidSizingIsReported pins that an invalid JUST_CODE_CPUS reaches
+// the user instead of behaving exactly like an unset variable.
+func TestMSBInvalidSizingIsReported(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	m.cfg.SandboxResourcesErr = fmt.Errorf("JUST_CODE_CPUS must be at most 255, got 256")
+	if err := m.validateConfig(); err == nil {
+		t.Fatal("an invalid guest sizing must be reported before any runtime work")
+	}
+}

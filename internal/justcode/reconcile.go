@@ -70,6 +70,18 @@ func (p ReconcilePlan) NeedsRecreate() bool {
 	return false
 }
 
+// CreatesInstance reports whether the plan includes the creation operation —
+// the only one that applies the creation-fixed attributes, guest sizing
+// included.
+func (p ReconcilePlan) CreatesInstance() bool {
+	for _, op := range p.Ops {
+		if op == OpCreate {
+			return true
+		}
+	}
+	return false
+}
+
 // credentialGenJSON reads the rotation marker from either its historical
 // numeric form (P07 wrote `credentialGen: 0`) or the current string composite
 // (P09). A decode failure in the old format would otherwise make every
@@ -426,6 +438,15 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// find their transport variables without any value being persisted.
 	st := desired.toState()
 	st.Pending = opsToJournal(pending)
+	// The guest sizing is only ever set by creation. Any other plan leaves the
+	// running guest with the sizing it already had, so the state must carry
+	// that value forward rather than claim the desired one: with a pre-P12b
+	// instance (state records 0 = "not recorded") applying a project sizing
+	// of 8 to a guest that still has 2, recording 8 would make the drift
+	// invisible forever — and the state file would attest it was applied.
+	if !plan.CreatesInstance() && applied != nil {
+		st.CPUs, st.MemoryMB = applied.CPUs, applied.MemoryMB
+	}
 	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
 		return fmt.Errorf("persisting reconcile journal for %s: %w", m.InstanceName(), err)
 	}

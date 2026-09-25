@@ -861,14 +861,27 @@ func applyProjectSandboxResources(cfg justcode.Config, projectRoot string) (just
 		// unreadable one is reported by the paths that own that decision.
 		return cfg, nil
 	}
-	if _, set := os.LookupEnv("JUST_CODE_CPUS"); !set && pm.CPUs > 0 {
-		if pm.CPUs > justcode.MaxSandboxCPUs {
-			return cfg, fmt.Errorf("the project manifest asks for %d CPUs, but the sandbox runtime accepts at most %d", pm.CPUs, justcode.MaxSandboxCPUs)
+	// Zero means "not set in the manifest", which is the common case. Any
+	// other out-of-range value — negative, or above what the runtime can
+	// carry — is reported rather than ignored: a hand-edited manifest should
+	// fail loudly on both sides of the range, not just above it.
+	if _, set := os.LookupEnv("JUST_CODE_CPUS"); !set {
+		switch {
+		case pm.CPUs == 0:
+		case pm.CPUs < 0 || pm.CPUs > justcode.MaxSandboxCPUs:
+			return cfg, fmt.Errorf("the project manifest asks for %d CPUs; the sandbox runtime accepts 1 to %d", pm.CPUs, justcode.MaxSandboxCPUs)
+		default:
+			cfg.CPUs = pm.CPUs
 		}
-		cfg.CPUs = pm.CPUs
 	}
-	if _, set := os.LookupEnv("JUST_CODE_MEMORY_MB"); !set && pm.MemoryMB > 0 {
-		cfg.MemoryMB = pm.MemoryMB
+	if _, set := os.LookupEnv("JUST_CODE_MEMORY_MB"); !set {
+		switch {
+		case pm.MemoryMB == 0:
+		case pm.MemoryMB < 0 || pm.MemoryMB > justcode.MaxSandboxMemoryMB:
+			return cfg, fmt.Errorf("the project manifest asks for %d MiB; the sandbox runtime accepts 1 to %d", pm.MemoryMB, justcode.MaxSandboxMemoryMB)
+		default:
+			cfg.MemoryMB = pm.MemoryMB
+		}
 	}
 	return cfg, nil
 }

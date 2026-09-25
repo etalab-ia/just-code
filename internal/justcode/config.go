@@ -122,6 +122,11 @@ const (
 	// MaxSandboxCPUs is the largest CPU count the sandbox SDK can carry (it
 	// takes a uint8); a larger value is rejected rather than wrapped.
 	MaxSandboxCPUs = 255
+	// MaxSandboxMemoryMB is the largest memory size the SDK can carry (it
+	// takes a uint32 of MiB). Unreachable in practice, but the bound is the
+	// same representation limit as MaxSandboxCPUs: wrapping silently is the
+	// failure mode being avoided, not the magnitude.
+	MaxSandboxMemoryMB = 1<<32 - 1
 )
 
 // LoadConfigEnv resolves configuration from the process environment.
@@ -275,7 +280,7 @@ func LoadConfig(lookup EnvLookup) Config {
 		// MaxSandboxCPUs is not a policy choice: the sandbox SDK takes the CPU
 		// count as a uint8, so a larger value would wrap silently.
 		{"JUST_CODE_CPUS", MaxSandboxCPUs, &cfg.CPUs},
-		{"JUST_CODE_MEMORY_MB", 0, &cfg.MemoryMB},
+		{"JUST_CODE_MEMORY_MB", MaxSandboxMemoryMB, &cfg.MemoryMB},
 	} {
 		v, ok := lookup(f.key)
 		if !ok || v == "" {

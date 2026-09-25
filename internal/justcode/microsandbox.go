@@ -285,6 +285,14 @@ func (m *MicrosandboxRuntime) validateConfig() error {
 	if m.cfg.Isolation == IsolationFull && m.cfg.StartTimeoutErr != nil {
 		return m.cfg.StartTimeoutErr
 	}
+	// A typo in JUST_CODE_CPUS or JUST_CODE_MEMORY_MB is the same contract:
+	// every sibling deferred error is surfaced where the value is consumed,
+	// and a recorded-but-unreported error would mean an invalid sizing
+	// behaves exactly like an unset one — the "configured but ignored"
+	// defect this sizing work exists to remove.
+	if m.cfg.SandboxResourcesErr != nil {
+		return m.cfg.SandboxResourcesErr
+	}
 	return nil
 }
 
@@ -885,7 +893,37 @@ func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) er
 	if err := m.requireSealedWorkspace(ctx); err != nil {
 		return err
 	}
+	// A recorded sizing change is recreation-only as well: Restart boots the
+	// existing guest with the sizing it was created with, so proceeding would
+	// keep the old allocation while appearing to apply the new one. Isolation
+	// is refused on this same path; sizing must not be the one attribute that
+	// is silently kept.
+	if err := m.rejectResourceSizingChange(); err != nil {
+		return err
+	}
 	return m.rejectIsolationMismatch(ctx, sandbox)
+}
+
+// rejectResourceSizingChange refuses a restart when the applied state records
+// a sizing different from the configured one. An unrecorded state (0) is not
+// a mismatch: it cannot be compared, and the sizing is not what the user
+// asked to change.
+func (m *MicrosandboxRuntime) rejectResourceSizingChange() error {
+	// The reconcile journal's location, not the binding-approval directory:
+	// this reads the record Reconcile writes, so the two must agree even when
+	// a caller overrides StateDir.
+	applied, err := ReadInstanceState(DefaultFS, instanceStatePath(DefaultStateDir(), m.InstanceName()))
+	if err != nil || applied == nil {
+		return nil
+	}
+	changed := (applied.CPUs != 0 && applied.CPUs != m.cfg.CPUs) ||
+		(applied.MemoryMB != 0 && applied.MemoryMB != m.cfg.MemoryMB)
+	if !changed {
+		return nil
+	}
+	return fmt.Errorf("%s was created with %d CPUs and %d MiB, and a running guest cannot be resized (now %d CPUs and %d MiB). "+
+		"Run 'just-code recreate --microsandbox' to apply the new sizing, or restore the previous value",
+		m.InstanceName(), applied.CPUs, applied.MemoryMB, m.cfg.CPUs, m.cfg.MemoryMB)
 }
 
 func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {
