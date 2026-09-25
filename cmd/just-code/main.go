@@ -116,6 +116,18 @@ func run(args []string) (int, error) {
 	}
 	// The sealed transfer source (P22/P12).
 	cfg = withProjectRootAsWorkspaceSource(cfg, pc, projErr)
+	// A project with no configuration yet is offered one before the guest is
+	// built (P12): the launch would otherwise pick every default silently, and
+	// the choices it made would be invisible until someone read the review.
+	// Read-only actions are never gated on it.
+	if projErr == nil && isLaunchAction(parsed.action) {
+		// configured is belt-and-braces: every false path also returns an
+		// error, but a future caller must not read "no error" as "go ahead".
+		configured, code, err := offerProjectInit(projectRoot, parsed)
+		if err != nil || !configured {
+			return code, err
+		}
+	}
 	// The project manifest's runtime and isolation choices (P12b). They are
 	// applied here, after discovery, because they are resolved from the
 	// discovered root; the flag and the exported variable still win, per the
@@ -131,7 +143,7 @@ func run(args []string) (int, error) {
 	// commands keep working, which is when the user needs them.
 	cfg, resErr := applyProjectSandboxResources(cfg, projectRoot)
 	if resErr != nil {
-		if parsed.action == "attach" || parsed.action == "start" || parsed.action == "restart" || parsed.action == "recreate" {
+		if isLaunchAction(parsed.action) {
 			return 1, resErr
 		}
 		fmt.Fprintf(os.Stderr, "Warning: %v; using the default guest sizing\n", resErr)
@@ -145,7 +157,7 @@ func run(args []string) (int, error) {
 	// behind the host-local trust record.
 	overlay := justcode.ManagedOverlay{Model: resolveModelSelection(projectRoot)}
 	conflictMsg, err := opencodeConfigReview(projectRoot, overlay)
-	startPath := parsed.action == "attach" || parsed.action == "start" || parsed.action == "restart" || parsed.action == "recreate"
+	startPath := isLaunchAction(parsed.action)
 	if err != nil {
 		// A malformed project config is fatal only on the paths that would
 		// load it: read-only commands (stop, check, logs, shell) must keep

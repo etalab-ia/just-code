@@ -330,3 +330,189 @@ func TestInitRejectsATypedZero(t *testing.T) {
 		t.Fatalf("a typed 0 must be rejected like the flag: %v", err)
 	}
 }
+
+// TestOfferProjectInitSkipsWhenConfigured pins the first rule: a project that
+// already has a configuration is never asked about it, so a normal launch
+// takes no new step.
+func TestOfferProjectInitSkipsWhenConfigured(t *testing.T) {
+	root := initTestProject(t)
+	if _, err := (justcode.InitWizard{}).Plan(justcode.InitAnswers{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := initRun(initOptions{Root: root, Yes: true, Set: map[string]bool{"root": true}},
+		bufio.NewReader(strings.NewReader("")), false); err != nil || code != 0 {
+		t.Fatalf("precondition: init must write a manifest: code=%d err=%v", code, err)
+	}
+	configured, code, err := offerProjectInit(root, parsedArgs{action: "attach"})
+	if !configured || code != 0 || err != nil {
+		t.Fatalf("a configured project must proceed: configured=%v code=%d err=%v", configured, code, err)
+	}
+}
+
+// TestOfferProjectInitWithNoTerminalNamesTheCommand pins the non-TTY contract
+// on the launch path: nothing waits, and the failure says exactly what to run.
+func TestOfferProjectInitWithNoTerminalNamesTheCommand(t *testing.T) {
+	root := initTestProject(t)
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	orig := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = orig }()
+
+	configured, code, err := offerProjectInit(root, parsedArgs{action: "attach"})
+	if configured {
+		t.Fatal("an unconfigured project must not proceed silently without a terminal")
+	}
+	if code != 1 || err == nil {
+		t.Fatalf("code=%d err=%v", code, err)
+	}
+	for _, want := range []string{"--root", "--yes", justcode.ProjectManifestPath(root)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the failure must mention %q: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be written without an answer (stat err = %v)", err)
+	}
+}
+
+// TestOfferProjectInitRespectsExplicitChoices pins that a launch already
+// carrying its own runtime or isolation flags is not asked to configure a
+// project: those flags are the answer the offer would collect.
+func TestOfferProjectInitRespectsExplicitChoices(t *testing.T) {
+	root := initTestProject(t)
+	for _, parsed := range []parsedArgs{{action: "start", runtime: "--tart"}, {action: "start", isolation: "backend"}} {
+		configured, _, err := offerProjectInit(root, parsed)
+		if !configured || err != nil {
+			t.Fatalf("an explicit choice must skip the offer: configured=%v err=%v", configured, err)
+		}
+	}
+}
+
+// TestOfferProjectInitAppliesWhatItWrote pins that accepting the offer is not
+// cosmetic: the manifest written by the offer is what the launch then applies.
+func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
+	root := initTestProject(t)
+	// root, runtime, isolation(backend), model, cpus, memory, credential, apply
+	input := "\n\nbackend\n\n\n\n\n\n"
+	devNullLike := bufio.NewReader(strings.NewReader(input))
+
+	// Drive the offer with the same answers a user would give.
+	var configured bool
+	var err error
+	_ = captureStdout(t, func() {
+		configured, _, err = offerProjectInitWithReader(root, parsedArgs{action: "attach"}, devNullLike, true)
+	})
+	if err != nil || !configured {
+		t.Fatalf("the offer must go through: configured=%v err=%v", configured, err)
+	}
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatalf("the offer must write the manifest: %v", err)
+	}
+	if pm.Isolation != "backend" {
+		t.Fatalf("isolation = %q, want the answer given to the offer", pm.Isolation)
+	}
+	runtimeChoice, isolationChoice := projectRuntimeIsolation(root)
+	if runtimeChoice != justcode.RuntimeMicrosandbox || isolationChoice != justcode.IsolationBackend {
+		t.Fatalf("the launch must resolve what the offer wrote: %q / %q", runtimeChoice, isolationChoice)
+	}
+}
+
+// TestOfferProjectInitSkipsWhenTheEnvironmentDecides pins that a choice made
+// through the documented environment variables counts as an answer: a CI run
+// exporting RUNTIME or ISOLATION has no terminal to be asked with, and asking
+// anyway would turn a working launch into a failure.
+func TestOfferProjectInitSkipsWhenTheEnvironmentDecides(t *testing.T) {
+	for _, env := range []string{"RUNTIME", "ISOLATION"} {
+		t.Run(env, func(t *testing.T) {
+			root := initTestProject(t)
+			t.Setenv(env, "microsandbox")
+			if env == "ISOLATION" {
+				t.Setenv(env, "backend")
+			}
+			devNull, err := os.Open(os.DevNull)
+			if err != nil {
+				t.Skipf("cannot open %s: %v", os.DevNull, err)
+			}
+			defer func() { _ = devNull.Close() }()
+			orig := os.Stdin
+			os.Stdin = devNull
+			defer func() { os.Stdin = orig }()
+
+			configured, code, err := offerProjectInit(root, parsedArgs{action: "start"})
+			if !configured || code != 0 || err != nil {
+				t.Fatalf("an environment-carried choice must skip the offer: configured=%v code=%d err=%v", configured, code, err)
+			}
+		})
+	}
+	// An empty exported value selects nothing, so it is not a choice.
+	root := initTestProject(t)
+	t.Setenv("RUNTIME", "")
+	t.Setenv("ISOLATION", "")
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	orig := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = orig }()
+	if configured, _, _ := offerProjectInit(root, parsedArgs{action: "start"}); configured {
+		t.Fatal("an empty exported value must not silently stand in for a configuration")
+	}
+}
+
+// TestOfferProjectInitWarnsOnABrokenManifest pins that a manifest the launch
+// cannot read is not passed over in silence: the launch readers tolerate the
+// error, so this is the only place holding it.
+func TestOfferProjectInitWarnsOnABrokenManifest(t *testing.T) {
+	root := initTestProject(t)
+	if err := os.MkdirAll(filepath.Dir(justcode.ProjectManifestPath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A secret-looking field is rejected by the reader, like a broken one.
+	if err := os.WriteFile(justcode.ProjectManifestPath(root), []byte(`{"schemaVersion":1,"apiKey":"leak"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var configured bool
+	var err error
+	stderr := captureStderr(t, func() {
+		configured, _, err = offerProjectInit(root, parsedArgs{action: "attach"})
+	})
+	if err != nil || !configured {
+		t.Fatalf("a broken manifest must not block the launch: configured=%v err=%v", configured, err)
+	}
+	if !strings.Contains(stderr, "cannot be read") || !strings.Contains(stderr, "--replace") {
+		t.Fatalf("the user must be told the manifest is ignored and how to fix it: %q", stderr)
+	}
+	// And the broken file is left alone: the offer must not replace it.
+	raw, readErr := os.ReadFile(justcode.ProjectManifestPath(root))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(raw), "leak") {
+		t.Fatalf("the offer must not rewrite the manifest: %s", raw)
+	}
+}
+
+// TestIsLaunchActionPinsTheGuestBuildingSet keeps the one action set the launch
+// flow shares from drifting: the offer, the malformed-config gate and the guest
+// sizing gate all key off it, and a read-only action must never be gated on a
+// configuration the user may have come to inspect because it is broken.
+func TestIsLaunchActionPinsTheGuestBuildingSet(t *testing.T) {
+	for _, action := range []string{"attach", "start", "restart", "recreate"} {
+		if !isLaunchAction(action) {
+			t.Fatalf("%q builds a guest and must be a launch action", action)
+		}
+	}
+	for _, action := range []string{"stop", "logs", "shell", "check", "doctor", "clean", "help", "version", "config", "auth", "bindings", "workspace", "init", "trust", "models"} {
+		if isLaunchAction(action) {
+			t.Fatalf("%q does not build a guest and must not be gated on the project configuration", action)
+		}
+	}
+}
