@@ -577,7 +577,10 @@ func resolveAlbertWith(read credentialReader, ctx context.Context, cfg Config, f
 	if !isNotFound(rerr) {
 		return "", "", "", "", rerr
 	}
-	return "", "", "", "", fmt.Errorf("no Albert credential found: set ALBERT_API_KEY in the environment or .env, or store one with 'just-code auth add albert'")
+	// The message names the two routes that exist. It deliberately does not
+	// promise a .env: since P12 a .env is not read implicitly, so pointing at
+	// one would send the user to a file that has no effect.
+	return "", "", "", "", fmt.Errorf("no Albert credential found: export ALBERT_API_KEY in the environment, or store one with 'just-code auth add albert'")
 }
 
 // withHostSecrets publishes each resolved value under its binding's host

@@ -103,16 +103,19 @@ l'approbation.
 
 ## Transition legacy
 
-Le chemin legacy (`.env` + variables non préfixées) reste le chemin de lancement
-actif jusqu'à P12 ; le résolveur typé est interne et exposé uniquement via
-`just-code config`. Fenêtre de dépréciation retenue en P04 : les variables non
-préfixées sont retirées dans la première version mineure qui suit l'achèvement
-de P12 (réglage par défaut entièrement typé). Aucun fichier `.env` n'est lu
-implicitement par le nouveau chemin ; l'import est explicite et laisse
-l'original intact.
+**P12 est arrivé.** Le fichier `.env` n'est plus lu du tout : `LoadConfigEnv`
+résout la configuration depuis l'environnement du processus, et un `.env`
+présent est signalé avec la commande qui l'adopte
+(`just-code config import-env <chemin>`, qui prévisualise et ne modifie jamais
+l'original). Les variables non préfixées restent lues depuis l'environnement
+pour l'instant ; leur retrait est prévu dans la première version mineure qui
+suit l'achèvement du réglage par défaut entièrement typé.
 
 ## Compatibilité
 
-Le chemin legacy (`LoadConfig`) est inchangé : mêmes clés, mêmes défauts, même
-comportement « déjà exporté gagne ». Le nouveau résolveur ne remplace aucun
-appelant existant ; l'adaptation finale est P12.
+`LoadConfig` garde le comportement « déjà exporté gagne », mais **ses défauts
+ont changé en P12** : `RUNTIME` vaut `microsandbox` (au lieu d'aucun défaut), et
+`ISOLATION` vaut `full` (au lieu de `backend`). `WORKSPACE_DIR` n'a plus de
+valeur par défaut dans le fichier : le lancement utilise la racine du projet
+découverte quand rien n'est configuré, et un `WORKSPACE_DIR` explicite est
+honoré tel quel (`Config.WorkspaceDirSet` enregistre cette provenance).

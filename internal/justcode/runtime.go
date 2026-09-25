@@ -95,8 +95,10 @@ func StartOrReconcile(ctx context.Context, b Backend) error {
 
 // ResolveRuntime picks a runtime from an explicit --<runtime> flag and the
 // RUNTIME environment preference. The explicit flag always wins, mirroring the
-// justfile contract. On Windows the microsandbox runtime is the default and the
-// only supported choice; elsewhere there is deliberately no built-in default.
+// justfile contract. Without either, Microsandbox is the built-in default on
+// every platform (P12): it is the runtime with the sealed workspace, so the
+// zero-flag path is the safe one rather than the historically familiar one.
+// Tart and agent-vm remain explicitly selectable.
 func ResolveRuntime(flag, preference string) (Runtime, error) {
 	return resolveRuntimeOn(flag, preference, runtime.GOOS)
 }
@@ -110,10 +112,9 @@ func resolveRuntimeOn(flag, preference, goos string) (Runtime, error) {
 	if preference != "" {
 		return parseRuntimeNameOn(preference, goos)
 	}
-	if goos == "windows" {
-		return RuntimeMicrosandbox, nil
-	}
-	return "", fmt.Errorf("select --microsandbox, --tart or --agent-vm, or set RUNTIME in .env")
+	// Microsandbox is the default everywhere. RUNTIME and the --<runtime>
+	// flags still override it, so an empty selection never fails.
+	return RuntimeMicrosandbox, nil
 }
 
 // parseRuntimeFlag accepts --microsandbox or --tart.

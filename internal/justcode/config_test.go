@@ -3,6 +3,7 @@ package justcode
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,5 +255,77 @@ func TestApplyDotenvDoesNotOverrideExisting(t *testing.T) {
 	}
 	if got := os.Getenv("NEWKEY"); got != "newval" {
 		t.Errorf("NEWKEY = %q, want newval", got)
+	}
+}
+
+// TestWorkspaceDirSetRecordsExplicitConfiguration pins the provenance the
+// launch path depends on: only an explicit WORKSPACE_DIR (or the legacy
+// PROJECT_DIR) may suppress the project-root default.
+func TestWorkspaceDirSetRecordsExplicitConfiguration(t *testing.T) {
+	if LoadConfig(lookupFrom(nil)).WorkspaceDirSet {
+		t.Fatal("an unset WORKSPACE_DIR must not be reported as explicit")
+	}
+	if now := LoadConfig(lookupFrom(map[string]string{"WORKSPACE_DIR": "./w"})).WorkspaceDirSet; !now {
+		t.Fatal("WORKSPACE_DIR must be recorded as explicit")
+	}
+	if legacy := LoadConfig(lookupFrom(map[string]string{"PROJECT_DIR": "./w"})).WorkspaceDirSet; !legacy {
+		t.Fatal("the legacy PROJECT_DIR must be recorded as explicit too")
+	}
+	// An explicitly empty value has no meaning: it must not suppress the
+	// project-root default while also being unusable as a path.
+	if empty := LoadConfig(lookupFrom(map[string]string{"WORKSPACE_DIR": ""})).WorkspaceDirSet; empty {
+		t.Fatal("an empty WORKSPACE_DIR must not count as explicit")
+	}
+}
+
+// TestLoadConfigEnvDoesNotApplyDotenvImplicitly pins the P12 change: a .env in
+// the working directory is no longer read behind the user's back, and its
+// presence is reported with the migration command instead of being ignored
+// silently.
+func TestLoadConfigEnvDoesNotApplyDotenvImplicitly(t *testing.T) {
+	dir := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The key must be ABSENT, not merely empty: ApplyDotenv deliberately does
+	// not override a key that is already present in the environment, so
+	// t.Setenv(KEY, "") would make the "not applied" check pass even if the
+	// implicit load were reinstated. That is exactly how the first version of
+	// this test was vacuous.
+	const probeKey = "JUST_CODE_MODEL"
+	if _, present := os.LookupEnv(probeKey); present {
+		t.Skipf("%s is set in this environment; the absence check needs it unset", probeKey)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(probeKey+"=from-dotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+
+	stderr := captureStderr(t, func() {
+		_ = LoadConfigEnv()
+	})
+	if !strings.Contains(stderr, "was NOT read") || !strings.Contains(stderr, "config import-env") {
+		t.Fatalf("the skipped .env must be reported with the adoption command: %q", stderr)
+	}
+	// The note names the file by absolute path. Accept either view of it: the
+	// process working directory can be the resolved form of the temp dir
+	// (macOS /var -> /private/var), so comparing raw strings would fail on a
+	// host where the message is still correct.
+	named := strings.Contains(stderr, filepath.Join(dir, ".env"))
+	if !named {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			named = strings.Contains(stderr, filepath.Join(resolved, ".env"))
+		}
+	}
+	if !named {
+		t.Fatalf("the note must name the ignored file: %q", stderr)
+	}
+	// The real property: the file's key did not reach the environment at all.
+	if value, present := os.LookupEnv(probeKey); present {
+		t.Fatalf("the .env must not be applied to the environment, got %s=%q", probeKey, value)
 	}
 }

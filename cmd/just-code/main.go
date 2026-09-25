@@ -119,6 +119,8 @@ func run(args []string) (int, error) {
 	if projErr == nil {
 		projectRoot = pc.Root
 	}
+	// The sealed transfer source (P22/P12).
+	cfg = withProjectRootAsWorkspaceSource(cfg, pc, projErr)
 	cfg.CredentialRef = resolveCredentialRef(projectRoot)
 
 	// Managed OpenCode configuration (P10): the model selection from the
@@ -242,6 +244,23 @@ func run(args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
 	}
+}
+
+// withProjectRootAsWorkspaceSource points the sealed transfer source at the
+// discovered project root when the user has not configured one.
+//
+// Under the sealed model (P22) WORKSPACE_DIR is the source whose filtered
+// content is transferred into the guest. The historical default (./workspace,
+// an empty subdirectory) would provision a guest with nothing in it, and the
+// user would see a working agent and an empty project rather than an error.
+// An explicit WORKSPACE_DIR/PROJECT_DIR is always honoured as given, and a
+// discovery failure leaves the configured value alone.
+func withProjectRootAsWorkspaceSource(cfg justcode.Config, pc justcode.ProjectContext, projErr error) justcode.Config {
+	if cfg.WorkspaceDirSet || projErr != nil {
+		return cfg
+	}
+	cfg.WorkspaceDir = pc.Root
+	return cfg
 }
 
 // applyIsolation returns cfg with the effective isolation level applied, plus
@@ -796,16 +815,24 @@ Commands:
   help       Show this help
 
 Runtime selection:
-  Pass --microsandbox, --tart or --agent-vm. RUNTIME in .env is used when no
-  flag is provided; an explicit flag always takes precedence. On Windows,
-  --microsandbox is the default and the only supported runtime. Tart and
-  agent-vm hand the credential to the guest in plaintext and additionally
-  require --acknowledge-guest-credentials to start.
+  Microsandbox in isolation full is the built-in default: the agent runs in the
+  microVM and its workspace is sealed (no host file is mounted). Pass
+  --microsandbox, --tart or --agent-vm, or set RUNTIME, to override it; an
+  explicit flag always takes precedence. --isolation backend selects the
+  historical mode where the TUI runs on the host. Tart and agent-vm mount the
+  checkout, hand the credential to the guest in plaintext, and require
+  --acknowledge-guest-credentials to start.
+
+  A .env in the working directory is NOT loaded implicitly any more; exported
+  variables still are. To see what an existing .env holds and where each value
+  belongs, run 'just-code config import-env <path>' (preview only). The Albert
+  key belongs in the credential store: 'just-code auth add albert'.
 
 Isolation:
-  --isolation backend (default): the agent runs as a server inside the
-  sandbox and the TUI attaches from the host.
-  --isolation full: the whole agent, TUI included, runs inside the sandbox;
-  the host is only a terminal passthrough. ISOLATION in .env is used when no
-  flag is provided; the flag always takes precedence.`)
+  --isolation full (default): the whole agent, TUI included, runs inside the
+  sandbox; the host is only a terminal passthrough.
+  --isolation backend: the agent runs as a server inside the sandbox and the
+  TUI attaches from the host. ISOLATION is used when no flag is provided; the
+  flag always takes precedence. How each runtime handles the credential in
+  either mode is stated above.`)
 }

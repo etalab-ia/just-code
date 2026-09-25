@@ -22,15 +22,20 @@ var allIsolations = []Isolation{IsolationBackend, IsolationFull}
 
 // ResolveIsolation picks an isolation level from the explicit --isolation flag
 // and the ISOLATION environment preference, mirroring ResolveRuntime: the
-// flag wins, an empty preference defaults to backend, and any other value is
+// flag wins, an empty preference defaults to full, and any other value is
 // rejected with a message listing the accepted surface.
+//
+// The default is full since P12: the zero-flag path must be the one where the
+// agent — and therefore its provider credentials — lives inside the sandbox,
+// not the one where the host runs it and the guest is merely a backend.
+// ISOLATION=backend (or --isolation backend) remains the explicit escape.
 func ResolveIsolation(flag, preference string) (Isolation, error) {
 	value := flag
 	if value == "" {
 		value = preference
 	}
 	if value == "" {
-		return IsolationBackend, nil
+		return IsolationFull, nil
 	}
 	switch Isolation(value) {
 	case IsolationBackend, IsolationFull:

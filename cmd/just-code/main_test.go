@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -167,3 +168,34 @@ func TestParseArgsAllAcceptedAnywhere(t *testing.T) {
 		t.Fatalf("parseArgs(--all stop) = %+v", p)
 	}
 }
+
+// TestWorkspaceSourceDefaultsToProjectRoot pins the P12 sealed-source rule: a
+// zero-flag launch transfers the project the user is in, while an explicit
+// WORKSPACE_DIR is never overridden.
+func TestWorkspaceSourceDefaultsToProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	pc := justcode.ProjectContext{Root: root, Name: "proj"}
+
+	got := withProjectRootAsWorkspaceSource(justcode.Config{WorkspaceDir: "/configured"}, pc, nil)
+	if got.WorkspaceDir != root {
+		t.Fatalf("a zero-flag launch must use the project root, got %q", got.WorkspaceDir)
+	}
+
+	explicit := justcode.Config{WorkspaceDir: "/configured", WorkspaceDirSet: true}
+	if got := withProjectRootAsWorkspaceSource(explicit, pc, nil); got.WorkspaceDir != "/configured" {
+		t.Fatalf("an explicit source must be honoured, got %q", got.WorkspaceDir)
+	}
+
+	// Discovery failure leaves the value alone rather than guessing. This is
+	// the case with NO explicit configuration, which is the one that would
+	// otherwise be replaced by an empty root.
+	unset := justcode.Config{WorkspaceDir: "/default-ish"}
+	if got := withProjectRootAsWorkspaceSource(unset, pc, errDiscovery); got.WorkspaceDir != "/default-ish" {
+		t.Fatalf("a discovery failure must not change the source, got %q", got.WorkspaceDir)
+	}
+	if got := withProjectRootAsWorkspaceSource(explicit, pc, errDiscovery); got.WorkspaceDir != "/configured" {
+		t.Fatalf("a discovery failure must not change an explicit source, got %q", got.WorkspaceDir)
+	}
+}
+
+var errDiscovery = errors.New("not a project")

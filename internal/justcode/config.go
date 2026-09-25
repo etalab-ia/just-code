@@ -13,10 +13,17 @@ import (
 // Config holds the settings resolved from the environment for a run. Field
 // semantics match the .env.example contract.
 type Config struct {
-	// WorkspaceDir is the host directory mounted at the guest's /workspace.
-	// It replaces the legacy PROJECT_DIR, which is still honoured.
+	// WorkspaceDir is the host directory the project content comes from. Under
+	// the sealed model (P22) it is the transfer SOURCE, not a mounted
+	// directory: only filtered files ever cross into the guest. A zero-flag
+	// launch uses the discovered project root; WORKSPACE_DIR (or the legacy
+	// PROJECT_DIR) overrides it. It replaces the legacy PROJECT_DIR, which is
+	// still honoured.
 	WorkspaceDir string
-	Username     string
+	// WorkspaceDirSet records that WORKSPACE_DIR or PROJECT_DIR was explicitly
+	// configured, so the launch path knows not to substitute the project root.
+	WorkspaceDirSet bool
+	Username        string
 	// Password is the HTTP basic-auth password. It is empty when
 	// OPENCODE_SERVER_PASSWORD was explicitly set to an empty value, which
 	// means "no auth". PasswordSet records whether the variable was present,
@@ -65,7 +72,7 @@ type Config struct {
 	StartTimeout    time.Duration
 	StartTimeoutErr error
 	// Isolation is the resolved execution model (see isolation.go). It
-	// defaults to backend. IsolationErr records an invalid ISOLATION value
+	// defaults to full. IsolationErr records an invalid ISOLATION value
 	// with the same deferred-validation contract as StartTimeoutErr.
 	Isolation    Isolation
 	IsolationErr error
@@ -99,15 +106,43 @@ const (
 	DefaultStartTimeout = 300 * time.Second
 )
 
-// LoadConfigEnv applies .env and resolves configuration from the process
-// environment. It mirrors just's `set dotenv-load` + env_var_or_default
-// behavior, but for a standalone binary: it looks for .env in the working
-// directory first, then next to the executable, so a binary placed anywhere
-// still finds the configuration shipped beside it. Already-exported variables
-// win over both.
+// LoadConfigEnv resolves configuration from the process environment.
+//
+// It no longer loads a .env implicitly (P12). The implicit load made the
+// launch depend on an untracked file in the working directory — the exact kind
+// of file that carries secrets and that the sealed workspace exists to keep
+// out of the guest — and it made behaviour differ between two invocations of
+// the same binary. Exported variables are still honoured, and a .env left in
+// place is reported with the explicit command that imports it, so the change
+// is visible rather than silent.
 func LoadConfigEnv() Config {
+	// Detect without applying: the user is told the file was not read and how
+	// to adopt it, instead of discovering the difference from behaviour.
 	for _, dir := range dotenvDirs() {
-		_ = ApplyDotenv(filepath.Join(dir, ".env"))
+		path := filepath.Join(dir, ".env")
+		info, err := os.Stat(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "Note: %s could not be inspected (%v); it is not read either way, since just-code no longer loads a .env implicitly.\n", path, err)
+			}
+			continue
+		}
+		if info.IsDir() {
+			// A directory named .env is not a configuration file; the note
+			// below would be misleading.
+			continue
+		}
+		// The absolute path is what the user needs: two directories are
+		// searched, so "." alone would not say which file is being ignored.
+		shown := path
+		if abs, err := filepath.Abs(path); err == nil {
+			shown = abs
+		}
+		fmt.Fprintf(os.Stderr, "Note: %s was NOT read: just-code no longer loads a .env implicitly.\n"+
+			"      Exported variables are still honoured. To see what the file holds and where each\n"+
+			"      value belongs, run 'just-code config import-env %s' (preview only; the Albert key\n"+
+			"      belongs in the credential store: 'just-code auth add albert').\n", shown, shown)
+		break
 	}
 	if _, ok := os.LookupEnv("WORKSPACE_DIR"); !ok {
 		if _, legacy := os.LookupEnv("PROJECT_DIR"); legacy {
@@ -213,10 +248,10 @@ func LoadConfig(lookup EnvLookup) Config {
 			cfg.StartTimeout = d
 		}
 	}
-	if iso, err := ResolveIsolation("", envDefault(lookup, "ISOLATION", string(IsolationBackend))); err != nil {
-		// Keep the backend default so commands that never read Isolation
+	if iso, err := ResolveIsolation("", envDefault(lookup, "ISOLATION", string(IsolationFull))); err != nil {
+		// Keep a usable default so commands that never read Isolation
 		// still work; the error is surfaced where the value is consumed.
-		cfg.Isolation, cfg.IsolationErr = IsolationBackend, err
+		cfg.Isolation, cfg.IsolationErr = IsolationFull, err
 	} else {
 		cfg.Isolation = iso
 	}
@@ -229,6 +264,15 @@ func LoadConfig(lookup EnvLookup) Config {
 	cfg.APIKey, _ = lookup("ALBERT_API_KEY")
 	if abs, err := filepath.Abs(cfg.WorkspaceDir); err == nil {
 		cfg.WorkspaceDir = abs
+	}
+	// An explicitly configured workspace source is honoured as given; a
+	// zero-flag launch resolves it to the project root instead of the
+	// historical ./workspace subdirectory, which under the sealed model would
+	// be an empty directory nothing ever fills.
+	if v, ok := lookup("WORKSPACE_DIR"); ok && strings.TrimSpace(v) != "" {
+		cfg.WorkspaceDirSet = true
+	} else if v, ok := lookup("PROJECT_DIR"); ok && strings.TrimSpace(v) != "" {
+		cfg.WorkspaceDirSet = true
 	}
 	cfg.TartVM = VMName(cfg.TartImage)
 	return cfg
