@@ -116,8 +116,14 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		return plan, fmt.Errorf("project root %s is not a directory", pc.Root)
 	}
 	plan.Answers.Root = pc.Root
-	if abs, err := filepath.Abs(given); err == nil && filepath.Clean(abs) != pc.Root {
-		plan.Warnings = append(plan.Warnings, fmt.Sprintf("the project root is the Git worktree root %s (not %s): its manifest covers the whole worktree", pc.Root, filepath.Clean(abs)))
+	// Warn only when the user named a directory that is genuinely INSIDE the
+	// worktree: the same directory spelled differently (macOS /var for
+	// /private/var, a Windows 8.3 short name) is not a surprise worth a
+	// warning, and warning about it would be noise on every launch.
+	if resolved, err := filepath.EvalSymlinks(strings.TrimSpace(answers.Root)); err == nil {
+		if resolved != pc.Root && strings.HasPrefix(resolved, pc.Root+string(filepath.Separator)) {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("the project root is the Git worktree root %s (not %s): its manifest covers the whole worktree", pc.Root, resolved))
+		}
 	}
 
 	runtimeName := answers.Runtime

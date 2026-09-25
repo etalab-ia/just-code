@@ -229,10 +229,17 @@ func TestInitPlanCanonicalizesToTheWorktreeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if plan.Answers.Root != root {
-		t.Fatalf("root = %q, want the worktree root %q", plan.Answers.Root, root)
+	// Both sides are compared in their resolved form: t.TempDir() is the
+	// unresolved spelling on macOS (/var -> /private/var) and Windows (8.3
+	// short names), while discovery resolves it.
+	wantRoot := root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		wantRoot = resolved
 	}
-	if plan.ManifestPath != ProjectManifestPath(root) {
+	if plan.Answers.Root != wantRoot {
+		t.Fatalf("root = %q, want the worktree root %q", plan.Answers.Root, wantRoot)
+	}
+	if plan.ManifestPath != ProjectManifestPath(wantRoot) {
 		t.Fatalf("manifest path = %q, want the root's manifest", plan.ManifestPath)
 	}
 	// The user is told the manifest covers more than the directory they named.
@@ -307,5 +314,39 @@ func TestInitReviewWarnsAboutAnUnversionedManifest(t *testing.T) {
 	}
 	if !strings.Contains(FormatInitReview(mounted), "MOUNTS") {
 		t.Fatal("a mounting runtime must be told the project is exposed in the guest")
+	}
+}
+
+// TestInitPlanDoesNotWarnOnADifferentSpellingOfTheSameDirectory pins that the
+// worktree warning is about a genuinely wider root, not about a path that
+// merely resolves differently: t.TempDir() is the unresolved spelling on macOS
+// (/var -> /private/var) and on Windows (8.3 short names), and warning there
+// would fire on an ordinary launch.
+func TestInitPlanDoesNotWarnOnADifferentSpellingOfTheSameDirectory(t *testing.T) {
+	real := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved == real {
+		// The spelling does not differ here; exercise it through a symlink so
+		// the property is tested on every platform.
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		real = link
+	}
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: real})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	for _, warning := range plan.Warnings {
+		if strings.Contains(warning, "worktree root") {
+			t.Fatalf("a differently-spelled path to the same directory must not warn: %v", plan.Warnings)
+		}
+	}
+	if plan.Answers.Root != resolved {
+		t.Fatalf("root = %q, want %q", plan.Answers.Root, resolved)
 	}
 }
