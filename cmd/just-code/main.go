@@ -196,6 +196,13 @@ func run(args []string) (int, error) {
 		return trustCmd(parsed.trustArgs, pc.Root)
 	}
 
+	// init writes the minimal project configuration (P12b). It runs before
+	// any runtime is constructed and needs only a directory, so a machine that
+	// cannot run a guest yet can still be configured.
+	if parsed.action == "init" {
+		return initCmd(parsed.initArgs)
+	}
+
 	// workspace manages the sealed guest workspace (P22): the transfer
 	// manifest, the per-file re-inclusion decisions, the refresh, and the
 	// reviewed change export. It needs the project root and the instance
@@ -354,6 +361,8 @@ type parsedArgs struct {
 	modelsArgs []string
 	// workspaceArgs holds the words after the workspace command.
 	workspaceArgs []string
+	// initArgs holds the words after the init command.
+	initArgs []string
 	// setupArgs holds the words after the setup command.
 	setupArgs []string
 }
@@ -368,6 +377,7 @@ var actionNames = map[string]bool{
 	"help": true, "version": true, "config": true,
 	"auth": true, "bindings": true,
 	"workspace": true,
+	"init":      true,
 }
 
 func runtimeFlag(a string) bool {
@@ -443,6 +453,12 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the workspace command belongs to it.
 			p.workspaceArgs = args[i+1:]
+			return p, nil
+		case a == "init" && !actionSet:
+			p.action = "init"
+			actionSet = true
+			// Everything after the init command belongs to it.
+			p.initArgs = args[i+1:]
 			return p, nil
 		case a == "trust" && !actionSet:
 			p.action = "trust"
@@ -852,6 +868,9 @@ Commands:
   trust      Approve execution-relevant project OpenCode inputs (status,
              approve)
   models     List the validated Albert models (live, or last-known-good)
+  init       Configure this project: sharing mode, model, guest resources and
+             credential reference. Interactive by default; every answer can be
+             given as a flag (see 'just-code init --help' for the surface).
   workspace  Manage the sealed guest workspace: what crosses into the guest,
              per-file re-inclusions, refresh and reviewed export (status,
              sync, allow, deny, export). The host checkout is never mounted.
