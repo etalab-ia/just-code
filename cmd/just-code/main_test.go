@@ -115,7 +115,7 @@ func TestApplyIsolationPrecedence(t *testing.T) {
 	}
 
 	// No flag, broken env: the error surfaces and the config is untouched.
-	got, err := applyIsolation(brokenEnv, "")
+	got, err := applyIsolation(brokenEnv, "", "")
 	if err == nil {
 		t.Fatal("an invalid ISOLATION must be surfaced when no flag is given")
 	}
@@ -124,7 +124,7 @@ func TestApplyIsolationPrecedence(t *testing.T) {
 	}
 
 	// Explicit flag, broken env: the flag wins and the level is applied.
-	got, err = applyIsolation(brokenEnv, "full")
+	got, err = applyIsolation(brokenEnv, "full", "")
 	if err != nil {
 		t.Fatalf("an explicit flag must override an invalid ISOLATION: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestApplyIsolationPrecedence(t *testing.T) {
 	}
 
 	// Explicit flag, valid env: the flag still wins.
-	got, err = applyIsolation(justcode.Config{Isolation: justcode.IsolationBackend}, "full")
+	got, err = applyIsolation(justcode.Config{Isolation: justcode.IsolationBackend}, "full", "")
 	if err != nil || got.Isolation != justcode.IsolationFull {
 		t.Errorf("applyIsolation(valid env, full) = (%q, %v)", got.Isolation, err)
 	}
@@ -248,5 +248,67 @@ func TestProjectManifestSizesTheGuest(t *testing.T) {
 	empty, err := applyProjectSandboxResources(base, t.TempDir())
 	if err != nil || empty.CPUs != base.CPUs {
 		t.Fatalf("a project without a manifest must keep the defaults: %d cpus, err %v", empty.CPUs, err)
+	}
+}
+
+// TestProjectManifestSelectsRuntimeAndIsolation pins that the two choices the
+// project setup records are actually applied at launch, with the documented
+// precedence: flag > exported variable > project manifest > built-in default.
+// Before this, they were displayed by 'config explain' and ignored by the
+// runtime.
+func TestProjectManifestSelectsRuntimeAndIsolation(t *testing.T) {
+	root := t.TempDir()
+	pm := justcode.ProjectManifest{SchemaVersion: 1, Runtime: "tart", Isolation: "backend"}
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), pm); err != nil {
+		t.Fatal(err)
+	}
+	runtimeChoice, isolationChoice := projectRuntimeIsolation(root)
+	if runtimeChoice != justcode.RuntimeTart || isolationChoice != justcode.IsolationBackend {
+		t.Fatalf("manifest choices = %q / %q", runtimeChoice, isolationChoice)
+	}
+
+	// A project value beats the built-in default.
+	got, err := applyIsolation(justcode.Config{Isolation: justcode.IsolationFull}, "", isolationChoice)
+	if err != nil {
+		t.Fatalf("applyIsolation: %v", err)
+	}
+	if got.Isolation != justcode.IsolationBackend {
+		t.Fatalf("isolation = %q, want the project's choice", got.Isolation)
+	}
+
+	// An exported variable beats the project value.
+	t.Setenv("ISOLATION", string(justcode.IsolationFull))
+	got, err = applyIsolation(justcode.Config{Isolation: justcode.IsolationFull}, "", isolationChoice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Isolation != justcode.IsolationFull {
+		t.Fatalf("isolation = %q, want the exported value to win", got.Isolation)
+	}
+
+	// An explicit flag beats both.
+	t.Setenv("ISOLATION", string(justcode.IsolationFull))
+	got, err = applyIsolation(justcode.Config{Isolation: justcode.IsolationFull}, "backend", justcode.IsolationFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Isolation != justcode.IsolationBackend {
+		t.Fatalf("isolation = %q, want the flag to win", got.Isolation)
+	}
+
+	// A hand-edited manifest naming an unknown runtime is reported, not ignored.
+	pm.Runtime = "podman"
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), pm); err != nil {
+		t.Fatal(err)
+	}
+	runtimeChoice, _ = projectRuntimeIsolation(root)
+	if _, err := justcode.ResolveRuntime("", string(runtimeChoice)); err == nil {
+		t.Fatal("an unknown runtime in the manifest must be reported at launch")
+	}
+
+	// No manifest is the normal zero-flag state.
+	runtimeChoice, isolationChoice = projectRuntimeIsolation(t.TempDir())
+	if runtimeChoice != "" || isolationChoice != "" {
+		t.Fatalf("a project without a manifest must yield no preference, got %q / %q", runtimeChoice, isolationChoice)
 	}
 }

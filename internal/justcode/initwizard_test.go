@@ -3,6 +3,7 @@ package justcode
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,12 +32,6 @@ func TestInitPlanResolvesDefaults(t *testing.T) {
 	}
 	if plan.Answers.Isolation != IsolationFull {
 		t.Fatalf("isolation = %q, want the built-in default", plan.Answers.Isolation)
-	}
-	if plan.Answers.Storage != StorageVersioned {
-		t.Fatalf("storage = %q", plan.Answers.Storage)
-	}
-	if plan.Answers.Name != filepath.Base(root) {
-		t.Fatalf("name = %q, want the root's base name", plan.Answers.Name)
 	}
 	if plan.ManifestPath != ProjectManifestPath(plan.Answers.Root) || plan.LockPath != ProjectLockPath(plan.Answers.Root) {
 		t.Fatalf("paths = %q / %q", plan.ManifestPath, plan.LockPath)
@@ -72,7 +67,6 @@ func TestInitPlanRejectsBadAnswers(t *testing.T) {
 		{"unknown isolation", InitAnswers{Root: root, Isolation: "sometimes"}, "isolation"},
 		{"cpus above the SDK range", InitAnswers{Root: root, CPUs: MaxSandboxCPUs + 1}, "CPUs must be"},
 		{"negative memory", InitAnswers{Root: root, MemoryMB: -1}, "memory must be"},
-		{"unknown storage", InitAnswers{Root: root, Storage: "elsewhere"}, "storage must be"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,8 +116,8 @@ func TestInitPlanValidatesTheModel(t *testing.T) {
 func TestInitApplyWritesManifestAndLock(t *testing.T) {
 	root := initTestRoot(t)
 	plan, err := (InitWizard{}).Plan(InitAnswers{
-		Root: root, Name: "demo", Model: "albert/deepseek-v4-flash",
-		CPUs: 4, MemoryMB: 8192, CredentialRef: "work", Storage: StorageVersioned,
+		Root: root, Model: "albert/deepseek-v4-flash",
+		CPUs: 4, MemoryMB: 8192, CredentialRef: "work",
 	})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -135,10 +129,15 @@ func TestInitApplyWritesManifestAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the manifest must be readable by the normal reader: %v", err)
 	}
-	if pm.Project != "demo" || pm.Runtime != string(RuntimeMicrosandbox) || pm.Isolation != string(IsolationFull) ||
+	if pm.Runtime != string(RuntimeMicrosandbox) || pm.Isolation != string(IsolationFull) ||
 		pm.Model != "albert/deepseek-v4-flash" || pm.CPUs != 4 || pm.MemoryMB != 8192 ||
-		pm.CredentialRef != "work" || pm.Storage != StorageVersioned {
+		pm.CredentialRef != "work" {
 		t.Fatalf("manifest = %+v", pm)
+	}
+	// Only settings the launch path actually applies are recorded: a field
+	// nothing reads would be a decision the setup pretends to have taken.
+	if pm.Project != "" || pm.Storage != "" {
+		t.Fatalf("the manifest must not record settings no reader consumes: %+v", pm)
 	}
 	if pm.SchemaVersion != projectManifestSchemaVersion {
 		t.Fatalf("schemaVersion = %d", pm.SchemaVersion)
@@ -170,7 +169,7 @@ func TestInitApplyRefusesToReplaceWithoutConsent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root, Name: "replacement", Model: "albert/new"})
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root, Model: "albert/new"})
 	if err != nil {
 		t.Fatalf("Plan on an existing manifest must still work: %v", err)
 	}
@@ -201,29 +200,83 @@ func TestInitApplyRefusesToReplaceWithoutConsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replaced.Project != "replacement" || replaced.Model != "albert/new" {
+	if replaced.Model != "albert/new" {
 		t.Fatalf("manifest = %+v", replaced)
 	}
 }
 
-func TestInitLocalStorageKeepsTheCheckoutClean(t *testing.T) {
-	isolateHostState(t)
+// TestInitPlanCanonicalizesToTheWorktreeRoot pins the rule that makes the
+// written manifest readable: the launch path resolves a project to its Git
+// worktree root, so initializing a subdirectory of one must write the root's
+// manifest, not a nested file nothing would ever read.
+func TestInitPlanCanonicalizesToTheWorktreeRoot(t *testing.T) {
 	root := initTestRoot(t)
-	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root, Storage: StorageLocal})
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "T"}, {"add", "-A"}, {"commit", "-q", "-m", "i", "--allow-empty"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	sub := filepath.Join(root, "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: sub})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Answers.Root != root {
+		t.Fatalf("root = %q, want the worktree root %q", plan.Answers.Root, root)
+	}
+	if plan.ManifestPath != ProjectManifestPath(root) {
+		t.Fatalf("manifest path = %q, want the root's manifest", plan.ManifestPath)
+	}
+	// The user is told the manifest covers more than the directory they named.
+	var told bool
+	for _, warning := range plan.Warnings {
+		if strings.Contains(warning, "worktree root") {
+			told = true
+		}
+	}
+	if !told {
+		t.Fatalf("the review must say the manifest covers the worktree: %v", plan.Warnings)
+	}
+	// And no nested manifest is written for the subdirectory.
+	if err := (InitWizard{}).Apply(plan, false); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sub, ".just-code")); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be written below the root (stat err = %v)", err)
+	}
+}
+
+// TestInitApplyKeepsExistingPins pins that replacing a manifest is not a
+// reason to discard a lockfile someone else committed.
+func TestInitApplyKeepsExistingPins(t *testing.T) {
+	root := initTestRoot(t)
+	if err := os.MkdirAll(filepath.Dir(ProjectLockPath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, ProjectLockPath(root), Lockfile{Entries: map[string]string{"skill": "rev-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root, Model: "albert/x"})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err := (InitWizard{}).Apply(plan, false); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".just-code")); !os.IsNotExist(err) {
-		t.Fatalf("local storage must not add anything to the checkout (stat err = %v)", err)
+	lf, err := ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := ReadProjectManifest(DefaultFS, plan.ManifestPath); err != nil {
-		t.Fatalf("the manifest must be readable from host state: %v", err)
-	}
-	if !strings.Contains(FormatInitReview(plan), "host state only") {
-		t.Fatalf("the review must state where the state lives: %q", FormatInitReview(plan))
+	if lf.Entries["skill"] != "rev-1" {
+		t.Fatalf("an existing pin must survive a setup run: %v", lf.Entries)
 	}
 }
 

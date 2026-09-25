@@ -12,20 +12,21 @@ import (
 // makes the flow testable without a terminal, and it is the shape P11's global
 // setup already uses (setupwizard.go).
 //
-// What the setup collects is deliberately small: where the project is, how the
-// agent is isolated, which model it uses, how much machine it gets, which
-// credential it may use, and whether the project state is versioned. Anything
-// that belongs to a later chantier (skills, connectors, browser MCPs) is not
-// asked here, because a question whose answer nothing reads is worse than no
-// question.
+// What the setup collects is exactly what the launch path applies, and nothing
+// else: where the project is, how the agent is isolated, which model it uses,
+// how much machine it gets, and which credential it may use. A question whose
+// answer nothing reads is worse than no question — so there is no name
+// question (instance naming derives from the root, P05) and no storage
+// question (the versioned location is the only one with readers). Skills,
+// connectors and browser MCPs arrive with their own chantiers.
 
 // InitAnswers is one set of project-setup decisions.
 type InitAnswers struct {
-	// Root is the canonical project root. It is required and must exist.
+	// Root is the project directory. It is required and must exist; it is
+	// canonicalized through the same discovery the launch path uses, so the
+	// file this writes is the file the launch reads (a Git worktree root, not
+	// a subdirectory of one).
 	Root string
-	// Name is the readable project name used for instance naming (P05). Empty
-	// means "derive from the root".
-	Name string
 	// Runtime and Isolation are the agent placement choices. Empty means the
 	// built-in default (Microsandbox, full) rather than "unset in the file".
 	Runtime   Runtime
@@ -38,21 +39,7 @@ type InitAnswers struct {
 	// CredentialRef names the credential this project may use (a P08
 	// reference). Empty means the global default resolution applies.
 	CredentialRef string
-	// Storage selects where the project state lives: StorageVersioned (the
-	// default, inside the checkout) or StorageLocal (host state, for a
-	// repository the user does not want to carry .just-code).
-	Storage string
 }
-
-// Storage backends for the project state.
-const (
-	// StorageVersioned keeps the manifest in the checkout, so the whole team
-	// shares the same project settings.
-	StorageVersioned = "versioned"
-	// StorageLocal keeps it in host state, for a checkout that must not carry
-	// just-code files.
-	StorageLocal = "local"
-)
 
 // InitWizard validates project setup answers and writes what they imply.
 // The seams keep every external dependency out of the flow: the model
@@ -66,6 +53,11 @@ type InitWizard struct {
 	// Print receives the review screen. Nil means stdout.
 	Print func(string)
 }
+
+// Note on the FS seam: it carries the manifest and lockfile. Path validation
+// (does the root exist, is it a directory, is it inside a worktree) uses the
+// real filesystem, because those are host paths the user is asserting about
+// rather than content this component owns.
 
 func (w InitWizard) fs() FS {
 	if w.FS != nil {
@@ -86,8 +78,8 @@ func (w InitWizard) print(msg string) {
 // user should know before confirming.
 type InitPlan struct {
 	Answers InitAnswers
-	// ManifestPath and LockPath are the files Apply will write. With
-	// StorageLocal they point into host state instead of the checkout.
+	// ManifestPath and LockPath are the files Apply will write, in the
+	// checkout. They are the same paths the launch path reads.
 	ManifestPath string
 	LockPath     string
 	// ExistingManifest is the manifest already on disk, if any. Apply refuses
@@ -105,34 +97,28 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	plan := InitPlan{Answers: answers}
 	fs := w.fs()
 
-	root := strings.TrimSpace(answers.Root)
-	if root == "" {
+	given := strings.TrimSpace(answers.Root)
+	if given == "" {
 		return plan, fmt.Errorf("the project root is required")
 	}
-	abs, err := filepath.Abs(root)
+	// The same discovery the launch path uses, so the two cannot disagree: a
+	// directory inside a Git worktree resolves to the worktree root, and
+	// writing a manifest anywhere else would be a manifest nothing reads.
+	pc, err := DiscoverProject(given)
 	if err != nil {
-		return plan, err
+		return plan, fmt.Errorf("project root %s: %w", given, err)
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	}
-	info, err := os.Stat(abs)
+	info, err := os.Stat(pc.Root)
 	if err != nil {
-		return plan, fmt.Errorf("project root %s: %w", abs, err)
+		return plan, fmt.Errorf("project root %s: %w", given, err)
 	}
 	if !info.IsDir() {
-		return plan, fmt.Errorf("project root %s is not a directory", abs)
+		return plan, fmt.Errorf("project root %s is not a directory", pc.Root)
 	}
-	plan.Answers.Root = abs
-
-	name := strings.TrimSpace(answers.Name)
-	if name == "" {
-		name = filepath.Base(abs)
+	plan.Answers.Root = pc.Root
+	if abs, err := filepath.Abs(given); err == nil && filepath.Clean(abs) != pc.Root {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("the project root is the Git worktree root %s (not %s): its manifest covers the whole worktree", pc.Root, filepath.Clean(abs)))
 	}
-	if safeFileName(name) == "" {
-		return plan, fmt.Errorf("the project name %q cannot be used in an instance name", name)
-	}
-	plan.Answers.Name = name
 
 	runtimeName := answers.Runtime
 	if runtimeName == "" {
@@ -178,23 +164,8 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 	}
 
-	switch answers.Storage {
-	case "", StorageVersioned:
-		plan.Answers.Storage = StorageVersioned
-		plan.ManifestPath = ProjectManifestPath(abs)
-		plan.LockPath = ProjectLockPath(abs)
-	case StorageLocal:
-		// The host-local location is derived from HOME by the same helper the
-		// resolver documents, so the writer and any future reader agree.
-		dir, err := LocalProjectStateDir(abs)
-		if err != nil {
-			return plan, err
-		}
-		plan.ManifestPath = filepath.Join(dir, "project.json")
-		plan.LockPath = filepath.Join(dir, "lock.json")
-	default:
-		return plan, fmt.Errorf("storage must be %q or %q, got %q", StorageVersioned, StorageLocal, answers.Storage)
-	}
+	plan.ManifestPath = ProjectManifestPath(pc.Root)
+	plan.LockPath = ProjectLockPath(pc.Root)
 
 	if existing, err := ReadProjectManifest(fs, plan.ManifestPath); err == nil {
 		plan.ExistingManifest = &existing
@@ -203,10 +174,8 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		// not present a review that quietly ignores it.
 		return plan, err
 	}
-	if plan.Answers.Storage == StorageVersioned {
-		if _, err := os.Stat(filepath.Join(abs, ".git")); err != nil {
-			plan.Warnings = append(plan.Warnings, "this directory is not a Git repository: the manifest in .just-code/ will not be versioned with the project")
-		}
+	if !pc.IsGit {
+		plan.Warnings = append(plan.Warnings, "this directory is not a Git repository: the manifest in .just-code/ will not be versioned with the project")
 	}
 	return plan, nil
 }
@@ -217,7 +186,7 @@ func FormatInitReview(plan InitPlan) string {
 	var b strings.Builder
 	a := plan.Answers
 	b.WriteString("Review the project setup:\n")
-	fmt.Fprintf(&b, "  project      %s (%s)\n", a.Name, a.Root)
+	fmt.Fprintf(&b, "  project      %s\n", a.Root)
 	fmt.Fprintf(&b, "  sharing      %s runtime, isolation %s\n", a.Runtime, a.Isolation)
 	if a.Isolation == IsolationFull {
 		b.WriteString("               the agent, its TUI and its credentials run inside the guest\n")
@@ -227,15 +196,21 @@ func FormatInitReview(plan InitPlan) string {
 	if a.Model != "" {
 		fmt.Fprintf(&b, "  model        %s\n", a.Model)
 	} else {
-		b.WriteString("  model        built-in default (change later with 'just-code models')\n")
+		b.WriteString("  model        the built-in default\n")
 	}
 	fmt.Fprintf(&b, "  resources    %d CPUs, %d MiB (fixed when the guest is created)\n", resolvedCPUs(a.CPUs), resolvedMemoryMB(a.MemoryMB))
 	if a.CredentialRef != "" {
-		fmt.Fprintf(&b, "  credential   reference %q (the value stays in the host credential store)\n", a.CredentialRef)
+		fmt.Fprintf(&b, "  credential   reference %q\n", a.CredentialRef)
 	} else {
 		b.WriteString("  credential   the global Albert credential\n")
 	}
-	fmt.Fprintf(&b, "  state        %s\n", DescribeStorage(a.Storage))
+	// No claim is made here about where the credential VALUE lives: the
+	// manifest records a reference, and what each runtime then does with the
+	// secret differs (Microsandbox proxies it, Tart and agent-vm hand it to
+	// the guest). Promising "it stays on the host" would be false for two of
+	// the three.
+	b.WriteString("               (the manifest records the reference, never a value)\n")
+	b.WriteString("  state        versioned in .just-code/ (shared with whoever clones the repository)\n")
 	fmt.Fprintf(&b, "  manifest     %s\n", plan.ManifestPath)
 	if a.Runtime == RuntimeMicrosandbox {
 		b.WriteString("\nThe guest receives a filtered copy of the project: .env files, ignored files,\n" +
@@ -252,14 +227,6 @@ func FormatInitReview(plan InitPlan) string {
 		b.WriteString(formatManifestSummary(*plan.ExistingManifest))
 	}
 	return b.String()
-}
-
-// DescribeStorage renders the storage choice for the review.
-func DescribeStorage(storage string) string {
-	if storage == StorageLocal {
-		return "host state only (nothing is added to the checkout)"
-	}
-	return "versioned in .just-code/ (shared with whoever clones the repository)"
 }
 
 func resolvedCPUs(cpus int) int {
@@ -308,21 +275,27 @@ func formatManifestSummary(pm ProjectManifest) string {
 // is not something a re-run should do quietly.
 func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	fs := w.fs()
-	if plan.ExistingManifest != nil && !replace {
+	// Re-read rather than trusting the plan's snapshot: a manifest created
+	// between Plan and Apply must not be overwritten without consent, and the
+	// guarantee would be only as strong as the snapshot.
+	_, readErr := ReadProjectManifest(fs, plan.ManifestPath)
+	if readErr == nil && !replace {
 		return fmt.Errorf("%s already exists; re-run with the replace option, or edit it directly", plan.ManifestPath)
+	}
+	if readErr != nil && !os.IsNotExist(readErr) {
+		// An unreadable manifest must not be silently replaced either.
+		return readErr
 	}
 	// The manifest is secret-free by construction: a credential is referenced
 	// by name, never written here. It also carries no host-absolute path, so a
 	// teammate who clones the repository gets the same project identity.
 	pm := ProjectManifest{
-		Project:       plan.Answers.Name,
 		Runtime:       string(plan.Answers.Runtime),
 		Isolation:     string(plan.Answers.Isolation),
 		Model:         plan.Answers.Model,
 		CPUs:          plan.Answers.CPUs,
 		MemoryMB:      plan.Answers.MemoryMB,
 		CredentialRef: plan.Answers.CredentialRef,
-		Storage:       plan.Answers.Storage,
 	}
 	if err := fs.MkdirAll(filepath.Dir(plan.ManifestPath), 0o755); err != nil {
 		return err
@@ -332,8 +305,14 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	}
 	// The lockfile is written even though nothing is pinned yet: it is where
 	// the skills and images of later chantiers record their resolved
-	// revisions, and an empty lock is the honest "nothing pinned" state.
-	if err := WriteLockfile(fs, plan.LockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+	// revisions, and an empty lock is the honest "nothing pinned" state. An
+	// existing lock is preserved: replacing the manifest is not a reason to
+	// discard pins someone else committed.
+	lock := Lockfile{Entries: map[string]string{}}
+	if kept, err := ReadLockfile(fs, plan.LockPath); err == nil && len(kept.Entries) > 0 {
+		lock.Entries = kept.Entries
+	}
+	if err := WriteLockfile(fs, plan.LockPath, lock); err != nil {
 		return err
 	}
 	w.print(fmt.Sprintf("Wrote %s\nWrote %s\n", plan.ManifestPath, plan.LockPath))
