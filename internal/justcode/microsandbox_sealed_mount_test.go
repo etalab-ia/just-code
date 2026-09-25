@@ -248,3 +248,33 @@ func TestMSBSandboxEnvCarriesGitIdentity(t *testing.T) {
 		t.Fatalf("the guest prep script does not read the identity environment")
 	}
 }
+
+// TestMSBSpecCarriesGuestSizing pins that the configured sizing reaches the
+// sandbox options. Before this, the values were hardcoded, so a project's
+// recorded resource choice was displayed by 'config explain' and then ignored.
+func TestMSBSpecCarriesGuestSizing(t *testing.T) {
+	client := &fakeMSBClient{}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.CPUs = 6
+	m.cfg.MemoryMB = 12288
+	spec := m.sandboxSpec(nil)
+	if spec.CPUs != 6 || spec.MemoryMB != 12288 {
+		t.Fatalf("spec sizing = %d cpus / %d MB", spec.CPUs, spec.MemoryMB)
+	}
+	var cfg msb.SandboxConfig
+	for _, option := range msbCreateOptions(spec) {
+		option(&cfg)
+	}
+	if cfg.CPUs != 6 || cfg.MemoryMiB != 12288 {
+		t.Fatalf("sandbox options = %d cpus / %d MB", cfg.CPUs, cfg.MemoryMiB)
+	}
+	// A spec that never resolved sizing still boots with the defaults rather
+	// than asking for a zero-CPU VM.
+	var zero msb.SandboxConfig
+	for _, option := range msbCreateOptions(msbSandboxSpec{Image: msbImage, SealedWorkspace: true}) {
+		option(&zero)
+	}
+	if zero.CPUs != DefaultSandboxCPUs || zero.MemoryMiB != DefaultSandboxMemoryMB {
+		t.Fatalf("unset sizing = %d cpus / %d MB", zero.CPUs, zero.MemoryMiB)
+	}
+}

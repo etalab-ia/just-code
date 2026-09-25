@@ -121,6 +121,16 @@ func run(args []string) (int, error) {
 	}
 	// The sealed transfer source (P22/P12).
 	cfg = withProjectRootAsWorkspaceSource(cfg, pc, projErr)
+	// Guest sizing from the project manifest (P12b). A malformed value is
+	// fatal only where the guest would actually be created; read-only
+	// commands keep working, which is when the user needs them.
+	cfg, resErr := applyProjectSandboxResources(cfg, projectRoot)
+	if resErr != nil {
+		if parsed.action == "attach" || parsed.action == "start" || parsed.action == "restart" || parsed.action == "recreate" {
+			return 1, resErr
+		}
+		fmt.Fprintf(os.Stderr, "Warning: %v; using the default guest sizing\n", resErr)
+	}
 	cfg.CredentialRef = resolveCredentialRef(projectRoot)
 
 	// Managed OpenCode configuration (P10): the model selection from the
@@ -835,4 +845,43 @@ Isolation:
   TUI attaches from the host. ISOLATION is used when no flag is provided; the
   flag always takes precedence. How each runtime handles the credential in
   either mode is stated above.`)
+}
+
+// applyProjectSandboxResources applies the project manifest's guest sizing.
+//
+// Precedence follows the configuration contract (#29): an exported variable
+// beats the project manifest, which beats the built-in default. The manifest
+// is where the project setup records the answer to "how much machine does this
+// project get", so a value written there must actually size the guest — a
+// recorded setting nothing reads is worse than not asking.
+func applyProjectSandboxResources(cfg justcode.Config, projectRoot string) (justcode.Config, error) {
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot))
+	if err != nil {
+		// A missing manifest is the normal zero-flag state. A present but
+		// unreadable one is reported by the paths that own that decision.
+		return cfg, nil
+	}
+	// Zero means "not set in the manifest", which is the common case. Any
+	// other out-of-range value — negative, or above what the runtime can
+	// carry — is reported rather than ignored: a hand-edited manifest should
+	// fail loudly on both sides of the range, not just above it.
+	if _, set := os.LookupEnv("JUST_CODE_CPUS"); !set {
+		switch {
+		case pm.CPUs == 0:
+		case pm.CPUs < 0 || pm.CPUs > justcode.MaxSandboxCPUs:
+			return cfg, fmt.Errorf("the project manifest asks for %d CPUs; the sandbox runtime accepts 1 to %d", pm.CPUs, justcode.MaxSandboxCPUs)
+		default:
+			cfg.CPUs = pm.CPUs
+		}
+	}
+	if _, set := os.LookupEnv("JUST_CODE_MEMORY_MB"); !set {
+		switch {
+		case pm.MemoryMB == 0:
+		case pm.MemoryMB < 0 || pm.MemoryMB > justcode.MaxSandboxMemoryMB:
+			return cfg, fmt.Errorf("the project manifest asks for %d MiB; the sandbox runtime accepts 1 to %d", pm.MemoryMB, justcode.MaxSandboxMemoryMB)
+		default:
+			cfg.MemoryMB = pm.MemoryMB
+		}
+	}
+	return cfg, nil
 }

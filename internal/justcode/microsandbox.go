@@ -258,6 +258,11 @@ type msbSandboxSpec struct {
 	Name  string // instance name (P05); empty means the legacy singleton
 	Image string
 	Env   map[string]string
+	// CPUs and MemoryMB size the guest. Zero means "unset": the create
+	// options then fall back to the built-in defaults, so a spec built by a
+	// path that does not resolve resources still boots.
+	CPUs     int
+	MemoryMB int
 	// SealedWorkspace selects the P22 sealed model: /workspace is an owned
 	// volume inside the sandbox and the host checkout is NOT mounted. The
 	// zero value is refused rather than falling back to a bind mount.
@@ -279,6 +284,14 @@ func (m *MicrosandboxRuntime) validateConfig() error {
 	// wait, so validate before doing any runtime work.
 	if m.cfg.Isolation == IsolationFull && m.cfg.StartTimeoutErr != nil {
 		return m.cfg.StartTimeoutErr
+	}
+	// A typo in JUST_CODE_CPUS or JUST_CODE_MEMORY_MB is the same contract:
+	// every sibling deferred error is surfaced where the value is consumed,
+	// and a recorded-but-unreported error would mean an invalid sizing
+	// behaves exactly like an unset one — the "configured but ignored"
+	// defect this sizing work exists to remove.
+	if m.cfg.SandboxResourcesErr != nil {
+		return m.cfg.SandboxResourcesErr
 	}
 	return nil
 }
@@ -564,6 +577,8 @@ func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandbox
 		Image:           msbImage,
 		Env:             m.sandboxEnv(),
 		SealedWorkspace: true,
+		CPUs:            m.cfg.CPUs,
+		MemoryMB:        m.cfg.MemoryMB,
 		Bindings:        bindingsMetadata(bindings),
 		StartScript:     msbStartScript(m.cfg.Isolation),
 	}
@@ -878,7 +893,44 @@ func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) er
 	if err := m.requireSealedWorkspace(ctx); err != nil {
 		return err
 	}
+	// A recorded sizing change is recreation-only as well: Restart boots the
+	// existing guest with the sizing it was created with, so proceeding would
+	// keep the old allocation while appearing to apply the new one. Isolation
+	// is refused on this same path; sizing must not be the one attribute that
+	// is silently kept.
+	if err := m.rejectResourceSizingChange(); err != nil {
+		return err
+	}
 	return m.rejectIsolationMismatch(ctx, sandbox)
+}
+
+// rejectResourceSizingChange refuses a restart when the applied state records
+// a sizing different from the configured one. An unrecorded state (0) is not
+// a mismatch: it cannot be compared, and the sizing is not what the user
+// asked to change.
+func (m *MicrosandboxRuntime) rejectResourceSizingChange() error {
+	// The reconcile journal's location, not the binding-approval directory:
+	// this reads the record Reconcile writes, so the two must agree even when
+	// a caller overrides StateDir.
+	applied, err := ReadInstanceState(DefaultFS, instanceStatePath(DefaultStateDir(), m.InstanceName()))
+	if err != nil {
+		// An unreadable record cannot answer the question. Fail closed, as the
+		// reconcile path does with the same file: booting on a guess would be
+		// the silent case this guard exists to prevent.
+		return fmt.Errorf("cannot read the recorded state of %s to check its guest sizing; refusing to restart on an unverifiable record. "+
+			"Recreate it with 'just-code recreate --microsandbox' if the record cannot be recovered: %w", m.InstanceName(), err)
+	}
+	if applied == nil {
+		return nil
+	}
+	changed := (applied.CPUs != 0 && applied.CPUs != m.cfg.CPUs) ||
+		(applied.MemoryMB != 0 && applied.MemoryMB != m.cfg.MemoryMB)
+	if !changed {
+		return nil
+	}
+	return fmt.Errorf("%s was created with %d CPUs and %d MiB, and a microVM cannot be resized after creation (now %d CPUs and %d MiB). "+
+		"Run 'just-code recreate --microsandbox' to apply the new sizing, or restore the previous value",
+		m.InstanceName(), applied.CPUs, applied.MemoryMB, m.cfg.CPUs, m.cfg.MemoryMB)
 }
 
 func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {

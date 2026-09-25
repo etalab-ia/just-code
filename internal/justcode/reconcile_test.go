@@ -545,3 +545,83 @@ func TestWorkspaceSourceChangeDoesNotMoveTheRevision(t *testing.T) {
 		t.Fatalf("changing the transfer source moved the config revision (%s -> %s)", before, after)
 	}
 }
+
+// TestReconcileTreatsResourceChangeAsRecreation pins both halves of the
+// resource rule through the REAL reconciliation path: a recorded change to the
+// guest sizing requires recreation (the SDK cannot resize a running guest),
+// while an instance whose sizing was never recorded (0) must not be recreated
+// just for that. Asserting the classification here rather than re-typing the
+// boolean expression is what makes the test able to fail.
+func TestReconcileTreatsResourceChangeAsRecreation(t *testing.T) {
+	isolateHostState(t)
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := newTestMicrosandbox(t, client)
+	m.Probe = func(context.Context, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	m.cfg.CPUs = 8
+
+	// An instance created with 4 CPUs, now asked for 8.
+	applied := DesiredState{Instance: m.InstanceName(), Isolation: m.cfg.Isolation, Image: msbImage, CPUs: 4, MemoryMB: m.cfg.MemoryMB}.toState()
+	if applied.CPUs != 4 {
+		t.Fatalf("precondition: the state must record the sizing, got %d", applied.CPUs)
+	}
+	facts, err := m.reconcileFacts(context.Background(), &applied, m.desiredState(true, nil, nil))
+	if err != nil {
+		t.Fatalf("reconcileFacts: %v", err)
+	}
+	if !facts.CreationFixedChanged {
+		t.Fatal("a recorded sizing change must classify as creation-fixed")
+	}
+	if !PlanReconcile(&applied, m.desiredState(true, nil, nil), facts).NeedsRecreate() {
+		t.Fatal("a recorded sizing change must plan a recreation")
+	}
+
+	// An instance whose state predates the recorded sizing (0 = unknown).
+	legacy := DesiredState{Instance: m.InstanceName(), Isolation: m.cfg.Isolation, Image: msbImage}.toState()
+	facts, err = m.reconcileFacts(context.Background(), &legacy, m.desiredState(true, nil, nil))
+	if err != nil {
+		t.Fatalf("reconcileFacts: %v", err)
+	}
+	if facts.CreationFixedChanged {
+		t.Fatal("an instance whose sizing was never recorded must not require recreation")
+	}
+}
+
+// TestReconcileCarriesUnappliedSizingForward pins the state-write rule that
+// keeps a sizing drift visible: a plan that does not create the instance
+// leaves the guest with the sizing it already had, so the state must record
+// that value, not the desired one. Recording the desired value would make the
+// drift permanently invisible — and the state file would attest it was applied.
+func TestReconcileCarriesUnappliedSizingForward(t *testing.T) {
+	isolateHostState(t)
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := newTestMicrosandbox(t, client)
+	m.Probe = func(context.Context, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	// The project asks for more than the pre-existing instance has.
+	m.cfg.CPUs, m.cfg.MemoryMB = 8, 16384
+
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	applied := DesiredState{Instance: m.InstanceName(), Isolation: m.cfg.Isolation, Image: msbImage}.toState()
+	// A credential rotation, so the plan is neither no-op nor create.
+	applied.ConfigRevision = "stale"
+	if err := WriteInstanceState(DefaultFS, path, applied); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	final, err := ReadInstanceState(DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.CPUs == 8 || final.MemoryMB == 16384 {
+		t.Fatalf("the state must not claim sizing the guest never received: %+v", final)
+	}
+	_ = os.RemoveAll(filepath.Dir(path))
+}

@@ -145,6 +145,20 @@ func (sdkMSBClient) List(ctx context.Context) ([]msbSandboxInfo, error) {
 // to its host env reference immediately after creation (RotateSecretsLive),
 // before the start script runs. The raw value never reaches the persisted
 // sandbox config.
+// msbGuestResources resolves the guest sizing from a spec, falling back to the
+// built-in defaults so a zero value never asks the runtime for a zero-CPU or
+// zero-memory VM.
+func msbGuestResources(spec msbSandboxSpec) (cpus, memoryMB int) {
+	cpus, memoryMB = spec.CPUs, spec.MemoryMB
+	if cpus <= 0 {
+		cpus = DefaultSandboxCPUs
+	}
+	if memoryMB <= 0 {
+		memoryMB = DefaultSandboxMemoryMB
+	}
+	return cpus, memoryMB
+}
+
 func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 	secrets := make([]msb.SecretEntry, 0, len(spec.Bindings))
 	for _, b := range spec.Bindings {
@@ -152,10 +166,11 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 			Allow: b.AllowHosts,
 		}))
 	}
+	cpus, memoryMB := msbGuestResources(spec)
 	return []msb.SandboxOption{
 		msb.WithImage(spec.Image),
-		msb.WithCPUs(2),
-		msb.WithMemory(4096),
+		msb.WithCPUs(uint8(cpus)),
+		msb.WithMemory(uint32(memoryMB)),
 		msb.WithWorkdir(msbGuestWorkspace),
 		msb.WithShell("/bin/sh"),
 		msb.WithEntrypoint("/bin/sh", "-c"),

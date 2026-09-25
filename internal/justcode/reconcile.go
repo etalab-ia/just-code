@@ -70,6 +70,18 @@ func (p ReconcilePlan) NeedsRecreate() bool {
 	return false
 }
 
+// CreatesInstance reports whether the plan includes the creation operation —
+// the only one that applies the creation-fixed attributes, guest sizing
+// included.
+func (p ReconcilePlan) CreatesInstance() bool {
+	for _, op := range p.Ops {
+		if op == OpCreate {
+			return true
+		}
+	}
+	return false
+}
+
 // credentialGenJSON reads the rotation marker from either its historical
 // numeric form (P07 wrote `credentialGen: 0`) or the current string composite
 // (P09). A decode failure in the old format would otherwise make every
@@ -120,6 +132,11 @@ type InstanceState struct {
 	// it must not look like a difference the sandbox was created with.
 	Isolation string `json:"isolation"`
 	Image     string `json:"image"`
+	// CPUs and MemoryMB are creation-fixed too: the sandbox SDK sets them at
+	// creation and cannot resize a running guest, so a change must ask for a
+	// recreation instead of silently keeping the old sizing.
+	CPUs     int `json:"cpus,omitempty"`
+	MemoryMB int `json:"memoryMB,omitempty"`
 	// ConfigRevision is the hash of the non-secret desired config that was
 	// applied. Identical revision + healthy guest = no-op.
 	ConfigRevision string `json:"configRevision"`
@@ -156,6 +173,10 @@ type DesiredState struct {
 	Instance  string
 	Isolation Isolation
 	Image     string
+	// CPUs and MemoryMB are the guest sizing the instance should have. They
+	// are creation-fixed, so a change is reported as a recreation.
+	CPUs     int
+	MemoryMB int
 	// CredentialRev is the hash of the desired binding-set descriptor (P09).
 	CredentialRev string
 	// CredentialGeneration is the non-secret rotation marker of the stored
@@ -202,8 +223,9 @@ type ReconcileFacts struct {
 	Running bool
 	// Healthy: the backend answers its health endpoint (backend mode).
 	Healthy bool
-	// CreationFixedChanged: isolation, mount or image differ from what the
-	// instance was created with.
+	// CreationFixedChanged: a creation-fixed attribute differs from what the
+	// instance was created with — isolation, image, workspace provenance, or
+	// guest sizing.
 	CreationFixedChanged bool
 	// CredentialChanged: the desired binding-set revision differs from the
 	// applied one (a value rotation within an unchanged set does NOT set it:
@@ -227,8 +249,13 @@ func PlanReconcile(applied *InstanceState, desired DesiredState, facts Reconcile
 	}
 	if facts.CreationFixedChanged {
 		return ReconcilePlan{
-			Ops:    []ReconcileOp{OpRecreate},
-			Reason: "isolation, workspace mount or image changed; these are fixed at creation",
+			Ops: []ReconcileOp{OpRecreate},
+			// The reason enumerates what can actually change. It must not
+			// name a cause the runtime no longer has (a "workspace mount"
+			// became a provenance check in P22) or omit one it does (guest
+			// sizing), because it is the only thing the user sees before
+			// deciding whether to lose the guest's state.
+			Reason: "the isolation level, the image, the workspace provenance or the guest sizing changed; these are fixed at creation",
 		}
 	}
 	if applied == nil {
@@ -411,6 +438,15 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// find their transport variables without any value being persisted.
 	st := desired.toState()
 	st.Pending = opsToJournal(pending)
+	// The guest sizing is only ever set by creation. Any other plan leaves the
+	// running guest with the sizing it already had, so the state must carry
+	// that value forward rather than claim the desired one: with a pre-P12b
+	// instance (state records 0 = "not recorded") applying a project sizing
+	// of 8 to a guest that still has 2, recording 8 would make the drift
+	// invisible forever — and the state file would attest it was applied.
+	if !plan.CreatesInstance() && applied != nil {
+		st.CPUs, st.MemoryMB = applied.CPUs, applied.MemoryMB
+	}
 	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
 		return fmt.Errorf("persisting reconcile journal for %s: %w", m.InstanceName(), err)
 	}
@@ -448,6 +484,8 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 		Isolation: m.cfg.Isolation,
 		Image:     msbImage,
 		Username:  m.cfg.Username,
+		CPUs:      m.cfg.CPUs,
+		MemoryMB:  m.cfg.MemoryMB,
 	}
 	if resolved {
 		d.CredentialRev = bindingsRevision(bindings)
@@ -474,6 +512,8 @@ func (d DesiredState) toState() InstanceState {
 		Instance:         d.Instance,
 		Isolation:        string(d.Isolation),
 		Image:            d.Image,
+		CPUs:             d.CPUs,
+		MemoryMB:         d.MemoryMB,
 		ConfigRevision:   d.ConfigRevision(),
 		CredentialRev:    d.CredentialRev,
 		CredentialGen:    credentialGenJSON(d.CredentialGeneration),
@@ -503,8 +543,15 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 	// Creation-fixed comparison. The applied state is the authority when it
 	// exists; without it, the live checks (isolation script, mount) stand in.
 	if applied != nil {
+		// An instance whose state predates the recorded sizing carries 0 for
+		// it. Zero means "not recorded", not "zero CPUs": comparing it
+		// against the desired default would ask for a recreation of every
+		// pre-existing sandbox. Only a recorded value is compared.
+		resourcesChanged := (applied.CPUs != 0 && applied.CPUs != desired.CPUs) ||
+			(applied.MemoryMB != 0 && applied.MemoryMB != desired.MemoryMB)
 		creationFixed := applied.Isolation != string(desired.Isolation) ||
-			applied.Image != desired.Image
+			applied.Image != desired.Image ||
+			resourcesChanged
 		if creationFixed {
 			facts.CreationFixedChanged = true
 			return facts, nil

@@ -329,3 +329,29 @@ func TestLoadConfigEnvDoesNotApplyDotenvImplicitly(t *testing.T) {
 		t.Fatalf("the .env must not be applied to the environment, got %s=%q", probeKey, value)
 	}
 }
+
+// TestSandboxResourceDefaultsAndParsing pins the guest sizing source: the
+// built-in default, an explicit variable, and the rejection of a value the
+// sandbox SDK cannot carry (its CPU count is a uint8, so 256 would wrap).
+func TestSandboxResourceDefaultsAndParsing(t *testing.T) {
+	cfg := LoadConfig(lookupFrom(nil))
+	if cfg.CPUs != DefaultSandboxCPUs || cfg.MemoryMB != DefaultSandboxMemoryMB {
+		t.Fatalf("defaults = %d cpus / %d MB", cfg.CPUs, cfg.MemoryMB)
+	}
+	cfg = LoadConfig(lookupFrom(map[string]string{"JUST_CODE_CPUS": "8", "JUST_CODE_MEMORY_MB": "8192"}))
+	if cfg.CPUs != 8 || cfg.MemoryMB != 8192 || cfg.SandboxResourcesErr != nil {
+		t.Fatalf("explicit sizing = %d cpus / %d MB (err %v)", cfg.CPUs, cfg.MemoryMB, cfg.SandboxResourcesErr)
+	}
+	cfg = LoadConfig(lookupFrom(map[string]string{"JUST_CODE_CPUS": "256"}))
+	if cfg.SandboxResourcesErr == nil {
+		t.Fatal("a CPU count above the SDK's uint8 range must be reported, not wrapped")
+	}
+	if cfg.CPUs != DefaultSandboxCPUs {
+		t.Fatalf("an invalid value must leave the default, got %d", cfg.CPUs)
+	}
+	for _, bad := range []string{"0", "-1", "many"} {
+		if cfg := LoadConfig(lookupFrom(map[string]string{"JUST_CODE_MEMORY_MB": bad})); cfg.SandboxResourcesErr == nil {
+			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+}
