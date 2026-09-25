@@ -23,7 +23,16 @@ type Config struct {
 	// WorkspaceDirSet records that WORKSPACE_DIR or PROJECT_DIR was explicitly
 	// configured, so the launch path knows not to substitute the project root.
 	WorkspaceDirSet bool
-	Username        string
+	// CPUs and MemoryMB size the Microsandbox guest. They were fixed
+	// constants until P12b, which made the project's resource choice a
+	// question the setup asks and the manifest records — a recorded setting
+	// nothing reads would be worse than no question at all.
+	CPUs     int
+	MemoryMB int
+	// SandboxResourcesErr records an invalid JUST_CODE_CPUS or
+	// JUST_CODE_MEMORY_MB, surfaced where the value is consumed.
+	SandboxResourcesErr error
+	Username            string
 	// Password is the HTTP basic-auth password. It is empty when
 	// OPENCODE_SERVER_PASSWORD was explicitly set to an empty value, which
 	// means "no auth". PasswordSet records whether the variable was present,
@@ -104,6 +113,15 @@ const (
 	// DefaultStartTimeout is deliberately generous: a first Microsandbox boot
 	// installs ~384 MiB of packages inside the microVM before OpenCode starts.
 	DefaultStartTimeout = 300 * time.Second
+	// DefaultSandboxCPUs and DefaultSandboxMemoryMB size the Microsandbox
+	// guest. They are the values the runtime used as constants before the
+	// resource choice became configurable, so an unconfigured project is
+	// unchanged.
+	DefaultSandboxCPUs     = 2
+	DefaultSandboxMemoryMB = 4096
+	// MaxSandboxCPUs is the largest CPU count the sandbox SDK can carry (it
+	// takes a uint8); a larger value is rejected rather than wrapped.
+	MaxSandboxCPUs = 255
 )
 
 // LoadConfigEnv resolves configuration from the process environment.
@@ -247,6 +265,33 @@ func LoadConfig(lookup EnvLookup) Config {
 		} else {
 			cfg.StartTimeout = d
 		}
+	}
+	cfg.CPUs, cfg.MemoryMB = DefaultSandboxCPUs, DefaultSandboxMemoryMB
+	for _, f := range []struct {
+		key string
+		max int
+		dst *int
+	}{
+		// MaxSandboxCPUs is not a policy choice: the sandbox SDK takes the CPU
+		// count as a uint8, so a larger value would wrap silently.
+		{"JUST_CODE_CPUS", MaxSandboxCPUs, &cfg.CPUs},
+		{"JUST_CODE_MEMORY_MB", 0, &cfg.MemoryMB},
+	} {
+		v, ok := lookup(f.key)
+		if !ok || v == "" {
+			continue
+		}
+		n, err := parsePositiveInt(v)
+		if err == nil && f.max > 0 && n > f.max {
+			err = fmt.Errorf("must be at most %d, got %d", f.max, n)
+		}
+		if err != nil {
+			if cfg.SandboxResourcesErr == nil {
+				cfg.SandboxResourcesErr = fmt.Errorf("%s %w", f.key, err)
+			}
+			continue
+		}
+		*f.dst = n
 	}
 	if iso, err := ResolveIsolation("", envDefault(lookup, "ISOLATION", string(IsolationFull))); err != nil {
 		// Keep a usable default so commands that never read Isolation

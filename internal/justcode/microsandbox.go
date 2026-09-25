@@ -258,6 +258,11 @@ type msbSandboxSpec struct {
 	Name  string // instance name (P05); empty means the legacy singleton
 	Image string
 	Env   map[string]string
+	// CPUs and MemoryMB size the guest. Zero means "unset": the create
+	// options then fall back to the built-in defaults, so a spec built by a
+	// path that does not resolve resources still boots.
+	CPUs     int
+	MemoryMB int
 	// SealedWorkspace selects the P22 sealed model: /workspace is an owned
 	// volume inside the sandbox and the host checkout is NOT mounted. The
 	// zero value is refused rather than falling back to a bind mount.
@@ -564,6 +569,8 @@ func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandbox
 		Image:           msbImage,
 		Env:             m.sandboxEnv(),
 		SealedWorkspace: true,
+		CPUs:            m.cfg.CPUs,
+		MemoryMB:        m.cfg.MemoryMB,
 		Bindings:        bindingsMetadata(bindings),
 		StartScript:     msbStartScript(m.cfg.Isolation),
 	}

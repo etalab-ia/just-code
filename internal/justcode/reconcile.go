@@ -120,6 +120,11 @@ type InstanceState struct {
 	// it must not look like a difference the sandbox was created with.
 	Isolation string `json:"isolation"`
 	Image     string `json:"image"`
+	// CPUs and MemoryMB are creation-fixed too: the sandbox SDK sets them at
+	// creation and cannot resize a running guest, so a change must ask for a
+	// recreation instead of silently keeping the old sizing.
+	CPUs     int `json:"cpus,omitempty"`
+	MemoryMB int `json:"memoryMB,omitempty"`
 	// ConfigRevision is the hash of the non-secret desired config that was
 	// applied. Identical revision + healthy guest = no-op.
 	ConfigRevision string `json:"configRevision"`
@@ -156,6 +161,10 @@ type DesiredState struct {
 	Instance  string
 	Isolation Isolation
 	Image     string
+	// CPUs and MemoryMB are the guest sizing the instance should have. They
+	// are creation-fixed, so a change is reported as a recreation.
+	CPUs     int
+	MemoryMB int
 	// CredentialRev is the hash of the desired binding-set descriptor (P09).
 	CredentialRev string
 	// CredentialGeneration is the non-secret rotation marker of the stored
@@ -448,6 +457,8 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 		Isolation: m.cfg.Isolation,
 		Image:     msbImage,
 		Username:  m.cfg.Username,
+		CPUs:      m.cfg.CPUs,
+		MemoryMB:  m.cfg.MemoryMB,
 	}
 	if resolved {
 		d.CredentialRev = bindingsRevision(bindings)
@@ -474,6 +485,8 @@ func (d DesiredState) toState() InstanceState {
 		Instance:         d.Instance,
 		Isolation:        string(d.Isolation),
 		Image:            d.Image,
+		CPUs:             d.CPUs,
+		MemoryMB:         d.MemoryMB,
 		ConfigRevision:   d.ConfigRevision(),
 		CredentialRev:    d.CredentialRev,
 		CredentialGen:    credentialGenJSON(d.CredentialGeneration),
@@ -503,8 +516,15 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 	// Creation-fixed comparison. The applied state is the authority when it
 	// exists; without it, the live checks (isolation script, mount) stand in.
 	if applied != nil {
+		// An instance whose state predates the recorded sizing carries 0 for
+		// it. Zero means "not recorded", not "zero CPUs": comparing it
+		// against the desired default would ask for a recreation of every
+		// pre-existing sandbox. Only a recorded value is compared.
+		resourcesChanged := (applied.CPUs != 0 && applied.CPUs != desired.CPUs) ||
+			(applied.MemoryMB != 0 && applied.MemoryMB != desired.MemoryMB)
 		creationFixed := applied.Isolation != string(desired.Isolation) ||
-			applied.Image != desired.Image
+			applied.Image != desired.Image ||
+			resourcesChanged
 		if creationFixed {
 			facts.CreationFixedChanged = true
 			return facts, nil

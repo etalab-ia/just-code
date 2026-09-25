@@ -199,3 +199,54 @@ func TestWorkspaceSourceDefaultsToProjectRoot(t *testing.T) {
 }
 
 var errDiscovery = errors.New("not a project")
+
+// TestProjectManifestSizesTheGuest pins the precedence for guest sizing: an
+// exported variable beats the project manifest, which beats the built-in
+// default. Without this, the resource answer the project setup records would
+// be displayed by 'config explain' and then ignored at launch.
+func TestProjectManifestSizesTheGuest(t *testing.T) {
+	root := t.TempDir()
+	pm := justcode.ProjectManifest{SchemaVersion: 1, Project: "p", CPUs: 6, MemoryMB: 12288}
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), pm); err != nil {
+		t.Fatal(err)
+	}
+	base := justcode.Config{CPUs: justcode.DefaultSandboxCPUs, MemoryMB: justcode.DefaultSandboxMemoryMB}
+
+	got, err := applyProjectSandboxResources(base, root)
+	if err != nil {
+		t.Fatalf("applyProjectSandboxResources: %v", err)
+	}
+	if got.CPUs != 6 || got.MemoryMB != 12288 {
+		t.Fatalf("manifest sizing not applied: %d cpus / %d MB", got.CPUs, got.MemoryMB)
+	}
+
+	// A value the SDK cannot carry is an error, not a silent wrap. (Checked
+	// before any environment variable is set: an exported value would mask
+	// the manifest, which is the next case.)
+	pm.CPUs = justcode.MaxSandboxCPUs + 1
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), pm); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyProjectSandboxResources(base, root); err == nil {
+		t.Fatal("an out-of-range manifest CPU count must be reported")
+	}
+
+	// An exported variable wins over the manifest, per variable.
+	t.Setenv("JUST_CODE_CPUS", "2")
+	got, err = applyProjectSandboxResources(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CPUs != justcode.DefaultSandboxCPUs {
+		t.Fatalf("an exported CPU count must win over the manifest, got %d", got.CPUs)
+	}
+	if got.MemoryMB != 12288 {
+		t.Fatalf("the unset variable must still let the manifest through, got %d", got.MemoryMB)
+	}
+
+	// No manifest is the normal zero-flag state, not an error.
+	empty, err := applyProjectSandboxResources(base, t.TempDir())
+	if err != nil || empty.CPUs != base.CPUs {
+		t.Fatalf("a project without a manifest must keep the defaults: %d cpus, err %v", empty.CPUs, err)
+	}
+}
