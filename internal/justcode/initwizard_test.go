@@ -63,7 +63,10 @@ func TestInitPlanRejectsBadAnswers(t *testing.T) {
 		want    string
 	}{
 		{"missing root", InitAnswers{}, "root is required"},
-		{"nonexistent root", InitAnswers{Root: filepath.Join(root, "nope")}, "no such file"},
+		// The message is the OS's, so assert on the part this code owns: the
+		// path it could not use. "no such file" is Unix wording; Windows says
+		// "The system cannot find the file specified".
+		{"nonexistent root", InitAnswers{Root: filepath.Join(root, "nope")}, "nope"},
 		{"root is a file", InitAnswers{Root: file}, "not a directory"},
 		{"unknown runtime", InitAnswers{Root: root, Runtime: "podman"}, "microsandbox"},
 		{"unknown isolation", InitAnswers{Root: root, Isolation: "sometimes"}, "isolation"},
@@ -238,7 +241,14 @@ func TestInitReviewWarnsAboutAnUnversionedManifest(t *testing.T) {
 	if !strings.Contains(FormatInitReview(plan), "filtered copy") {
 		t.Fatal("a Microsandbox project must be told the guest gets a filtered copy")
 	}
-	mounted, err := (InitWizard{}).Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+	// The mounting-runtime wording only applies where such a runtime is
+	// selectable: Tart is macOS-only, so this is skipped on Windows rather
+	// than asserting a choice the platform refuses.
+	mounting := RuntimeTart
+	if _, err := parseRuntimeName(string(mounting)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", mounting, err)
+	}
+	mounted, err := (InitWizard{}).Plan(InitAnswers{Root: root, Runtime: mounting})
 	if err != nil {
 		t.Fatal(err)
 	}
