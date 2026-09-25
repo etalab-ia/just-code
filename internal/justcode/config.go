@@ -139,7 +139,9 @@ func LoadConfigEnv() Config {
 			shown = abs
 		}
 		fmt.Fprintf(os.Stderr, "Note: %s was NOT read: just-code no longer loads a .env implicitly.\n"+
-			"      Exported variables are still honoured. To adopt these settings, run 'just-code config import-env %s' (it previews; nothing is written without your confirmation).\n", shown, shown)
+			"      Exported variables are still honoured. To see what the file holds and where each\n"+
+			"      value belongs, run 'just-code config import-env %s' (preview only; the Albert key\n"+
+			"      belongs in the credential store: 'just-code auth add albert').\n", shown, shown)
 		break
 	}
 	if _, ok := os.LookupEnv("WORKSPACE_DIR"); !ok {

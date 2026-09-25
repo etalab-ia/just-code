@@ -169,12 +169,14 @@ export ALBERT_API_KEY=ta-clé          # ou : just-code auth add albert
 just-code                             # Microsandbox, isolation full, racine du projet
 ```
 
-C'est volontaire : un `.env` non versionné dans le répertoire courant rendait le lancement dépendant d'un fichier invisible (et de son contenu en secrets), et deux invocations du même binaire pouvaient se comporter différemment. Si tu as un `.env` d'une installation précédente, just-code te le dit au lancement et tu l'adoptes explicitement :
+C'est volontaire : un `.env` non versionné dans le répertoire courant rendait le lancement dépendant d'un fichier invisible (et de son contenu en secrets), et deux invocations du même binaire pouvaient se comporter différemment. Si tu as un `.env` d'une installation précédente, just-code te le signale au lancement ; pour voir ce qu'il contient et où chaque valeur va :
 
 ```bash
-just-code config import-env .env      # prévisualise ; n'écrit rien sans confirmation
-just-code auth add albert             # pour la clé, le magasin d'identifiants est préférable
+just-code config import-env .env      # prévisualisation seule : rien n'est écrit
+just-code auth add albert             # la clé va dans le magasin d'identifiants
 ```
+
+L'application automatique d'un import n'existe pas encore : la prévisualisation liste les valeurs reconnues et le fichier d'origine n'est jamais modifié.
 
 Un `.env.example` reste dans le dépôt comme **gabarit documentaire** : il liste les variables et leurs défauts, il n'est jamais lu.
 

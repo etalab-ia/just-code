@@ -824,8 +824,9 @@ Runtime selection:
   --acknowledge-guest-credentials to start.
 
   A .env in the working directory is NOT loaded implicitly any more; exported
-  variables still are. Adopt an existing .env with
-  'just-code config import-env <path>' (it previews before anything is written).
+  variables still are. To see what an existing .env holds and where each value
+  belongs, run 'just-code config import-env <path>' (preview only). The Albert
+  key belongs in the credential store: 'just-code auth add albert'.
 
 Isolation:
   --isolation full (default): the whole agent, TUI included, runs inside the
