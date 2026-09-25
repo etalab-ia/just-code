@@ -284,31 +284,35 @@ func TestWorkspaceDirSetRecordsExplicitConfiguration(t *testing.T) {
 // silently.
 func TestLoadConfigEnvDoesNotApplyDotenvImplicitly(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("JUST_CODE_HIDDEN=from-dotenv\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	wd, err := os.Getwd()
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The key must be ABSENT, not merely empty: ApplyDotenv deliberately does
+	// not override a key that is already present in the environment, so
+	// t.Setenv(KEY, "") would make the "not applied" check pass even if the
+	// implicit load were reinstated. That is exactly how the first version of
+	// this test was vacuous.
+	const probeKey = "JUST_CODE_MODEL"
+	if _, present := os.LookupEnv(probeKey); present {
+		t.Skipf("%s is set in this environment; the absence check needs it unset", probeKey)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(probeKey+"=from-dotenv\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chdir(dir); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.Chdir(wd) }()
-	// The .env also sets a value the loader reads, so "not applied" is
-	// observable rather than merely claimed.
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("JUST_CODE_MODEL=from-dotenv\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("JUST_CODE_MODEL", "")
 
 	stderr := captureStderr(t, func() {
 		_ = LoadConfigEnv()
 	})
-	if !strings.Contains(stderr, "was NOT read") || !strings.Contains(stderr, "config import-env") {
-		t.Fatalf("the skipped .env must be reported with the migration path: %q", stderr)
+	if !strings.Contains(stderr, "was NOT read") || !strings.Contains(stderr, "config import-env "+filepath.Join(dir, ".env")) {
+		t.Fatalf("the skipped .env must be reported with the adoption command: %q", stderr)
 	}
-	if os.Getenv("JUST_CODE_MODEL") != "" {
-		t.Fatalf("the .env must not be applied to the environment, got %q", os.Getenv("JUST_CODE_MODEL"))
+	// The real property: the file's key did not reach the environment at all.
+	if value, present := os.LookupEnv(probeKey); present {
+		t.Fatalf("the .env must not be applied to the environment, got %s=%q", probeKey, value)
 	}
 }

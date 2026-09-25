@@ -113,8 +113,7 @@ func resolveRuntimeOn(flag, preference, goos string) (Runtime, error) {
 		return parseRuntimeNameOn(preference, goos)
 	}
 	// Microsandbox is the default everywhere. RUNTIME and the --<runtime>
-	// flags still override it; the error path below is now unreachable for an
-	// empty selection, and kept only for the explicit-flag parsers.
+	// flags still override it, so an empty selection never fails.
 	return RuntimeMicrosandbox, nil
 }
 

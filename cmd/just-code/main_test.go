@@ -186,9 +186,15 @@ func TestWorkspaceSourceDefaultsToProjectRoot(t *testing.T) {
 		t.Fatalf("an explicit source must be honoured, got %q", got.WorkspaceDir)
 	}
 
-	// Discovery failure leaves the configured value alone rather than guessing.
-	if got := withProjectRootAsWorkspaceSource(explicit, pc, errDiscovery); got.WorkspaceDir != "/configured" {
+	// Discovery failure leaves the value alone rather than guessing. This is
+	// the case with NO explicit configuration, which is the one that would
+	// otherwise be replaced by an empty root.
+	unset := justcode.Config{WorkspaceDir: "/default-ish"}
+	if got := withProjectRootAsWorkspaceSource(unset, pc, errDiscovery); got.WorkspaceDir != "/default-ish" {
 		t.Fatalf("a discovery failure must not change the source, got %q", got.WorkspaceDir)
+	}
+	if got := withProjectRootAsWorkspaceSource(explicit, pc, errDiscovery); got.WorkspaceDir != "/configured" {
+		t.Fatalf("a discovery failure must not change an explicit source, got %q", got.WorkspaceDir)
 	}
 }
 

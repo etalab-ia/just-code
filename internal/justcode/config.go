@@ -72,7 +72,7 @@ type Config struct {
 	StartTimeout    time.Duration
 	StartTimeoutErr error
 	// Isolation is the resolved execution model (see isolation.go). It
-	// defaults to backend. IsolationErr records an invalid ISOLATION value
+	// defaults to full. IsolationErr records an invalid ISOLATION value
 	// with the same deferred-validation contract as StartTimeoutErr.
 	Isolation    Isolation
 	IsolationErr error
@@ -117,19 +117,29 @@ const (
 // is visible rather than silent.
 func LoadConfigEnv() Config {
 	// Detect without applying: the user is told the file was not read and how
-	// to migrate it, instead of discovering the difference from behaviour.
+	// to adopt it, instead of discovering the difference from behaviour.
 	for _, dir := range dotenvDirs() {
 		path := filepath.Join(dir, ".env")
-		if _, err := os.Stat(path); err != nil {
+		info, err := os.Stat(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "Note: %s could not be inspected (%v); it is not read either way, since just-code no longer loads a .env implicitly.\n", path, err)
+			}
 			continue
 		}
-		if os.Getenv(loadDotenvEnv) == "1" {
-			_ = ApplyDotenv(path)
-			fmt.Fprintf(os.Stderr, "Warning: %s loaded because %s=1; this compatibility path is temporary (see 'just-code config import-env').\n", path, loadDotenvEnv)
-			break
+		if info.IsDir() {
+			// A directory named .env is not a configuration file; the note
+			// below would be misleading.
+			continue
+		}
+		// The absolute path is what the user needs: two directories are
+		// searched, so "." alone would not say which file is being ignored.
+		shown := path
+		if abs, err := filepath.Abs(path); err == nil {
+			shown = abs
 		}
 		fmt.Fprintf(os.Stderr, "Note: %s was NOT read: just-code no longer loads a .env implicitly.\n"+
-			"      Exported variables are still honoured. To adopt these settings explicitly, run 'just-code config import-env'.\n", path)
+			"      Exported variables are still honoured. To adopt these settings, run 'just-code config import-env %s' (it previews; nothing is written without your confirmation).\n", shown, shown)
 		break
 	}
 	if _, ok := os.LookupEnv("WORKSPACE_DIR"); !ok {
@@ -139,12 +149,6 @@ func LoadConfigEnv() Config {
 	}
 	return LoadConfig(os.LookupEnv)
 }
-
-// loadDotenvEnv is the explicit, temporary opt-in that restores the implicit
-// .env load for one release cycle. It exists so an existing automation is not
-// broken without warning, and it is deliberately loud: adopting the settings
-// through `just-code config import-env` is the supported route.
-const loadDotenvEnv = "JUST_CODE_LOAD_DOTENV"
 
 // parseStartTimeout parses JUST_CODE_START_TIMEOUT, a whole number of seconds.
 func parseStartTimeout(value string) (time.Duration, error) {

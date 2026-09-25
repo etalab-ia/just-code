@@ -246,7 +246,6 @@ func run(args []string) (int, error) {
 	}
 }
 
-// applyIsolation returns cfg with the effective isolation level applied, plus
 // withProjectRootAsWorkspaceSource points the sealed transfer source at the
 // discovered project root when the user has not configured one.
 //
@@ -264,6 +263,7 @@ func withProjectRootAsWorkspaceSource(cfg justcode.Config, pc justcode.ProjectCo
 	return cfg
 }
 
+// applyIsolation returns cfg with the effective isolation level applied, plus
 // any deferred error. It exists as a separate step because the backends read
 // cfg.Isolation when they are constructed: resolving the level after building
 // the dispatcher would leave them in the wrong mode.
@@ -824,12 +824,14 @@ Runtime selection:
   --acknowledge-guest-credentials to start.
 
   A .env in the working directory is NOT loaded implicitly any more; exported
-  variables still are. Adopt an existing .env with 'just-code config import-env'.
+  variables still are. Adopt an existing .env with
+  'just-code config import-env <path>' (it previews before anything is written).
 
 Isolation:
-  --isolation backend (default): the agent runs as a server inside the
-  sandbox and the TUI attaches from the host.
-  --isolation full: the whole agent, TUI included, runs inside the sandbox;
-  the host is only a terminal passthrough. ISOLATION in .env is used when no
-  flag is provided; the flag always takes precedence.`)
+  --isolation full (default): the whole agent, TUI included, runs inside the
+  sandbox; the host is only a terminal passthrough.
+  --isolation backend: the agent runs as a server inside the sandbox and the
+  TUI attaches from the host, so the agent process and its credentials live on
+  the host. ISOLATION is used when no flag is provided; the flag always takes
+  precedence.`)
 }
