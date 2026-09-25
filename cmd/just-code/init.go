@@ -161,9 +161,15 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	}
 
 	// The catalogue check reads the credential reference of the project being
-	// configured, not of whatever directory the caller happens to run from.
+	// configured, not of whatever directory the caller happens to run from,
+	// and it resolves the root the same way the engine will (a path inside a
+	// worktree refers to the worktree's manifest).
 	wizard := justcode.InitWizard{ValidateModel: func(model string) (string, error) {
-		return catalogueModelWarningForRoot(answers.Root, model)
+		root := answers.Root
+		if pc, err := justcode.DiscoverProject(root); err == nil {
+			root = pc.Root
+		}
+		return catalogueModelWarningFn(root, model)
 	}}
 	// Flags are validated before any question: a typo on the command line must
 	// not send the user through six prompts to learn about it.
@@ -255,7 +261,9 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		fmt.Println("Sharing mode — where the agent and its credentials run:")
 		fmt.Println("  full (default): inside the guest; your machine is only a terminal")
 		fmt.Println("  backend: the TUI runs here and attaches to the guest")
-		fmt.Printf("  isolation [%s]: ", isolationOrFull(answers.Isolation))
+		// Nothing has supplied this value at this point (the branch requires
+		// the flag to be absent), so the effective default is the engine's.
+		fmt.Printf("  isolation [%s]: ", justcode.IsolationFull)
 		if answer, ok := promptLine(in, ""); ok && strings.TrimSpace(answer) != "" {
 			answers.Isolation = justcode.Isolation(strings.TrimSpace(answer))
 		}
@@ -278,6 +286,11 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 				if err != nil {
 					return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
 				}
+				// Symmetry with --cpus: a typed 0 is out of range, not a
+				// secret way to mean "default" (leave the answer empty).
+				if n < 1 || n > justcode.MaxSandboxCPUs {
+					return answers, fmt.Errorf("cpus must be 1 to %d, got %d", justcode.MaxSandboxCPUs, n)
+				}
 				answers.CPUs = n
 			}
 		}
@@ -286,6 +299,9 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 				n, err := strconv.Atoi(strings.TrimSpace(answer))
 				if err != nil {
 					return answers, fmt.Errorf("memory must be a whole number of MiB, got %q", answer)
+				}
+				if n < 1 || n > justcode.MaxSandboxMemoryMB {
+					return answers, fmt.Errorf("memory must be 1 to %d MiB, got %d", justcode.MaxSandboxMemoryMB, n)
 				}
 				answers.MemoryMB = n
 			}
@@ -302,13 +318,6 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 	return answers, nil
 }
 
-func isolationOrFull(iso justcode.Isolation) string {
-	if iso == "" {
-		return string(justcode.IsolationFull)
-	}
-	return string(iso)
-}
-
 // resolvedOrDefault renders the value a reader can reason about: what will
 // actually be used, rather than a zero meaning "unset".
 func resolvedOrDefault(value, fallback int) int {
@@ -321,6 +330,12 @@ func resolvedOrDefault(value, fallback int) int {
 // catalogueModelWarning validates a model against the P10 catalogue through the
 // same cache the other commands use. An unreachable catalogue is a warning, not
 // a refusal: the model is still recorded and 'just-code models' re-checks it.
+// catalogueModelWarningFn is the catalogue validator the flow uses. It is a
+// package variable so a test can exercise the flow without an Albert
+// credential and without a network: the real validator needs both, and a test
+// that silently depends on them fails on the machine that has them.
+var catalogueModelWarningFn = catalogueModelWarningForRoot
+
 func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
 	apiKey, err := resolveAlbertKeyForCatalogueAt(projectRoot)
 	if err != nil {

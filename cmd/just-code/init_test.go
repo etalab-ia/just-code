@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,17 @@ import (
 
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
+
+// stubCatalogueCheck replaces the catalogue validator for one test. The real
+// one needs an Albert credential and a reachable (or cached) catalogue, so a
+// test that exercises it fails on a machine that has those — which is exactly
+// how this seam came to exist.
+func stubCatalogueCheck(t *testing.T, fn func(root, model string) (string, error)) {
+	t.Helper()
+	orig := catalogueModelWarningFn
+	catalogueModelWarningFn = fn
+	t.Cleanup(func() { catalogueModelWarningFn = orig })
+}
 
 func initTestProject(t *testing.T) string {
 	t.Helper()
@@ -80,6 +92,7 @@ func TestInitNonTTYNamesWhatIsMissing(t *testing.T) {
 // TestInitNonTTYWithAllInputsWritesTheManifest pins the scriptable path: every
 // answer on the command line, no terminal, no prompt.
 func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	root := initTestProject(t)
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{
@@ -198,6 +211,7 @@ func TestIsTTYTreatsDevNullAsNonInteractive(t *testing.T) {
 // prompts are one coherent path: a supplied flag is not re-asked, and the
 // displayed default is the value that will actually be used.
 func TestInitSkipsQuestionsAnsweredByFlags(t *testing.T) {
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	root := initTestProject(t)
 	input := "\n" // only the apply confirmation is left to answer
 	out := captureStdout(t, func() {
@@ -262,5 +276,57 @@ func TestParseInitArgsRejectsAFlagAsValue(t *testing.T) {
 	_, err := parseInitArgs([]string{"--root", "--yes"})
 	if err == nil || !strings.Contains(err.Error(), "needs a value") {
 		t.Fatalf("error = %v, want a missing-value error", err)
+	}
+}
+
+// TestInitStopsOnAModelTheCatalogueDoesNotList pins both halves of the model
+// rule at the CLI level: a listing that does not contain the model stops the
+// setup (the answer must change), while an unreachable catalogue only warns.
+func TestInitStopsOnAModelTheCatalogueDoesNotList(t *testing.T) {
+	root := initTestProject(t)
+	stubCatalogueCheck(t, func(string, string) (string, error) {
+		return "", fmt.Errorf("the model %q is not in the Albert catalogue", "albert/gone")
+	})
+	var err error
+	_ = captureStdout(t, func() {
+		_, err = initRun(initOptions{Root: root, Model: "albert/gone", Yes: true, Set: map[string]bool{"root": true, "model": true}},
+			bufio.NewReader(strings.NewReader("")), false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "catalogue") {
+		t.Fatalf("a model the catalogue does not list must stop the setup: %v", err)
+	}
+	if _, err := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("a refused model must leave nothing on disk (stat err = %v)", err)
+	}
+
+	// Unreachable catalogue: a warning, and the setup proceeds.
+	stubCatalogueCheck(t, func(string, string) (string, error) {
+		return "the model was recorded unverified: the catalogue could not be reached", nil
+	})
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{Root: root, Model: "albert/deepseek-v4-flash", Yes: true, Set: map[string]bool{"root": true, "model": true}},
+			bufio.NewReader(strings.NewReader("")), false)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "unverified") {
+		t.Fatalf("the warning must reach the user: %q", out)
+	}
+}
+
+// TestInitRejectsATypedZero pins parity with the flag: an empty answer means
+// "use the default", so a typed 0 is an out-of-range value rather than a
+// second way to say the same thing.
+func TestInitRejectsATypedZero(t *testing.T) {
+	root := initTestProject(t)
+	// root, runtime, isolation, model, cpus(0)
+	input := root + "\n\n\n\n0\n"
+	var err error
+	_ = captureStdout(t, func() {
+		_, err = initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "cpus must be 1 to") {
+		t.Fatalf("a typed 0 must be rejected like the flag: %v", err)
 	}
 }
