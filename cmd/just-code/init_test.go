@@ -330,3 +330,95 @@ func TestInitRejectsATypedZero(t *testing.T) {
 		t.Fatalf("a typed 0 must be rejected like the flag: %v", err)
 	}
 }
+
+// TestOfferProjectInitSkipsWhenConfigured pins the first rule: a project that
+// already has a configuration is never asked about it, so a normal launch
+// takes no new step.
+func TestOfferProjectInitSkipsWhenConfigured(t *testing.T) {
+	root := initTestProject(t)
+	if _, err := (justcode.InitWizard{}).Plan(justcode.InitAnswers{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := initRun(initOptions{Root: root, Yes: true, Set: map[string]bool{"root": true}},
+		bufio.NewReader(strings.NewReader("")), false); err != nil || code != 0 {
+		t.Fatalf("precondition: init must write a manifest: code=%d err=%v", code, err)
+	}
+	configured, code, err := offerProjectInit(root, parsedArgs{action: "attach"})
+	if !configured || code != 0 || err != nil {
+		t.Fatalf("a configured project must proceed: configured=%v code=%d err=%v", configured, code, err)
+	}
+}
+
+// TestOfferProjectInitWithNoTerminalNamesTheCommand pins the non-TTY contract
+// on the launch path: nothing waits, and the failure says exactly what to run.
+func TestOfferProjectInitWithNoTerminalNamesTheCommand(t *testing.T) {
+	root := initTestProject(t)
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	orig := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = orig }()
+
+	configured, code, err := offerProjectInit(root, parsedArgs{action: "attach"})
+	if configured {
+		t.Fatal("an unconfigured project must not proceed silently without a terminal")
+	}
+	if code != 1 || err == nil {
+		t.Fatalf("code=%d err=%v", code, err)
+	}
+	for _, want := range []string{"--root", "--yes", justcode.ProjectManifestPath(root)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the failure must mention %q: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be written without an answer (stat err = %v)", err)
+	}
+}
+
+// TestOfferProjectInitRespectsExplicitChoices pins that a launch already
+// carrying its own runtime or isolation flags is not asked to configure a
+// project: those flags are the answer the offer would collect.
+func TestOfferProjectInitRespectsExplicitChoices(t *testing.T) {
+	root := initTestProject(t)
+	for _, parsed := range []parsedArgs{{action: "start", runtime: "--tart"}, {action: "start", isolation: "backend"}} {
+		configured, _, err := offerProjectInit(root, parsed)
+		if !configured || err != nil {
+			t.Fatalf("an explicit choice must skip the offer: configured=%v err=%v", configured, err)
+		}
+	}
+}
+
+// TestOfferProjectInitAppliesWhatItWrote pins that accepting the offer is not
+// cosmetic: the manifest written by the offer is what the launch then applies.
+func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
+	root := initTestProject(t)
+	// root, runtime, isolation(backend), model, cpus, memory, credential, apply
+	input := "\n\nbackend\n\n\n\n\n\n"
+	devNullLike := bufio.NewReader(strings.NewReader(input))
+
+	// Drive the offer with the same answers a user would give.
+	var configured bool
+	var err error
+	_ = captureStdout(t, func() {
+		configured, _, err = offerProjectInitWithReader(root, parsedArgs{action: "attach"}, devNullLike, true)
+	})
+	if err != nil || !configured {
+		t.Fatalf("the offer must go through: configured=%v err=%v", configured, err)
+	}
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatalf("the offer must write the manifest: %v", err)
+	}
+	if pm.Isolation != "backend" {
+		t.Fatalf("isolation = %q, want the answer given to the offer", pm.Isolation)
+	}
+	runtimeChoice, isolationChoice := projectRuntimeIsolation(root)
+	if runtimeChoice != justcode.RuntimeMicrosandbox || isolationChoice != justcode.IsolationBackend {
+		t.Fatalf("the launch must resolve what the offer wrote: %q / %q", runtimeChoice, isolationChoice)
+	}
+}

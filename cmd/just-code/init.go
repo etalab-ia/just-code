@@ -386,3 +386,68 @@ With no terminal, the command never waits: it fails and names the inputs it is
 missing, so a script can supply them on the next run.
 `)
 }
+
+// isLaunchAction reports whether an action builds a guest, which is what makes
+// the project configuration relevant.
+func isLaunchAction(action string) bool {
+	switch action {
+	case "attach", "start", "restart", "recreate":
+		return true
+	default:
+		return false
+	}
+}
+
+// offerProjectInit runs the project setup when the launch is about to happen
+// with no project configuration at all.
+//
+// The point is not to nag: it is that a zero-flag launch would otherwise
+// choose the runtime, the isolation, the model and the guest sizing silently,
+// and the user would have no moment at which those choices were visible. With
+// no terminal there is nobody to ask, so it fails and names the command that
+// answers everything — never a prompt that cannot be answered.
+//
+// It returns configured=true when the launch may proceed (a configuration
+// exists, or the offer was accepted and written).
+func offerProjectInit(projectRoot string, parsed parsedArgs) (configured bool, code int, err error) {
+	return offerProjectInitWithReader(projectRoot, parsed, nil, isTTY())
+}
+
+// offerProjectInitWithReader is the testable core: the reader and the TTY
+// verdict are supplied so the offer can be exercised without a terminal.
+func offerProjectInitWithReader(projectRoot string, parsed parsedArgs, given *bufio.Reader, tty bool) (configured bool, code int, err error) {
+	if _, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil {
+		return true, 0, nil
+	} else if !os.IsNotExist(err) {
+		// A present-but-unreadable manifest is reported by the paths that own
+		// that decision; it must not be silently replaced here.
+		return true, 0, nil
+	}
+	// An explicit flag or variable means the caller already made the choices
+	// this offer would collect, so there is nothing to ask about.
+	if parsed.runtime != "" || parsed.isolation != "" {
+		return true, 0, nil
+	}
+	if !tty {
+		return false, 1, fmt.Errorf("this project has no configuration (%s) and no terminal is available to ask for one.\n"+
+			"Run 'just-code init --root %s --yes' to accept the defaults, or 'just-code init' in a terminal to choose",
+			justcode.ProjectManifestPath(projectRoot), projectRoot)
+	}
+
+	fmt.Printf("This project has no just-code configuration yet (%s).\n", justcode.ProjectManifestPath(projectRoot))
+	// One reader for both steps: a line the user typed ahead (or a piped
+	// answer list) must not be split between two buffers.
+	in := given
+	if in == nil {
+		in = bufio.NewReader(os.Stdin)
+	}
+	answer, ok := promptLine(in, "Configure it now? [Y/n]: ")
+	if ok && strings.EqualFold(strings.TrimSpace(answer), "n") {
+		return false, 1, fmt.Errorf("no project configuration: nothing was written. Run 'just-code init' when you want to configure it")
+	}
+	code, err = initRun(initOptions{Root: projectRoot, Set: map[string]bool{"root": true}}, in, true)
+	if err != nil || code != 0 {
+		return false, code, err
+	}
+	return true, 0, nil
+}

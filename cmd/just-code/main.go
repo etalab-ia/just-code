@@ -116,6 +116,16 @@ func run(args []string) (int, error) {
 	}
 	// The sealed transfer source (P22/P12).
 	cfg = withProjectRootAsWorkspaceSource(cfg, pc, projErr)
+	// A project with no configuration yet is offered one before the guest is
+	// built (P12): the launch would otherwise pick every default silently, and
+	// the choices it made would be invisible until someone read the review.
+	// Read-only actions are never gated on it.
+	if projErr == nil && isLaunchAction(parsed.action) {
+		configured, code, err := offerProjectInit(projectRoot, parsed)
+		if err != nil || !configured {
+			return code, err
+		}
+	}
 	// The project manifest's runtime and isolation choices (P12b). They are
 	// applied here, after discovery, because they are resolved from the
 	// discovered root; the flag and the exported variable still win, per the
