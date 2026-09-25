@@ -120,9 +120,13 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	// worktree: the same directory spelled differently (macOS /var for
 	// /private/var, a Windows 8.3 short name) is not a surprise worth a
 	// warning, and warning about it would be noise on every launch.
-	if resolved, err := filepath.EvalSymlinks(strings.TrimSpace(answers.Root)); err == nil {
-		if resolved != pc.Root && strings.HasPrefix(resolved, pc.Root+string(filepath.Separator)) {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("the project root is the Git worktree root %s (not %s): its manifest covers the whole worktree", pc.Root, resolved))
+	// The absolute form comes first: a relative path never prefix-matches the
+	// absolute root, so a relative nested root would lose the notice.
+	if abs, err := filepath.Abs(strings.TrimSpace(answers.Root)); err == nil {
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			if resolved != pc.Root && strings.HasPrefix(resolved, pc.Root+string(filepath.Separator)) {
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("the project root is the Git worktree root %s (not %s): its manifest covers the whole worktree", pc.Root, resolved))
+			}
 		}
 	}
 
@@ -314,8 +318,15 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	// revisions, and an empty lock is the honest "nothing pinned" state. An
 	// existing lock is preserved: replacing the manifest is not a reason to
 	// discard pins someone else committed.
+	// A lock that cannot be read is NOT replaced with an empty one: that would
+	// discard whatever pins it held, silently, which is the same refusal the
+	// manifest gets above. A missing lock reads as the zero lock, no error.
+	kept, err := ReadLockfile(fs, plan.LockPath)
+	if err != nil {
+		return err
+	}
 	lock := Lockfile{Entries: map[string]string{}}
-	if kept, err := ReadLockfile(fs, plan.LockPath); err == nil && len(kept.Entries) > 0 {
+	if len(kept.Entries) > 0 {
 		lock.Entries = kept.Entries
 	}
 	if err := WriteLockfile(fs, plan.LockPath, lock); err != nil {

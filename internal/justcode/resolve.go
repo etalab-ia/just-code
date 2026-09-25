@@ -141,7 +141,10 @@ type ProjectManifest struct {
 	// on newer unsupported versions.
 	SchemaVersion int `json:"schemaVersion"`
 
-	// Project is the canonical project name used for instance naming (P05).
+	// Project is an optional readable name. Nothing currently writes it (P12b
+	// dropped the question) and instance naming derives from the project root
+	// (P05); it is read for backward compatibility and shown in the setup
+	// review when an older manifest carries one.
 	Project string `json:"project,omitempty"`
 
 	// Runtime and Isolation are the project's explicit runtime and
@@ -155,8 +158,9 @@ type ProjectManifest struct {
 	// CredentialRef names the project's credential (a P08 reference).
 	CredentialRef string `json:"credentialRef,omitempty"`
 
-	// Storage selects where the manifest and lock live: "versioned"
-	// (.just-code/ in the checkout, the default) or "local" (host state).
+	// Storage recorded where the manifest and lock live. Only the versioned
+	// location has readers today, so nothing writes this; the field is read
+	// for backward compatibility and shown in the setup review.
 	Storage string `json:"storage,omitempty"`
 }
 
@@ -233,17 +237,6 @@ func ProjectManifestPath(projectRoot string) string {
 // ProjectLockPath returns the project lockfile path for a root.
 func ProjectLockPath(projectRoot string) string {
 	return filepath.Join(ProjectStateDir(projectRoot), "lock.json")
-}
-
-// LocalProjectStateDir returns the host-local (never version-controlled)
-// project state directory for a canonical project root. It is used when the
-// manifest's storage is "local".
-func LocalProjectStateDir(projectRoot string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "state", "just-code", "projects", safeFileName(projectRoot)), nil
 }
 
 // EnvNamespace is the prefix of namespaced environment variables read by the

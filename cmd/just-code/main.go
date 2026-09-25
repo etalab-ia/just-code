@@ -284,18 +284,20 @@ func withProjectRootAsWorkspaceSource(cfg justcode.Config, pc justcode.ProjectCo
 	return cfg
 }
 
-// applyIsolation returns cfg with the effective isolation level applied, plus
-// any deferred error. It exists as a separate step because the backends read
+// applyIsolation resolves the effective isolation level: an explicit flag
+// wins, then an exported ISOLATION, then the project manifest's choice, then
+// the built-in default. A project value only decides when nothing higher does,
+// so a one-off `--isolation backend` still overrides what the project
+// recorded. It exists as a separate step because the backends read
 // cfg.Isolation when they are constructed: resolving the level after building
 // the dispatcher would leave them in the wrong mode.
-// applyIsolation resolves the effective level: an explicit flag wins, then an
-// exported ISOLATION, then the project manifest's choice, then the built-in
-// default. A project value only decides when nothing higher does, so a
-// one-off `--isolation backend` still overrides what the project recorded.
 func applyIsolation(cfg justcode.Config, flag string, project justcode.Isolation) (justcode.Config, error) {
 	preference, preferenceErr := cfg.Isolation, cfg.IsolationErr
 	if project != "" {
-		if _, envSet := os.LookupEnv("ISOLATION"); !envSet {
+		// An exported but EMPTY value is treated as "not set" for both
+		// ISOLATION and RUNTIME: an empty string selects nothing, so it must
+		// not silently suppress the project's choice.
+		if strings.TrimSpace(os.Getenv("ISOLATION")) == "" {
 			// The project choice replaces the built-in default, not an
 			// exported value: env beats project.
 			preference, preferenceErr = project, nil

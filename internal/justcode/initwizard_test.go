@@ -350,3 +350,73 @@ func TestInitPlanDoesNotWarnOnADifferentSpellingOfTheSameDirectory(t *testing.T)
 		t.Fatalf("root = %q, want %q", plan.Answers.Root, resolved)
 	}
 }
+
+// TestInitApplyRefusesToDiscardAnUnreadableLock pins the other half of the
+// preservation rule: a lockfile that cannot be read must stop the run, not be
+// replaced with an empty one. Replacing it would discard whatever pins it
+// held, silently — the same refusal the manifest already gets.
+func TestInitApplyRefusesToDiscardAnUnreadableLock(t *testing.T) {
+	root := initTestRoot(t)
+	if err := os.MkdirAll(filepath.Dir(ProjectLockPath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ProjectLockPath(root), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root, Model: "albert/x"})
+	if err != nil {
+		t.Fatalf("Plan (a corrupt lock is not the manifest's problem): %v", err)
+	}
+	if err := (InitWizard{}).Apply(plan, false); err == nil {
+		t.Fatal("Apply must refuse to overwrite a lockfile it cannot read")
+	}
+	raw, err := os.ReadFile(ProjectLockPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "{not json" {
+		t.Fatalf("the unreadable lock must be left untouched, got %q", raw)
+	}
+}
+
+// TestInitWarnsForARelativeNestedRoot pins that the "covers the whole
+// worktree" notice survives a relative invocation: `just-code init nested/dir`
+// names a directory inside the worktree just as much as an absolute path does.
+func TestInitWarnsForARelativeNestedRoot(t *testing.T) {
+	root := initTestRoot(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "T"}, {"add", "-A"}, {"commit", "-q", "-m", "i", "--allow-empty"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: filepath.Join("nested")})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	var told bool
+	for _, warning := range plan.Warnings {
+		if strings.Contains(warning, "worktree root") {
+			told = true
+		}
+	}
+	if !told {
+		t.Fatalf("a relative nested root must still be reported: %v", plan.Warnings)
+	}
+}
