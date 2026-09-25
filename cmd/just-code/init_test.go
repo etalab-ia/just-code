@@ -422,3 +422,97 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 		t.Fatalf("the launch must resolve what the offer wrote: %q / %q", runtimeChoice, isolationChoice)
 	}
 }
+
+// TestOfferProjectInitSkipsWhenTheEnvironmentDecides pins that a choice made
+// through the documented environment variables counts as an answer: a CI run
+// exporting RUNTIME or ISOLATION has no terminal to be asked with, and asking
+// anyway would turn a working launch into a failure.
+func TestOfferProjectInitSkipsWhenTheEnvironmentDecides(t *testing.T) {
+	for _, env := range []string{"RUNTIME", "ISOLATION"} {
+		t.Run(env, func(t *testing.T) {
+			root := initTestProject(t)
+			t.Setenv(env, "microsandbox")
+			if env == "ISOLATION" {
+				t.Setenv(env, "backend")
+			}
+			devNull, err := os.Open(os.DevNull)
+			if err != nil {
+				t.Skipf("cannot open %s: %v", os.DevNull, err)
+			}
+			defer func() { _ = devNull.Close() }()
+			orig := os.Stdin
+			os.Stdin = devNull
+			defer func() { os.Stdin = orig }()
+
+			configured, code, err := offerProjectInit(root, parsedArgs{action: "start"})
+			if !configured || code != 0 || err != nil {
+				t.Fatalf("an environment-carried choice must skip the offer: configured=%v code=%d err=%v", configured, code, err)
+			}
+		})
+	}
+	// An empty exported value selects nothing, so it is not a choice.
+	root := initTestProject(t)
+	t.Setenv("RUNTIME", "")
+	t.Setenv("ISOLATION", "")
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	orig := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = orig }()
+	if configured, _, _ := offerProjectInit(root, parsedArgs{action: "start"}); configured {
+		t.Fatal("an empty exported value must not silently stand in for a configuration")
+	}
+}
+
+// TestOfferProjectInitWarnsOnABrokenManifest pins that a manifest the launch
+// cannot read is not passed over in silence: the launch readers tolerate the
+// error, so this is the only place holding it.
+func TestOfferProjectInitWarnsOnABrokenManifest(t *testing.T) {
+	root := initTestProject(t)
+	if err := os.MkdirAll(filepath.Dir(justcode.ProjectManifestPath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A secret-looking field is rejected by the reader, like a broken one.
+	if err := os.WriteFile(justcode.ProjectManifestPath(root), []byte(`{"schemaVersion":1,"apiKey":"leak"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var configured bool
+	var err error
+	stderr := captureStderr(t, func() {
+		configured, _, err = offerProjectInit(root, parsedArgs{action: "attach"})
+	})
+	if err != nil || !configured {
+		t.Fatalf("a broken manifest must not block the launch: configured=%v err=%v", configured, err)
+	}
+	if !strings.Contains(stderr, "cannot be read") || !strings.Contains(stderr, "--replace") {
+		t.Fatalf("the user must be told the manifest is ignored and how to fix it: %q", stderr)
+	}
+	// And the broken file is left alone: the offer must not replace it.
+	raw, readErr := os.ReadFile(justcode.ProjectManifestPath(root))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(raw), "leak") {
+		t.Fatalf("the offer must not rewrite the manifest: %s", raw)
+	}
+}
+
+// TestIsLaunchActionPinsTheGuestBuildingSet keeps the one action set the launch
+// flow shares from drifting: the offer, the malformed-config gate and the guest
+// sizing gate all key off it, and a read-only action must never be gated on a
+// configuration the user may have come to inspect because it is broken.
+func TestIsLaunchActionPinsTheGuestBuildingSet(t *testing.T) {
+	for _, action := range []string{"attach", "start", "restart", "recreate"} {
+		if !isLaunchAction(action) {
+			t.Fatalf("%q builds a guest and must be a launch action", action)
+		}
+	}
+	for _, action := range []string{"stop", "logs", "shell", "check", "doctor", "clean", "help", "version", "config", "auth", "bindings", "workspace", "init", "trust", "models"} {
+		if isLaunchAction(action) {
+			t.Fatalf("%q does not build a guest and must not be gated on the project configuration", action)
+		}
+	}
+}

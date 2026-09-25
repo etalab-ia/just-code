@@ -51,6 +51,9 @@ type initOptions struct {
 	CredentialRef string
 	Replace       bool
 	Yes           bool
+	// FromLaunch records that the launch flow is driving the setup, which only
+	// changes the closing message.
+	FromLaunch bool
 	// Set records which fields came from the command line, so the interactive
 	// flow only asks for what is missing and the non-TTY flow knows what to
 	// report.
@@ -204,7 +207,14 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	if err := wizard.Apply(plan, opts.Replace); err != nil {
 		return 1, err
 	}
-	fmt.Println("\nNext: run 'just-code' in this directory to start the agent in its sealed workspace.")
+	// The trailer is advice for the standalone command. When the launch flow
+	// drives the setup, the launch is already continuing: telling the user to
+	// run it would describe a step the code does not need.
+	if opts.FromLaunch {
+		fmt.Println("\nConfiguration written. Continuing the launch...")
+	} else {
+		fmt.Println("\nNext: run 'just-code' in this directory to start the agent in its sealed workspace.")
+	}
 	return 0, nil
 }
 
@@ -419,18 +429,30 @@ func offerProjectInitWithReader(projectRoot string, parsed parsedArgs, given *bu
 	if _, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil {
 		return true, 0, nil
 	} else if !os.IsNotExist(err) {
-		// A present-but-unreadable manifest is reported by the paths that own
-		// that decision; it must not be silently replaced here.
+		// A present-but-unreadable manifest must not be silently replaced —
+		// and it must not be silently ignored either. The launch readers
+		// tolerate a broken manifest (so a read-only command keeps working),
+		// which means nothing downstream will say so: this is the one place
+		// holding the error, so it has to say it.
+		fmt.Fprintf(os.Stderr, "Warning: %s cannot be read (%v); the launch will ignore the settings it records.\n"+
+			"         Fix or remove it, or run 'just-code init --replace' to write it again.\n",
+			justcode.ProjectManifestPath(projectRoot), err)
 		return true, 0, nil
 	}
 	// An explicit flag or variable means the caller already made the choices
 	// this offer would collect, so there is nothing to ask about.
-	if parsed.runtime != "" || parsed.isolation != "" {
+	// The environment counts: `RUNTIME=tart just-code start` in CI is a caller
+	// who has answered, and prompting someone who cannot answer would turn a
+	// working launch into a failure. An empty exported value is not a choice
+	// (it selects nothing), which mirrors how the isolation resolution treats
+	// it.
+	if parsed.runtime != "" || parsed.isolation != "" ||
+		strings.TrimSpace(os.Getenv("RUNTIME")) != "" || strings.TrimSpace(os.Getenv("ISOLATION")) != "" {
 		return true, 0, nil
 	}
 	if !tty {
 		return false, 1, fmt.Errorf("this project has no configuration (%s) and no terminal is available to ask for one.\n"+
-			"Run 'just-code init --root %s --yes' to accept the defaults, or 'just-code init' in a terminal to choose",
+			"Run 'just-code init --root %q --yes' to accept the defaults, or 'just-code init' in a terminal to choose",
 			justcode.ProjectManifestPath(projectRoot), projectRoot)
 	}
 
@@ -445,7 +467,7 @@ func offerProjectInitWithReader(projectRoot string, parsed parsedArgs, given *bu
 	if ok && strings.EqualFold(strings.TrimSpace(answer), "n") {
 		return false, 1, fmt.Errorf("no project configuration: nothing was written. Run 'just-code init' when you want to configure it")
 	}
-	code, err = initRun(initOptions{Root: projectRoot, Set: map[string]bool{"root": true}}, in, true)
+	code, err = initRun(initOptions{Root: projectRoot, FromLaunch: true, Set: map[string]bool{"root": true}}, in, true)
 	if err != nil || code != 0 {
 		return false, code, err
 	}

@@ -33,6 +33,29 @@ func captureStdout(t *testing.T, fn func()) string {
 	return out
 }
 
+// captureStderr captures what fn writes to stderr, for the warnings that only
+// exist as text.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	fn()
+	os.Stderr = old
+	_ = w.Close()
+	out := <-done
+	_ = r.Close()
+	return out
+}
+
 // TestParseArgsWorkspaceCapturesSubcommand pins the dispatch contract: the
 // words after `workspace` belong to the command.
 func TestParseArgsWorkspaceCapturesSubcommand(t *testing.T) {
