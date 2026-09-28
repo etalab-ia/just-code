@@ -180,6 +180,7 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 	// guest or rewrite the state file (mtime included).
 	client := &fakeMSBClient{exists: true, status: "running"}
 	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
 	m.Probe = func(context.Context, string, string, string) HealthProbe {
 		return HealthProbe{Healthy: true}
 	}

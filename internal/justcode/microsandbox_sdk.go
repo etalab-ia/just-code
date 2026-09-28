@@ -555,6 +555,10 @@ func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 // the requested spec: an existing sandbox keeps the mapping it was created
 // with. Either side of a mapping to DefaultPort is enough to expose the
 // OpenCode server to the host.
+//
+// ConfigJSON normalizes the request-side port map into an array of
+// {host_port, guest_port} entries; parse this persisted shape, not the SDK
+// option shape.
 func parseServerPortForwarded(configJSON string) (bool, error) {
 	var raw struct {
 		Network *struct {

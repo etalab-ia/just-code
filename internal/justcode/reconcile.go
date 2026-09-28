@@ -400,7 +400,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// older binary can be a no-op under ordinary reconciliation while still
 	// listening on the backend-only server port. Refuse it before the no-op
 	// return; only an explicit recreate can remove the persisted mapping.
-	if facts.Exists {
+	if facts.Exists && !facts.CreationFixedChanged {
 		if err := m.rejectFullServerPortForwarding(ctx); err != nil {
 			return err
 		}
