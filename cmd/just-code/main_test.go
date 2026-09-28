@@ -54,10 +54,18 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestOpenCodeAttachArgsResumesLastSession(t *testing.T) {
-	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password"), " ")
+	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password", justcode.OpenCodeContinueArgs("--continue continue the last session")), " ")
 	want := "attach http://127.0.0.1:4096 --username test-user --password test-password --continue"
 	if got != want {
 		t.Fatalf("OpenCode attach args = %q, want %q", got, want)
+	}
+}
+
+func TestOpenCodeAttachArgsFallsBackWhenContinueIsUnsupported(t *testing.T) {
+	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password", justcode.OpenCodeContinueArgs("Options: --session session id")), " ")
+	want := "attach http://127.0.0.1:4096 --username test-user --password test-password"
+	if got != want {
+		t.Fatalf("OpenCode attach args = %q, want the compatible fresh-session command %q", got, want)
 	}
 }
 

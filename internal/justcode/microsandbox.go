@@ -1030,7 +1030,15 @@ func (m *MicrosandboxRuntime) Shell() error {
 // with /workspace as its working directory (isolation full). The SDK attach
 // channel passes the host terminal through.
 func (m *MicrosandboxRuntime) RunAgent(ctx context.Context) error {
-	code, err := m.Client.AttachInteractive(ctx, m.InstanceName(), "opencode", []string{"--continue"}, "/workspace")
+	help, stderr, code, probeErr := m.Client.ExecCapture(ctx, m.InstanceName(), "opencode --help")
+	var resumeArgs []string
+	if probeErr == nil && code == 0 {
+		resumeArgs = OpenCodeContinueArgs(help + "\n" + stderr)
+	}
+	if len(resumeArgs) == 0 {
+		WarnOpenCodeContinueUnavailable("dans le sandbox Microsandbox")
+	}
+	code, err := m.Client.AttachInteractive(ctx, m.InstanceName(), "opencode", resumeArgs, "/workspace")
 	if err != nil {
 		return err
 	}

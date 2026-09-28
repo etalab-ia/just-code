@@ -707,7 +707,19 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
 		return err
 	}
-	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode --continue`, shellQuote(cfg.WorkspaceDir))
+	help, err := a.Runner.Run(ctx, "limactl", "shell", vm, "opencode", "--help")
+	var resumeArgs []string
+	if err == nil && help.ExitCode == 0 {
+		resumeArgs = OpenCodeContinueArgs(help.Stdout + "\n" + help.Stderr)
+	}
+	if len(resumeArgs) == 0 {
+		WarnOpenCodeContinueUnavailable("dans le guest agent-vm")
+	}
+	resumeFlag := strings.Join(resumeArgs, " ")
+	if resumeFlag != "" {
+		resumeFlag = " " + resumeFlag
+	}
+	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode%s`, shellQuote(cfg.WorkspaceDir), resumeFlag)
 	interactive := a.Interactive
 	if interactive == nil {
 		interactive = RunInteractive

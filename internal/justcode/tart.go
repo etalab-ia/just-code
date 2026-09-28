@@ -631,19 +631,31 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand, cfg.Username, name, email); err != nil {
 		return err
 	}
+	help, err := t.Runner.Run(ctx, "tart", "exec", vm, "opencode", "--help")
+	var resumeArgs []string
+	if err == nil && help.ExitCode == 0 {
+		resumeArgs = OpenCodeContinueArgs(help.Stdout + "\n" + help.Stderr)
+	}
+	if len(resumeArgs) == 0 {
+		WarnOpenCodeContinueUnavailable("dans le guest Tart")
+	}
 	interactive := t.Interactive
 	if interactive == nil {
 		interactive = RunInteractive
 	}
-	return interactive("tart", "exec", "-it", vm, "/bin/zsh", "-lc", tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir))
+	return interactive("tart", "exec", "-it", vm, "/bin/zsh", "-lc", tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir, len(resumeArgs) > 0))
 }
 
 // tartAgentLaunch builds the in-guest launch line for isolation full: source
 // the 0600 secrets env file, cd into the workspace share, exec the TUI. Both
 // paths are shell-quoted: the workspace share contains spaces, and the line
 // runs under `zsh -lc`.
-func tartAgentLaunch(secretsPath, workspaceDir string) string {
-	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode --continue", shellQuote(secretsPath), shellQuote(workspaceDir))
+func tartAgentLaunch(secretsPath, workspaceDir string, continueSession bool) string {
+	resume := ""
+	if continueSession {
+		resume = " --continue"
+	}
+	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode%s", shellQuote(secretsPath), shellQuote(workspaceDir), resume)
 }
 
 // Status describes the managed VM's current state, for `check` in isolation

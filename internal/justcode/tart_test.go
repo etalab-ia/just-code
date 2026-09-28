@@ -371,7 +371,12 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &fakeRunner{}
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "tart" && strings.Contains(strings.Join(args, " "), "opencode --help") {
+			return ExecResult{ExitCode: 0, Stdout: "--continue continue the last session"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
 	tt := newTestTart(t, r)
 	var interactiveArgs []string
 	tt.Interactive = func(name string, args ...string) error {
@@ -428,7 +433,7 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 // it contains spaces, and the line runs under `zsh -lc`, so an unquoted `cd`
 // would receive multiple arguments and never reach `exec opencode --continue`.
 func TestTartAgentLaunchQuotesPaths(t *testing.T) {
-	line := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir)
+	line := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir, true)
 	if !strings.Contains(line, "cd '"+guestWorkspaceDir+"'") {
 		t.Fatalf("workspace path must be shell-quoted for the spaced share path: %q", line)
 	}
@@ -437,6 +442,10 @@ func TestTartAgentLaunchQuotesPaths(t *testing.T) {
 	}
 	if !strings.Contains(line, "exec opencode --continue") {
 		t.Fatalf("Tart full mode must resume the latest session: %q", line)
+	}
+	fresh := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir, false)
+	if !strings.Contains(fresh, "exec opencode") || strings.Contains(fresh, "--continue") {
+		t.Fatalf("unsupported OpenCode should still launch a fresh TUI: %q", fresh)
 	}
 	// The share path really does contain spaces; guard the premise.
 	if !strings.Contains(guestWorkspaceDir, " ") {
