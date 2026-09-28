@@ -1,6 +1,9 @@
 package justcode
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +18,71 @@ func TestOpenCodeContinueArgsUsesCapabilityOutput(t *testing.T) {
 	}
 	if got := OpenCodeContinueArgs("Options: --session session id"); len(got) != 0 {
 		t.Fatalf("unsupported help args = %v, want no continue flag", got)
+	}
+}
+
+func TestOpenCodeHasSessions(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		output  string
+		want    bool
+		wantErr bool
+	}{
+		{name: "empty store", output: "", want: false},
+		{name: "empty json list", output: "[]", want: false},
+		{name: "existing session", output: `[{"id":"ses_123","title":"test"}]`, want: true},
+		{name: "invalid session id", output: `[{"id":"dummy"}]`, wantErr: true},
+		{name: "invalid json", output: "not-json", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := OpenCodeHasSessions(tt.output)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("OpenCodeHasSessions(%q) = (%t, %v), want (%t, error=%t)", tt.output, got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestOpenCodeResumeArgsOnlyContinuesExistingSessions(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		has      bool
+		listErr  error
+		help     string
+		helpErr  error
+		wantArgs string
+		wantWarn bool
+	}{
+		{name: "first launch is plain", has: false},
+		{name: "resume previous session", has: true, help: "--continue continue the last session", wantArgs: "--continue"},
+		{name: "old CLI falls back", has: true, help: "--session session id", wantWarn: true},
+		{name: "session probe failure falls back", listErr: context.DeadlineExceeded, wantWarn: true},
+		{name: "help probe failure falls back", has: true, helpErr: context.DeadlineExceeded, wantWarn: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args, warn := OpenCodeResumeArgs(tt.has, tt.listErr, tt.help, tt.helpErr)
+			if strings.Join(args, " ") != tt.wantArgs || warn != tt.wantWarn {
+				t.Fatalf("OpenCodeResumeArgs() = (%v, %t), want (%q, %t)", args, warn, tt.wantArgs, tt.wantWarn)
+			}
+		})
+	}
+}
+
+func TestOpenCodeRemoteHasSessionsUsesAuthenticatedSessionRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if r.URL.Path != "/session" || !ok || user != "test-user" || pass != "test-password" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"ses_123","title":"existing"}]`))
+	}))
+	defer server.Close()
+
+	has, err := OpenCodeRemoteHasSessions(context.Background(), server.URL, "test-user", "test-password")
+	if err != nil || !has {
+		t.Fatalf("OpenCodeRemoteHasSessions() = (%t, %v), want (true, nil)", has, err)
 	}
 }
 

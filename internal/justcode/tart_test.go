@@ -372,7 +372,11 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
-		if name == "tart" && strings.Contains(strings.Join(args, " "), "opencode --help") {
+		joined := strings.Join(args, " ")
+		if name == "tart" && strings.Contains(joined, "opencode session list --format json") {
+			return ExecResult{ExitCode: 0, Stdout: `[{"id":"ses_existing"}]`}
+		}
+		if name == "tart" && strings.Contains(joined, "opencode --help") {
 			return ExecResult{ExitCode: 0, Stdout: "--continue continue the last session"}
 		}
 		return ExecResult{ExitCode: 0}
@@ -412,8 +416,11 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	if !r.hasCall("exec opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestPrepareCommand + " opencode Albert Code Agent albert-code@noreply.etalab.gouv.fr") {
 		t.Fatalf("prepare argv must be __guest-prepare <username> <gitName> <gitEmail>; calls: %v", r.calls)
 	}
-	if !r.hasCall("exec opencode-tahoe-base-latest /bin/zsh -lc opencode --help") {
-		t.Fatalf("the OpenCode capability probe must use the same login-shell PATH as the TUI: %v", r.calls)
+	if !r.hasCall("exec opencode-tahoe-base-latest /bin/zsh -lc set -a; . " + shellQuote(guestSecretsEnvPath) + "; set +a; cd '" + guestWorkspaceDir + "' && opencode session list --format json") {
+		t.Fatalf("the session-list probe must use the same login-shell PATH as the TUI: %v", r.calls)
+	}
+	if !r.hasCall("exec opencode-tahoe-base-latest /bin/zsh -lc set -a; . " + shellQuote(guestSecretsEnvPath) + "; set +a; opencode --help") {
+		t.Fatalf("the OpenCode help probe must use the TUI's environment: %v", r.calls)
 	}
 	// Interactive TUI: tart exec -it, zsh login shell, launch line sources
 	// the secrets file and resumes the latest OpenCode session in the workspace.

@@ -631,15 +631,37 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand, cfg.Username, name, email); err != nil {
 		return err
 	}
-	// Probe through the same login shell/PATH as the actual TUI launch: the
-	// vendor installer may keep OpenCode in ~/.opencode/bin.
-	help, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", "opencode --help")
-	var resumeArgs []string
-	if err == nil && help.ExitCode == 0 {
-		resumeArgs = OpenCodeContinueArgs(help.Stdout + "\n" + help.Stderr)
+	// Probe sessions and CLI support through the same login shell/PATH as the
+	// TUI: the vendor installer may keep OpenCode in ~/.opencode/bin. Source
+	// the same managed environment so project config and plugins resolve alike.
+	envPrefix := fmt.Sprintf("set -a; . %s; set +a; ", shellQuote(guestSecretsEnvPath))
+	listCommand := fmt.Sprintf("%scd %s && opencode session list --format json", envPrefix, shellQuote(guestWorkspaceDir))
+	sessions, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", listCommand)
+	var listErr error
+	if err != nil {
+		listErr = err
+	} else if sessions.ExitCode != 0 {
+		listErr = fmt.Errorf("OpenCode session list exited with code %d", sessions.ExitCode)
 	}
-	if len(resumeArgs) == 0 {
-		WarnOpenCodeContinueUnavailable("dans le guest Tart")
+	hasSessions := false
+	if listErr == nil {
+		hasSessions, listErr = OpenCodeHasSessions(sessions.Stdout)
+	}
+	var helpOutput string
+	var helpErr error
+	if listErr == nil && hasSessions {
+		help, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", envPrefix+"opencode --help")
+		if err != nil {
+			helpErr = err
+		} else if help.ExitCode != 0 {
+			helpErr = fmt.Errorf("OpenCode help exited with code %d", help.ExitCode)
+		} else {
+			helpOutput = help.Stdout + "\n" + help.Stderr
+		}
+	}
+	resumeArgs, warn := OpenCodeResumeArgs(hasSessions, listErr, helpOutput, helpErr)
+	if warn {
+		WarnOpenCodeResumeUnavailable("dans le guest Tart")
 	}
 	interactive := t.Interactive
 	if interactive == nil {

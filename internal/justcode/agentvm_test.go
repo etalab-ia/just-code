@@ -418,7 +418,11 @@ func TestAgentVMLogPath(t *testing.T) {
 
 func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
-		if name == "limactl" && strings.Contains(strings.Join(args, " "), "opencode --help") {
+		joined := strings.Join(args, " ")
+		if name == "limactl" && strings.Contains(joined, "opencode session list --format json") {
+			return ExecResult{ExitCode: 0, Stdout: `[{"id":"ses_existing"}]`}
+		}
+		if name == "limactl" && strings.Contains(joined, "opencode --help") {
 			return ExecResult{ExitCode: 0, Stdout: "--continue continue the last session"}
 		}
 		return ExecResult{ExitCode: 0}
@@ -438,6 +442,12 @@ func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 	}
 	if !r.hasCall("chmod 600 /tmp/just-code-opencode.env") {
 		t.Fatalf("guest env file must be chmod 600; calls: %v", r.calls)
+	}
+	if !r.hasCall("shell " + DefaultAgentVMVM + " sh -c set -a; . " + agentVMSecretsEnvPath + "; set +a; cd ") {
+		t.Fatalf("the session probe must source the same env file as the TUI: %v", r.calls)
+	}
+	if !r.hasCall("shell " + DefaultAgentVMVM + " sh -c set -a; . " + agentVMSecretsEnvPath + "; set +a; opencode --help") {
+		t.Fatalf("the OpenCode help probe must source the same env file as the TUI: %v", r.calls)
 	}
 	for _, c := range r.calls {
 		if strings.Contains(c, "pw") || strings.Contains(c, "key") {
@@ -462,7 +472,12 @@ func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 }
 
 func TestAgentVMRunAgentFallsBackWhenContinueIsUnsupported(t *testing.T) {
-	r := &fakeRunner{}
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && strings.Contains(strings.Join(args, " "), "opencode session list --format json") {
+			return ExecResult{ExitCode: 0, Stdout: `[{"id":"ses_existing"}]`}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
 	a := newTestAgentVM(t, r)
 	var interactiveArgs []string
 	a.Interactive = func(name string, args ...string) error {

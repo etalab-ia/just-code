@@ -1030,13 +1030,26 @@ func (m *MicrosandboxRuntime) Shell() error {
 // with /workspace as its working directory (isolation full). The SDK attach
 // channel passes the host terminal through.
 func (m *MicrosandboxRuntime) RunAgent(ctx context.Context) error {
-	help, stderr, code, probeErr := m.Client.ExecCapture(ctx, m.InstanceName(), "opencode --help")
-	var resumeArgs []string
-	if probeErr == nil && code == 0 {
-		resumeArgs = OpenCodeContinueArgs(help + "\n" + stderr)
+	sessions, _, listCode, listErr := m.Client.ExecCapture(ctx, m.InstanceName(), "cd /workspace && opencode session list --format json")
+	if listErr == nil && listCode != 0 {
+		listErr = fmt.Errorf("OpenCode session list exited with code %d", listCode)
 	}
-	if len(resumeArgs) == 0 {
-		WarnOpenCodeContinueUnavailable("dans le sandbox Microsandbox")
+	hasSessions := false
+	if listErr == nil {
+		hasSessions, listErr = OpenCodeHasSessions(sessions)
+	}
+	var help, stderr string
+	var probeErr error
+	if listErr == nil && hasSessions {
+		var code int
+		help, stderr, code, probeErr = m.Client.ExecCapture(ctx, m.InstanceName(), "opencode --help")
+		if probeErr == nil && code != 0 {
+			probeErr = fmt.Errorf("OpenCode help exited with code %d", code)
+		}
+	}
+	resumeArgs, warn := OpenCodeResumeArgs(hasSessions, listErr, help+"\n"+stderr, probeErr)
+	if warn {
+		WarnOpenCodeResumeUnavailable("dans le sandbox Microsandbox")
 	}
 	code, err := m.Client.AttachInteractive(ctx, m.InstanceName(), "opencode", resumeArgs, "/workspace")
 	if err != nil {
