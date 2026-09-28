@@ -371,7 +371,12 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &fakeRunner{}
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "tart" && strings.Contains(strings.Join(args, " "), "opencode --help") {
+			return ExecResult{ExitCode: 0, Stdout: "--continue continue the last session"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
 	tt := newTestTart(t, r)
 	var interactiveArgs []string
 	tt.Interactive = func(name string, args ...string) error {
@@ -407,8 +412,11 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	if !r.hasCall("exec opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestPrepareCommand + " opencode Albert Code Agent albert-code@noreply.etalab.gouv.fr") {
 		t.Fatalf("prepare argv must be __guest-prepare <username> <gitName> <gitEmail>; calls: %v", r.calls)
 	}
+	if !r.hasCall("exec opencode-tahoe-base-latest /bin/zsh -lc opencode --help") {
+		t.Fatalf("the OpenCode capability probe must use the same login-shell PATH as the TUI: %v", r.calls)
+	}
 	// Interactive TUI: tart exec -it, zsh login shell, launch line sources
-	// the secrets file and execs opencode in the workspace share.
+	// the secrets file and resumes the latest OpenCode session in the workspace.
 	if len(interactiveArgs) == 0 {
 		t.Fatal("interactive TUI step never ran")
 	}
@@ -416,8 +424,8 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	if !strings.HasPrefix(joined, "tart exec -it opencode-tahoe-base-latest /bin/zsh -lc ") {
 		t.Fatalf("interactive argv = %q", joined)
 	}
-	if !strings.Contains(joined, guestSecretsEnvPath) || !strings.Contains(joined, guestWorkspaceDir) || !strings.Contains(joined, "exec opencode") {
-		t.Fatalf("launch line must source the secrets file and exec opencode in the workspace: %q", joined)
+	if !strings.Contains(joined, guestSecretsEnvPath) || !strings.Contains(joined, guestWorkspaceDir) || !strings.Contains(joined, "exec opencode --continue") {
+		t.Fatalf("launch line must source secrets and resume OpenCode in the workspace: %q", joined)
 	}
 	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
 		t.Fatalf("secrets leaked into the interactive argv: %q", joined)
@@ -426,14 +434,21 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 
 // TestTartAgentLaunchQuotesPaths pins the fix for the workspace share path:
 // it contains spaces, and the line runs under `zsh -lc`, so an unquoted `cd`
-// would receive multiple arguments and never reach `exec opencode`.
+// would receive multiple arguments and never reach `exec opencode --continue`.
 func TestTartAgentLaunchQuotesPaths(t *testing.T) {
-	line := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir)
+	line := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir, true)
 	if !strings.Contains(line, "cd '"+guestWorkspaceDir+"'") {
 		t.Fatalf("workspace path must be shell-quoted for the spaced share path: %q", line)
 	}
 	if !strings.Contains(line, ". '"+guestSecretsEnvPath+"'") {
 		t.Fatalf("secrets path must be shell-quoted: %q", line)
+	}
+	if !strings.Contains(line, "exec opencode --continue") {
+		t.Fatalf("Tart full mode must resume the latest session: %q", line)
+	}
+	fresh := tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir, false)
+	if !strings.Contains(fresh, "exec opencode") || strings.Contains(fresh, "--continue") {
+		t.Fatalf("unsupported OpenCode should still launch a fresh TUI: %q", fresh)
 	}
 	// The share path really does contain spaces; guard the premise.
 	if !strings.Contains(guestWorkspaceDir, " ") {

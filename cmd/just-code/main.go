@@ -743,10 +743,26 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 		return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
 	}
 
-	attachErr := justcode.RunInteractive("opencode", "attach", endpoint, "--username", cfg.Username, "--password", cfg.Password)
+	help, helpErr := justcode.OpenCodeHelp(ctx, "attach", "--help")
+	var resumeArgs []string
+	if helpErr == nil {
+		resumeArgs = justcode.OpenCodeContinueArgs(help)
+	}
+	if len(resumeArgs) == 0 {
+		justcode.WarnOpenCodeContinueUnavailable("sur l'hôte")
+	}
+	attachErr := justcode.RunInteractive("opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
 	code := exitCodeOf(attachErr)
 	askToStop(ctx, d, rt)
 	return code, attachErr
+}
+
+// openCodeAttachArgs keeps the host-TUI backend path consistent with the
+// guest TUI paths: resume the latest conversation, while leaving /new
+// available inside OpenCode to start a fresh one.
+func openCodeAttachArgs(endpoint, username, password string, resumeArgs []string) []string {
+	args := []string{"attach", endpoint, "--username", username, "--password", password}
+	return append(args, resumeArgs...)
 }
 
 func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (int, error) {

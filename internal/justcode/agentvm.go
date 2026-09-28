@@ -684,8 +684,9 @@ func (a *AgentVM) Shell() error {
 // RunAgent launches the OpenCode TUI in the foreground inside the VM
 // (isolation full). The secrets env file is pushed with limactl copy (same
 // channel as the backend flow), then the TUI runs under `limactl shell`,
-// sourcing the 0600 env file and execing opencode in the workspace mount,
-// which shares the host's absolute path.
+// sourcing the 0600 env file and execing opencode --continue in the workspace
+// mount, which shares the host's absolute path. The TUI's /new command starts
+// a fresh session.
 func (a *AgentVM) RunAgent(ctx context.Context) error {
 	cfg := a.Config
 	vm := a.VMName()
@@ -706,7 +707,19 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
 		return err
 	}
-	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode`, shellQuote(cfg.WorkspaceDir))
+	help, err := a.Runner.Run(ctx, "limactl", "shell", vm, "opencode", "--help")
+	var resumeArgs []string
+	if err == nil && help.ExitCode == 0 {
+		resumeArgs = OpenCodeContinueArgs(help.Stdout + "\n" + help.Stderr)
+	}
+	if len(resumeArgs) == 0 {
+		WarnOpenCodeContinueUnavailable("dans le guest agent-vm")
+	}
+	resumeFlag := strings.Join(resumeArgs, " ")
+	if resumeFlag != "" {
+		resumeFlag = " " + resumeFlag
+	}
+	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode%s`, shellQuote(cfg.WorkspaceDir), resumeFlag)
 	interactive := a.Interactive
 	if interactive == nil {
 		interactive = RunInteractive

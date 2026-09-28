@@ -220,6 +220,31 @@ func interactiveCommand(name string, args ...string) *exec.Cmd {
 	return exec.Command(name, args...)
 }
 
+// OpenCodeHelp captures the installed OpenCode CLI's help using the same
+// Windows batch-shim handling as interactiveCommand.
+func OpenCodeHelp(ctx context.Context, args ...string) (string, error) {
+	prepared := interactiveCommand("opencode", args...)
+	cmd := exec.CommandContext(ctx, prepared.Path, prepared.Args[1:]...)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+// OpenCodeContinueArgs returns the session-resume flag only when the
+// installed CLI advertises it. Older OpenCode builds still launch normally;
+// the caller can warn that auto-resume is unavailable.
+func OpenCodeContinueArgs(help string) []string {
+	if strings.Contains(help, "--continue") {
+		return []string{"--continue"}
+	}
+	return nil
+}
+
+// WarnOpenCodeContinueUnavailable explains that an older or uninspectable
+// OpenCode CLI will start a fresh session rather than fail on an unknown flag.
+func WarnOpenCodeContinueUnavailable(target string) {
+	fmt.Fprintf(os.Stderr, "Avertissement : OpenCode %s ne documente pas `--continue`; une nouvelle session sera ouverte. Mettez OpenCode à jour pour reprendre automatiquement la session précédente.\n", target)
+}
+
 // isBatchFile reports whether path names a Windows batch file.
 func isBatchFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))

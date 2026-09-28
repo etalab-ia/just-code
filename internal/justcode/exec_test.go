@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+func TestOpenCodeContinueArgsUsesCapabilityOutput(t *testing.T) {
+	if got := strings.Join(OpenCodeContinueArgs("-c, --continue continue the last session"), " "); got != "--continue" {
+		t.Fatalf("supported help args = %q", got)
+	}
+	if got := OpenCodeContinueArgs("Options: --session session id"); len(got) != 0 {
+		t.Fatalf("unsupported help args = %v, want no continue flag", got)
+	}
+}
+
 // TestStartDeliversStdinToDetachedChild is a regression test for a race where a
 // detached child read empty stdin: os/exec copies a non-*os.File Stdin through a
 // goroutine, and releasing the process let the CLI exit before that goroutine

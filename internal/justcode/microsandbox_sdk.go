@@ -745,14 +745,14 @@ func (sdkMSBClient) Shell(name string) (err error) {
 	return nil
 }
 
-// AttachInteractive runs cmd interactively in the sandbox with cwd as the
-// working directory, blocking until it exits. It is the isolation-full TUI
-// channel; the host terminal is passed through by the SDK attach stream.
-func (sdkMSBClient) AttachInteractive(ctx context.Context, name, cmd, cwd string) (int, error) {
+// AttachInteractive runs cmd with args interactively in the sandbox with cwd
+// as the working directory, blocking until it exits. It is the isolation-full
+// TUI channel; the host terminal is passed through by the SDK attach stream.
+func (sdkMSBClient) AttachInteractive(ctx context.Context, name, cmd string, args []string, cwd string) (int, error) {
 	sb, err := connectMSBSandbox(ctx, name)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = sb.Close() }()
-	return sb.AttachWith(ctx, cmd, nil, msb.WithAttachCwd(cwd))
+	return sb.AttachWith(ctx, cmd, args, msb.WithAttachCwd(cwd))
 }

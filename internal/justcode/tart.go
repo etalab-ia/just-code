@@ -596,9 +596,10 @@ func (t *Tart) Shell() error {
 }
 
 // RunAgent launches the OpenCode TUI in the foreground inside the VM
-// (isolation full). Secrets are pushed first via the staged guest binary
-// (stdin only, never argv), then the TUI runs under `tart exec -it`, sourcing
-// the 0600 env file and execing opencode in the workspace share.
+// (isolation full), resuming the latest session when one exists. The TUI's
+// /new command starts a fresh session. Secrets are pushed first via the staged
+// guest binary on stdin (never argv); the TUI then runs under `tart exec -it`,
+// sourcing the 0600 env file and execing opencode --continue in the workspace.
 func (t *Tart) RunAgent(ctx context.Context) error {
 	cfg := t.Config
 	vm := t.VMName()
@@ -630,19 +631,33 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand, cfg.Username, name, email); err != nil {
 		return err
 	}
+	// Probe through the same login shell/PATH as the actual TUI launch: the
+	// vendor installer may keep OpenCode in ~/.opencode/bin.
+	help, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", "opencode --help")
+	var resumeArgs []string
+	if err == nil && help.ExitCode == 0 {
+		resumeArgs = OpenCodeContinueArgs(help.Stdout + "\n" + help.Stderr)
+	}
+	if len(resumeArgs) == 0 {
+		WarnOpenCodeContinueUnavailable("dans le guest Tart")
+	}
 	interactive := t.Interactive
 	if interactive == nil {
 		interactive = RunInteractive
 	}
-	return interactive("tart", "exec", "-it", vm, "/bin/zsh", "-lc", tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir))
+	return interactive("tart", "exec", "-it", vm, "/bin/zsh", "-lc", tartAgentLaunch(guestSecretsEnvPath, guestWorkspaceDir, len(resumeArgs) > 0))
 }
 
 // tartAgentLaunch builds the in-guest launch line for isolation full: source
 // the 0600 secrets env file, cd into the workspace share, exec the TUI. Both
 // paths are shell-quoted: the workspace share contains spaces, and the line
 // runs under `zsh -lc`.
-func tartAgentLaunch(secretsPath, workspaceDir string) string {
-	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode", shellQuote(secretsPath), shellQuote(workspaceDir))
+func tartAgentLaunch(secretsPath, workspaceDir string, continueSession bool) string {
+	resume := ""
+	if continueSession {
+		resume = " --continue"
+	}
+	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode%s", shellQuote(secretsPath), shellQuote(workspaceDir), resume)
 }
 
 // Status describes the managed VM's current state, for `check` in isolation

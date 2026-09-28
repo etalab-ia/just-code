@@ -245,8 +245,8 @@ func (f *fakeMSBClient) Shell(name string) error {
 	return f.shellErr
 }
 
-func (f *fakeMSBClient) AttachInteractive(_ context.Context, name, cmd, cwd string) (int, error) {
-	f.record("attach " + name + " " + cmd + " " + cwd)
+func (f *fakeMSBClient) AttachInteractive(_ context.Context, name, cmd string, args []string, cwd string) (int, error) {
+	f.record("attach " + name + " " + strings.Join(append([]string{cmd}, args...), " ") + " " + cwd)
 	return 0, f.attachErr
 }
 
@@ -1645,13 +1645,24 @@ func TestMicrosandboxStartMatchingIsolationProceeds(t *testing.T) {
 }
 
 func TestMicrosandboxRunAgentAttachesTUI(t *testing.T) {
-	client := &fakeMSBClient{}
+	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "--continue", code: 0}}
+	m := newTestMicrosandbox(t, client)
+	if err := m.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if !hasCall(client, "attach "+msbSandbox+" opencode --continue /workspace") {
+		t.Fatalf("RunAgent must resume the most recent session while attaching opencode at /workspace; calls: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRunAgentFallsBackForOpenCodeWithoutContinue(t *testing.T) {
+	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "OpenCode options: --model", code: 0}}
 	m := newTestMicrosandbox(t, client)
 	if err := m.RunAgent(context.Background()); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
 	if !hasCall(client, "attach "+msbSandbox+" opencode /workspace") {
-		t.Fatalf("RunAgent must attach opencode at /workspace; calls: %v", client.calls)
+		t.Fatalf("an OpenCode CLI without --continue must still launch a fresh TUI session: %v", client.calls)
 	}
 }
 

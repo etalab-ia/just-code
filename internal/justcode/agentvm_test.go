@@ -417,7 +417,12 @@ func TestAgentVMLogPath(t *testing.T) {
 }
 
 func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
-	r := &fakeRunner{}
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && strings.Contains(strings.Join(args, " "), "opencode --help") {
+			return ExecResult{ExitCode: 0, Stdout: "--continue continue the last session"}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
 	a := newTestAgentVM(t, r)
 	var interactiveArgs []string
 	a.Interactive = func(name string, args ...string) error {
@@ -446,13 +451,30 @@ func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 	if !strings.HasPrefix(joined, "limactl shell "+DefaultAgentVMVM+" sh -c ") {
 		t.Fatalf("interactive argv = %q", joined)
 	}
-	if !strings.Contains(joined, "/tmp/just-code-opencode.env") || !strings.Contains(joined, a.Config.WorkspaceDir) || !strings.Contains(joined, "exec opencode") {
-		t.Fatalf("launch line must source the secrets file and exec opencode in the workspace: %q", joined)
+	if !strings.Contains(joined, "/tmp/just-code-opencode.env") || !strings.Contains(joined, a.Config.WorkspaceDir) || !strings.Contains(joined, "exec opencode --continue") {
+		t.Fatalf("launch line must source secrets and resume OpenCode in the workspace: %q", joined)
 	}
 	// The workspace path is user-configurable and lands in a `sh -c` string,
 	// so it must be shell-quoted rather than interpolated raw.
 	if !strings.Contains(joined, "cd '"+a.Config.WorkspaceDir+"'") {
 		t.Fatalf("workspace path must be shell-quoted in the launch line: %q", joined)
+	}
+}
+
+func TestAgentVMRunAgentFallsBackWhenContinueIsUnsupported(t *testing.T) {
+	r := &fakeRunner{}
+	a := newTestAgentVM(t, r)
+	var interactiveArgs []string
+	a.Interactive = func(name string, args ...string) error {
+		interactiveArgs = append([]string{name}, args...)
+		return nil
+	}
+	if err := a.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	joined := strings.Join(interactiveArgs, " ")
+	if !strings.Contains(joined, "exec opencode") || strings.Contains(joined, "--continue") {
+		t.Fatalf("an older OpenCode must still start a fresh session: %q", joined)
 	}
 }
 
