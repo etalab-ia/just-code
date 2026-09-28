@@ -257,6 +257,9 @@ func TestProjectManifestSizesTheGuest(t *testing.T) {
 // Before this, they were displayed by 'config explain' and ignored by the
 // runtime.
 func TestProjectManifestSelectsRuntimeAndIsolation(t *testing.T) {
+	// applyIsolation reads the ambient variable before this test sets its own
+	// value; do not let a developer shell's ISOLATION alter the manifest case.
+	t.Setenv("ISOLATION", "")
 	root := t.TempDir()
 	pm := justcode.ProjectManifest{SchemaVersion: 1, Runtime: "tart", Isolation: "backend"}
 	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), pm); err != nil {

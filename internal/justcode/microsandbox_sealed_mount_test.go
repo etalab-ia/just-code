@@ -48,12 +48,10 @@ func TestMSBCreateOptionsNeverBindMountAWorkspace(t *testing.T) {
 //
 // Fixture provenance: the bind shapes are the live-captured document shape
 // (see persistedWorkspaceBindMount, captured from a real sandbox); the owned
-// spellings include the selector the SDK's create path emits, pinned by
-// upstream's TestOwnedMountWireShape. The persisted spelling of an owned
-// mount has NOT been captured from a live sealed sandbox yet (this
-// environment cannot boot one: no /dev/kvm), which is why the parser accepts
-// every plausible variant and why a live `start` + `workspace sync` against a
-// real sandbox remains the confirmation step before release.
+// spellings include the live-captured persisted shape (type:"Owned") and the
+// selector the SDK's create path emits, pinned by upstream's
+// TestOwnedMountWireShape. The live sealed-workspace capture was performed on
+// macOS for issue #92 on 2026-09-28.
 func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -70,6 +68,26 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 			name:  "owned selector without a type, as the create path emits",
 			doc:   `{"mounts":[{"owned":"dir","guest":"/workspace","quota_mib":null}]}`,
 			owned: true,
+		},
+		{
+			name: "missing type and source is ambiguous, not owned",
+			doc:  `{"mounts":[{"guest":"/workspace"}]}`,
+		},
+		{
+			name: "unknown owned selector is not positive evidence",
+			doc:  `{"mounts":[{"owned":"unknown","guest":"/workspace"}]}`,
+		},
+		{
+			name: "owned selector with a host source remains host-backed",
+			doc:  `{"mounts":[{"owned":"dir","bind":"/host/workspace","guest":"/workspace"}]}`,
+		},
+		{
+			name: "owned selector conflicts with bind type",
+			doc:  `{"mounts":[{"type":"Bind","owned":"dir","guest":"/workspace"}]}`,
+		},
+		{
+			name: "owned selector conflicts with unknown type",
+			doc:  `{"mounts":[{"type":"Virtiofs","owned":"dir","guest":"/workspace"}]}`,
 		},
 		{
 			name:  "owned with the options blob a persisted entry carries",

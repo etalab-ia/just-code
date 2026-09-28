@@ -498,11 +498,12 @@ func parseWorkspaceMount(configJSON, guestPath string) (string, error) {
 // exclusive at the same guest path, so this answers the provenance question
 // the sealed model needs: "does this guest have a host-mounted workspace?".
 //
-// Owned storage is recognized by positive evidence, in either spelling the
-// runtime uses: {"type":"Owned"} in the persisted document, or {"owned":"dir"}
-// on the create path (pinned by the SDK's TestOwnedMountWireShape). An entry
-// with no type and no source is also owned: that is the shape a directory
-// mount serializes to once its selector is dropped.
+// Owned storage is recognized only by positive evidence, in either spelling
+// the runtime uses: {"type":"Owned"} in the persisted document, or
+// {"owned":"dir"} on the create path (pinned by the SDK's
+// TestOwnedMountWireShape). An entry with no type and no source is ambiguous
+// and must be refused; the live persisted config confirms that an owned mount
+// carries type:"Owned".
 //
 // Everything else is refused, which is the direction that matters. A host
 // source is refused in every spelling known to either serializer, including
@@ -528,10 +529,13 @@ func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 			return false, nil
 		}
 		switch {
-		case m.Type == "":
-			// No selector and no source: owned directory storage.
-			return true, nil
 		case strings.EqualFold(m.Type, "Owned"):
+			return true, nil
+		case m.Type == "" && (m.Owned == "dir" || m.Owned == "disk"):
+			// The create-path wire form uses an explicit owned selector
+			// instead of a type field. These are the SDK's only valid owned
+			// kinds; an unknown selector or conflicting non-owned type is
+			// refused below.
 			return true, nil
 		default:
 			// A known host-backed kind (bind/named/disk), or a kind this
