@@ -214,9 +214,43 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 			strings.HasPrefix(call, "readconfig "),
 			strings.HasPrefix(call, "mount "),
 			strings.HasPrefix(call, "owned "),
+			strings.HasPrefix(call, "server-port "),
 			strings.HasPrefix(call, "readenv "):
 		default:
 			t.Fatalf("no-op reconcile mutated the guest: %q", call)
+		}
+	}
+	_ = os.Remove(path)
+	_ = os.RemoveAll(filepath.Dir(path))
+}
+
+func TestReconcileRejectsExistingFullModeServerPortMapping(t *testing.T) {
+	isolateHostState(t)
+	client := &fakeMSBClient{
+		exists:              true,
+		status:              "running",
+		startScript:         msbStartScript(IsolationFull),
+		serverPortForwarded: true,
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.Probe = func(context.Context, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
+	path := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := WriteInstanceState(DefaultFS, path, desired.toState()); err != nil {
+		t.Fatal(err)
+	}
+
+	err := m.Reconcile(context.Background())
+	var need *ErrRecreateNeeded
+	if err == nil || !errorsAs(err, &need) || !strings.Contains(err.Error(), "4096") {
+		t.Fatalf("Reconcile error = %v, want an explicit recreate refusal for port 4096", err)
+	}
+	for _, call := range client.calls {
+		if strings.HasPrefix(call, "start ") || strings.HasPrefix(call, "remove") || strings.HasPrefix(call, "stop ") {
+			t.Fatalf("stale full-mode mapping must not be started, stopped, or removed implicitly: %v", client.calls)
 		}
 	}
 	_ = os.Remove(path)

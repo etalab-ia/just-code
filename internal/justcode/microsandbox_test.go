@@ -60,8 +60,10 @@ type fakeMSBClient struct {
 	// volume, i.e. a sealed workspace with no host mount. Nil means "derive
 	// from mount": no host bind source means owned storage, which is what the
 	// runtime actually persists for a sealed sandbox.
-	owned    *bool
-	ownedErr error
+	owned               *bool
+	ownedErr            error
+	serverPortForwarded bool
+	serverPortErr       error
 	// listed/listedRunning drive List: the managed sandboxes the fake
 	// runtime knows, and which of them are up.
 	listed        []string
@@ -179,6 +181,11 @@ func (f *fakeMSBClient) WorkspaceOwned(_ context.Context, name string) (bool, er
 		return *f.owned, nil
 	}
 	return f.mount == "", nil
+}
+
+func (f *fakeMSBClient) ServerPortForwarded(_ context.Context, name string) (bool, error) {
+	f.record("server-port " + name)
+	return f.serverPortForwarded, f.serverPortErr
 }
 
 func (f *fakeMSBClient) WriteFile(_ context.Context, name, guestPath string, data []byte) error {
@@ -596,6 +603,46 @@ func TestMicrosandboxFullModeRunningRechecksToolchain(t *testing.T) {
 	}
 	if hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
 		t.Fatalf("an installer that is alive must not be joined by a second launch: %v", client.calls)
+	}
+}
+
+// TestMicrosandboxFullModeRejectsPersistedServerPortMapping pins the upgrade
+// path: a full-mode sandbox created before the port fix retains its persisted
+// server mapping and must be explicitly recreated rather than silently
+// adopted or started again.
+func TestMicrosandboxFullModeRejectsPersistedServerPortMapping(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:              true,
+		status:              "stopped",
+		startScript:         msbStartScript(IsolationFull),
+		serverPortForwarded: true,
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	err := m.startInstance(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "recreate --microsandbox") || !strings.Contains(err.Error(), "4096") {
+		t.Fatalf("start error = %v, want an explicit recreation instruction for port 4096", err)
+	}
+	if hasCall(client, "start "+msbSandbox) || hasCall(client, "create") || hasCall(client, "modify "+msbSandbox) {
+		t.Fatalf("an instance with the stale port mapping must not be started or changed in place: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRestartRejectsServerPortBeforeStopping(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:              true,
+		status:              "running",
+		startScript:         msbStartScript(IsolationFull),
+		serverPortForwarded: true,
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	err := m.Restart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "4096") || !strings.Contains(err.Error(), "recreate --microsandbox") {
+		t.Fatalf("Restart error = %v, want an explicit recreation refusal for port 4096", err)
+	}
+	if hasCall(client, "stop "+msbSandbox) || hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("restart must refuse the stale port map before stopping the existing guest: %v", client.calls)
 	}
 }
 

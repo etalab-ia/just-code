@@ -396,6 +396,15 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// WithPorts is creation-time state: a running full-mode instance from an
+	// older binary can be a no-op under ordinary reconciliation while still
+	// listening on the backend-only server port. Refuse it before the no-op
+	// return; only an explicit recreate can remove the persisted mapping.
+	if facts.Exists {
+		if err := m.rejectFullServerPortForwarding(ctx); err != nil {
+			return err
+		}
+	}
 	plan := PlanReconcile(applied, desired, facts)
 	if plan.NeedsRecreate() {
 		return &ErrRecreateNeeded{Instance: m.InstanceName(), Reason: plan.Reason}
