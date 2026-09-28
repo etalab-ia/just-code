@@ -412,6 +412,9 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	if !r.hasCall("exec opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestPrepareCommand + " opencode Albert Code Agent albert-code@noreply.etalab.gouv.fr") {
 		t.Fatalf("prepare argv must be __guest-prepare <username> <gitName> <gitEmail>; calls: %v", r.calls)
 	}
+	if !r.hasCall("exec opencode-tahoe-base-latest /bin/zsh -lc opencode --help") {
+		t.Fatalf("the OpenCode capability probe must use the same login-shell PATH as the TUI: %v", r.calls)
+	}
 	// Interactive TUI: tart exec -it, zsh login shell, launch line sources
 	// the secrets file and resumes the latest OpenCode session in the workspace.
 	if len(interactiveArgs) == 0 {

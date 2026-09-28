@@ -631,7 +631,9 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err := t.guestRun(ctx, guestLocalBinary, GuestPrepareCommand, cfg.Username, name, email); err != nil {
 		return err
 	}
-	help, err := t.Runner.Run(ctx, "tart", "exec", vm, "opencode", "--help")
+	// Probe through the same login shell/PATH as the actual TUI launch: the
+	// vendor installer may keep OpenCode in ~/.opencode/bin.
+	help, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", "opencode --help")
 	var resumeArgs []string
 	if err == nil && help.ExitCode == 0 {
 		resumeArgs = OpenCodeContinueArgs(help.Stdout + "\n" + help.Stderr)
