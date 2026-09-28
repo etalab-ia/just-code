@@ -78,6 +78,10 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 			doc:  `{"mounts":[{"owned":"unknown","guest":"/workspace"}]}`,
 		},
 		{
+			name: "owned selector with a host source remains host-backed",
+			doc:  `{"mounts":[{"owned":"dir","bind":"/host/workspace","guest":"/workspace"}]}`,
+		},
+		{
 			name: "owned selector conflicts with bind type",
 			doc:  `{"mounts":[{"type":"Bind","owned":"dir","guest":"/workspace"}]}`,
 		},
