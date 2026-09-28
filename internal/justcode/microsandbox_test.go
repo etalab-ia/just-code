@@ -797,6 +797,7 @@ func TestMicrosandboxDelegatesInteractiveCommands(t *testing.T) {
 func TestMSBCreateOptions(t *testing.T) {
 	spec := msbSandboxSpec{
 		Image:           msbImage,
+		Isolation:       IsolationBackend,
 		Env:             map[string]string{"OPENCODE_SERVER_USERNAME": "opencode"},
 		SealedWorkspace: true,
 		Bindings:        bindingsMetadata(testBindings("secret-value")),
@@ -846,6 +847,31 @@ func TestMSBCreateOptions(t *testing.T) {
 	}
 	if cfg.Scripts["start"] != spec.StartScript {
 		t.Fatalf("start script = %q", cfg.Scripts["start"])
+	}
+}
+
+// TestMSBFullModeDoesNotPublishOpenCodeServerPort pins the P12 full-mode
+// boundary: the TUI runs in the guest, so no OpenCode server port should be
+// forwarded to the host. Development preview ports remain available on
+// loopback.
+func TestMSBFullModeDoesNotPublishOpenCodeServerPort(t *testing.T) {
+	spec := msbSandboxSpec{
+		Image:           msbImage,
+		Isolation:       IsolationFull,
+		SealedWorkspace: true,
+		StartScript:     msbStartScript(IsolationFull),
+	}
+	var cfg msb.SandboxConfig
+	for _, option := range msbCreateOptions(spec) {
+		option(&cfg)
+	}
+	if _, forwarded := cfg.Ports[DefaultPort]; forwarded {
+		t.Fatalf("full mode must not forward the OpenCode server port %d: %v", DefaultPort, cfg.Ports)
+	}
+	for port := uint16(3000); port <= 3010; port++ {
+		if cfg.Ports[port] != port {
+			t.Fatalf("preview port %d missing from full-mode config: %v", port, cfg.Ports)
+		}
 	}
 }
 

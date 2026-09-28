@@ -18,15 +18,17 @@
 
 # just code
 
-**Un backend OpenCode isolé dans une microVM Microsandbox ou une VM macOS Tart, piloté par le TUI OpenCode natif de ta machine.**
+**Un environnement OpenCode isolé dans une microVM Microsandbox, piloté par le TUI dans l'invité par défaut ou par le TUI hôte en mode backend explicite.**
 
-L'agent tourne dans un environnement Linux (ou macOS via Tart) avec les modèles souverains d'[Albert API](https://albert.api.etalab.gouv.fr), pendant que tu gardes ton interface habituelle. Tu peux comparer une microVM Microsandbox ou une VM macOS Tart sans changer de workflow.
+Par défaut, l'agent et son TUI tournent dans la microVM Microsandbox avec les modèles souverains d'[Albert API](https://albert.api.etalab.gouv.fr). Le mode backend, Tart et agent-vm restent des choix explicites.
 
 ```text
-terminal hôte (opencode attach) ──> sandbox sélectionné :4096 (opencode serve)
-                                            ├── /workspace  = ton projet (bind-mount)
-                                            ├── outils      = bash, git, node, python
-                                            └── inférence   = Albert API (deepseek-v4-flash)
+full (défaut) : terminal hôte ──> TUI OpenCode dans l'invité
+                                  /workspace = volume invité, fichiers transférés par filtre
+                                  aucun port serveur OpenCode hôte (4096)
+
+backend (explicite) : TUI hôte ──> 127.0.0.1:4096 ──> opencode serve dans l'invité
+                                  previews invitées : 127.0.0.1:3000-3010
 ```
 
 Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence, reconnexion, persistance de session, previews web) et comparer les frontières d'isolation.
@@ -95,14 +97,14 @@ macOS / Linux :
 
 ```bash
 export ALBERT_API_KEY="ta-clé"
-just-code --microsandbox
+just-code
 ```
 
 Windows (PowerShell) :
 
 ```powershell
 $env:ALBERT_API_KEY = "ta-clé"
-just-code --microsandbox
+just-code
 ```
 
 `just-code` sans argument utilise **Microsandbox en isolation `full`** : l'agent, sa TUI et ses identifiants tournent dans la microVM, dont l'espace de travail est scellé (aucun fichier de l'hôte n'y est monté). `--tart` et `--agent-vm` restent disponibles explicitement, par flag ou via `RUNTIME`.
@@ -213,7 +215,7 @@ Un `.env.example` reste dans le dépôt comme **gabarit documentaire** : il list
 - `--isolation backend|full` prime sur `ISOLATION` ; un flag explicite reste utilisable même si `ISOLATION` contient une valeur invalide.
 - Sans `WORKSPACE_DIR`, le **répertoire de travail est la racine du projet**. Pour Tart et agent-vm, cela change ce qui est monté : le montage devient le projet lui-même au lieu de `./workspace`, et donc la porte de sécurité de ces runtimes (qui refusent un workspace contenant un `.env`, puisqu'ils le montent) porte désormais sur le projet. En Microsandbox il n'y a pas de montage : changer la source prend effet au `workspace sync` suivant, sans recréation.
 - Le **dimensionnement de l'invité** (`JUST_CODE_CPUS`, `JUST_CODE_MEMORY_MB`) est figé à la création du sandbox : le runtime ne redimensionne pas un invité en cours. Une valeur enregistrée dans le manifeste du projet qui change est donc signalée comme nécessitant une recréation, jamais ignorée en silence.
-- Le niveau d'isolation est figé à la création du sandbox Microsandbox : ses scripts de démarrage sont persistés et ne peuvent pas être réécrits. Basculer `ISOLATION` sur un sandbox existant est refusé avec un message ; `just-code restart --microsandbox` le recrée dans le mode demandé.
+- Le niveau d'isolation est figé à la création du sandbox Microsandbox : ses scripts de démarrage sont persistés et ne peuvent pas être réécrits. Basculer `ISOLATION` sur un sandbox existant est refusé avec un message ; `just-code recreate --microsandbox` le recrée dans le mode demandé.
 - Une modification des identifiants HTTP nécessite `just-code stop`, puis un nouveau lancement pour redémarrer le backend avec les nouvelles valeurs.
 - Une modification de `TART_MTU` nécessite `just-code stop`, puis `just-code --tart`. Elle ne nécessite pas de recréer la VM.
 - Changer `TART_IMAGE` cible une autre VM Tart ; les VM créées depuis des images différentes peuvent coexister.
@@ -226,7 +228,7 @@ Les sections suivantes détaillent les réglages propres à Tart. Les montages d
 
 Dans `.env`, `TART_MTU` accepte un entier de **1280 à 1500**, ou **`auto`** pour ne pas modifier la MTU. `auto` ne restaure pas une valeur précédemment appliquée ; utiliser `1500` pour revenir à la valeur habituelle. L'application nécessite `sudo` sans mot de passe dans l'invité (disponible dans l'image de base utilisée). Les erreurs sont consignées dans `just-code logs --tart`.
 
-Après modification, exécuter **`just-code stop` puis `just-code --tart`** pour réappliquer le réglage tout en conservant les logiciels installés. Un backend déjà sain n'est pas reconfiguré par `just-code start`. Ne pas utiliser `just-code restart` pour cela : cette commande recrée la VM.
+Après modification, exécuter **`just-code stop` puis `just-code --tart`** pour réappliquer le réglage tout en conservant les logiciels installés. Un backend déjà sain n'est pas reconfiguré par `just-code start`. `just-code restart --tart` est également non destructif ; `just-code recreate --tart` reconstruit la VM.
 
 Sur macOS, autoriser également le terminal utilisé dans **Réglages Système > Confidentialité et sécurité > Réseau local**. Cette permission couvre l'accès à l'adresse privée de la VM, même si elle tourne sur le même Mac. Sans elle, le TUI peut rester en attente ou signaler une erreur trompeuse d'URL/port.
 
@@ -279,7 +281,7 @@ La construction est refaite si le template est absent **ou** s'il a été laiss�
 
 Une opération interrompue est rattrapée : une construction qui échoue supprime le template partiel, pour qu'un nouvel essai reparte d'une base saine plutôt que de cloner une image sans OpenCode.
 
-`just-code stop` arrête la VM (l'état est conservé), `just-code restart --agent-vm` la recrée depuis le template (destructif), `just-code clean --agent-vm` la supprime avec son état local.
+`just-code stop` arrête la VM (l'état est conservé), `just-code restart --agent-vm` l'arrête puis la relance sans effacer son disque, `just-code recreate --agent-vm` la reconstruit depuis le template (destructif), `just-code clean --agent-vm` la supprime avec son état local.
 
 ## Utilisation
 
@@ -294,18 +296,19 @@ just-code stop --all             # arrête toutes les instances just-code
 just-code check                  # santé du backend actif + provider Albert
 just-code logs --tart            # logs d'un runtime explicite
 just-code shell --tart           # shell dans un runtime explicite
-just-code restart --tart         # recrée le sandbox (destructif, demande confirmation)
+just-code restart --tart         # arrête puis relance l'instance existante
+just-code recreate --tart        # recrée le sandbox (destructif, demande confirmation)
 just-code clean --tart            # supprime le sandbox et son état local
 just-code doctor --tart           # vérifie l'installation du runtime
 just-code version                # identifie le binaire (version, commit, plateforme)
 just-code help                   # liste les commandes
 ```
 
-Lancer `just-code` sans commande démarre le backend sélectionné et attache le TUI natif OpenCode. Les commandes et les flags de runtime peuvent être donnés dans n'importe quel ordre (`just-code --microsandbox start` et `just-code start --microsandbox` sont équivalents). La commande `code` n'existe pas : la taper renvoie une erreur explicite.
+Lancer `just-code` sans commande utilise Microsandbox/full par défaut et lance le TUI OpenCode dans l'invité. En mode backend explicite, le serveur invité écoute sur 4096 et le TUI hôte s'y attache ; ce port n'est pas transféré en mode full. Les ports de prévisualisation 3000-3010 restent liés à `127.0.0.1`. Les commandes et les flags de runtime peuvent être donnés dans n'importe quel ordre (`just-code --microsandbox start` et `just-code start --microsandbox` sont équivalents). La commande `code` n'existe pas : la taper renvoie une erreur explicite.
 
 Les environnements sont identifiés par projet (répertoire racine du worktree Git) : chaque projet a sa propre instance `jc-<nom>-<suffixe>`, et les commandes `stop`, `logs`, `shell`, `clean` et `check` ciblent le projet courant. `just-code stop` n'arrête que l'instance du projet courant ; `just-code stop --all` arrête toutes les instances just-code, tous runtimes confondus. Les instances legacy (singleton d'avant l'identification par projet) restent découvrables pour les opérations explicites et ne sont jamais renommées ni supprimées automatiquement.
 
-Les runtimes publient les mêmes ports et ne doivent pas tourner simultanément. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code restart` est destructif : il recrée l'environnement et perd les sessions, les outils installés dans l'invité et les fichiers propres à l'invité ; la commande demande une confirmation interactive (refusée hors TTY, pour CI et scripts).
+Les runtimes partagent les ports de prévisualisation 3000-3010, liés à `127.0.0.1`, et ne doivent pas tourner simultanément si ces ports entrent en conflit. Le port serveur 4096 n'est transféré qu'en mode backend. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code restart` arrête puis relance la même instance sans la recréer ; `just-code recreate` détruit et reconstruit l'environnement, perdant les sessions, les outils installés et les fichiers propres à l'invité. La recréation demande une confirmation interactive (refusée hors TTY, pour CI et scripts).
 
 ### Niveaux d'isolation
 
@@ -387,13 +390,13 @@ Sur Microsandbox, le secret est déclaré via l'API de secrets du runtime et la 
 
 Sur Tart et agent-vm, les secrets ne passent jamais par la ligne de commande : en mode `full` ils sont transmis sur l'entrée standard (Tart) ou par un fichier `0600` copié dans l'invité (agent-vm), et le TUI les lit depuis ce fichier. Le fichier porte aussi la configuration du provider Albert, sans quoi le TUI n'aurait pas de modèle à utiliser. Ces deux runtimes n'ont pas de proxy audité : la clé y est en clair dans l'invité, quel que soit le niveau d'isolation. Le démarrage l'exige donc explicitement : sans `--acknowledge-guest-credentials`, `start` est refusé ; avec, l'avertissement reste affiché à chaque démarrage. Réservez-les aux travaux qui n'ont pas besoin de la clé, ou traitez l'invité comme portant un identifiant vivant.
 
-Le niveau d'isolation est fixé à la création du sandbox Microsandbox. Le demander différent sur un sandbox existant est refusé, avec la commande de recréation à lancer ; `just-code restart --<runtime>` recrée l'environnement dans le mode demandé.
+Le niveau d'isolation est fixé à la création du sandbox Microsandbox. Le demander différent sur un sandbox existant est refusé, avec la commande de recréation à lancer ; `just-code recreate --<runtime>` recrée l'environnement dans le mode demandé.
 
-Par défaut, `./workspace` est monté comme projet. Pour pointer sur un vrai dépôt :
+Sans `WORKSPACE_DIR` explicite, la racine du projet courant est utilisée : Microsandbox en transfère une copie filtrée vers l'invité ; Tart et agent-vm la montent sur `/workspace`. Pour choisir une autre source/racine :
 
 ```bash
 export WORKSPACE_DIR="$HOME/Code/mon-projet"
-just-code --microsandbox
+just-code
 ```
 
 `PROJECT_DIR` reste accepté mais est déprécié (un avertissement le signale).
@@ -455,7 +458,7 @@ Une VM Microsandbox survit à un redémarrage, mais son entrée de conteneur (`/
 
 Si malgré cela le backend ne répond pas, l'attachement (`just-code` sans commande) attend en affichant l'avancement (300 s par défaut, réglable via `JUST_CODE_START_TIMEOUT` en secondes). À l'expiration, l'erreur précise le dernier résultat observé, ce qui distingue les causes :
 
-- `HTTP 401: unauthorized` — le mot de passe attendu par le backend diffère de `OPENCODE_SERVER_PASSWORD`. Un sandbox créé lors d'un run précédent conserve l'ancien mot de passe. Utiliser `just-code restart --<runtime>` (destructif) ou `just-code stop` puis `just-code --<runtime>`.
+- `HTTP 401: unauthorized` — le mot de passe attendu par le backend diffère de `OPENCODE_SERVER_PASSWORD`. Un sandbox créé lors d'un run précédent conserve l'ancien mot de passe. Utiliser `just-code recreate --<runtime>` (destructif) ou `just-code stop` puis `just-code --<runtime>`.
 - `connection refused` — le backend n'écoute pas ; `just-code logs --<runtime>` montre la sortie du bootstrap invité.
 - `HTTP 200: ...` sans `healthy` — l'application démarre encore ; attendre quelques secondes.
 
@@ -465,20 +468,20 @@ Le réflexe le plus simple reste `just-code stop` suivi d'un relancement de `jus
 
 ### Conteneur Docker d'une version précédente
 
-Les versions antérieures à la suppression du runtime Docker laissaient un conteneur `albert-opencode-sandbox` (`restart: unless-stopped`) qui publiait les ports 4096 et 3000-3010, les mêmes que les runtimes actuels. Au premier `start` / `attach`, et sur `just-code stop`, just-code détecte ce conteneur et le supprime automatiquement en l'annonçant ; s'il ne peut pas le supprimer, il s'arrête en le signalant plutôt que de laisser un conflit de ports inexpliqué. Aucun `docker` installé n'est nécessaire : l'absence de Docker est ignorée.
+Les versions antérieures à la suppression du runtime Docker laissaient un conteneur `albert-opencode-sandbox` (`restart: unless-stopped`) qui publiait les ports 4096 et 3000-3010. Au premier `start` / `attach`, et sur `just-code stop`, just-code détecte ce conteneur et le supprime automatiquement en l'annonçant ; s'il ne peut pas le supprimer, il s'arrête en le signalant plutôt que de laisser un conflit de ports inexpliqué. Aucun `docker` installé n'est nécessaire : l'absence de Docker est ignorée.
 
 ## Choix de conception
 
-- **Deux runtimes, aucun défaut intégré.** Les commandes ciblent `--microsandbox` ou `--tart`, avec une préférence `RUNTIME` facultative pour les usages répétés. Le flag explicite est toujours prioritaire. Le répertoire projet et le port OpenCode (4096) restent identiques.
-- **Microsandbox préservé.** La microVM Linux d'origine reste inchangée et expose les previews sur `localhost` (ports 3000-3010).
+- **Microsandbox/full par défaut.** `just-code` sans commande lance le TUI dans l'invité. Aucun serveur OpenCode ni port 4096 n'est publié en mode full ; le mode backend explicite utilise `opencode serve` sur 4096. Les previews des ports 3000-3010 restent accessibles sur `localhost`.
+- **Runtimes alternatifs explicites.** Tart et agent-vm restent disponibles via `--tart`, `--agent-vm` ou `RUNTIME` et gardent leurs propres contraintes de workspace et de transport des identifiants.
 - **VM macOS avec Tart pour Xcode/iOS.** Tart permet d'exécuter l'agent OpenCode directement dans un système macOS invité, donnant accès aux outils de compilation Xcode (`xcodebuild`, `swift`, simulateurs). Par défaut, l'image `ghcr.io/cirruslabs/macos-tahoe-base:latest` est clonée dans une VM locale nommée `opencode-tahoe-base-latest` (surchargeable via `TART_IMAGE`). L'utilisateur ou le développeur peut ensuite y installer les outils Xcode nécessaires. La VM étant une machine invitée macOS sur le réseau NAT, le TUI et les previews sont joints par son adresse (`tart ip opencode-tahoe-base-latest`) plutôt que par `localhost`. `ALBERT_API_KEY` est transmise sur l'entrée standard du processus de bootstrap, jamais dans la liste des arguments ; seul le binaire du CLI (copie dédiée en lecture seule) est partagé avec la VM, pas le dépôt ni `.env`.
-- **MicroVM nommée et persistante.** Avec Microsandbox et Tart, `just-code stop` conserve l'état inscriptible de la VM et les relances ultérieures évitent de repartir de zéro. `just-code restart` recrée la VM proprement.
+- **MicroVM nommée et persistante.** Avec Microsandbox et Tart, `just-code stop` conserve l'état inscriptible de la VM et les relances ultérieures évitent de repartir de zéro. `just-code restart` arrête puis relance la même VM ; `just-code recreate` la reconstruit explicitement.
 - **Pas de démon ni de runtime conteneur.** La microVM démarre à la demande depuis l'image OCI officielle `ghcr.io/anomalyco/opencode:latest`.
-- **Pas de fichier de config OpenCode bind-mounté.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` par le SDK. Le seul bind-mount est le répertoire projet.
-- **Éditions visibles sur l'hôte.** Les modifications de l'agent atterrissent directement dans ton checkout local. Le modèle « remote-authoritative » (clone dans le sandbox, livraison via branche/PR) reste une expérience ultérieure.
+- **Workspace Microsandbox scellé.** `/workspace` est un volume possédé par l'invité ; le checkout hôte n'est jamais monté. Les fichiers traversent le filtre par défaut-deny et le retour des changements se fait par export revu. Tart et agent-vm continuent de monter le workspace hôte.
+- **Configuration OpenCode générée.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` par le SDK ; le workspace n'est pas utilisé comme source de configuration hôte montée.
 - **Permissions permissives dans le sandbox.** Le runtime sélectionné est la frontière de confinement : `edit`, `bash` et `external_directory` sont autorisés à l'intérieur.
-- **Secrets.** `.env` est ignoré par git. Avec Microsandbox, la vraie valeur reste sur l'hôte : seule une valeur de substitution entre dans la microVM et le proxy réseau ne la remplace que pour `albert.api.etalab.gouv.fr`.
-- **Scan du workspace au démarrage.** Le workspace étant intégralement lisible par l'agent, le démarrage est refusé si des fichiers `.env` ou des secrets gitleaks y sont détectés. C'est une frontière au démarrage, pas une garantie continue : un fichier ajouté pendant l'exécution reste lisible via le bind-mount (documenté dans « Sécurité du workspace »).
+- **Secrets Microsandbox.** La vraie valeur reste sur l'hôte : seule une valeur de substitution entre dans la microVM et le proxy réseau ne la remplace que pour `albert.api.etalab.gouv.fr`. Pour Tart et agent-vm, la clé est lisible dans l'invité et un avertissement/accord explicite s'applique.
+- **Filtre de transfert Microsandbox.** Les fichiers `.env`, les liens symboliques et les fichiers signalés par gitleaks sont exclus par défaut à chaque transfert et rafraîchissement ; une ré-inclusion se fait fichier par fichier. Tart et agent-vm montent le workspace hôte et conservent le scan bloquant au démarrage.
 
 ## Contribuer
 

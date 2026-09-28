@@ -44,8 +44,13 @@ func mustAsset(name string) string {
 	return string(data)
 }
 
-func msbPortMappings() map[uint16]uint16 {
-	ports := map[uint16]uint16{DefaultPort: DefaultPort}
+func msbPortMappings(isolation Isolation) map[uint16]uint16 {
+	ports := make(map[uint16]uint16, 12)
+	// Full mode runs the TUI in the guest and has no OpenCode HTTP server.
+	// Keep the server port only for backend mode, where the host TUI attaches.
+	if isolation == IsolationBackend {
+		ports[DefaultPort] = DefaultPort
+	}
 	for p := uint16(3000); p <= 3010; p++ {
 		ports[p] = p
 	}
@@ -180,7 +185,7 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		msb.WithEnv(spec.Env),
 		msb.WithMounts(msbWorkspaceMounts(spec)),
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
-		msb.WithPorts(msbPortMappings()),
+		msb.WithPorts(msbPortMappings(spec.Isolation)),
 		msb.WithSecrets(secrets...),
 		msb.WithScripts(map[string]string{"start": spec.StartScript}),
 		// Ownership label (P06): the lifecycle sweeps list managed sandboxes

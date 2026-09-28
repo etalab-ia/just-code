@@ -255,9 +255,10 @@ type msbSandboxInfo struct {
 // carries binding *metadata* only: no secret value may appear here, so a spec
 // can never leak a credential into a persisted config or an SDK error dump.
 type msbSandboxSpec struct {
-	Name  string // instance name (P05); empty means the legacy singleton
-	Image string
-	Env   map[string]string
+	Name      string // instance name (P05); empty means the legacy singleton
+	Image     string
+	Isolation Isolation
+	Env       map[string]string
 	// CPUs and MemoryMB size the guest. Zero means "unset": the create
 	// options then fall back to the built-in defaults, so a spec built by a
 	// path that does not resolve resources still boots.
@@ -575,6 +576,7 @@ func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandbox
 	return msbSandboxSpec{
 		Name:            m.InstanceName(),
 		Image:           msbImage,
+		Isolation:       m.cfg.Isolation,
 		Env:             m.sandboxEnv(),
 		SealedWorkspace: true,
 		CPUs:            m.cfg.CPUs,
