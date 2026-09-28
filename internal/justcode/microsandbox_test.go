@@ -60,8 +60,10 @@ type fakeMSBClient struct {
 	// volume, i.e. a sealed workspace with no host mount. Nil means "derive
 	// from mount": no host bind source means owned storage, which is what the
 	// runtime actually persists for a sealed sandbox.
-	owned    *bool
-	ownedErr error
+	owned               *bool
+	ownedErr            error
+	serverPortForwarded bool
+	serverPortErr       error
 	// listed/listedRunning drive List: the managed sandboxes the fake
 	// runtime knows, and which of them are up.
 	listed        []string
@@ -179,6 +181,11 @@ func (f *fakeMSBClient) WorkspaceOwned(_ context.Context, name string) (bool, er
 		return *f.owned, nil
 	}
 	return f.mount == "", nil
+}
+
+func (f *fakeMSBClient) ServerPortForwarded(_ context.Context, name string) (bool, error) {
+	f.record("server-port " + name)
+	return f.serverPortForwarded, f.serverPortErr
 }
 
 func (f *fakeMSBClient) WriteFile(_ context.Context, name, guestPath string, data []byte) error {
@@ -599,6 +606,46 @@ func TestMicrosandboxFullModeRunningRechecksToolchain(t *testing.T) {
 	}
 }
 
+// TestMicrosandboxFullModeRejectsPersistedServerPortMapping pins the upgrade
+// path: a full-mode sandbox created before the port fix retains its persisted
+// server mapping and must be explicitly recreated rather than silently
+// adopted or started again.
+func TestMicrosandboxFullModeRejectsPersistedServerPortMapping(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:              true,
+		status:              "stopped",
+		startScript:         msbStartScript(IsolationFull),
+		serverPortForwarded: true,
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	err := m.startInstance(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "recreate --microsandbox") || !strings.Contains(err.Error(), "4096") {
+		t.Fatalf("start error = %v, want an explicit recreation instruction for port 4096", err)
+	}
+	if hasCall(client, "start "+msbSandbox) || hasCall(client, "create") || hasCall(client, "modify "+msbSandbox) {
+		t.Fatalf("an instance with the stale port mapping must not be started or changed in place: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRestartRejectsServerPortBeforeStopping(t *testing.T) {
+	client := &fakeMSBClient{
+		exists:              true,
+		status:              "running",
+		startScript:         msbStartScript(IsolationFull),
+		serverPortForwarded: true,
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	err := m.Restart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "4096") || !strings.Contains(err.Error(), "recreate --microsandbox") {
+		t.Fatalf("Restart error = %v, want an explicit recreation refusal for port 4096", err)
+	}
+	if hasCall(client, "stop "+msbSandbox) || hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("restart must refuse the stale port map before stopping the existing guest: %v", client.calls)
+	}
+}
+
 // A running full-mode sandbox where nothing is preparing (an idle VM left by
 // the pre-#61 creation path, or a start script whose launch retries were
 // exhausted) must be relaunched rather than polled: no process will ever
@@ -797,6 +844,7 @@ func TestMicrosandboxDelegatesInteractiveCommands(t *testing.T) {
 func TestMSBCreateOptions(t *testing.T) {
 	spec := msbSandboxSpec{
 		Image:           msbImage,
+		Isolation:       IsolationBackend,
 		Env:             map[string]string{"OPENCODE_SERVER_USERNAME": "opencode"},
 		SealedWorkspace: true,
 		Bindings:        bindingsMetadata(testBindings("secret-value")),
@@ -846,6 +894,31 @@ func TestMSBCreateOptions(t *testing.T) {
 	}
 	if cfg.Scripts["start"] != spec.StartScript {
 		t.Fatalf("start script = %q", cfg.Scripts["start"])
+	}
+}
+
+// TestMSBFullModeDoesNotPublishOpenCodeServerPort pins the P12 full-mode
+// boundary: the TUI runs in the guest, so no OpenCode server port should be
+// forwarded to the host. Development preview ports remain available on
+// loopback.
+func TestMSBFullModeDoesNotPublishOpenCodeServerPort(t *testing.T) {
+	spec := msbSandboxSpec{
+		Image:           msbImage,
+		Isolation:       IsolationFull,
+		SealedWorkspace: true,
+		StartScript:     msbStartScript(IsolationFull),
+	}
+	var cfg msb.SandboxConfig
+	for _, option := range msbCreateOptions(spec) {
+		option(&cfg)
+	}
+	if _, forwarded := cfg.Ports[DefaultPort]; forwarded {
+		t.Fatalf("full mode must not forward the OpenCode server port %d: %v", DefaultPort, cfg.Ports)
+	}
+	for port := uint16(3000); port <= 3010; port++ {
+		if cfg.Ports[port] != port {
+			t.Fatalf("preview port %d missing from full-mode config: %v", port, cfg.Ports)
+		}
 	}
 }
 

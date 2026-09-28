@@ -216,6 +216,9 @@ type msbClient interface {
 	// storage inside the sandbox rather than a host bind mount (P22). It is
 	// the provenance check that replaces mount-staleness detection.
 	WorkspaceOwned(ctx context.Context, name string) (bool, error)
+	// ServerPortForwarded reports whether the persisted configuration forwards
+	// OpenCode's HTTP server port from the guest to the host.
+	ServerPortForwarded(ctx context.Context, name string) (bool, error)
 	// WriteFile writes one payload to a path inside the running sandbox. It
 	// is the host->guest transfer channel; the caller passes files already
 	// resolved by the transfer filter.
@@ -255,9 +258,10 @@ type msbSandboxInfo struct {
 // carries binding *metadata* only: no secret value may appear here, so a spec
 // can never leak a credential into a persisted config or an SDK error dump.
 type msbSandboxSpec struct {
-	Name  string // instance name (P05); empty means the legacy singleton
-	Image string
-	Env   map[string]string
+	Name      string // instance name (P05); empty means the legacy singleton
+	Image     string
+	Isolation Isolation
+	Env       map[string]string
 	// CPUs and MemoryMB size the guest. Zero means "unset": the create
 	// options then fall back to the built-in defaults, so a spec built by a
 	// path that does not resolve resources still boots.
@@ -418,6 +422,12 @@ func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []reso
 		if err := m.rejectIsolationMismatch(ctx, sandbox); err != nil {
 			return err
 		}
+		// Port mappings are fixed in the persisted sandbox config. A full-mode
+		// instance created by an older build may still expose the unused
+		// OpenCode server port; do not silently adopt it after an upgrade.
+		if err := m.rejectFullServerPortForwarding(ctx); err != nil {
+			return err
+		}
 		// A sandbox created by an earlier version may still persist the real
 		// Albert key in its guest environment. Refuse to boot it: the key
 		// would stay readable inside the guest.
@@ -575,6 +585,7 @@ func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandbox
 	return msbSandboxSpec{
 		Name:            m.InstanceName(),
 		Image:           msbImage,
+		Isolation:       m.cfg.Isolation,
 		Env:             m.sandboxEnv(),
 		SealedWorkspace: true,
 		CPUs:            m.cfg.CPUs,
@@ -786,6 +797,30 @@ func (m *MicrosandboxRuntime) requireSealedWorkspace(ctx context.Context) error 
 	return nil
 }
 
+// rejectFullServerPortForwarding refuses an existing full-mode sandbox whose
+// persisted network config still exposes the backend-only OpenCode server
+// port. Port maps are creation-time state and cannot be removed in place;
+// migration therefore requires the explicit destructive recreate command.
+func (m *MicrosandboxRuntime) rejectFullServerPortForwarding(ctx context.Context) error {
+	if m.cfg.Isolation != IsolationFull {
+		return nil
+	}
+	forwarded, err := m.Client.ServerPortForwarded(ctx, m.InstanceName())
+	if err != nil {
+		return &ErrRecreateNeeded{
+			Instance: m.InstanceName(),
+			Reason:   fmt.Sprintf("cannot verify whether the persisted network configuration still forwards the OpenCode server port: %v", err),
+		}
+	}
+	if forwarded {
+		return &ErrRecreateNeeded{
+			Instance: m.InstanceName(),
+			Reason:   fmt.Sprintf("the full-mode sandbox still forwards the backend-only OpenCode server port %d; persisted port mappings cannot be changed in place", DefaultPort),
+		}
+	}
+	return nil
+}
+
 // warnWorkspaceHygiene prints host-side advice about secrets sitting in the
 // checkout. It never blocks: the sealed model does not mount the checkout, so
 // these files cannot reach the guest — the transfer filter refuses them — and
@@ -901,7 +936,12 @@ func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) er
 	if err := m.rejectResourceSizingChange(); err != nil {
 		return err
 	}
-	return m.rejectIsolationMismatch(ctx, sandbox)
+	if err := m.rejectIsolationMismatch(ctx, sandbox); err != nil {
+		return err
+	}
+	// Port mappings are also creation-fixed: refuse before Stop so a stale
+	// full-mode instance remains available until the user approves recreation.
+	return m.rejectFullServerPortForwarding(ctx)
 }
 
 // rejectResourceSizingChange refuses a restart when the applied state records

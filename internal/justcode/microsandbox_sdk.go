@@ -44,8 +44,13 @@ func mustAsset(name string) string {
 	return string(data)
 }
 
-func msbPortMappings() map[uint16]uint16 {
-	ports := map[uint16]uint16{DefaultPort: DefaultPort}
+func msbPortMappings(isolation Isolation) map[uint16]uint16 {
+	ports := make(map[uint16]uint16, 12)
+	// Full mode runs the TUI in the guest and has no OpenCode HTTP server.
+	// Keep the server port only for backend mode, where the host TUI attaches.
+	if isolation == IsolationBackend {
+		ports[DefaultPort] = DefaultPort
+	}
 	for p := uint16(3000); p <= 3010; p++ {
 		ports[p] = p
 	}
@@ -180,7 +185,7 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		msb.WithEnv(spec.Env),
 		msb.WithMounts(msbWorkspaceMounts(spec)),
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
-		msb.WithPorts(msbPortMappings()),
+		msb.WithPorts(msbPortMappings(spec.Isolation)),
 		msb.WithSecrets(secrets...),
 		msb.WithScripts(map[string]string{"start": spec.StartScript}),
 		// Ownership label (P06): the lifecycle sweeps list managed sandboxes
@@ -546,6 +551,37 @@ func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 	return false, nil
 }
 
+// parseServerPortForwarded checks the persisted network port map rather than
+// the requested spec: an existing sandbox keeps the mapping it was created
+// with. Either side of a mapping to DefaultPort is enough to expose the
+// OpenCode server to the host.
+//
+// ConfigJSON normalizes the request-side port map into an array of
+// {host_port, guest_port} entries; parse this persisted shape, not the SDK
+// option shape.
+func parseServerPortForwarded(configJSON string) (bool, error) {
+	var raw struct {
+		Network *struct {
+			Ports *[]struct {
+				HostPort  uint16 `json:"host_port"`
+				GuestPort uint16 `json:"guest_port"`
+			} `json:"ports"`
+		} `json:"network"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
+		return false, fmt.Errorf("decode persisted sandbox config: %w", err)
+	}
+	if raw.Network == nil || raw.Network.Ports == nil {
+		return false, fmt.Errorf("persisted sandbox config has no readable network port list")
+	}
+	for _, port := range *raw.Network.Ports {
+		if port.HostPort == DefaultPort || port.GuestPort == DefaultPort {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (sdkMSBClient) WorkspaceMount(ctx context.Context, name string) (string, error) {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {
@@ -564,6 +600,16 @@ func (sdkMSBClient) WorkspaceOwned(ctx context.Context, name string) (bool, erro
 		return false, err
 	}
 	return parseOwnedWorkspace(h.ConfigJSON(), msbGuestWorkspace)
+}
+
+// ServerPortForwarded reports whether the persisted sandbox config exposes
+// OpenCode's backend server port to the host.
+func (sdkMSBClient) ServerPortForwarded(ctx context.Context, name string) (bool, error) {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return parseServerPortForwarded(h.ConfigJSON())
 }
 
 // WriteFile writes data to a file inside the running sandbox, creating it.
