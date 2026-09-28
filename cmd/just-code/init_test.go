@@ -349,9 +349,19 @@ func TestOfferProjectInitSkipsWhenConfigured(t *testing.T) {
 	}
 }
 
+func clearLaunchChoiceEnv(t *testing.T) {
+	t.Helper()
+	// The launch offer correctly treats exported runtime choices as supplied
+	// answers. These tests exercise the no-env path, so isolate them from a
+	// developer shell that may export RUNTIME or ISOLATION.
+	t.Setenv("RUNTIME", "")
+	t.Setenv("ISOLATION", "")
+}
+
 // TestOfferProjectInitWithNoTerminalNamesTheCommand pins the non-TTY contract
 // on the launch path: nothing waits, and the failure says exactly what to run.
 func TestOfferProjectInitWithNoTerminalNamesTheCommand(t *testing.T) {
+	clearLaunchChoiceEnv(t)
 	root := initTestProject(t)
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -383,6 +393,7 @@ func TestOfferProjectInitWithNoTerminalNamesTheCommand(t *testing.T) {
 // carrying its own runtime or isolation flags is not asked to configure a
 // project: those flags are the answer the offer would collect.
 func TestOfferProjectInitRespectsExplicitChoices(t *testing.T) {
+	clearLaunchChoiceEnv(t)
 	root := initTestProject(t)
 	for _, parsed := range []parsedArgs{{action: "start", runtime: "--tart"}, {action: "start", isolation: "backend"}} {
 		configured, _, err := offerProjectInit(root, parsed)
@@ -395,6 +406,7 @@ func TestOfferProjectInitRespectsExplicitChoices(t *testing.T) {
 // TestOfferProjectInitAppliesWhatItWrote pins that accepting the offer is not
 // cosmetic: the manifest written by the offer is what the launch then applies.
 func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
+	clearLaunchChoiceEnv(t)
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	root := initTestProject(t)
 	// root, runtime, isolation(backend), model, cpus, memory, credential, apply
