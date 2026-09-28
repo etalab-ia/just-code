@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const agentVMSecretsEnvPath = "/tmp/just-code-opencode.env"
+
 // AgentVM orchestrates the OpenCode backend inside a Lima VM cloned from an
 // agent-vm base template (https://github.com/sylvinus/agent-vm). just-code
 // drives `limactl` directly rather than sourcing agent-vm.sh: the only
@@ -701,13 +703,13 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := runOK(a.Runner, ctx, "limactl", "copy", secretsPath, vm+":/tmp/just-code-opencode.env"); err != nil {
+	if err := runOK(a.Runner, ctx, "limactl", "copy", secretsPath, vm+":"+agentVMSecretsEnvPath); err != nil {
 		return err
 	}
-	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
+	if err := a.guestRun(ctx, "chmod", "600", agentVMSecretsEnvPath); err != nil {
 		return err
 	}
-	listCommand := fmt.Sprintf("cd %s && opencode session list --format json", shellQuote(cfg.WorkspaceDir))
+	listCommand := fmt.Sprintf("set -a; . %s; set +a; cd %s && opencode session list --format json", agentVMSecretsEnvPath, shellQuote(cfg.WorkspaceDir))
 	sessions, err := a.Runner.Run(ctx, "limactl", "shell", vm, "sh", "-c", listCommand)
 	var listErr error
 	if err != nil {
@@ -722,7 +724,8 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	var helpOutput string
 	var helpErr error
 	if listErr == nil && hasSessions {
-		help, err := a.Runner.Run(ctx, "limactl", "shell", vm, "sh", "-c", "opencode --help")
+		helpCommand := fmt.Sprintf("set -a; . %s; set +a; opencode --help", agentVMSecretsEnvPath)
+		help, err := a.Runner.Run(ctx, "limactl", "shell", vm, "sh", "-c", helpCommand)
 		if err != nil {
 			helpErr = err
 		} else if help.ExitCode != 0 {
@@ -739,7 +742,7 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if resumeFlag != "" {
 		resumeFlag = " " + resumeFlag
 	}
-	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode%s`, shellQuote(cfg.WorkspaceDir), resumeFlag)
+	launch := fmt.Sprintf(`set -a; . %s; set +a; cd %s; exec opencode%s`, agentVMSecretsEnvPath, shellQuote(cfg.WorkspaceDir), resumeFlag)
 	interactive := a.Interactive
 	if interactive == nil {
 		interactive = RunInteractive

@@ -443,6 +443,12 @@ func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 	if !r.hasCall("chmod 600 /tmp/just-code-opencode.env") {
 		t.Fatalf("guest env file must be chmod 600; calls: %v", r.calls)
 	}
+	if !r.hasCall("shell " + DefaultAgentVMVM + " sh -c set -a; . " + agentVMSecretsEnvPath + "; set +a; cd ") {
+		t.Fatalf("the session probe must source the same env file as the TUI: %v", r.calls)
+	}
+	if !r.hasCall("shell " + DefaultAgentVMVM + " sh -c set -a; . " + agentVMSecretsEnvPath + "; set +a; opencode --help") {
+		t.Fatalf("the OpenCode help probe must source the same env file as the TUI: %v", r.calls)
+	}
 	for _, c := range r.calls {
 		if strings.Contains(c, "pw") || strings.Contains(c, "key") {
 			t.Fatalf("secret value leaked into argv: %v", r.calls)

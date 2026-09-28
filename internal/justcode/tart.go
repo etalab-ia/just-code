@@ -632,8 +632,10 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 		return err
 	}
 	// Probe sessions and CLI support through the same login shell/PATH as the
-	// TUI: the vendor installer may keep OpenCode in ~/.opencode/bin.
-	listCommand := fmt.Sprintf("cd %s && opencode session list --format json", shellQuote(guestWorkspaceDir))
+	// TUI: the vendor installer may keep OpenCode in ~/.opencode/bin. Source
+	// the same managed environment so project config and plugins resolve alike.
+	envPrefix := fmt.Sprintf("set -a; . %s; set +a; ", shellQuote(guestSecretsEnvPath))
+	listCommand := fmt.Sprintf("%scd %s && opencode session list --format json", envPrefix, shellQuote(guestWorkspaceDir))
 	sessions, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", listCommand)
 	var listErr error
 	if err != nil {
@@ -648,7 +650,7 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	var helpOutput string
 	var helpErr error
 	if listErr == nil && hasSessions {
-		help, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", "opencode --help")
+		help, err := t.Runner.Run(ctx, "tart", "exec", vm, "/bin/zsh", "-lc", envPrefix+"opencode --help")
 		if err != nil {
 			helpErr = err
 		} else if help.ExitCode != 0 {
