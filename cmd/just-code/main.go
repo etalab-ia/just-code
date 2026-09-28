@@ -743,13 +743,15 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 		return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
 	}
 
-	help, helpErr := justcode.OpenCodeHelp(ctx, "attach", "--help")
-	var resumeArgs []string
-	if helpErr == nil {
-		resumeArgs = justcode.OpenCodeContinueArgs(help)
+	hasSessions, sessionErr := justcode.OpenCodeRemoteHasSessions(ctx, endpoint, cfg.Username, cfg.Password)
+	var help string
+	var helpErr error
+	if sessionErr == nil && hasSessions {
+		help, helpErr = justcode.OpenCodeHelp(ctx, "attach", "--help")
 	}
-	if len(resumeArgs) == 0 {
-		justcode.WarnOpenCodeContinueUnavailable("sur l'hôte")
+	resumeArgs, warn := justcode.OpenCodeResumeArgs(hasSessions, sessionErr, help, helpErr)
+	if warn {
+		justcode.WarnOpenCodeResumeUnavailable("sur l'hôte")
 	}
 	attachErr := justcode.RunInteractive("opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
 	code := exitCodeOf(attachErr)

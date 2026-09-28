@@ -418,7 +418,11 @@ func TestAgentVMLogPath(t *testing.T) {
 
 func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
-		if name == "limactl" && strings.Contains(strings.Join(args, " "), "opencode --help") {
+		joined := strings.Join(args, " ")
+		if name == "limactl" && strings.Contains(joined, "opencode session list --format json") {
+			return ExecResult{ExitCode: 0, Stdout: `[{"id":"ses_existing"}]`}
+		}
+		if name == "limactl" && strings.Contains(joined, "opencode --help") {
 			return ExecResult{ExitCode: 0, Stdout: "--continue continue the last session"}
 		}
 		return ExecResult{ExitCode: 0}
@@ -462,7 +466,12 @@ func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 }
 
 func TestAgentVMRunAgentFallsBackWhenContinueIsUnsupported(t *testing.T) {
-	r := &fakeRunner{}
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "limactl" && strings.Contains(strings.Join(args, " "), "opencode session list --format json") {
+			return ExecResult{ExitCode: 0, Stdout: `[{"id":"ses_existing"}]`}
+		}
+		return ExecResult{ExitCode: 0}
+	}}
 	a := newTestAgentVM(t, r)
 	var interactiveArgs []string
 	a.Interactive = func(name string, args ...string) error {

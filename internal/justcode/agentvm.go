@@ -707,13 +707,33 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
 		return err
 	}
-	help, err := a.Runner.Run(ctx, "limactl", "shell", vm, "opencode", "--help")
-	var resumeArgs []string
-	if err == nil && help.ExitCode == 0 {
-		resumeArgs = OpenCodeContinueArgs(help.Stdout + "\n" + help.Stderr)
+	listCommand := fmt.Sprintf("cd %s && opencode session list --format json", shellQuote(cfg.WorkspaceDir))
+	sessions, err := a.Runner.Run(ctx, "limactl", "shell", vm, "sh", "-c", listCommand)
+	var listErr error
+	if err != nil {
+		listErr = err
+	} else if sessions.ExitCode != 0 {
+		listErr = fmt.Errorf("OpenCode session list exited with code %d", sessions.ExitCode)
 	}
-	if len(resumeArgs) == 0 {
-		WarnOpenCodeContinueUnavailable("dans le guest agent-vm")
+	hasSessions := false
+	if listErr == nil {
+		hasSessions, listErr = OpenCodeHasSessions(sessions.Stdout)
+	}
+	var helpOutput string
+	var helpErr error
+	if listErr == nil && hasSessions {
+		help, err := a.Runner.Run(ctx, "limactl", "shell", vm, "sh", "-c", "opencode --help")
+		if err != nil {
+			helpErr = err
+		} else if help.ExitCode != 0 {
+			helpErr = fmt.Errorf("OpenCode help exited with code %d", help.ExitCode)
+		} else {
+			helpOutput = help.Stdout + "\n" + help.Stderr
+		}
+	}
+	resumeArgs, warn := OpenCodeResumeArgs(hasSessions, listErr, helpOutput, helpErr)
+	if warn {
+		WarnOpenCodeResumeUnavailable("dans le guest agent-vm")
 	}
 	resumeFlag := strings.Join(resumeArgs, " ")
 	if resumeFlag != "" {

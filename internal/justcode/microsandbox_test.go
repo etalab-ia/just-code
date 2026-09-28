@@ -1645,7 +1645,10 @@ func TestMicrosandboxStartMatchingIsolationProceeds(t *testing.T) {
 }
 
 func TestMicrosandboxRunAgentAttachesTUI(t *testing.T) {
-	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "--continue", code: 0}}
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{stdout: `[{"id":"ses_existing"}]`, code: 0},
+		{stdout: "--continue continue the last session", code: 0},
+	}}
 	m := newTestMicrosandbox(t, client)
 	if err := m.RunAgent(context.Background()); err != nil {
 		t.Fatalf("RunAgent: %v", err)
@@ -1656,13 +1659,32 @@ func TestMicrosandboxRunAgentAttachesTUI(t *testing.T) {
 }
 
 func TestMicrosandboxRunAgentFallsBackForOpenCodeWithoutContinue(t *testing.T) {
-	client := &fakeMSBClient{execCaptureDefault: &fakeMSBExecCaptureResult{stdout: "OpenCode options: --model", code: 0}}
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{stdout: `[{"id":"ses_existing"}]`, code: 0},
+		{stdout: "OpenCode options: --model", code: 0},
+	}}
 	m := newTestMicrosandbox(t, client)
 	if err := m.RunAgent(context.Background()); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
 	if !hasCall(client, "attach "+msbSandbox+" opencode /workspace") {
 		t.Fatalf("an OpenCode CLI without --continue must still launch a fresh TUI session: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRunAgentStartsNormallyWhenNoSessionExists(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{stdout: "", code: 0},
+	}}
+	m := newTestMicrosandbox(t, client)
+	if err := m.RunAgent(context.Background()); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if !hasCall(client, "attach "+msbSandbox+" opencode /workspace") {
+		t.Fatalf("first launch without a stored session must use plain OpenCode TUI: %v", client.calls)
+	}
+	if hasCall(client, "execcapture "+msbSandbox+" opencode --help") {
+		t.Fatalf("a first launch must not probe or pass --continue without an existing session: %v", client.calls)
 	}
 }
 

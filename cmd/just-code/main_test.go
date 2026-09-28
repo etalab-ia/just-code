@@ -54,7 +54,11 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestOpenCodeAttachArgsResumesLastSession(t *testing.T) {
-	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password", justcode.OpenCodeContinueArgs("--continue continue the last session")), " ")
+	resumeArgs, warn := justcode.OpenCodeResumeArgs(true, nil, "--continue continue the last session", nil)
+	if warn {
+		t.Fatal("supported CLI with a prior session must not warn")
+	}
+	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password", resumeArgs), " ")
 	want := "attach http://127.0.0.1:4096 --username test-user --password test-password --continue"
 	if got != want {
 		t.Fatalf("OpenCode attach args = %q, want %q", got, want)
@@ -62,10 +66,26 @@ func TestOpenCodeAttachArgsResumesLastSession(t *testing.T) {
 }
 
 func TestOpenCodeAttachArgsFallsBackWhenContinueIsUnsupported(t *testing.T) {
-	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password", justcode.OpenCodeContinueArgs("Options: --session session id")), " ")
+	resumeArgs, warn := justcode.OpenCodeResumeArgs(true, nil, "Options: --session session id", nil)
+	if !warn {
+		t.Fatal("unsupported CLI with a prior session must warn")
+	}
+	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password", resumeArgs), " ")
 	want := "attach http://127.0.0.1:4096 --username test-user --password test-password"
 	if got != want {
 		t.Fatalf("OpenCode attach args = %q, want the compatible fresh-session command %q", got, want)
+	}
+}
+
+func TestOpenCodeAttachArgsStartsNewWithoutPriorSession(t *testing.T) {
+	resumeArgs, warn := justcode.OpenCodeResumeArgs(false, nil, "--continue", nil)
+	if warn || len(resumeArgs) != 0 {
+		t.Fatalf("first launch resume decision = (%v, %t), want no flag and no warning", resumeArgs, warn)
+	}
+	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password", resumeArgs), " ")
+	want := "attach http://127.0.0.1:4096 --username test-user --password test-password"
+	if got != want {
+		t.Fatalf("OpenCode attach args = %q, want %q", got, want)
 	}
 }
 
