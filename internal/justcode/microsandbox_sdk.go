@@ -531,10 +531,11 @@ func parseOwnedWorkspace(configJSON, guestPath string) (bool, error) {
 		switch {
 		case strings.EqualFold(m.Type, "Owned"):
 			return true, nil
-		case m.Owned != "":
+		case m.Type == "" && (m.Owned == "dir" || m.Owned == "disk"):
 			// The create-path wire form uses an explicit owned selector
-			// instead of a type field; unlike an empty entry, this is positive
-			// evidence of guest-owned storage.
+			// instead of a type field. These are the SDK's only valid owned
+			// kinds; an unknown selector or conflicting non-owned type is
+			// refused below.
 			return true, nil
 		default:
 			// A known host-backed kind (bind/named/disk), or a kind this

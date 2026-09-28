@@ -74,6 +74,18 @@ func TestParseOwnedWorkspaceDistinguishesProvenance(t *testing.T) {
 			doc:  `{"mounts":[{"guest":"/workspace"}]}`,
 		},
 		{
+			name: "unknown owned selector is not positive evidence",
+			doc:  `{"mounts":[{"owned":"unknown","guest":"/workspace"}]}`,
+		},
+		{
+			name: "owned selector conflicts with bind type",
+			doc:  `{"mounts":[{"type":"Bind","owned":"dir","guest":"/workspace"}]}`,
+		},
+		{
+			name: "owned selector conflicts with unknown type",
+			doc:  `{"mounts":[{"type":"Virtiofs","owned":"dir","guest":"/workspace"}]}`,
+		},
+		{
 			name:  "owned with the options blob a persisted entry carries",
 			doc:   `{"mounts":[{"type":"Owned","guest":"/workspace","options":{"readonly":false,"noexec":false,"nosuid":false,"nodev":false},"stat_virtualization":"strict","host_permissions":"private","follow_root_symlinks":false,"quota_mib":null}]}`,
 			owned: true,
