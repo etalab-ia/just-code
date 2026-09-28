@@ -446,8 +446,8 @@ func TestAgentVMRunAgentPushesSecretsAndLaunchesTUI(t *testing.T) {
 	if !strings.HasPrefix(joined, "limactl shell "+DefaultAgentVMVM+" sh -c ") {
 		t.Fatalf("interactive argv = %q", joined)
 	}
-	if !strings.Contains(joined, "/tmp/just-code-opencode.env") || !strings.Contains(joined, a.Config.WorkspaceDir) || !strings.Contains(joined, "exec opencode") {
-		t.Fatalf("launch line must source the secrets file and exec opencode in the workspace: %q", joined)
+	if !strings.Contains(joined, "/tmp/just-code-opencode.env") || !strings.Contains(joined, a.Config.WorkspaceDir) || !strings.Contains(joined, "exec opencode --continue") {
+		t.Fatalf("launch line must source secrets and resume OpenCode in the workspace: %q", joined)
 	}
 	// The workspace path is user-configurable and lands in a `sh -c` string,
 	// so it must be shell-quoted rather than interpolated raw.

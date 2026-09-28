@@ -237,10 +237,10 @@ type msbClient interface {
 	Logs(name string) error
 	// Shell opens an interactive shell in the sandbox.
 	Shell(name string) error
-	// AttachInteractive runs a command interactively in the sandbox with a
-	// working directory, blocking until it exits. It is the TUI channel used
-	// by isolation full; Shell() is the /bin/bash special case of it.
-	AttachInteractive(ctx context.Context, name, cmd, cwd string) (int, error)
+	// AttachInteractive runs a command with args interactively in the sandbox
+	// with a working directory, blocking until it exits. It is the TUI channel
+	// used by isolation full; Shell() is the /bin/bash special case of it.
+	AttachInteractive(ctx context.Context, name, cmd string, args []string, cwd string) (int, error)
 	// List returns every managed sandbox known to the runtime, in
 	// deterministic order. Managed means carrying the ownership label; the
 	// legacy singleton is reported separately by the runtime (it predates
@@ -1026,10 +1026,11 @@ func (m *MicrosandboxRuntime) Shell() error {
 }
 
 // RunAgent launches the OpenCode TUI in the foreground inside the microVM,
+// resuming its latest session (the TUI's /new command starts a fresh one),
 // with /workspace as its working directory (isolation full). The SDK attach
 // channel passes the host terminal through.
 func (m *MicrosandboxRuntime) RunAgent(ctx context.Context) error {
-	code, err := m.Client.AttachInteractive(ctx, m.InstanceName(), "opencode", "/workspace")
+	code, err := m.Client.AttachInteractive(ctx, m.InstanceName(), "opencode", []string{"--continue"}, "/workspace")
 	if err != nil {
 		return err
 	}

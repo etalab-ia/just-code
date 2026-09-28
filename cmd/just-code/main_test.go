@@ -53,6 +53,14 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAttachArgsResumesLastSession(t *testing.T) {
+	got := strings.Join(openCodeAttachArgs("http://127.0.0.1:4096", "test-user", "test-password"), " ")
+	want := "attach http://127.0.0.1:4096 --username test-user --password test-password --continue"
+	if got != want {
+		t.Fatalf("OpenCode attach args = %q, want %q", got, want)
+	}
+}
+
 // TestParseArgsRejectsCode covers the deliberate break with the old CLI: the
 // `code` command is gone and the error explains the replacement.
 func TestParseArgsRejectsCode(t *testing.T) {

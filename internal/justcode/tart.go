@@ -596,9 +596,10 @@ func (t *Tart) Shell() error {
 }
 
 // RunAgent launches the OpenCode TUI in the foreground inside the VM
-// (isolation full). Secrets are pushed first via the staged guest binary
-// (stdin only, never argv), then the TUI runs under `tart exec -it`, sourcing
-// the 0600 env file and execing opencode in the workspace share.
+// (isolation full), resuming the latest session when one exists. The TUI's
+// /new command starts a fresh session. Secrets are pushed first via the staged
+// guest binary on stdin (never argv); the TUI then runs under `tart exec -it`,
+// sourcing the 0600 env file and execing opencode --continue in the workspace.
 func (t *Tart) RunAgent(ctx context.Context) error {
 	cfg := t.Config
 	vm := t.VMName()
@@ -642,7 +643,7 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 // paths are shell-quoted: the workspace share contains spaces, and the line
 // runs under `zsh -lc`.
 func tartAgentLaunch(secretsPath, workspaceDir string) string {
-	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode", shellQuote(secretsPath), shellQuote(workspaceDir))
+	return fmt.Sprintf("set -a; . %s; set +a; cd %s; exec opencode --continue", shellQuote(secretsPath), shellQuote(workspaceDir))
 }
 
 // Status describes the managed VM's current state, for `check` in isolation

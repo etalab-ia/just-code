@@ -684,8 +684,9 @@ func (a *AgentVM) Shell() error {
 // RunAgent launches the OpenCode TUI in the foreground inside the VM
 // (isolation full). The secrets env file is pushed with limactl copy (same
 // channel as the backend flow), then the TUI runs under `limactl shell`,
-// sourcing the 0600 env file and execing opencode in the workspace mount,
-// which shares the host's absolute path.
+// sourcing the 0600 env file and execing opencode --continue in the workspace
+// mount, which shares the host's absolute path. The TUI's /new command starts
+// a fresh session.
 func (a *AgentVM) RunAgent(ctx context.Context) error {
 	cfg := a.Config
 	vm := a.VMName()
@@ -706,7 +707,7 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := a.guestRun(ctx, "chmod", "600", "/tmp/just-code-opencode.env"); err != nil {
 		return err
 	}
-	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode`, shellQuote(cfg.WorkspaceDir))
+	launch := fmt.Sprintf(`set -a; . /tmp/just-code-opencode.env; set +a; cd %s; exec opencode --continue`, shellQuote(cfg.WorkspaceDir))
 	interactive := a.Interactive
 	if interactive == nil {
 		interactive = RunInteractive
