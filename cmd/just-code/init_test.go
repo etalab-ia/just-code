@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -114,7 +115,11 @@ func TestInitGitHubWorkflowRejectsNonMicrosandboxRuntime(t *testing.T) {
 		Root: root, Runtime: "tart", GitHub: true, Yes: true,
 		Set: map[string]bool{"root": true, "runtime": true, "github": true},
 	}, bufio.NewReader(strings.NewReader("")), false)
-	if code == 0 || err == nil || !strings.Contains(err.Error(), "requires the microsandbox runtime") {
+	want := "requires the microsandbox runtime"
+	if runtime.GOOS == "windows" {
+		want = "tart is macOS only"
+	}
+	if code == 0 || err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("non-Microsandbox GitHub workflow: code=%d err=%v", code, err)
 	}
 	if approved {

@@ -105,16 +105,18 @@ func TestGitHubSnapshotBranchScriptKeepsRemoteBaseAndOverlaysFilteredSnapshot(t 
 	}
 	root := t.TempDir()
 	remote := filepath.Join(root, "origin.git")
-	cmd := exec.Command("git", "init", "-q", "--bare", "--initial-branch=main", remote)
+	cmd := exec.Command("git", "init", "-q", "--bare", remote)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("create remote: %v\n%s", err, out)
 	}
+	runGitTest(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	base := filepath.Join(root, "base")
 	if err := os.Mkdir(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runGitTest(t, base, "init", "-q", "--initial-branch=main")
+	runGitTest(t, base, "init", "-q")
+	runGitTest(t, base, "symbolic-ref", "HEAD", "refs/heads/main")
 	runGitTest(t, base, "config", "user.name", "Base")
 	runGitTest(t, base, "config", "user.email", "base@example.test")
 	if err := os.WriteFile(filepath.Join(base, "shared.txt"), []byte("remote version\n"), 0o644); err != nil {

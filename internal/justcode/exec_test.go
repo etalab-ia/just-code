@@ -97,8 +97,11 @@ func TestStartDeliversStdinToDetachedChild(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "received")
 	script := filepath.Join(dir, "read-stdin.sh")
-	// Read one line of stdin and persist it, so the test can observe delivery.
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nread -r line\nprintf '%s' \"$line\" > "+out+"\n"), 0o755); err != nil {
+	// Publish only after the write finishes, so the reader cannot observe the
+	// empty file created by shell redirection before printf runs.
+	childScript := "#!/bin/sh\nset -eu\nread -r line\nprintf '%s' \"$line\" > " + shellQuote(out+".tmp") +
+		"\nmv " + shellQuote(out+".tmp") + " " + shellQuote(out) + "\n"
+	if err := os.WriteFile(script, []byte(childScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(dir, "child.log")
