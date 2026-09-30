@@ -36,23 +36,89 @@ func TestParseInitArgs(t *testing.T) {
 	opts, err := parseInitArgs([]string{
 		"--root", "/tmp/p", "--runtime", "tart", "--isolation", "backend",
 		"--model", "albert/x", "--cpus", "4", "--memory-mb", "2048",
-		"--credential-ref", "work", "--replace", "--yes",
+		"--credential-ref", "work", "--github", "--replace", "--yes",
 	})
 	if err != nil {
 		t.Fatalf("parseInitArgs: %v", err)
 	}
 	if opts.Root != "/tmp/p" || opts.Runtime != "tart" || opts.Isolation != "backend" ||
 		opts.Model != "albert/x" || opts.CPUs != 4 || opts.MemoryMB != 2048 ||
-		opts.CredentialRef != "work" || !opts.Replace || !opts.Yes {
+		opts.CredentialRef != "work" || !opts.GitHub || !opts.Replace || !opts.Yes {
 		t.Fatalf("options = %+v", opts)
 	}
-	if !opts.Set["root"] || !opts.Set["cpus"] || !opts.Set["memory-mb"] {
+	if !opts.Set["root"] || !opts.Set["cpus"] || !opts.Set["memory-mb"] || !opts.Set["github"] {
 		t.Fatalf("every supplied field must be recorded as set: %v", opts.Set)
 	}
 	for _, args := range [][]string{{"--cpus", "many"}, {"--memory-mb", "x"}, {"--root"}, {"--bogus"}} {
 		if _, err := parseInitArgs(args); err == nil {
 			t.Fatalf("%v must be rejected", args)
 		}
+	}
+}
+
+func TestInitGitHubApprovalStaysOutOfProjectManifest(t *testing.T) {
+	root := initTestProject(t)
+	originalPreflight, originalApprove := githubInitPreflightFn, approveGitHubForProjectFn
+	var preflightRoot, approvedRoot string
+	githubInitPreflightFn = func(gotRoot string) (justcode.GitHubRemote, error) {
+		preflightRoot = gotRoot
+		return justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, nil
+	}
+	approveGitHubForProjectFn = func(gotRoot string) error {
+		approvedRoot = gotRoot
+		return nil
+	}
+	t.Cleanup(func() {
+		githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove
+	})
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{
+			Root: root, GitHub: true, Yes: true,
+			Set: map[string]bool{"root": true, "github": true},
+		}, bufio.NewReader(strings.NewReader("")), false)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preflightRoot != root || approvedRoot != canonicalRoot {
+		t.Fatalf("preflight root = %q, approval root = %q, want %q and canonical %q", preflightRoot, approvedRoot, root, canonicalRoot)
+	}
+	if !strings.Contains(out, "guest workflow for owner/repo") || !strings.Contains(out, "approval is not stored in project files") {
+		t.Fatalf("review must identify the repo and host-local approval: %q", out)
+	}
+	manifest, err := os.ReadFile(justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(manifest)), "github") {
+		t.Fatalf("GitHub approval or origin leaked into project manifest: %s", manifest)
+	}
+}
+
+func TestInitGitHubWorkflowRejectsNonMicrosandboxRuntime(t *testing.T) {
+	root := initTestProject(t)
+	originalPreflight, originalApprove := githubInitPreflightFn, approveGitHubForProjectFn
+	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
+		return justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, nil
+	}
+	approved := false
+	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+	t.Cleanup(func() {
+		githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove
+	})
+	code, err := initRun(initOptions{
+		Root: root, Runtime: "tart", GitHub: true, Yes: true,
+		Set: map[string]bool{"root": true, "runtime": true, "github": true},
+	}, bufio.NewReader(strings.NewReader("")), false)
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "requires the microsandbox runtime") {
+		t.Fatalf("non-Microsandbox GitHub workflow: code=%d err=%v", code, err)
+	}
+	if approved {
+		t.Fatal("GitHub approval must not be persisted after runtime validation fails")
 	}
 }
 
@@ -121,7 +187,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 // engine's defaults are what get written.
 func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	root := initTestProject(t)
-	input := root + "\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, apply
+	input := root + "\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, apply
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -213,7 +279,7 @@ func TestIsTTYTreatsDevNullAsNonInteractive(t *testing.T) {
 func TestInitSkipsQuestionsAnsweredByFlags(t *testing.T) {
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	root := initTestProject(t)
-	input := "\n" // only the apply confirmation is left to answer
+	input := "\n\n" // GitHub defaults to off, then the apply confirmation
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{
 			Root: root, Runtime: "microsandbox", Isolation: "backend", Model: "albert/x",
@@ -409,8 +475,8 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	clearLaunchChoiceEnv(t)
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	root := initTestProject(t)
-	// root, runtime, isolation(backend), model, cpus, memory, credential, apply
-	input := "\n\nbackend\n\n\n\n\n\n"
+	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, apply
+	input := "\n\nbackend\n\n\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.

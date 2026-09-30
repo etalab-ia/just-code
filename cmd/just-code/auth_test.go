@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"io"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -64,4 +68,71 @@ func TestAuthCmdUsage(t *testing.T) {
 	if code != 2 || err != nil {
 		t.Fatalf("code = %d, err = %v; want 2, nil", code, err)
 	}
+}
+
+func TestAuthAddFallbackCreatesStoreOnlyAfterNonemptySecret(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the CLI path test uses XDG/HOME credential directories")
+	}
+	home := t.TempDir()
+	config := t.TempDir()
+	state := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("APPDATA", config)
+
+	store, err := justcode.ConsentFileStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.Path); !os.IsNotExist(err) {
+		t.Fatalf("precondition: fallback store already exists: %v", err)
+	}
+	withAuthTestStdin(t, "\n")
+	if code, err := authAddCmd([]string{"github", "--stdin", "--fallback"}); code != 1 || err == nil {
+		t.Fatalf("empty fallback credential: code=%d err=%v", code, err)
+	}
+	if _, err := os.Stat(store.Path); !os.IsNotExist(err) {
+		t.Fatalf("empty input created the fallback store: %v", err)
+	}
+
+	const testValue = "not-a-real-github-token"
+	withAuthTestStdin(t, testValue+"\n")
+	if code, err := authAddCmd([]string{"github", "--stdin", "--fallback"}); code != 0 || err != nil {
+		t.Fatalf("first explicit fallback write: code=%d err=%v", code, err)
+	}
+	got, err := store.Get(context.Background(), justcode.CredentialGithub)
+	if err != nil || got != testValue {
+		t.Fatalf("stored test value = %q, err=%v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(store.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("fallback store mode = %o, want 0600", info.Mode().Perm())
+		}
+	}
+}
+
+func withAuthTestStdin(t *testing.T, input string) {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(writer, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdin
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = previous
+		_ = reader.Close()
+	})
 }

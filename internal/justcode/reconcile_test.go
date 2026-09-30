@@ -225,6 +225,30 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 	_ = os.RemoveAll(filepath.Dir(path))
 }
 
+func TestGitHubOriginParticipatesOnlyForResolvedBinding(t *testing.T) {
+	isolateHostState(t)
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	albert := testBindings(m.cfg.APIKey)
+	github := append(append([]resolvedBinding{}, albert...), resolvedBinding{
+		msbSecretBinding: msbSecretBinding{Kind: CredentialGithub, GuestEnv: "GITHUB_TOKEN"},
+	})
+	m.cfg.GitHubRemote = GitHubRemote{URL: "https://github.com/owner/one.git", Repo: "owner/one"}
+	without := m.desiredState(true, albert, nil)
+	before := m.desiredState(true, github, nil)
+	applied := before.toState()
+	m.cfg.GitHubRemote = GitHubRemote{URL: "https://github.com/owner/two.git", Repo: "owner/two"}
+	after := m.desiredState(true, github, &applied)
+	if before.ConfigRevision() == after.ConfigRevision() {
+		t.Fatal("approved origin changes must not reconcile as a no-op")
+	}
+	if without.ConfigRevision() != m.desiredState(true, albert, nil).ConfigRevision() {
+		t.Fatal("origin changes must not affect projects without a GitHub binding")
+	}
+	if got := m.desiredState(false, nil, &applied); got.ConfigRevision() != before.ConfigRevision() {
+		t.Fatal("an unresolved credential must retain the applied origin and revision")
+	}
+}
+
 func TestReconcileRejectsExistingFullModeServerPortMapping(t *testing.T) {
 	isolateHostState(t)
 	client := &fakeMSBClient{

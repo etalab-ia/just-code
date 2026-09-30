@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -33,6 +34,36 @@ func TestBindingsCmdRejectsRequiredKind(t *testing.T) {
 		if code, err := bindingsCmd([]string{sub, "albert"}, "jc-test"); code != 2 || err == nil {
 			t.Fatalf("bindings %s albert: code %d, err %v; want 2, error", sub, code, err)
 		}
+	}
+}
+
+func TestProjectGitHubRemoteRequiresHostLocalApproval(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "https://x-access-token:secret@github.com/owner/repo.git"}} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	project, err := justcode.DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	remote, err := projectGitHubRemote(root, stateDir, project.InstanceName())
+	if err != nil || remote.URL != "" {
+		t.Fatalf("unapproved repository remote activated GitHub: remote=%#v err=%v", remote, err)
+	}
+	approvalPath := justcode.BindingApprovalsPath(stateDir, project.InstanceName())
+	if err := justcode.ApproveBinding(justcode.DefaultFS, approvalPath, justcode.CredentialGithub); err != nil {
+		t.Fatal(err)
+	}
+	remote, err = projectGitHubRemote(root, stateDir, project.InstanceName())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remote.URL != "https://github.com/owner/repo.git" || remote.Repo != "owner/repo" {
+		t.Fatalf("approved origin = %#v", remote)
 	}
 }
 

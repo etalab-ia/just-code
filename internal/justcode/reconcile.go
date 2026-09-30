@@ -140,6 +140,8 @@ type InstanceState struct {
 	// ConfigRevision is the hash of the non-secret desired config that was
 	// applied. Identical revision + healthy guest = no-op.
 	ConfigRevision string `json:"configRevision"`
+	// GitHubOrigin is sanitized metadata, retained on unresolved credentials.
+	GitHubOrigin string `json:"githubOrigin,omitempty"`
 	// CredentialRev is the hash of the applied binding-set descriptor (P09).
 	// A value rotation within an unchanged set does not move it: the secret
 	// reference re-resolves at the next boot.
@@ -190,6 +192,8 @@ type DesiredState struct {
 	BoundCredentials []string
 	// Non-secret server credentials participate in the revision.
 	Username string
+	// GitHubOrigin participates only when the optional binding is resolved.
+	GitHubOrigin string
 }
 
 // ConfigRevision hashes the non-secret configuration. Credential values
@@ -206,6 +210,7 @@ func (d DesiredState) ConfigRevision() string {
 		d.Username,
 		"rev:" + d.CredentialRev,
 		"gen:" + d.CredentialGeneration,
+		"github:" + d.GitHubOrigin,
 	} {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{0})
@@ -391,6 +396,11 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if resolved {
+		if err := m.validateAppliedGitHubOrigin(bindings, applied); err != nil {
+			return err
+		}
+	}
 	desired := m.desiredState(resolved, bindings, applied)
 	facts, err := m.reconcileFacts(ctx, applied, desired)
 	if err != nil {
@@ -497,12 +507,16 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 		MemoryMB:  m.cfg.MemoryMB,
 	}
 	if resolved {
+		if hasResolvedGitHubBinding(bindings) {
+			d.GitHubOrigin = m.cfg.GitHubRemote.URL
+		}
 		d.CredentialRev = bindingsRevision(bindings)
 		d.BoundCredentials = storeBoundEntries(bindings)
 		d.CredentialGeneration = storeGenerationOf(DefaultFS, DefaultStateDir(), bindings)
 		return d
 	}
 	if applied != nil {
+		d.GitHubOrigin = applied.GitHubOrigin
 		d.CredentialRev = applied.CredentialRev
 		d.CredentialGeneration = string(applied.CredentialGen)
 		d.BoundCredentials = append([]string(nil), applied.BoundCredentials...)
@@ -524,6 +538,7 @@ func (d DesiredState) toState() InstanceState {
 		CPUs:             d.CPUs,
 		MemoryMB:         d.MemoryMB,
 		ConfigRevision:   d.ConfigRevision(),
+		GitHubOrigin:     d.GitHubOrigin,
 		CredentialRev:    d.CredentialRev,
 		CredentialGen:    credentialGenJSON(d.CredentialGeneration),
 		BoundCredentials: append([]string(nil), d.BoundCredentials...),

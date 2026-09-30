@@ -39,6 +39,13 @@ type InitAnswers struct {
 	// CredentialRef names the credential this project may use (a P08
 	// reference). Empty means the global default resolution applies.
 	CredentialRef string
+	// GitHubWorkflow records the user's project-init choice to approve the
+	// optional GitHub binding on this host. It is not written to the manifest:
+	// binding approval is a local trust decision (P09).
+	GitHubWorkflow bool
+	// GitHubRemote is the sanitized origin shown in the review. It is derived
+	// from the host Git config and is not persisted by InitWizard.
+	GitHubRemote GitHubRemote
 }
 
 // InitWizard validates project setup answers and writes what they imply.
@@ -139,6 +146,16 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		return plan, err
 	}
 	plan.Answers.Runtime = rt
+	if answers.GitHubWorkflow {
+		if rt != RuntimeMicrosandbox {
+			return plan, fmt.Errorf("the protected GitHub guest workflow requires the microsandbox runtime")
+		}
+		remote, err := ParseGitHubRemote(answers.GitHubRemote.URL)
+		if err != nil || remote != answers.GitHubRemote {
+			return plan, fmt.Errorf("the GitHub guest workflow requires a GitHub.com origin remote")
+		}
+		plan.Answers.GitHubRemote = remote
+	}
 
 	iso := answers.Isolation
 	if iso == "" {
@@ -220,6 +237,12 @@ func FormatInitReview(plan InitPlan) string {
 	// the guest). Promising "it stays on the host" would be false for two of
 	// the three.
 	b.WriteString("               (the manifest records the reference, never a value)\n")
+	if a.GitHubWorkflow {
+		fmt.Fprintf(&b, "  GitHub       guest workflow for %s\n", a.GitHubRemote.Repo)
+		b.WriteString("               GitHub token approval is host-local and is not written to the project\n")
+	} else {
+		b.WriteString("  GitHub       no new approval; existing host-local approvals remain unchanged\n")
+	}
 	b.WriteString("  state        versioned in .just-code/ (shared with whoever clones the repository)\n")
 	fmt.Fprintf(&b, "  manifest     %s\n", plan.ManifestPath)
 	if a.Runtime == RuntimeMicrosandbox {

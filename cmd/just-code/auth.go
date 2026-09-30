@@ -110,9 +110,11 @@ func authAddCmd(args []string) (int, error) {
 		return 1, err
 	}
 	// Probe the store first: an unavailable or locked store must fail
-	// BEFORE the user types the secret, and must never silently create
-	// a plaintext fallback.
-	if err := store.Verify(context.Background()); err != nil {
+	// BEFORE the user types the secret. An absent file store is the one
+	// expected first-run state when --fallback explicitly consents to create
+	// it on the first non-empty Put; Verify itself remains side-effect-free.
+	if err := store.Verify(context.Background()); err != nil &&
+		!(fallback && errors.Is(err, justcode.ErrFileStoreAbsent)) {
 		return 1, err
 	}
 	value, err := readSecret(useStdin)

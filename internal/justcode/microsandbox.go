@@ -367,6 +367,9 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := m.validateStoredGitHubOrigin(bindings); err != nil {
+		return err
+	}
 	// The host transport variables exist only for the duration of the start:
 	// the SDK's env references resolve from this process's environment at
 	// apply/boot time, and are restored afterwards.
@@ -386,7 +389,10 @@ func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBind
 	// untouched. Refreshing an existing workspace is explicit
 	// (SyncGuestWorkspace / 'just-code workspace sync'), never a side effect
 	// of a plain start.
-	return m.ProvisionGuestWorkspace(ctx, SyncOptions{})
+	if err := m.ProvisionGuestWorkspace(ctx, SyncOptions{}); err != nil {
+		return err
+	}
+	return m.configureGitHubWorkspace(ctx, bindings)
 }
 
 func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []resolvedBinding) error {
@@ -895,7 +901,11 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	}
 	// Resolve credentials before stopping: a resolution failure must not
 	// leave a previously usable sandbox stopped.
-	if _, err := m.resolveBindings(ctx); err != nil {
+	bindings, err := m.resolveBindings(ctx)
+	if err != nil {
+		return err
+	}
+	if err := m.validateStoredGitHubOrigin(bindings); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
