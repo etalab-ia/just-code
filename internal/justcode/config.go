@@ -18,7 +18,7 @@ type Config struct {
 	ProjectSkills []SkillPackage
 	// ProjectSkillIDs and ProjectSkillsManaged include deselection state even
 	// when no current archives are selected.
-	ProjectSkillIDs     []string
+	ProjectSkillIDs      []string
 	ProjectSkillsManaged bool
 	// WorkspaceDir is the host directory the project content comes from. Under
 	// the sealed model (P22) it is the transfer SOURCE, not a mounted
