@@ -559,9 +559,9 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	if err != nil {
 		return err
 	}
-	instructionsChanged := plan.InstructionsChanged
+	instructionsChanged := false
 	instructionsAfter := plan.InstructionsAfter
-	if instructionsChanged {
+	if plan.InstructionsPath != "" {
 		if info, err := os.Lstat(plan.InstructionsPath); err == nil && !info.Mode().IsRegular() {
 			return fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
 		} else if err != nil && !os.IsNotExist(err) {
@@ -639,7 +639,7 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 		return err
 	}
 	w.print(fmt.Sprintf("Wrote %s\nWrote %s\n", plan.ManifestPath, plan.LockPath))
-	if plan.InstructionsChanged {
+	if instructionsChanged {
 		w.print(fmt.Sprintf("Updated %s\n", plan.InstructionsPath))
 	}
 	if plan.Answers.SkillsLocalOnly && len(plan.Answers.Skills) > 0 {

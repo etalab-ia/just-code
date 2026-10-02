@@ -496,8 +496,43 @@ func TestInitApplyMergesAGENTSChangesMadeAfterPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := readFileForTest(t, plan.InstructionsPath)
-	if !bytes.Contains(got, []byte("official/rgaa")) || !bytes.HasSuffix(got, []byte(concurrentEdit)) {
+	if !bytes.Contains(got, []byte("official/rgaa")) || !bytes.Contains(got, []byte(concurrentEdit)) {
 		t.Fatalf("Apply lost concurrent user text or managed skill: %q", got)
+	}
+}
+
+func TestInitApplyRepairsManagedInstructionsAfterNoDiffReview(t *testing.T) {
+	root := initTestRoot(t)
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	wizard := InitWizard{ResolveSkills: fixtureSkillResolver(t)}
+	answers := InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true}
+	first, err := wizard.Plan(answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(first, false); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := wizard.Plan(answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsChanged {
+		t.Fatal("unchanged versioned skills should have an unchanged managed-zone preview")
+	}
+	const concurrentEdit = "User edit made after an unchanged preview.\n"
+	if err := os.WriteFile(plan.InstructionsPath, []byte(concurrentEdit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileForTest(t, plan.InstructionsPath)
+	if !bytes.Contains(got, []byte("official/rgaa")) || !bytes.Contains(got, []byte(concurrentEdit)) {
+		t.Fatalf("Apply did not restore the managed skill zone or lost concurrent user text: %q", got)
 	}
 }
 
