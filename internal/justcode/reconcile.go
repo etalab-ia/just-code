@@ -659,6 +659,15 @@ func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op Reconcile
 	case OpRestartBackend:
 		return m.launchBackend(ctx)
 	case OpRestartVM:
+		running, err := m.IsRunning(ctx)
+		if err != nil {
+			return err
+		}
+		if running {
+			if _, _, err := m.preflightProjectSkills(ctx); err != nil {
+				return err
+			}
+		}
 		if err := m.Stop(ctx); err != nil {
 			return err
 		}

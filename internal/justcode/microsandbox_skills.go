@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 const guestSkillInventorySchema = 1
@@ -157,9 +158,26 @@ func skillPackagesBySelection(ids []string, packages []SkillPackage) (map[string
 }
 
 func (m *MicrosandboxRuntime) readGuestSkillInventory(ctx context.Context) (guestSkillInventory, error) {
-	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), readGuestSkillInventoryScript())
-	if err != nil {
-		return guestSkillInventory{}, fmt.Errorf("read guest skill inventory: %w", err)
+	delay := m.launchRetryDelay
+	if delay == 0 {
+		delay = msbLaunchRetryDelay
+	}
+	var stdout, stderr string
+	var code int
+	var err error
+	for attempt := 1; attempt <= msbLaunchAttempts; attempt++ {
+		stdout, stderr, code, err = m.Client.ExecCapture(ctx, m.InstanceName(), readGuestSkillInventoryScript())
+		if err == nil {
+			break
+		}
+		if attempt == msbLaunchAttempts {
+			return guestSkillInventory{}, fmt.Errorf("read guest skill inventory: %w", err)
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return guestSkillInventory{}, fmt.Errorf("read guest skill inventory: %w", ctx.Err())
+		}
 	}
 	if code != 0 {
 		return guestSkillInventory{}, fmt.Errorf("read guest skill inventory exited %d: %s", code, strings.TrimSpace(stderr))
