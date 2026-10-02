@@ -559,6 +559,10 @@ func (f failRenameForPathFS) RenameTmp(oldPath, newPath string) error {
 
 func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
 	root := initTestRoot(t)
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cache, state := t.TempDir(), t.TempDir()
 	oldCacheDir := userCacheDirFn
 	userCacheDirFn = func() (string, error) { return cache, nil }
@@ -593,7 +597,7 @@ func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wizard.FS = failRenameForPathFS{FS: fs, Path: manifestPath}
+	wizard.FS = failRenameForPathFS{FS: fs, Path: plan.ManifestPath}
 	if err := wizard.Apply(plan, true); err == nil {
 		t.Fatal("manifest failure after staging local pins must be reported")
 	}
