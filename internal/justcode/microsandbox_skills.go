@@ -148,16 +148,7 @@ func skillPackagesBySelection(ids []string, packages []SkillPackage) (map[string
 }
 
 func (m *MicrosandboxRuntime) readGuestSkillInventory(ctx context.Context) (guestSkillInventory, error) {
-	const script = "set -eu\n" +
-		"config_home=${XDG_CONFIG_HOME:-\"$HOME/.config\"}\n" +
-		"case \"$config_home\" in /*) ;; *) echo 'XDG_CONFIG_HOME must be absolute' >&2; exit 1 ;; esac\n" +
-		"state=\"$config_home/just-code\"\n" +
-		"index=\"$state/project-skills.json\"\n" +
-		"if [ -L \"$config_home\" ] || [ -L \"$config_home/opencode\" ] || [ -L \"$config_home/opencode/skills\" ] || [ -L \"$state\" ] || [ -L \"$index\" ]; then echo 'refusing a symlink in the managed skill state path' >&2; exit 1; fi\n" +
-		"if [ -e \"$state\" ] && [ ! -d \"$state\" ]; then echo 'managed skill state path is not a directory' >&2; exit 1; fi\n" +
-		"if [ -e \"$index\" ] && [ ! -f \"$index\" ]; then echo 'managed skill inventory is not a regular file' >&2; exit 1; fi\n" +
-		"if [ -f \"$index\" ]; then cat -- \"$index\"; else printf '%s\\n' '{\"schemaVersion\":1,\"skills\":[]}'; fi\n"
-	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), script)
+	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), readGuestSkillInventoryScript())
 	if err != nil {
 		return guestSkillInventory{}, fmt.Errorf("read guest skill inventory: %w", err)
 	}
@@ -186,6 +177,25 @@ func (m *MicrosandboxRuntime) readGuestSkillInventory(ctx context.Context) (gues
 		seenIDs[item.ID], seenNames[item.Name] = true, true
 	}
 	return inventory, nil
+}
+
+func readGuestSkillInventoryScript() string {
+	const script = "set -eu\n" +
+		"config_home=${XDG_CONFIG_HOME:-\"$HOME/.config\"}\n" +
+		"case \"$config_home\" in /*) ;; *) echo 'XDG_CONFIG_HOME must be absolute' >&2; exit 1 ;; esac\n" +
+		"state=\"$config_home/just-code\"\n" +
+		"index=\"$state/project-skills.json\"\n" +
+		"skills=\"$config_home/opencode/skills\"\n" +
+		"if [ -L \"$config_home\" ] || [ -L \"$config_home/opencode\" ] || [ -L \"$config_home/opencode/skills\" ] || [ -L \"$state\" ] || [ -L \"$index\" ]; then echo 'refusing a symlink in the managed skill state path' >&2; exit 1; fi\n" +
+		"if [ -e \"$state\" ] && [ ! -d \"$state\" ]; then echo 'managed skill state path is not a directory' >&2; exit 1; fi\n" +
+		"if [ -e \"$index\" ] && [ ! -f \"$index\" ]; then echo 'managed skill inventory is not a regular file' >&2; exit 1; fi\n" +
+		"if [ -f \"$index\" ]; then cat -- \"$index\"; else\n" +
+		"  for marker in \"$skills\"/*/.just-code-source; do\n" +
+		"    if [ -e \"$marker\" ] || [ -L \"$marker\" ]; then echo 'managed skill directory exists without its project-skill inventory' >&2; exit 1; fi\n" +
+		"  done\n" +
+		"  printf '%s\\n' '{\"schemaVersion\":1,\"skills\":[]}'\n" +
+		"fi\n"
+	return script
 }
 
 func skillNameFromID(id string) string {

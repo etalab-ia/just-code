@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -249,6 +250,55 @@ func TestMicrosandboxInstallsPinnedSkillInOpenCodeGlobalDirectory(t *testing.T) 
 	}
 	if !hasCall(client, "execcapture "+m.InstanceName()+" opencode debug skill") {
 		t.Fatal("startup did not verify that OpenCode discovered the installed skill")
+	}
+}
+
+func TestGuestSkillInventoryScriptRejectsOrphanedManagedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("guest inventory script requires POSIX path semantics")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	home := t.TempDir()
+	run := func() ([]byte, error) {
+		cmd := exec.Command(sh, "-c", readGuestSkillInventoryScript())
+		cmd.Env = []string{"HOME=" + home}
+		return cmd.CombinedOutput()
+	}
+	output, err := run()
+	if err != nil || strings.TrimSpace(string(output)) != `{"schemaVersion":1,"skills":[]}` {
+		t.Fatalf("fresh guest inventory = %q, err = %v", output, err)
+	}
+	managedDir := filepath.Join(home, ".config", "opencode", "skills", "rgaa")
+	if err := os.MkdirAll(managedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managedDir, ".just-code-source"), []byte("pinned-source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err = run()
+	if err == nil || !strings.Contains(string(output), "managed skill directory exists without its project-skill inventory") {
+		t.Fatalf("orphaned managed skill was accepted: output = %q, err = %v", output, err)
+	}
+}
+
+func TestEmptySelectionFailsClosedWhenGuestInventoryIsMissing(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{
+		stderr: "managed skill directory exists without its project-skill inventory", code: 1,
+	}}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true})
+	m.Client = client
+	err := m.installProjectSkills(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
+		t.Fatalf("empty selection should reject an orphaned managed directory, got %v", err)
+	}
+	if len(client.written) != 0 || hasCall(client, "execcapture "+m.InstanceName()+" opencode debug skill") {
+		t.Fatalf("reconciliation continued despite missing inventory: writes=%+v calls=%+v", client.written, client.calls)
+	}
+	if len(client.calls) != 1 || !strings.Contains(client.calls[0], "for marker in ") || !strings.Contains(client.calls[0], ".just-code-source") {
+		t.Fatalf("inventory read did not check for orphaned managed directories: %+v", client.calls)
 	}
 }
 
