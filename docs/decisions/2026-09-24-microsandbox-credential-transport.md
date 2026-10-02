@@ -261,7 +261,13 @@ Apple Silicon avec le laboratoire réseau local corrigé.
   chercher le titre (« Example Domain ») au lieu de `<h1>` disparu du
   site example.com.
 
-**Conclusion :** Aucune régression du transport des identifiants ou
-des capacités invité dans Microsandbox v0.7.3 par rapport à v0.7.2.
-Les échecs observés étaient des artefacts de laboratoire, pas des
-régressions du runtime.
+**État de qualification :** le résultat initial 14/15 ne qualifiait pas
+entièrement le transport des identifiants (aucun rejeu complet après la
+séparation des journaux ; la revue Codex de #109 a relevé un journal JSON
+conservé entre exécutions et un contrat de préparation incompatible).
+Après correction (réinitialisation du journal au démarrage du serveur,
+serveur TLS bundlé géré par `run.sh`, certificats avec extensions
+explicites), le rejeu complet sur macOS (msb 0.7.3) donne **15/15**
+deux fois de suite, y compris avec un journal volontairement pollué
+avant la seconde exécution. La matrice des capacités invité reste 16/16.
+Le transport des identifiants est qualifié sur v0.7.3.

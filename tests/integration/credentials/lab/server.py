@@ -2,7 +2,7 @@
 """Echo HTTPS server for the P02 credential lab.
 
 Listens on 0.0.0.0:8443, logs each request as JSON ({method, path, headers,
-body}) to requests.log, and answers 302 to https://evil.test:8443/
+body}) to requests.jsonl, and answers 302 to https://evil.test:8443/
 redirect-target on /redirect-to-evil. See the suite README for the contract.
 """
 
@@ -55,6 +55,8 @@ def main():
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain("srv.crt", "srv.key")
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    with open("requests.jsonl", "w"):
+        pass
     httpd.serve_forever()
 
 

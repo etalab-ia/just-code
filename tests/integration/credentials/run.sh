@@ -9,6 +9,7 @@ set -eu
 
 FAILURES=0
 PASS=0
+LAB_SERVER_PID=""
 
 ok() { PASS=$((PASS+1)); printf '  ok  %s\n' "$1"; }
 fail() { FAILURES=$((FAILURES+1)); printf 'FAIL  %s\n' "$1"; }
@@ -36,6 +37,10 @@ check "CLI msb épinglée" "$WANT_CLI" "$GOT_CLI"
 cleanup() {
   "$MSB" stop "$SB" >/dev/null 2>&1 || true
   "$MSB" remove "$SB" >/dev/null 2>&1 || true
+  if [ -n "$LAB_SERVER_PID" ]; then
+    kill "$LAB_SERVER_PID" >/dev/null 2>&1 || true
+    wait "$LAB_SERVER_PID" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -64,12 +69,27 @@ fi
 
 # Prévol: les services du laboratoire répondent, sinon c'est un échec de
 # préparation (code 2), pas une régression de transport (T1-T11).
-if ! nc -z -w 5 127.0.0.1 8443 >/dev/null 2>&1; then
-  echo "laboratoire: serveur TLS echo absent sur 127.0.0.1:8443" >&2
+if nc -z -w 5 127.0.0.1 8443 >/dev/null 2>&1; then
+  echo "laboratoire: port 8443 occupé ; arrêter le serveur existant" >&2
   exit 2
 fi
-if ! curl -s -m 10 --cacert "$LAB/ca.crt" -o /dev/null "https://127.0.0.1:8443/preflight" 2>/dev/null; then
-  echo "laboratoire: serveur TLS ne répond pas (certificat CA refusé)" >&2
+# Le serveur versionné possède le journal et le réinitialise seulement
+# après avoir acquis le port : un démarrage refusé ne détruit pas la preuve.
+(cd "$LAB" && exec python3 "$HERE/lab/server.py" 8443 > server.log 2>&1) &
+LAB_SERVER_PID=$!
+READY=0
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if ! kill -0 "$LAB_SERVER_PID" 2>/dev/null; then
+    break
+  fi
+  if curl -fsS -m 1 --cacert "$LAB/ca.crt" -o /dev/null "https://127.0.0.1:8443/preflight" 2>/dev/null; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+if [ "$READY" -ne 1 ] || [ ! -f "$LAB/requests.jsonl" ]; then
+  echo "laboratoire: serveur TLS non prêt (voir server.log)" >&2
   exit 2
 fi
 if ! nslookup -timeout=5 -port=5354 p02lab.test 127.0.0.1 >/dev/null 2>&1 && \
@@ -80,21 +100,6 @@ fi
 
 CANARY="p02-harness-canary-$RANDOM"
 export P02_CANARY="$CANARY"
-
-# Journal scopé à l'exécution courante : le serveur écho écrit dans
-# requests.log ; on bascule sur un journal frais par exécution en redémarrant
-# le serveur (évite à la fois l'historique et la corruption d'une troncature
-# sous un serveur actif).
-if [ -n "${MSB_CREDENTIAL_LAB_RESTART:-1}" ] && [ -f "$LAB/server.py" ]; then
-  pkill -f "server.py 8443" >/dev/null 2>&1 || true
-  sleep 1
-  (cd "$LAB" && python3 server.py 8443 > requests.log 2>&1 &)
-  sleep 12
-fi
-if [ ! -f "$LAB/requests.log" ]; then
-  echo "laboratoire: requests.log absent après préparation" >&2
-  exit 2
-fi
 
 # --- Création avec interception TLS sur 443 et 8443 ---------------------------
 "$MSB" create \
