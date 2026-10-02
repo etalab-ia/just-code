@@ -67,6 +67,10 @@ une zone gérée versionnée dans `AGENTS.md`, son retrait est montré avant App
 le texte utilisateur hors de cette zone reste intact. Pour changer la
 sélection ou les pins après création du guest, recrée explicitement
 l'environnement après avoir exporté les éventuels changements invités.
+Le passage du mode versionné au mode local-only ne rafraîchit pas la copie
+scellée d'`AGENTS.md` du guest. Si elle porte encore l'ancienne zone gérée,
+`start` et `attach` refusent de poursuivre : exporte les changements invités,
+puis lance `just-code workspace sync` ou recrée le guest.
 
 Chaque fichier porte un `schemaVersion`. Un schéma plus récent que la version
 supportée par le binaire est une erreur explicite (mettre à jour just-code), pas
