@@ -284,6 +284,72 @@ func TestGuestSkillInventoryScriptRejectsOrphanedManagedDirectory(t *testing.T) 
 	}
 }
 
+func TestGuestSkillPreflightFindsManagedDirectoriesOmittedFromInventory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("guest preflight script requires POSIX path semantics")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	home := t.TempDir()
+	run := func(allowedNames []string) ([]byte, error) {
+		cmd := exec.Command(sh, "-c", guestSkillPathsPrelude()+guestSkillInventoryOrphanCheckScript(allowedNames))
+		cmd.Env = []string{"HOME=" + home}
+		return cmd.CombinedOutput()
+	}
+	managedDir := filepath.Join(home, ".config", "opencode", "skills", "rgaa")
+	if err := os.MkdirAll(managedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := run(nil); err != nil || len(output) != 0 {
+		t.Fatalf("unmarked user directory should pass an empty-inventory preflight: output=%q err=%v", output, err)
+	}
+	if err := os.WriteFile(filepath.Join(managedDir, ".just-code-source"), []byte("pinned-source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := run(nil); err == nil || !strings.Contains(string(output), "project-skill inventory") {
+		t.Fatalf("managed directory omitted from an empty inventory was accepted: output=%q err=%v", output, err)
+	}
+	if output, err := run([]string{"rgaa"}); err != nil || len(output) != 0 {
+		t.Fatalf("managed directory listed in the inventory should pass the orphan check: output=%q err=%v", output, err)
+	}
+	client := &fakeMSBClient{}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true})
+	m.Client = client
+	if err := m.preflightGuestSkills(context.Background(), guestSkillInventory{SchemaVersion: guestSkillInventorySchema}, nil); err != nil {
+		t.Fatalf("empty-selection guest preflight: %v", err)
+	}
+	if len(client.calls) != 1 || !strings.Contains(client.calls[0], "for dest in \"$parent\"/*") || !strings.Contains(client.calls[0], ".just-code-source") {
+		t.Fatalf("guest preflight omitted its managed-directory scan: %v", client.calls)
+	}
+}
+
+func TestLocalOnlyInstructionPreflightRetriesAndExplainsRecovery(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{err: errors.New("guest agent is not ready")},
+		{stdout: "before\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n- official/rgaa\n<!-- END JUST-CODE MANAGED SKILLS -->\nafter\n"},
+	}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true, ProjectSkillsLocalOnly: true})
+	m.Client = client
+	m.launchRetryDelay = time.Millisecond
+	err := m.preflightLocalOnlySkillInstructions(context.Background())
+	if err == nil {
+		t.Fatal("versioned managed instructions should block local-only startup")
+	}
+	for _, expected := range []string{"workspace export", "workspace sync", "while the guest is running", "just-code recreate"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("recovery error %q does not mention %q", err, expected)
+		}
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("guard attempts = %d, want retry after one transient error: %v", len(client.calls), client.calls)
+	}
+	if len(client.written) != 0 {
+		t.Fatalf("read-only instruction preflight wrote guest data: %+v", client.written)
+	}
+}
+
 func TestEmptySelectionFailsClosedWhenGuestInventoryIsMissing(t *testing.T) {
 	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{
 		stderr: "managed skill directory exists without its project-skill inventory", code: 1,

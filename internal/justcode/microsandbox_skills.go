@@ -95,7 +95,7 @@ func (m *MicrosandboxRuntime) preflightProjectSkills(ctx context.Context) (guest
 }
 
 func (m *MicrosandboxRuntime) preflightLocalOnlySkillInstructions(ctx context.Context) error {
-	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), readGuestManagedInstructionsScript())
+	stdout, stderr, code, err := m.execCaptureWithGuestAgentRetry(ctx, readGuestManagedInstructionsScript())
 	if err != nil {
 		return fmt.Errorf("inspect guest managed skill instructions: %w", err)
 	}
@@ -111,7 +111,8 @@ func (m *MicrosandboxRuntime) preflightLocalOnlySkillInstructions(ctx context.Co
 	}
 	if zone != "" {
 		return fmt.Errorf("the guest workspace still contains versioned managed skill instructions, but this project now keeps skills host-local; " +
-			"run 'just-code workspace sync' before starting, and export guest-local changes first with 'just-code workspace export'")
+			"export guest-local changes first with 'just-code workspace export', then run 'just-code workspace sync' while the guest is running. " +
+			"If the host AGENTS.md is missing or excluded from sync, recreate with 'just-code recreate'")
 	}
 	return nil
 }
@@ -194,26 +195,9 @@ func skillPackagesBySelection(ids []string, packages []SkillPackage) (map[string
 }
 
 func (m *MicrosandboxRuntime) readGuestSkillInventory(ctx context.Context) (guestSkillInventory, error) {
-	delay := m.launchRetryDelay
-	if delay == 0 {
-		delay = msbLaunchRetryDelay
-	}
-	var stdout, stderr string
-	var code int
-	var err error
-	for attempt := 1; attempt <= msbLaunchAttempts; attempt++ {
-		stdout, stderr, code, err = m.Client.ExecCapture(ctx, m.InstanceName(), readGuestSkillInventoryScript())
-		if err == nil {
-			break
-		}
-		if attempt == msbLaunchAttempts {
-			return guestSkillInventory{}, fmt.Errorf("read guest skill inventory: %w", err)
-		}
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return guestSkillInventory{}, fmt.Errorf("read guest skill inventory: %w", ctx.Err())
-		}
+	stdout, stderr, code, err := m.execCaptureWithGuestAgentRetry(ctx, readGuestSkillInventoryScript())
+	if err != nil {
+		return guestSkillInventory{}, fmt.Errorf("read guest skill inventory: %w", err)
 	}
 	if code != 0 {
 		return guestSkillInventory{}, fmt.Errorf("read guest skill inventory exited %d: %s", code, strings.TrimSpace(stderr))
@@ -240,6 +224,25 @@ func (m *MicrosandboxRuntime) readGuestSkillInventory(ctx context.Context) (gues
 		seenIDs[item.ID], seenNames[item.Name] = true, true
 	}
 	return inventory, nil
+}
+
+func (m *MicrosandboxRuntime) execCaptureWithGuestAgentRetry(ctx context.Context, script string) (stdout, stderr string, code int, err error) {
+	delay := m.launchRetryDelay
+	if delay == 0 {
+		delay = msbLaunchRetryDelay
+	}
+	for attempt := 1; attempt <= msbLaunchAttempts; attempt++ {
+		stdout, stderr, code, err = m.Client.ExecCapture(ctx, m.InstanceName(), script)
+		if err == nil || attempt == msbLaunchAttempts {
+			return stdout, stderr, code, err
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return "", "", 0, ctx.Err()
+		}
+	}
+	return stdout, stderr, code, err
 }
 
 func readGuestSkillInventoryScript() string {
@@ -287,6 +290,7 @@ func (m *MicrosandboxRuntime) preflightGuestSkills(ctx context.Context, old gues
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	b.WriteString(guestSkillInventoryOrphanCheckScript(names))
 	for _, name := range names {
 		markers := allowed[name]
 		fmt.Fprintf(&b, "dest=\"$parent/%s\"\n", name)
@@ -315,6 +319,29 @@ func (m *MicrosandboxRuntime) preflightGuestSkills(ctx context.Context, old gues
 		return fmt.Errorf("preflight guest skill changes; no managed skill was removed: %w", err)
 	}
 	return nil
+}
+
+func guestSkillInventoryOrphanCheckScript(allowedNames []string) string {
+	var b strings.Builder
+	b.WriteString("for dest in \"$parent\"/*; do\n")
+	b.WriteString("  if [ ! -e \"$dest\" ] && [ ! -L \"$dest\" ]; then continue; fi\n")
+	b.WriteString("  marker=\"$dest/.just-code-source\"\n")
+	b.WriteString("  if [ -e \"$marker\" ] || [ -L \"$marker\" ]; then\n")
+	b.WriteString("    name=${dest##*/}\n")
+	if len(allowedNames) == 0 {
+		b.WriteString("    echo 'managed skill directory is missing from the project-skill inventory' >&2; exit 1\n")
+	} else {
+		b.WriteString("    case \"$name\" in ")
+		for i, name := range allowedNames {
+			if i > 0 {
+				b.WriteByte('|')
+			}
+			b.WriteString(name)
+		}
+		b.WriteString(") ;; *) echo 'managed skill directory is missing from the project-skill inventory' >&2; exit 1 ;; esac\n")
+	}
+	b.WriteString("  fi\ndone\n")
+	return b.String()
 }
 
 func guestSkillPathsPrelude() string {
