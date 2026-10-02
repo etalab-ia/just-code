@@ -26,7 +26,7 @@ class EchoHandler(BaseHTTPRequestHandler):
             "headers": {k.lower(): v for k, v in self.headers.items()},
             "body": body,
         }
-        with open("requests.log", "a") as fh:
+        with open("requests.jsonl", "a") as fh:
             fh.write(json.dumps(entry) + "\n")
         if self.path == "/redirect-to-evil":
             self.send_response(302)

