@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.6.0...just-code-v0.7.0) (2026-10-02)
+
+
+### Features
+
+* **skills:** gérer les skills projet épinglées (P14) ([#113](https://github.com/etalab-ia/just-code/issues/113)) ([26e942e](https://github.com/etalab-ia/just-code/commit/26e942efdb8437472aec427184a28eeac4c155b5))
+
 ## [0.6.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.5.0...just-code-v0.6.0) (2026-10-02)
 
 
