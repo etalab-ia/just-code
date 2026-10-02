@@ -159,3 +159,29 @@ des garanties de performance.
 - Le comportement des sous-modules et des dépôts de taille réaliste
   (centaines de Mo) est non rejoué — P22 devra le mesurer sur un dépôt
   réel en ayant avant de geler le contrat de clone.
+
+## Requalification v0.7.3 (2026-10-02)
+
+Suite à la montée du runtime Microsandbox de v0.7.2 vers v0.7.3 (issue
+#104, PR #107), la matrice d'intégration P03 a été rejouée sur Mac
+Apple Silicon avec les cas réseau activés.
+
+**Résultats :** 16/16 passent (T1–T10c), incluant :
+
+- Images invité (alpine, debian:bookworm-slim)
+- Démarrage à froid (< 260ms)
+- Persistance d'état après redémarrage
+- Propagation PTY (40x120)
+- Node.js v22.14.0 invité
+- OpenCode 1.18.32 invité
+- Chromium headless + capture d'écran
+- Playwright MCP (chromium système via `--executable-path`)
+- Clone depuis l'origine distante (< 1s, profondeur 1)
+- Clone host-path + worktree lié
+
+L'assertion T7a a été mise à jour : example.com a été redesigné et ne
+contient plus de balise `<h1>` ; le harnais cherche désormais le titre
+« Example Domain ».
+
+**Conclusion :** Aucune régression des capacités invité dans
+Microsandbox v0.7.3. Le runtime passe la matrice complète.
