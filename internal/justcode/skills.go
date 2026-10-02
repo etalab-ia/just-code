@@ -491,6 +491,13 @@ func ValidateProjectSkillIDs(ids []string) error {
 	return validateSkillIDs(ids, nil)
 }
 
+func validateProjectSkillRuntime(runtime Runtime, ids []string) error {
+	if len(ids) > 0 && runtime != RuntimeMicrosandbox {
+		return fmt.Errorf("selected project skills require the sealed microsandbox runtime")
+	}
+	return nil
+}
+
 func normalizeSkillArchive(src io.Reader, sourceDir, expectedName string) ([]byte, error) {
 	tr := tar.NewReader(src)
 	files := make(map[string][]byte)

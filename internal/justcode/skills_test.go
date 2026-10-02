@@ -33,6 +33,20 @@ func TestParseSkillFrontmatter(t *testing.T) {
 	}
 }
 
+func TestProjectSkillsRequireMicrosandboxRegardlessOfHostSupport(t *testing.T) {
+	if err := validateProjectSkillRuntime(RuntimeMicrosandbox, []string{"official/rgaa"}); err != nil {
+		t.Fatalf("Microsandbox skill selection: %v", err)
+	}
+	for _, runtime := range []Runtime{RuntimeTart, RuntimeAgentVM} {
+		if err := validateProjectSkillRuntime(runtime, []string{"official/rgaa"}); err == nil || !strings.Contains(err.Error(), "sealed microsandbox") {
+			t.Errorf("runtime %q validation error = %v", runtime, err)
+		}
+	}
+	if err := validateProjectSkillRuntime(RuntimeAgentVM, nil); err != nil {
+		t.Fatalf("a project with no skills must not be restricted: %v", err)
+	}
+}
+
 func TestParseProjectSkillCatalogueRejectsDuplicateNames(t *testing.T) {
 	entries := []skillTreeEntry{
 		{Mode: "100644", Path: "skills/rgaa/SKILL.md", OID: "one"},

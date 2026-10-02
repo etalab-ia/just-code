@@ -452,8 +452,8 @@ func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T)
 		!bytes.Equal(beforeAgents, readFileForTest(t, filepath.Join(root, "AGENTS.md"))) {
 		t.Fatal("reapplying an unchanged skill selection changed project files")
 	}
-	if _, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeAgentVM}); err == nil || !strings.Contains(err.Error(), "require the sealed microsandbox") {
-		t.Fatalf("preserved project skills with a non-Microsandbox runtime: %v", err)
+	if _, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeAgentVM}); err == nil {
+		t.Fatal("preserved project skills must be rejected with a non-Microsandbox runtime")
 	}
 	clear, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{}, SkillsSet: true})
 	if err != nil {

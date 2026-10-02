@@ -267,8 +267,8 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	if answers.SkillsSet {
 		selected = append([]string(nil), answers.Skills...)
 		if len(selected) > 0 {
-			if plan.Answers.Runtime != RuntimeMicrosandbox {
-				return plan, fmt.Errorf("selected project skills require the sealed microsandbox runtime")
+			if err := validateProjectSkillRuntime(plan.Answers.Runtime, selected); err != nil {
+				return plan, err
 			}
 			resolve := w.ResolveSkills
 			if resolve == nil {
@@ -286,8 +286,8 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	plan.Answers.SkillsSet = answers.SkillsSet
 	plan.Answers.SkillsLocalOnly = localOnly
 	plan.Answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet
-	if len(selected) > 0 && plan.Answers.Runtime != RuntimeMicrosandbox {
-		return plan, fmt.Errorf("selected project skills require the sealed microsandbox runtime")
+	if err := validateProjectSkillRuntime(plan.Answers.Runtime, selected); err != nil {
+		return plan, err
 	}
 	if len(selected) > 0 && len(plan.SkillLocks) == 0 {
 		return plan, fmt.Errorf("the selected skills have no pinned lock data")
