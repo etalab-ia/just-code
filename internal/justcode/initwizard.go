@@ -502,6 +502,28 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	if err != nil {
 		return err
 	}
+	instructionsChanged := plan.InstructionsChanged
+	instructionsAfter := plan.InstructionsAfter
+	if instructionsChanged {
+		if info, err := os.Lstat(plan.InstructionsPath); err == nil && !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		current, err := fs.ReadFile(plan.InstructionsPath)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		ids, locks := plan.Answers.Skills, plan.SkillLocks
+		if plan.Answers.SkillsLocalOnly {
+			ids, locks = nil, nil
+		}
+		instructionsAfter, err = MergeManagedInstructions(string(current), ids, locks)
+		if err != nil {
+			return err
+		}
+		instructionsChanged = string(current) != instructionsAfter
+	}
 	if plan.Answers.SkillsLocalOnly {
 		if plan.LocalSkillsPath == "" {
 			return fmt.Errorf("local-only skill state path was not resolved")
@@ -552,8 +574,8 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	if err := WriteLockfile(fs, plan.LockPath, lock); err != nil {
 		return err
 	}
-	if plan.InstructionsChanged {
-		if err := atomicWrite(fs, plan.InstructionsPath, []byte(plan.InstructionsAfter), 0o644); err != nil {
+	if instructionsChanged {
+		if err := atomicWrite(fs, plan.InstructionsPath, []byte(instructionsAfter), 0o644); err != nil {
 			return fmt.Errorf("write managed instructions after project files were written: %w", err)
 		}
 	}

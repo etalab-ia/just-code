@@ -476,6 +476,31 @@ func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T)
 	}
 }
 
+func TestInitApplyMergesAGENTSChangesMadeAfterPlan(t *testing.T) {
+	root := initTestRoot(t)
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	wizard := InitWizard{ResolveSkills: fixtureSkillResolver(t)}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const concurrentEdit = "User edit made while the review was open.\n"
+	current := plan.InstructionsAfter + "\n" + concurrentEdit
+	if err := os.WriteFile(plan.InstructionsPath, []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileForTest(t, plan.InstructionsPath)
+	if !bytes.Contains(got, []byte("official/rgaa")) || !bytes.HasSuffix(got, []byte(concurrentEdit)) {
+		t.Fatalf("Apply lost concurrent user text or managed skill: %q", got)
+	}
+}
+
 func TestInitLocalOnlySkillsStayOutsideTheCheckout(t *testing.T) {
 	root := initTestRoot(t)
 	cache, state := t.TempDir(), t.TempDir()
