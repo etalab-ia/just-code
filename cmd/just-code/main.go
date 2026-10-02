@@ -128,6 +128,17 @@ func run(args []string) (int, error) {
 			return code, err
 		}
 	}
+	// The GitHub origin is non-secret metadata. Resolve it only when this
+	// project has a host-local approval for the optional GitHub binding; a
+	// repository remote alone must never activate guest credentials.
+	if projErr == nil && isLaunchAction(parsed.action) {
+		remote, err := projectGitHubRemote(projectRoot, justcode.DefaultStateDir(), instance)
+		if err != nil {
+			return 1, fmt.Errorf("the approved GitHub workflow cannot use this project origin; no runtime changes were made: %w", err)
+		} else {
+			cfg.GitHubRemote = remote
+		}
+	}
 	// The project manifest's runtime and isolation choices (P12b). They are
 	// applied here, after discovery, because they are resolved from the
 	// discovered root; the flag and the exported variable still win, per the

@@ -49,6 +49,7 @@ type initOptions struct {
 	CPUs          int
 	MemoryMB      int
 	CredentialRef string
+	GitHub        bool
 	Replace       bool
 	Yes           bool
 	// FromLaunch records that the launch flow is driving the setup, which only
@@ -82,6 +83,8 @@ func parseInitArgs(args []string) (initOptions, error) {
 			opts.Replace = true
 		case a == "--yes" || a == "-y":
 			opts.Yes = true
+		case a == "--github":
+			opts.GitHub, opts.Set["github"] = true, true
 		case a == "--root":
 			v, err := value()
 			if err != nil {
@@ -143,13 +146,14 @@ func parseInitArgs(args []string) (initOptions, error) {
 // so the non-TTY contract can be exercised without a terminal.
 func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	answers := justcode.InitAnswers{
-		Root:          opts.Root,
-		Runtime:       justcode.Runtime(opts.Runtime),
-		Isolation:     justcode.Isolation(opts.Isolation),
-		Model:         opts.Model,
-		CPUs:          opts.CPUs,
-		MemoryMB:      opts.MemoryMB,
-		CredentialRef: opts.CredentialRef,
+		Root:           opts.Root,
+		Runtime:        justcode.Runtime(opts.Runtime),
+		Isolation:      justcode.Isolation(opts.Isolation),
+		Model:          opts.Model,
+		CPUs:           opts.CPUs,
+		MemoryMB:       opts.MemoryMB,
+		CredentialRef:  opts.CredentialRef,
+		GitHubWorkflow: opts.GitHub,
 	}
 	if answers.Root == "" {
 		if cwd, err := os.Getwd(); err == nil {
@@ -160,7 +164,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// nothing, and in a script it is the most likely thing to be wrong.
 	if !tty && !opts.Set["root"] {
 		return 1, fmt.Errorf("no terminal available: name the project explicitly, e.g. 'just-code init --root <dir> --yes'.\n" +
-			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --replace, --yes")
+			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --replace, --yes")
 	}
 
 	// The catalogue check reads the credential reference of the project being
@@ -186,6 +190,13 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			return 1, err
 		}
 	}
+	if answers.GitHubWorkflow {
+		remote, err := githubInitPreflightFn(answers.Root)
+		if err != nil {
+			return 1, err
+		}
+		answers.GitHubRemote = remote
+	}
 
 	plan, err := wizard.Plan(answers)
 	if err != nil {
@@ -206,6 +217,12 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	}
 	if err := wizard.Apply(plan, opts.Replace); err != nil {
 		return 1, err
+	}
+	if plan.Answers.GitHubWorkflow {
+		if err := approveGitHubForProjectFn(plan.Answers.Root); err != nil {
+			return 1, fmt.Errorf("project configuration was written, but GitHub approval was not recorded; run 'just-code bindings approve github': %w", err)
+		}
+		fmt.Println("GitHub guest workflow approved on this host; the approval is not stored in project files.")
 	}
 	// The trailer is advice for the standalone command. When the launch flow
 	// drives the setup, the launch is already continuing: telling the user to
@@ -325,8 +342,41 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			answers.CredentialRef = strings.TrimSpace(answer)
 		}
 	}
+	if !opts.Set["github"] {
+		fmt.Println()
+		fmt.Println("GitHub guest workflow (optional): the Microsandbox guest can push branches and open draft PRs to this origin.")
+		fmt.Println("It uses the stored GitHub credential through the secret proxy; approval is local to this host and not shared with clones.")
+		fmt.Println("Existing approvals remain unchanged; 'just-code bindings revoke github' disables the grant.")
+		answer, _ := promptLine(in, "Approve the GitHub workflow for this project? [y/N]: ")
+		answers.GitHubWorkflow = strings.EqualFold(strings.TrimSpace(answer), "y")
+	}
 	return answers, nil
 }
+
+// githubInitPreflightFn resolves the stored token and the host origin before
+// the project manifest is written. Tests replace this seam so they do not
+// inherit a real keychain or repository remote.
+var githubInitPreflightFn = func(root string) (justcode.GitHubRemote, error) {
+	if _, err := justcode.ReadStoredCredential(context.Background(), justcode.CredentialGithub); err != nil {
+		return justcode.GitHubRemote{}, fmt.Errorf("GitHub workflow requires a stored GitHub credential; add one with 'just-code auth add github': %w", err)
+	}
+	remote, err := justcode.GitHubOriginForProject(context.Background(), root)
+	if err != nil {
+		return justcode.GitHubRemote{}, fmt.Errorf("GitHub workflow requires a GitHub.com origin remote: %w", err)
+	}
+	return remote, nil
+}
+
+func approveGitHubForProject(root string) error {
+	pc, err := justcode.DiscoverProject(root)
+	if err != nil {
+		return err
+	}
+	path := justcode.BindingApprovalsPath(justcode.DefaultStateDir(), pc.InstanceName())
+	return justcode.ApproveBinding(justcode.DefaultFS, path, justcode.CredentialGithub)
+}
+
+var approveGitHubForProjectFn = approveGitHubForProject
 
 // resolvedOrDefault renders the value a reader can reason about: what will
 // actually be used, rather than a zero meaning "unset".
@@ -389,6 +439,7 @@ Options:
   --cpus <n>              guest CPUs (1-255; default 2)
   --memory-mb <n>         guest memory in MiB (default 4096)
   --credential-ref <ref>  project credential reference (default: the global one)
+  --github                enable the protected GitHub guest workflow
   --replace               allow replacing an existing manifest
   --yes, -y               accept the review without asking
 

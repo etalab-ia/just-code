@@ -158,8 +158,8 @@ Règles du flux :
   validation se rattrapera avec `just-code models`). Aucun appel
   d'inférence n'est effectué pour valider.
 - **GitHub sans pénalité.** Ignorer l'identifiant GitHub ne bloque rien ;
-  il n'est activé pour aucun projet (l'approbation par projet vient du
-  chantier GitHub invité).
+  un identifiant stocké reste inactif jusqu'à l'activation explicite du
+  workflow GitHub pour un projet Microsandbox.
 - **Magasin indisponible = choix explicite.** Un Secret Service absent
   propose le repli fichier consentit (`--fallback`), jamais une création
   silencieuse.
@@ -359,6 +359,52 @@ just-code bindings revoke github     # retire l'approbation et révoque l'instan
 
 L'approbation est un enregistrement local à l'hôte (`~/.local/state/just-code/instances/<instance>/bindings.json`) : elle n'est jamais versionnée et ne voyage pas avec un clone. Les hôtes autorisés sont disjoints entre liaisons, donc une liaison ne peut pas être substituée vers la destination d'une autre.
 
+### GitHub dans l'invité
+
+Le workflow est optionnel et limité à Microsandbox. Stocke d'abord le jeton,
+puis active le workflow pendant l'initialisation du projet :
+
+```bash
+just-code auth add github
+just-code init --github
+```
+
+L'assistant vérifie que le projet a un `origin` GitHub.com et que le jeton est
+stocké. L'approbation reste locale à l'hôte ; elle n'apparaît ni dans le
+manifeste ni dans le dépôt. Pour un projet déjà initialisé, utilise
+`just-code bindings approve github` après avoir stocké le jeton. Le parcours
+sans `--github` n'ajoute aucune approbation et ne modifie pas les approbations
+existantes. Sans approbation locale, `gh` n'est pas installé par just-code.
+Pour désactiver un accès déjà approuvé : `just-code bindings revoke github`.
+
+Au premier lancement approuvé, just-code installe GitHub CLI 2.100.0 dans la
+microVM uniquement, vérifie son empreinte, puis teste l'authentification,
+l'accès au dépôt et le rôle d'écriture du compte. Le checkout hôte n'est jamais monté :
+la branche invitée est basée sur la branche par défaut du dépôt et reçoit
+l'instantané filtré P22. Les fichiers déjà présents sur la branche distante
+mais absents de l'instantané restent préservés. Si l'invité contient des
+modifications non commitées, la préparation s'arrête sans les écraser.
+L'historique invité antérieur est conservé dans une branche locale
+`<branche-invitée>-snapshot-backup` : son contenu est repris dans la nouvelle
+branche sans perdre l'accès aux commits antérieurs. L'origine et les marqueurs
+de préparation sont publiés ensemble. Un changement d'origine approuvée est
+refusé avant un redémarrage ; relis et exporte les changements invités avant
+de recréer l'environnement.
+
+La préparation ne publie rien automatiquement. Après revue des changements
+dans le guest, l'agent peut pousser sa branche puis ouvrir une PR en brouillon :
+
+```bash
+git push -u origin HEAD
+gh pr create --draft
+```
+
+Pour un jeton fine-grained, accorde `Contents: read and write` et
+`Pull requests: read and write` sur le seul dépôt concerné ; une organisation
+peut aussi exiger son approbation. Le rôle du compte est vérifié à l'initialisation,
+mais GitHub applique aussi les permissions propres au jeton lors du push et de
+la création de PR. Le GitHub CLI de l'hôte n'est pas utilisé.
+
 ### Révocation
 
 `just-code auth remove` révoque l'accès avant de supprimer l'entrée du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. La révocation raisonne par **entrée de magasin**, pas par nom de liaison : un `credentialRef` peut alimenter la liaison Albert depuis une entrée nommée autrement, et c'est la liaison invitée effectivement alimentée qui est retirée (l'instantané le consigne sous la forme `entrée@magasin#liaison`). Supprimer l'entrée d'un magasin ne touche pas les instances liées à l'autre magasin ; une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée, cette variable n'appartenant pas à just-code ; une source non confirmable est révoquée puis signalée. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne — y compris lorsque l'entrée supprimée n'est pas nommée `albert` mais alimente la liaison Albert — car retirer la copie du magasin ne révoquerait rien.
@@ -434,7 +480,7 @@ Les modifications faites dans l'invité ne reviennent jamais en écriture direct
 just-code workspace export [--out <fichier>]
 ```
 
-produit un patch (fichiers suivis et nouveaux) écrit dans l'état hôte, à relire puis appliquer avec `git apply`. Avec le grant GitHub activé, la livraison par branche/PR prend le relais (P13).
+produit un patch (fichiers suivis et nouveaux) écrit dans l'état hôte, à relire puis appliquer avec `git apply`. Avec le grant GitHub activé, l'invité peut aussi livrer ses changements par branche/PR après revue (P13) ; aucun push n'est automatique.
 
 **Non destructif :** `workspace sync` refuse de rafraîchir si l'invité contient du travail non commité ; il nomme les fichiers et n'écrase qu'avec `--force`.
 

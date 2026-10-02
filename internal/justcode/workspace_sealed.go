@@ -195,7 +195,7 @@ func (m *MicrosandboxRuntime) transferIntoGuest(ctx context.Context, opts SyncOp
 // carry committed content the transfer filter cannot inspect, and the filter
 // is the boundary; a snapshot that is filtered file by file is the property
 // worth keeping. The host origin URL is recorded as a remote for later
-// branch/PR delivery (P13).
+// branch/PR delivery only after the project approves the GitHub binding (P13).
 func (m *MicrosandboxRuntime) ensureGuestRepository(ctx context.Context) error {
 	steps := []string{
 		// -q and an explicit identity keep the command independent of the
@@ -280,7 +280,8 @@ func (m *MicrosandboxRuntime) guestShell(ctx context.Context, command string) er
 
 // ExportGuestChanges produces a reviewable patch of the guest's work and
 // writes it to the host. It is the change-delivery path for a project without
-// an enabled GitHub grant; with one, P13 adds direct branch/PR delivery.
+// an enabled GitHub grant; when enabled, the guest can also deliver reviewed
+// changes through its GitHub branch and PR workflow.
 //
 // The patch is written outside the project by default (host state), so
 // reviewing it does not itself dirty the checkout.

@@ -71,6 +71,18 @@ func bindingsApproveCmd(path string, args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	if kind == justcode.CredentialGithub {
+		project, err := justcode.DiscoverProject(".")
+		if err != nil {
+			return 1, fmt.Errorf("GitHub approval requires a project directory: %w", err)
+		}
+		if runtime, _ := projectRuntimeIsolation(project.Root); runtime != "" && runtime != justcode.RuntimeMicrosandbox {
+			return 1, fmt.Errorf("the protected GitHub guest workflow is available only for Microsandbox projects")
+		}
+		if _, err := githubInitPreflightFn(project.Root); err != nil {
+			return 1, err
+		}
+	}
 	if err := justcode.ApproveBinding(justcode.DefaultFS, path, kind); err != nil {
 		return 1, err
 	}

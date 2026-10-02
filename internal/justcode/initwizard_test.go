@@ -79,6 +79,26 @@ func TestInitPlanRejectsBadAnswers(t *testing.T) {
 	}
 }
 
+func TestInitPlanGitHubWorkflowRequiresCanonicalRemote(t *testing.T) {
+	root := initTestRoot(t)
+	answers := InitAnswers{
+		Root:           root,
+		GitHubWorkflow: true,
+		GitHubRemote:   GitHubRemote{URL: "https://user:token@github.com/owner/repo.git", Repo: "owner/repo"},
+	}
+	if _, err := (InitWizard{}).Plan(answers); err == nil {
+		t.Fatal("a remote carrying credentials must not be accepted by the init plan")
+	}
+	answers.GitHubRemote = GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}
+	plan, err := (InitWizard{}).Plan(answers)
+	if err != nil {
+		t.Fatalf("canonical GitHub remote: %v", err)
+	}
+	if !strings.Contains(FormatInitReview(plan), "guest workflow for owner/repo") {
+		t.Fatal("the review must identify the approved repository")
+	}
+}
+
 func TestInitPlanValidatesTheModel(t *testing.T) {
 	root := initTestRoot(t)
 	rejected := InitWizard{ValidateModel: func(string) (string, error) {

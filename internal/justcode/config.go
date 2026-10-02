@@ -69,6 +69,9 @@ type Config struct {
 	// settings credentialRef; empty means the legacy chain (ALBERT_API_KEY
 	// environment, then the default stored albert credential).
 	CredentialRef string
+	// GitHubRemote is a normalized, credential-free github.com origin used
+	// only when this project's host-local GitHub binding is approved (P13).
+	GitHubRemote GitHubRemote
 	// GuestCredentialsAcknowledged records the explicit
 	// --acknowledge-guest-credentials flag (P09): Tart and agent-vm transport
 	// the credential into the guest in plaintext, so starting them requires
