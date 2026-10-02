@@ -41,14 +41,14 @@ def main():
         if qname in known and qtype == 1:
             answer = (
                 qid
-                + struct.pack(">HHHH", 0x8180, 1, 1, 0)
+                + struct.pack(">HHHHH", 0x8180, 1, 1, 0, 0)
                 + data[12:offset + 4]
                 + b"\xc0\x0c"
                 + struct.pack(">HHIH", 1, 1, 60, 4)
                 + socket.inet_aton(known[qname])
             )
         else:
-            answer = qid + struct.pack(">HHHH", 0x8185, 1, 0, 0) + data[12:offset + 4]
+            answer = qid + struct.pack(">HHHHH", 0x8185, 1, 0, 0, 0) + data[12:offset + 4]
         sock.sendto(answer, addr)
 
 

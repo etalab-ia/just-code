@@ -111,9 +111,9 @@ check "T6b OpenCode invité" "1.18.32" "$OC_VER"
 "$MSB" exec "$SB_PREFIX-debian" -- sh -c '
   apt-get install -y --no-install-recommends chromium fonts-liberation >/dev/null 2>&1
 ' >/dev/null 2>&1
-DOM_H1="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c \
-  'chromium --headless --no-sandbox --disable-gpu --dump-dom https://example.com 2>/dev/null | grep -c "<h1>"' 2>/dev/null)"
-check "T7a navigation + DOM (h1)" "1" "$DOM_H1"
+DOM_TITLE="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c \
+  'chromium --headless --no-sandbox --disable-gpu --dump-dom https://example.com 2>/dev/null | grep -c "Example Domain"' 2>/dev/null || true)"
+check "T7a navigation + DOM (title)" "1" "$DOM_TITLE"
 "$MSB" exec "$SB_PREFIX-debian" -- sh -c \
   'chromium --headless --no-sandbox --disable-gpu --screenshot=/tmp/p03.png --window-size=1280,720 https://example.com >/dev/null 2>&1; test -s /tmp/p03.png && echo shot-ok' \
   >/dev/null 2>&1
