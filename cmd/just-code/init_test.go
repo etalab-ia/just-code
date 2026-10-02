@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,15 @@ func stubCatalogueCheck(t *testing.T, fn func(root, model string) (string, error
 	t.Cleanup(func() { catalogueModelWarningFn = orig })
 }
 
+func stubProjectSkills(t *testing.T) {
+	t.Helper()
+	original := projectSkillCatalogueFn
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return []justcode.ProjectSkill{{ID: "official/example", Name: "example", Description: "fixture"}}, nil
+	}
+	t.Cleanup(func() { projectSkillCatalogueFn = original })
+}
+
 func initTestProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -37,18 +47,28 @@ func TestParseInitArgs(t *testing.T) {
 	opts, err := parseInitArgs([]string{
 		"--root", "/tmp/p", "--runtime", "tart", "--isolation", "backend",
 		"--model", "albert/x", "--cpus", "4", "--memory-mb", "2048",
-		"--credential-ref", "work", "--github", "--replace", "--yes",
+		"--credential-ref", "work", "--github", "--skill", "official/rgaa",
+		"--skill", "experimental/rag-parse", "--local-only-skills", "--replace", "--yes",
 	})
 	if err != nil {
 		t.Fatalf("parseInitArgs: %v", err)
 	}
 	if opts.Root != "/tmp/p" || opts.Runtime != "tart" || opts.Isolation != "backend" ||
 		opts.Model != "albert/x" || opts.CPUs != 4 || opts.MemoryMB != 2048 ||
-		opts.CredentialRef != "work" || !opts.GitHub || !opts.Replace || !opts.Yes {
+		opts.CredentialRef != "work" || !opts.GitHub || !opts.Replace || !opts.Yes ||
+		len(opts.Skills) != 2 || !opts.SkillsLocalOnly {
 		t.Fatalf("options = %+v", opts)
 	}
-	if !opts.Set["root"] || !opts.Set["cpus"] || !opts.Set["memory-mb"] || !opts.Set["github"] {
+	if !opts.Set["root"] || !opts.Set["cpus"] || !opts.Set["memory-mb"] || !opts.Set["github"] ||
+		!opts.Set["skills"] || !opts.Set["skills-storage"] {
 		t.Fatalf("every supplied field must be recorded as set: %v", opts.Set)
+	}
+	duplicate, err := parseInitArgs([]string{"--skill", "official/rgaa", "--skill", "official/rgaa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateInitOptions(duplicate); err == nil || !strings.Contains(err.Error(), "selected more than once") {
+		t.Fatalf("duplicate skill selection error = %v", err)
 	}
 	for _, args := range [][]string{{"--cpus", "many"}, {"--memory-mb", "x"}, {"--root"}, {"--bogus"}} {
 		if _, err := parseInitArgs(args); err == nil {
@@ -192,7 +212,8 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 // engine's defaults are what get written.
 func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	root := initTestProject(t)
-	input := root + "\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, apply
+	stubProjectSkills(t)
+	input := root + "\n\n\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, skills, storage, apply
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -289,7 +310,7 @@ func TestInitSkipsQuestionsAnsweredByFlags(t *testing.T) {
 		code, err := initRun(initOptions{
 			Root: root, Runtime: "microsandbox", Isolation: "backend", Model: "albert/x",
 			CPUs: 4, MemoryMB: 2048, CredentialRef: "work",
-			Set: map[string]bool{"root": true, "runtime": true, "isolation": true, "model": true, "cpus": true, "memory-mb": true, "credential-ref": true},
+			Set: map[string]bool{"root": true, "runtime": true, "isolation": true, "model": true, "cpus": true, "memory-mb": true, "credential-ref": true, "skills": true, "skills-storage": true},
 		}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
@@ -479,9 +500,10 @@ func TestOfferProjectInitRespectsExplicitChoices(t *testing.T) {
 func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	clearLaunchChoiceEnv(t)
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
+	stubProjectSkills(t)
 	root := initTestProject(t)
-	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, apply
-	input := "\n\nbackend\n\n\n\n\n\n\n"
+	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, skills, storage, apply
+	input := "\n\nbackend\n\n\n\n\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.

@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -397,6 +398,141 @@ func TestInitApplyRefusesToDiscardAnUnreadableLock(t *testing.T) {
 	if string(raw) != "{not json" {
 		t.Fatalf("the unreadable lock must be left untouched, got %q", raw)
 	}
+}
+
+func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T) {
+	root := initTestRoot(t)
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	const userText = "User-authored rules stay byte-for-byte.\n\n"
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(userText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{StateDir: state, ResolveSkills: fixtureSkillResolver(t)}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(FormatInitReview(plan), "AGENTS.md managed-zone diff") || !plan.InstructionsChanged {
+		t.Fatalf("review omitted the generated instruction diff: %+v", plan)
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || len(manifest.Skills) != 1 || manifest.Skills[0] != "official/rgaa" || manifest.SkillsLocalOnly {
+		t.Fatalf("manifest = %+v, err = %v", manifest, err)
+	}
+	lock, err := ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil || lock.Skills["official/rgaa"].Revision != projectSkillsRevision || !isSHA256(lock.Skills["official/rgaa"].SHA256) {
+		t.Fatalf("lock = %+v, err = %v", lock, err)
+	}
+	agents, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil || !strings.HasPrefix(string(agents), userText) || !strings.Contains(string(agents), projectSkillsRevision) {
+		t.Fatalf("managed AGENTS.md = %q, err = %v", agents, err)
+	}
+	beforeManifest, beforeLock, beforeAgents := readFileForTest(t, ProjectManifestPath(root)), readFileForTest(t, ProjectLockPath(root)), append([]byte(nil), agents...)
+	// A replacement with no skill flags keeps the pinned selection, lock and
+	// managed zone exactly unchanged and needs no network access.
+	wizard.ResolveSkills = nil
+	repeat, err := wizard.Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeat.InstructionsChanged {
+		t.Fatalf("identical pinned selection produced an AGENTS.md diff: before=%q after=%q", repeat.InstructionsBefore, repeat.InstructionsAfter)
+	}
+	if err := wizard.Apply(repeat, true); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeManifest, readFileForTest(t, ProjectManifestPath(root))) ||
+		!bytes.Equal(beforeLock, readFileForTest(t, ProjectLockPath(root))) ||
+		!bytes.Equal(beforeAgents, readFileForTest(t, filepath.Join(root, "AGENTS.md"))) {
+		t.Fatal("reapplying an unchanged skill selection changed project files")
+	}
+}
+
+func TestInitLocalOnlySkillsStayOutsideTheCheckout(t *testing.T) {
+	root := initTestRoot(t)
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	wizard := InitWizard{StateDir: state, ResolveSkills: fixtureSkillResolver(t)}
+	plan, err := wizard.Plan(InitAnswers{
+		Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true,
+		SkillsLocalOnly: true, SkillsLocalOnlySet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsChanged || strings.Contains(FormatInitReview(plan), "AGENTS.md managed-zone diff") {
+		t.Fatal("local-only selection must not preview a project instruction edit")
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || !manifest.SkillsLocalOnly || len(manifest.Skills) != 0 {
+		t.Fatalf("manifest = %+v, err = %v", manifest, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("local-only mode wrote AGENTS.md (stat err = %v)", err)
+	}
+	path, err := LocalSkillSelectionsPath(state, DiscoverInstanceForTest(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(path, root+string(filepath.Separator)) {
+		t.Fatalf("host-local skill state is inside the checkout: %s", path)
+	}
+	local, err := ReadLocalSkillSelections(DefaultFS, path)
+	if err != nil || len(local.Skills) != 1 || local.Pins["official/rgaa"].Revision != projectSkillsRevision {
+		t.Fatalf("local selections = %+v, err = %v", local, err)
+	}
+	packages, err := LoadProjectSkillPackages(DefaultFS, root, state, DiscoverInstanceForTest(t, root))
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("local packages = %d, err = %v", len(packages), err)
+	}
+}
+
+func TestMergeManagedInstructionsRefusesSymlink(t *testing.T) {
+	root := initTestRoot(t)
+	outside := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "AGENTS.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	wizard := InitWizard{ResolveSkills: fixtureSkillResolver(t)}
+	if _, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("symlinked AGENTS.md error = %v", err)
+	}
+	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+		t.Fatalf("external file changed: %q", got)
+	}
+}
+
+func readFileForTest(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func DiscoverInstanceForTest(t *testing.T, root string) string {
+	t.Helper()
+	project, err := DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project.InstanceName()
 }
 
 // TestInitWarnsForARelativeNestedRoot pins that the "covers the whole

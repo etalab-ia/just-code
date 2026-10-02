@@ -1,7 +1,10 @@
 package justcode
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -195,6 +198,83 @@ func (f *fakeMSBClient) WriteFile(_ context.Context, name, guestPath string, dat
 	}
 	f.written = append(f.written, fakeMSBWrite{guestPath: guestPath, data: append([]byte(nil), data...)})
 	return nil
+}
+
+func TestMicrosandboxInstallsPinnedSkillInOpenCodeGlobalDirectory(t *testing.T) {
+	raw := skillSourceTar(t, skillTarEntry{
+		name: "skills/rgaa/SKILL.md",
+		body: []byte("---\nname: rgaa\ndescription: fixture\n---\n"),
+	})
+	archive, err := normalizeSkillArchive(bytes.NewReader(raw), "skills/rgaa", "rgaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: projectSkillsRevision, SHA256: hex.EncodeToString(digest[:])}
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{stdout: `{"schemaVersion":1,"skills":[]}`},
+		{stdout: `[{"name":"rgaa"}]`},
+	}}
+	m := NewMicrosandboxRuntime(Config{
+		ProjectSkillIDs: []string{"official/rgaa"}, ProjectSkillsManaged: true,
+		ProjectSkills: []SkillPackage{{ID: "official/rgaa", Name: "rgaa", Lock: lock, Archive: archive}},
+	})
+	m.Client = client
+	if err := m.installProjectSkills(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.written) != 2 || client.written[0].guestPath != "/tmp/just-code-project-skills.json" ||
+		client.written[1].guestPath != "/tmp/just-code-skill-rgaa-"+lock.SHA256+".tar.gz" {
+		t.Fatalf("guest writes = %+v", client.written)
+	}
+	if !strings.Contains(string(client.written[0].data), "official/rgaa") {
+		t.Fatal("project selection inventory was not staged before package installation")
+	}
+	if !bytes.Equal(client.written[1].data, archive) {
+		t.Fatal("guest payload differs from the verified lock archive")
+	}
+	var installCommand string
+	for _, call := range client.calls {
+		if strings.Contains(call, "tar -xzf") {
+			installCommand = call
+		}
+	}
+	for _, expected := range []string{"${XDG_CONFIG_HOME", "parent=\"$config_home/opencode/skills\"", "dest=\"$parent/rgaa\"", "sha256sum -c", "tar -xzf", "refusing to overwrite"} {
+		if !strings.Contains(installCommand, expected) {
+			t.Fatalf("guest install command lacks %q: %s", expected, installCommand)
+		}
+	}
+	if strings.Contains(installCommand, "/workspace/.opencode/skills") {
+		t.Fatalf("guest skill was installed in the agent checkout: %s", installCommand)
+	}
+	if !hasCall(client, "execcapture "+m.InstanceName()+" opencode debug skill") {
+		t.Fatal("startup did not verify that OpenCode discovered the installed skill")
+	}
+}
+
+func TestSkillDeselectionRequiresExplicitGuestRecreation(t *testing.T) {
+	old := guestSkillInventory{SchemaVersion: guestSkillInventorySchema, Skills: []guestSkillEntry{{
+		ID: "official/rgaa", Name: "rgaa", Revision: projectSkillsRevision, SHA256: strings.Repeat("a", 64),
+	}}}
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{
+		stdout: `{"schemaVersion":1,"skills":[{"id":"official/rgaa","name":"rgaa","revision":"` + projectSkillsRevision + `","sha256":"` + strings.Repeat("a", 64) + `"}]}`,
+	}}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true})
+	m.Client = client
+	if err := m.installProjectSkills(context.Background()); err == nil || !strings.Contains(err.Error(), "just-code recreate") {
+		t.Fatalf("deselection error = %v", err)
+	}
+	if len(client.written) != 0 {
+		t.Fatalf("deselection changed guest files before the explicit recreation: %+v", client.written)
+	}
+	if err := ensureGuestSkillSelectionCompatible(old, nil); err == nil || !strings.Contains(err.Error(), "just-code recreate") {
+		t.Fatalf("deselection compatibility error = %v", err)
+	}
+	if err := ensureGuestSkillSelectionCompatible(old, map[string]SkillPackage{
+		"official/rgaa": {ID: "official/rgaa", Name: "rgaa", Lock: SkillLock{Revision: projectSkillsRevision, SHA256: strings.Repeat("a", 64)}},
+	}); err != nil {
+		t.Fatalf("unchanged selected skill: %v", err)
+	}
 }
 
 func (f *fakeMSBClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {

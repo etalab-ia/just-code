@@ -128,6 +128,15 @@ func run(args []string) (int, error) {
 			return code, err
 		}
 	}
+	if projErr == nil && isLaunchAction(parsed.action) {
+		packages, skillIDs, managed, err := justcode.LoadProjectSkillState(justcode.DefaultFS, projectRoot, justcode.DefaultStateDir(), instance)
+		if err != nil {
+			return 1, fmt.Errorf("cannot resolve the project's pinned skills before runtime changes: %w", err)
+		}
+		cfg.ProjectSkills = packages
+		cfg.ProjectSkillIDs = skillIDs
+		cfg.ProjectSkillsManaged = managed
+	}
 	// The GitHub origin is non-secret metadata. Resolve it only when this
 	// project has a host-local approval for the optional GitHub binding; a
 	// repository remote alone must never activate guest credentials.
@@ -280,6 +289,9 @@ func run(args []string) (int, error) {
 	rt, err := justcode.ResolveRuntime(parsed.runtime, runtimePreference)
 	if err != nil {
 		return 2, err
+	}
+	if len(cfg.ProjectSkills) > 0 && rt != justcode.RuntimeMicrosandbox {
+		return 2, fmt.Errorf("project skills currently require the sealed microsandbox runtime; no runtime changes were made")
 	}
 	// A typo in ISOLATION must not block commands that never read it, so it is
 	// validated only here, where the level is actually consumed.

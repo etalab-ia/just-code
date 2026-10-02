@@ -392,6 +392,9 @@ func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBind
 	if err := m.ProvisionGuestWorkspace(ctx, SyncOptions{}); err != nil {
 		return err
 	}
+	if err := m.installProjectSkills(ctx); err != nil {
+		return err
+	}
 	return m.configureGitHubWorkspace(ctx, bindings)
 }
 

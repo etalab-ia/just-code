@@ -10,6 +10,10 @@ contre un vrai processus OpenCode épinglé, hors microVM.
 # cas non réseau (fusion, découverte, JSONC, plugins) — sans clé
 tests/integration/opencode/run.sh
 
+# Ajouter une skill réellement résolue/verrouillée par just-code (P14)
+JUST_CODE_TEST_SKILL_ARCHIVE=/chemin/cache/rgaa.tar.gz JUST_CODE_TEST_SKILL_NAME=rgaa \
+  tests/integration/opencode/run.sh
+
 # cas réseau (sélection effective de modèle via Albert) — opt-in
 OPENCODE_INTEGRATION_NETWORK=1 ALBERT_API_KEY=... tests/integration/opencode/run.sh
 ```
@@ -18,6 +22,9 @@ Le harnais installe `opencode-ai` à la version épinglée dans un répertoire
 temporaire (npm), construit des projets synthétiques sous un `HOME` et un
 `XDG_CONFIG_HOME` isolés, et vérifie par assertions shell chaque constat du
 décision record. Un échec d'assertion sort non-zéro avec le nom du cas.
+Le cas P14 optionnel copie une archive résolue/vérifiée par just-code dans le
+répertoire global de l'HOME isolé, puis confirme que le vrai processus OpenCode
+ne découvre que les skills de base et la sélection prévue.
 
 ## Épinglage
 

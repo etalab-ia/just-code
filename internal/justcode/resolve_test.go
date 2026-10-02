@@ -320,7 +320,7 @@ func TestReadLockfileMissingIsEmpty(t *testing.T) {
 
 func TestReadLockfileNewerSchemaRejected(t *testing.T) {
 	fs := newMapFS()
-	fs.files["/root/.just-code/lock.json"] = []byte(`{"schemaVersion": 2, "entries": {}}`)
+	fs.files["/root/.just-code/lock.json"] = []byte(`{"schemaVersion": 3, "entries": {}}`)
 	_, err := ReadLockfile(fs, "/root/.just-code/lock.json")
 	if err == nil || !strings.Contains(err.Error(), "newer than this build supports") {
 		t.Fatalf("err = %v, want unsupported-schema error", err)
