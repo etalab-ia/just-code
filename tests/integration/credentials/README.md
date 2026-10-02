@@ -7,7 +7,7 @@ contre un vrai runtime Microsandbox épinglé, sur macOS (libkrun).
 ## Usage
 
 ```sh
-# cas non réseau (persistance de la référence source) — sans laboratoire
+# vérification de version uniquement — sans laboratoire
 tests/integration/credentials/run.sh
 
 # cas réseau (substitution, violations, rotation) — opt-in, laboratoire requis
@@ -23,22 +23,52 @@ transport.
 
 ## Laboratoire local
 
-Les cas réseau exigent un serveur TLS écho, un serveur DNS et une CA sous
-`$MSB_CREDENTIAL_LAB` (défaut `/tmp/p02-lab`) :
+Les cas réseau utilisent les serveurs versionnés dans `lab/` et une CA
+avec ses certificats sous `$MSB_CREDENTIAL_LAB` (défaut `/tmp/p02-lab`) :
 
 - `ca.crt` / `ca.key` : CA d'interception TLS (aussi utilisée en amont) ;
 - `srv.crt` / `srv.key` : certificat serveur avec SANs `DNS:p02lab.test`,
   `DNS:evil.test`, `IP:<IP-LAN-hôte>`, `IP:172.16.0.5`, `IP:127.0.0.1` ;
-- `server.py` : écho HTTPS sur `0.0.0.0:8443`, journalise chaque requête en
-  JSON (`{method, path, headers, body}`) dans `requests.log`, répond 302 vers
+- `lab/server.py` (dans le dépôt) : écho HTTPS sur `0.0.0.0:8443`, journalise chaque requête en
+  JSON (`{method, path, headers, body}`) dans `requests.jsonl`, répond 302 vers
   `https://evil.test:8443/redirect-target` sur `/redirect-to-evil` ;
-- `dns.py` : DNS UDP sur `0.0.0.0:5354`, répond `p02lab.test` et
+- `lab/dns.py` (dans le dépôt) : DNS UDP sur `0.0.0.0:5354`, répond `p02lab.test` et
   `evil.test` -> IP LAN hôte, REFUSED (rcode 5) pour les autres noms afin que
   le résolveur bascule sur le fallback (1.1.1.1).
 
 L'IP LAN de l'hôte est lue sur `en0`. Le moteur Microsandbox doit résoudre
 lui-même les noms autorisés (les entrées `/etc/hosts` invité ne suffisent
 pas), d'où le serveur DNS dédié.
+
+Depuis la racine du dépôt, préparer les certificats et démarrer uniquement
+le serveur DNS versionné :
+
+```sh
+REPO="$PWD"
+LAB="${MSB_CREDENTIAL_LAB:-/tmp/p02-lab}"
+HOST_IP="$(ipconfig getifaddr en0)"
+mkdir -p "$LAB"
+(cd "$LAB" && sh "$REPO/tests/integration/credentials/lab/setup.sh" "$HOST_IP")
+python3 "$REPO/tests/integration/credentials/lab/dns.py" "$HOST_IP" > "$LAB/dns.log" 2>&1 &
+DNS_PID=$!
+MSB_CREDENTIAL_LAB="$LAB" MSB_CREDENTIAL_INTEGRATION_NETWORK=1 tests/integration/credentials/run.sh
+kill "$DNS_PID"
+```
+
+Le harnais lance lui-même `lab/server.py` depuis le dépôt et arrête son
+processus à la sortie. Le port 8443 doit être libre ; un ancien serveur
+doit être arrêté explicitement. Après acquisition du port et chargement
+des certificats, le serveur réinitialise `requests.jsonl` avant de servir
+la moindre requête. Les diagnostics vont dans `server.log`, jamais dans
+le journal JSON. Les serveurs copiés précédemment dans `/tmp/p02-lab`
+ne sont pas utilisés ; `MSB_CREDENTIAL_LAB_RESTART` n'est plus utilisé.
+
+Les tests du cycle de vie du journal TLS (réinitialisation et préservation
+en cas de port occupé) sont exécutables sans runtime Microsandbox :
+
+```sh
+python3 -m unittest discover -s tests/integration/credentials/lab -p 'test_*.py' -v
+```
 
 ## Épinglage
 
