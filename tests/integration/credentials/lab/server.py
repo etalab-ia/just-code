@@ -23,7 +23,7 @@ class EchoHandler(BaseHTTPRequestHandler):
             "time": datetime.datetime.utcnow().isoformat(),
             "method": self.command,
             "path": self.path,
-            "headers": {k: v for k, v in self.headers.items()},
+            "headers": {k.lower(): v for k, v in self.headers.items()},
             "body": body,
         }
         with open("requests.log", "a") as fh:
