@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -234,12 +236,29 @@ func TestGitHubOriginParticipatesOnlyForResolvedBinding(t *testing.T) {
 	})
 	m.cfg.GitHubRemote = GitHubRemote{URL: "https://github.com/owner/one.git", Repo: "owner/one"}
 	without := m.desiredState(true, albert, nil)
+	legacyHash := sha256.New()
+	for _, part := range []string{"jc-state-v1", without.Instance, string(without.Isolation), without.Image, without.Username,
+		"rev:" + without.CredentialRev, "gen:" + without.CredentialGeneration} {
+		_, _ = legacyHash.Write([]byte(part))
+		_, _ = legacyHash.Write([]byte{0})
+	}
+	if got, want := without.ConfigRevision(), hex.EncodeToString(legacyHash.Sum(nil))[:16]; got != want {
+		t.Fatalf("legacy no-GitHub revision = %s, want unchanged pre-P13 hash %s", got, want)
+	}
 	before := m.desiredState(true, github, nil)
 	applied := before.toState()
 	m.cfg.GitHubRemote = GitHubRemote{URL: "https://github.com/owner/two.git", Repo: "owner/two"}
 	after := m.desiredState(true, github, &applied)
 	if before.ConfigRevision() == after.ConfigRevision() {
 		t.Fatal("approved origin changes must not reconcile as a no-op")
+	}
+	revoked := m.desiredState(true, albert, &applied)
+	if revoked.GitHubOrigin != before.GitHubOrigin || bindingsRevision(github) == bindingsRevision(albert) {
+		t.Fatal("revoking GitHub must remove its credential binding but retain the initialized origin")
+	}
+	revokedState := revoked.toState()
+	if err := m.validateAppliedGitHubOrigin(github, &revokedState); err == nil {
+		t.Fatal("reapproval against a changed repository must still be refused after revocation")
 	}
 	if without.ConfigRevision() != m.desiredState(true, albert, nil).ConfigRevision() {
 		t.Fatal("origin changes must not affect projects without a GitHub binding")

@@ -202,7 +202,7 @@ type DesiredState struct {
 // hash of metadata, so it participates.
 func (d DesiredState) ConfigRevision() string {
 	h := sha256.New()
-	for _, part := range []string{
+	parts := []string{
 		"jc-state-v1",
 		d.Instance,
 		string(d.Isolation),
@@ -210,8 +210,13 @@ func (d DesiredState) ConfigRevision() string {
 		d.Username,
 		"rev:" + d.CredentialRev,
 		"gen:" + d.CredentialGeneration,
-		"github:" + d.GitHubOrigin,
-	} {
+	}
+	// Preserve the pre-P13 hash shape when no project origin has ever been
+	// initialized; otherwise every existing non-GitHub guest would restart.
+	if d.GitHubOrigin != "" {
+		parts = append(parts, "github:"+d.GitHubOrigin)
+	}
+	for _, part := range parts {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{0})
 	}
@@ -509,6 +514,11 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 	if resolved {
 		if hasResolvedGitHubBinding(bindings) {
 			d.GitHubOrigin = m.cfg.GitHubRemote.URL
+		} else if applied != nil {
+			// Revoking the binding removes its proxy credential, not the
+			// recorded origin: reapproval for another repository must still
+			// trip the origin-change guard before guest mutations.
+			d.GitHubOrigin = applied.GitHubOrigin
 		}
 		d.CredentialRev = bindingsRevision(bindings)
 		d.BoundCredentials = storeBoundEntries(bindings)
