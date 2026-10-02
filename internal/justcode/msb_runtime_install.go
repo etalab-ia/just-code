@@ -65,7 +65,7 @@ func msbRuntimeArtifactFor(goos, goarch string) (msbRuntimeArtifact, error) {
 		}
 	case "linux/arm64":
 		artifact = msbRuntimeArtifact{
-		sha256:  "6c1bfde0a86919bdb04fa33bbe10e76b27d65f6afb25d17e6c5ffc9c53060c47",
+			sha256:  "6c1bfde0a86919bdb04fa33bbe10e76b27d65f6afb25d17e6c5ffc9c53060c47",
 			msbName: "msb",
 			libName: "libkrunfw.so.5.6.1",
 			libSymlink: [][2]string{
@@ -75,7 +75,7 @@ func msbRuntimeArtifactFor(goos, goarch string) (msbRuntimeArtifact, error) {
 		}
 	case "linux/amd64":
 		artifact = msbRuntimeArtifact{
-		sha256:  "2d5da7de187246c804dce2a1a23f06626b6f7cb892d9a0c7c5c620784ba412ea",
+			sha256:  "2d5da7de187246c804dce2a1a23f06626b6f7cb892d9a0c7c5c620784ba412ea",
 			msbName: "msb",
 			libName: "libkrunfw.so.5.6.1",
 			libSymlink: [][2]string{
@@ -85,13 +85,13 @@ func msbRuntimeArtifactFor(goos, goarch string) (msbRuntimeArtifact, error) {
 		}
 	case "windows/arm64":
 		artifact = msbRuntimeArtifact{
-		sha256:  "947ee8d49e3ab6c70158722c20685a64ea2c29cbe35738cb6e35115afd139918",
+			sha256:  "947ee8d49e3ab6c70158722c20685a64ea2c29cbe35738cb6e35115afd139918",
 			msbName: "msb.exe",
 			libName: "libkrunfw.dll",
 		}
 	case "windows/amd64":
 		artifact = msbRuntimeArtifact{
-		sha256:  "1fe9d237574f0833883aff098445d9f019c9cb6944977a36dd8650da7564e365",
+			sha256:  "1fe9d237574f0833883aff098445d9f019c9cb6944977a36dd8650da7564e365",
 			msbName: "msb.exe",
 			libName: "libkrunfw.dll",
 		}
