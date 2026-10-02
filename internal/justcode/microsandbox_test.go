@@ -758,6 +758,62 @@ func TestMicrosandboxFullModeRejectsPersistedServerPortMapping(t *testing.T) {
 	}
 }
 
+func TestBackendLaunchWaitsForGuestSkillInventory(t *testing.T) {
+	for _, status := range []string{"stopped", "running"} {
+		t.Run(status, func(t *testing.T) {
+			client := &fakeMSBClient{
+				exists: true, status: status, startScript: msbStartScript(IsolationBackend),
+				execCaptureResults: []fakeMSBExecCaptureResult{{
+					stderr: "managed skill directory exists without its project-skill inventory", code: 1,
+				}},
+			}
+			m := newTestMicrosandbox(t, client)
+			m.cfg.Isolation = IsolationBackend
+			m.cfg.ProjectSkillsManaged = true
+			err := m.startInstance(context.Background(), nil)
+			if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
+				t.Fatalf("start error = %v, want orphaned skill inventory refusal", err)
+			}
+			if hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+				t.Fatalf("backend launched before skill inventory refusal: %v", client.calls)
+			}
+			if status == "stopped" && !hasCall(client, "start "+msbSandbox) {
+				t.Fatalf("stopped VM was not booted before checking its inventory: %v", client.calls)
+			}
+			if status == "running" && hasCall(client, "start "+msbSandbox) {
+				t.Fatalf("running VM was unexpectedly started again: %v", client.calls)
+			}
+		})
+	}
+}
+
+func TestStoppedBackendLaunchesAfterGuestSkillInventoryCheck(t *testing.T) {
+	client := &fakeMSBClient{
+		exists: true, status: "stopped", startScript: msbStartScript(IsolationBackend),
+		execCaptureResults: []fakeMSBExecCaptureResult{{stdout: `{"schemaVersion":1,"skills":[]}`}},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationBackend
+	m.cfg.ProjectSkillsManaged = true
+	if err := m.startInstance(context.Background(), nil); err != nil {
+		t.Fatalf("startInstance: %v", err)
+	}
+	startAt, inventoryAt, launchAt := -1, -1, -1
+	for i, call := range client.calls {
+		switch {
+		case call == "start "+msbSandbox:
+			startAt = i
+		case strings.HasPrefix(call, "execcapture "+msbSandbox):
+			inventoryAt = i
+		case call == "exec "+msbSandbox+" "+msbRelaunchCommand:
+			launchAt = i
+		}
+	}
+	if startAt < 0 || inventoryAt <= startAt || launchAt <= inventoryAt {
+		t.Fatalf("VM boot, inventory validation, and backend launch must occur in order: %v", client.calls)
+	}
+}
+
 func TestMicrosandboxRestartRejectsServerPortBeforeStopping(t *testing.T) {
 	client := &fakeMSBClient{
 		exists:              true,
