@@ -439,6 +439,14 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 		pending = journalToOps(applied.Pending)
 		fmt.Printf("Resuming interrupted apply for %s at: %s\n", m.InstanceName(), joinOps(pending))
 	} else if plan.IsNoOp() {
+		// Skill selections are guest-local managed data (P14), not part of the
+		// VM configuration revision. Reconcile them before a successful no-op
+		// return so init on a running project does not silently defer them.
+		if m.cfg.ProjectSkillsManaged {
+			if err := m.installProjectSkills(ctx); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 

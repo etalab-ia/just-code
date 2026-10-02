@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -516,6 +517,58 @@ func TestInitLocalOnlySkillsStayOutsideTheCheckout(t *testing.T) {
 	packages, err := LoadProjectSkillPackages(DefaultFS, root, state, DiscoverInstanceForTest(t, root))
 	if err != nil || len(packages) != 1 {
 		t.Fatalf("local packages = %d, err = %v", len(packages), err)
+	}
+}
+
+func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
+	root := initTestRoot(t)
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	ids := []string{"official/rgaa"}
+	_, pins, err := fixtureSkillResolver(t)(context.Background(), ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := newMapFS()
+	agentsPath := filepath.Join(root, "AGENTS.md")
+	agents, err := MergeManagedInstructions("User rules.\n", ids, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentsPath, []byte(agents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs.files[agentsPath] = []byte(agents)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(fs, manifestPath, ProjectManifest{Skills: ids, Runtime: string(RuntimeMicrosandbox), Isolation: string(IsolationFull)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(fs, lockPath, Lockfile{Skills: pins}); err != nil {
+		t.Fatal(err)
+	}
+	beforeManifest := append([]byte(nil), fs.files[manifestPath]...)
+	beforeLock := append([]byte(nil), fs.files[lockPath]...)
+	beforeAgents := append([]byte(nil), fs.files[agentsPath]...)
+	wizard := InitWizard{FS: fs, StateDir: state}
+	plan, err := wizard.Plan(InitAnswers{Root: root, SkillsLocalOnly: true, SkillsLocalOnlySet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.failRename = true
+	if err := wizard.Apply(plan, true); err == nil {
+		t.Fatal("local-only state write must report the injected disk failure")
+	}
+	if !bytes.Equal(fs.files[manifestPath], beforeManifest) || !bytes.Equal(fs.files[lockPath], beforeLock) || !bytes.Equal(fs.files[agentsPath], beforeAgents) {
+		t.Fatal("failed local-only state persistence changed versioned project files")
+	}
+	localPath, err := LocalSkillSelectionsPath(state, DiscoverInstanceForTest(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fs.files[localPath]; exists {
+		t.Fatal("failed local-only persistence left a partial selection file")
 	}
 }
 

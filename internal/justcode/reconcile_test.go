@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -225,6 +226,50 @@ func TestReconcileNoOpWritesNothing(t *testing.T) {
 	}
 	_ = os.Remove(path)
 	_ = os.RemoveAll(filepath.Dir(path))
+}
+
+func TestReconcileNoOpInstallsNewProjectSkills(t *testing.T) {
+	isolateHostState(t)
+	raw := skillSourceTar(t, skillTarEntry{
+		name: "skills/rgaa/SKILL.md",
+		body: []byte("---\nname: rgaa\ndescription: fixture\n---\n"),
+	})
+	archive, err := normalizeSkillArchive(bytes.NewReader(raw), "skills/rgaa", "rgaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: projectSkillsRevision, SHA256: hex.EncodeToString(digest[:])}
+	skill := SkillPackage{ID: "official/rgaa", Name: "rgaa", Lock: lock, Archive: archive}
+	client := &fakeMSBClient{
+		exists: true, status: "running",
+		execCaptureResults: []fakeMSBExecCaptureResult{
+			{stdout: `{"schemaVersion":1,"skills":[]}`},
+			{stdout: `[{"name":"rgaa"}]`},
+		},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationFull
+	m.cfg.ProjectSkillIDs = []string{skill.ID}
+	m.cfg.ProjectSkillsManaged = true
+	m.cfg.ProjectSkills = []SkillPackage{skill}
+	m.Probe = func(context.Context, string, string, string) HealthProbe { return HealthProbe{Healthy: true} }
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
+	statePath := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := WriteInstanceState(DefaultFS, statePath, desired.toState()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.written) != 2 || countCalls(client, "create") != 0 || countCalls(client, "start") != 0 {
+		t.Fatalf("no-op reconcile did not install skills without restarting the guest: writes=%d calls=%v", len(client.written), client.calls)
+	}
+	if !hasCall(client, "execcapture "+m.InstanceName()+" opencode debug skill") {
+		t.Fatal("no-op reconcile returned before verifying OpenCode skill discovery")
+	}
+	_ = os.Remove(statePath)
+	_ = os.RemoveAll(filepath.Dir(statePath))
 }
 
 func TestGitHubOriginParticipatesOnlyForResolvedBinding(t *testing.T) {

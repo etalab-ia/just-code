@@ -502,6 +502,17 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	if err != nil {
 		return err
 	}
+	if plan.Answers.SkillsLocalOnly {
+		if plan.LocalSkillsPath == "" {
+			return fmt.Errorf("local-only skill state path was not resolved")
+		}
+		selection := LocalSkillSelections{Skills: append([]string(nil), plan.Answers.Skills...), Pins: cloneSkillLocks(plan.SkillLocks)}
+		// Persist host-local data first: a failed state write must leave the
+		// versioned manifest, lock and AGENTS file untouched.
+		if err := WriteLocalSkillSelections(fs, plan.LocalSkillsPath, selection); err != nil {
+			return fmt.Errorf("save host-local skill state before applying project files: %w", err)
+		}
+	}
 	// The manifest is secret-free by construction: a credential is referenced
 	// by name, never written here. It also carries no host-absolute path, so a
 	// teammate who clones the repository gets the same project identity.
@@ -544,15 +555,6 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	if plan.InstructionsChanged {
 		if err := atomicWrite(fs, plan.InstructionsPath, []byte(plan.InstructionsAfter), 0o644); err != nil {
 			return fmt.Errorf("write managed instructions after project files were written: %w", err)
-		}
-	}
-	if plan.Answers.SkillsLocalOnly {
-		if plan.LocalSkillsPath == "" {
-			return fmt.Errorf("local-only skill state path was not resolved")
-		}
-		selection := LocalSkillSelections{Skills: append([]string(nil), plan.Answers.Skills...), Pins: cloneSkillLocks(plan.SkillLocks)}
-		if err := WriteLocalSkillSelections(fs, plan.LocalSkillsPath, selection); err != nil {
-			return fmt.Errorf("project files were written, but local-only skill state could not be saved: %w", err)
 		}
 	}
 	w.print(fmt.Sprintf("Wrote %s\nWrote %s\n", plan.ManifestPath, plan.LockPath))
