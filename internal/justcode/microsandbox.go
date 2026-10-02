@@ -978,7 +978,15 @@ func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) er
 	}
 	// Port mappings are also creation-fixed: refuse before Stop so a stale
 	// full-mode instance remains available until the user approves recreation.
-	return m.rejectFullServerPortForwarding(ctx)
+	if err := m.rejectFullServerPortForwarding(ctx); err != nil {
+		return err
+	}
+	if sandbox.Status == "running" {
+		if _, _, err := m.preflightProjectSkills(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rejectResourceSizingChange refuses a restart when the applied state records

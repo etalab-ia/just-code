@@ -25,27 +25,10 @@ type guestSkillInventory struct {
 }
 
 func (m *MicrosandboxRuntime) installProjectSkills(ctx context.Context) error {
-	if !m.cfg.ProjectSkillsManaged {
-		return nil
-	}
-	if err := validateSkillIDs(m.cfg.ProjectSkillIDs, nil); err != nil {
-		return fmt.Errorf("invalid project skill selection: %w", err)
-	}
-	packages, err := skillPackagesBySelection(m.cfg.ProjectSkillIDs, m.cfg.ProjectSkills)
-	if err != nil {
+	inventory, packages, err := m.preflightProjectSkills(ctx)
+	if err != nil || !m.cfg.ProjectSkillsManaged {
 		return err
 	}
-	inventory, err := m.readGuestSkillInventory(ctx)
-	if err != nil {
-		return err
-	}
-	if err := ensureGuestSkillSelectionCompatible(inventory, packages); err != nil {
-		return err
-	}
-	if err := m.preflightGuestSkills(ctx, inventory, packages); err != nil {
-		return err
-	}
-
 	entries := make([]guestSkillEntry, 0, len(m.cfg.ProjectSkillIDs))
 	for _, id := range m.cfg.ProjectSkillIDs {
 		skill := packages[id]
@@ -77,6 +60,32 @@ func (m *MicrosandboxRuntime) installProjectSkills(ctx context.Context) error {
 		}
 	}
 	return m.verifyProjectSkills(ctx)
+}
+
+// preflightProjectSkills validates the desired pins and current guest state
+// without writing to the guest, so Restart can refuse before stopping it.
+func (m *MicrosandboxRuntime) preflightProjectSkills(ctx context.Context) (guestSkillInventory, map[string]SkillPackage, error) {
+	if !m.cfg.ProjectSkillsManaged {
+		return guestSkillInventory{}, nil, nil
+	}
+	if err := validateSkillIDs(m.cfg.ProjectSkillIDs, nil); err != nil {
+		return guestSkillInventory{}, nil, fmt.Errorf("invalid project skill selection: %w", err)
+	}
+	packages, err := skillPackagesBySelection(m.cfg.ProjectSkillIDs, m.cfg.ProjectSkills)
+	if err != nil {
+		return guestSkillInventory{}, nil, err
+	}
+	inventory, err := m.readGuestSkillInventory(ctx)
+	if err != nil {
+		return guestSkillInventory{}, nil, err
+	}
+	if err := ensureGuestSkillSelectionCompatible(inventory, packages); err != nil {
+		return guestSkillInventory{}, nil, err
+	}
+	if err := m.preflightGuestSkills(ctx, inventory, packages); err != nil {
+		return guestSkillInventory{}, nil, err
+	}
+	return inventory, packages, nil
 }
 
 func guestSkillInventoryMatches(current guestSkillInventory, desired []guestSkillEntry) bool {

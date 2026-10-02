@@ -1782,6 +1782,28 @@ func TestMicrosandboxRestartLeavesMismatchedSandboxRunning(t *testing.T) {
 	}
 }
 
+func TestMicrosandboxRestartLeavesGuestRunningWhenSkillPreflightFails(t *testing.T) {
+	client := &fakeMSBClient{
+		exists: true, status: "running", startScript: msbStartScript(IsolationBackend),
+		execCaptureResults: []fakeMSBExecCaptureResult{{
+			stderr: "managed skill directory exists without its project-skill inventory", code: 1,
+		}},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationBackend
+	m.cfg.ProjectSkillsManaged = true
+	err := m.Restart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
+		t.Fatalf("Restart error = %v, want a managed skill preflight refusal", err)
+	}
+	if hasCall(client, "stop "+msbSandbox) {
+		t.Fatalf("Restart stopped the working guest before skill preflight: %v", client.calls)
+	}
+	if len(client.written) != 0 {
+		t.Fatalf("read-only restart preflight wrote guest data: %+v", client.written)
+	}
+}
+
 // TestMicrosandboxFullModeRunningSandboxIsReady records that a running
 // full-mode sandbox is not health-probed (no backend endpoint exists in that
 // mode, so probing would always fail and relaunch into the wrong process) —
