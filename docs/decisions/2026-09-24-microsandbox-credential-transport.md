@@ -237,3 +237,31 @@ source `Value` du SDK.
 - Les tests de contrat P02 qui épinglaient l'écart (persistance de la
   valeur brute) ont été basculés en tests P09 qui épinglent l'absence de
   valeur brute.
+
+## Requalification v0.7.3 (2026-10-02)
+
+Suite à la montée du runtime Microsandbox de v0.7.2 vers v0.7.3 (issue
+#104, PR #107), les matrices d'intégration ont été rejouées sur Mac
+Apple Silicon avec le laboratoire réseau local corrigé.
+
+**Résultats :**
+
+- **Matrice credentials (P02) :** 14/15 passent. Le seul échec (T8a)
+  était un faux négatif causé par le serveur écho du laboratoire, qui
+  redirigeait stdout/stderr dans le même fichier que le journal JSON
+  (`requests.log`). Les connexions bloquées par le proxy généraient des
+  tracebacks `ConnectionResetError` qui écrasaient les entrées JSON
+  précédentes. Le transport lui-même était correct (T4, T7, T9, T10,
+  T11b passent). Le laboratoire a été corrigé pour écrire le journal
+  JSON dans un fichier dédié (`requests.jsonl`).
+
+- **Matrice guest-capabilities (P03) :** 16/16 passent (T1–T10c),
+  incluant Node/npm, OpenCode, Chromium headless, Playwright MCP, et
+  les clones Git invité. L'assertion T7a a été mise à jour pour
+  chercher le titre (« Example Domain ») au lieu de `<h1>` disparu du
+  site example.com.
+
+**Conclusion :** Aucune régression du transport des identifiants ou
+des capacités invité dans Microsandbox v0.7.3 par rapport à v0.7.2.
+Les échecs observés étaient des artefacts de laboratoire, pas des
+régressions du runtime.
