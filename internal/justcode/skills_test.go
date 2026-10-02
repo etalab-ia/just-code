@@ -180,6 +180,21 @@ func TestLocalSkillSelectionsAreHostScopedAndValidated(t *testing.T) {
 	}
 }
 
+func TestLoadProjectSkillStateReportsLocalOnlyMode(t *testing.T) {
+	root, state := t.TempDir(), t.TempDir()
+	manifestPath := ProjectManifestPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{SkillsLocalOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, ids, managed, localOnly, err := LoadProjectSkillState(DefaultFS, root, state, "jc-project-1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !managed || !localOnly || len(ids) != 0 {
+		t.Fatalf("local-only state = managed:%v localOnly:%v ids:%v", managed, localOnly, ids)
+	}
+}
+
 func TestLoadLockedSkillPackagesUsesOnlyVerifiedCache(t *testing.T) {
 	oldCacheDir := userCacheDirFn
 	cache := t.TempDir()

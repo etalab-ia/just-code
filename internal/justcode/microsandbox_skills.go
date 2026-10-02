@@ -83,10 +83,46 @@ func (m *MicrosandboxRuntime) preflightProjectSkills(ctx context.Context) (guest
 	if err := ensureGuestSkillSelectionCompatible(inventory, packages); err != nil {
 		return guestSkillInventory{}, nil, err
 	}
+	if m.cfg.ProjectSkillsLocalOnly {
+		if err := m.preflightLocalOnlySkillInstructions(ctx); err != nil {
+			return guestSkillInventory{}, nil, err
+		}
+	}
 	if err := m.preflightGuestSkills(ctx, inventory, packages); err != nil {
 		return guestSkillInventory{}, nil, err
 	}
 	return inventory, packages, nil
+}
+
+func (m *MicrosandboxRuntime) preflightLocalOnlySkillInstructions(ctx context.Context) error {
+	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), readGuestManagedInstructionsScript())
+	if err != nil {
+		return fmt.Errorf("inspect guest managed skill instructions: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("inspect guest managed skill instructions exited %d: %s", code, strings.TrimSpace(stderr))
+	}
+	if len(stdout) > 1<<20 {
+		return fmt.Errorf("guest AGENTS.md exceeds 1 MiB; refusing to inspect managed skill instructions")
+	}
+	zone, err := managedSkillZone(stdout)
+	if err != nil {
+		return fmt.Errorf("inspect guest managed skill instructions: %w", err)
+	}
+	if zone != "" {
+		return fmt.Errorf("the guest workspace still contains versioned managed skill instructions, but this project now keeps skills host-local; " +
+			"run 'just-code workspace sync' before starting, and export guest-local changes first with 'just-code workspace export'")
+	}
+	return nil
+}
+
+func readGuestManagedInstructionsScript() string {
+	target := shellQuote(msbGuestWorkspace + "/AGENTS.md")
+	return "set -eu\n" +
+		"target=" + target + "\n" +
+		"if [ -L \"$target\" ]; then echo 'AGENTS.md is a symlink; refusing to inspect managed instructions' >&2; exit 1; fi\n" +
+		"if [ -e \"$target\" ] && [ ! -f \"$target\" ]; then echo 'AGENTS.md is not a regular file; refusing to inspect managed instructions' >&2; exit 1; fi\n" +
+		"if [ -f \"$target\" ]; then cat -- \"$target\"; fi\n"
 }
 
 func guestSkillInventoryMatches(current guestSkillInventory, desired []guestSkillEntry) bool {

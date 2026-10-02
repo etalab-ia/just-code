@@ -402,6 +402,25 @@ func TestSkillDeselectionRequiresExplicitGuestRecreation(t *testing.T) {
 	}
 }
 
+func TestLocalOnlySkillsRefuseStaleManagedInstructions(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{stdout: `{"schemaVersion":1,"skills":[]}`},
+		{stdout: "user-authored instructions\n\n" + `<!-- BEGIN JUST-CODE MANAGED SKILLS -->` + "\n" +
+			"## Managed project skills\n\n- `official/rgaa` at `" + projectSkillsRevision + "`\n" +
+			`<!-- END JUST-CODE MANAGED SKILLS -->` + "\n"},
+	}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true, ProjectSkillsLocalOnly: true})
+	m.Client = client
+
+	err := m.installProjectSkills(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "just-code workspace sync") {
+		t.Fatalf("stale guest instructions should require an explicit workspace refresh: %v", err)
+	}
+	if len(client.written) != 0 || len(client.calls) != 2 {
+		t.Fatalf("stale instructions should block before any guest mutation: writes=%+v calls=%+v", client.written, client.calls)
+	}
+}
+
 func (f *fakeMSBClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {
 	f.record("execcapture " + name + " " + command)
 	if len(f.execCaptureResults) == 0 {

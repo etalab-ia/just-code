@@ -103,44 +103,45 @@ func ReadLocalSkillSelections(fs FS, path string) (LocalSkillSelections, error) 
 // LoadProjectSkillPackages selects either the versioned lock or the explicit
 // host-local selection and verifies every cache artifact before runtime start.
 func LoadProjectSkillPackages(fs FS, projectRoot, stateDir, instance string) ([]SkillPackage, error) {
-	packages, _, _, err := LoadProjectSkillState(fs, projectRoot, stateDir, instance)
+	packages, _, _, _, err := LoadProjectSkillState(fs, projectRoot, stateDir, instance)
 	return packages, err
 }
 
-// LoadProjectSkillState also returns the desired IDs and whether this
-// manifest version owns guest-skill reconciliation (needed for deselection).
-func LoadProjectSkillState(fs FS, projectRoot, stateDir, instance string) ([]SkillPackage, []string, bool, error) {
+// LoadProjectSkillState also returns the desired IDs, whether this manifest
+// version owns guest-skill reconciliation (needed for deselection), and
+// whether the selection is host-local rather than versioned in the checkout.
+func LoadProjectSkillState(fs FS, projectRoot, stateDir, instance string) ([]SkillPackage, []string, bool, bool, error) {
 	manifest, err := ReadProjectManifest(fs, ProjectManifestPath(projectRoot))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, false, nil
+			return nil, nil, false, false, nil
 		}
-		return nil, nil, false, err
+		return nil, nil, false, false, err
 	}
 	ids := manifest.Skills
 	var pins map[string]SkillLock
 	if manifest.SkillsLocalOnly {
 		path, err := LocalSkillSelectionsPath(stateDir, instance)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, false, false, err
 		}
 		local, err := ReadLocalSkillSelections(fs, path)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, false, false, err
 		}
 		ids, pins = local.Skills, local.Pins
 	} else {
 		lock, err := ReadLockfile(fs, ProjectLockPath(projectRoot))
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, false, false, err
 		}
 		pins = lock.Skills
 	}
 	packages, err := LoadLockedSkillPackages(ids, pins)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, false, err
 	}
-	return packages, append([]string(nil), ids...), manifest.SchemaVersion >= 2, nil
+	return packages, append([]string(nil), ids...), manifest.SchemaVersion >= 2, manifest.SkillsLocalOnly, nil
 }
 
 func WriteLocalSkillSelections(fs FS, path string, selection LocalSkillSelections) error {

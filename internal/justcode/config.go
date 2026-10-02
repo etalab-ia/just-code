@@ -20,6 +20,9 @@ type Config struct {
 	// when no current archives are selected.
 	ProjectSkillIDs      []string
 	ProjectSkillsManaged bool
+	// ProjectSkillsLocalOnly prevents stale versioned instructions in a
+	// persistent guest from being accepted after the selection moves host-local.
+	ProjectSkillsLocalOnly bool
 	// WorkspaceDir is the host directory the project content comes from. Under
 	// the sealed model (P22) it is the transfer SOURCE, not a mounted
 	// directory: only filtered files ever cross into the guest. A zero-flag

@@ -129,13 +129,14 @@ func run(args []string) (int, error) {
 		}
 	}
 	if projErr == nil && isLaunchAction(parsed.action) {
-		packages, skillIDs, managed, err := justcode.LoadProjectSkillState(justcode.DefaultFS, projectRoot, justcode.DefaultStateDir(), instance)
+		packages, skillIDs, managed, localOnly, err := justcode.LoadProjectSkillState(justcode.DefaultFS, projectRoot, justcode.DefaultStateDir(), instance)
 		if err != nil {
 			return 1, fmt.Errorf("cannot resolve the project's pinned skills before runtime changes: %w", err)
 		}
 		cfg.ProjectSkills = packages
 		cfg.ProjectSkillIDs = skillIDs
 		cfg.ProjectSkillsManaged = managed
+		cfg.ProjectSkillsLocalOnly = localOnly
 	}
 	// The GitHub origin is non-secret metadata. Resolve it only when this
 	// project has a host-local approval for the optional GitHub binding; a
