@@ -484,6 +484,14 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	}
 	return withHostSecrets(bindings, func() error {
 		for i, op := range pending {
+			// The backend-restart operation relaunches OpenCode without going
+			// through Start. Reconcile selected guest skills first so the
+			// restarted server cannot miss an init change made while unhealthy.
+			if op == OpRestartBackend && m.cfg.ProjectSkillsManaged {
+				if err := m.installProjectSkills(ctx); err != nil {
+					return fmt.Errorf("reconcile project skills before restarting the backend: %w", err)
+				}
+			}
 			if err := m.applyReconcileOp(ctx, op, bindings); err != nil {
 				// Journal the remaining ops: the next run resumes here.
 				st.Pending = opsToJournal(pending[i:])

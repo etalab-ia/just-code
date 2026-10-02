@@ -272,6 +272,56 @@ func TestReconcileNoOpInstallsNewProjectSkills(t *testing.T) {
 	_ = os.RemoveAll(filepath.Dir(statePath))
 }
 
+func TestReconcileBackendRestartInstallsSkillsBeforeRelaunch(t *testing.T) {
+	isolateHostState(t)
+	raw := skillSourceTar(t, skillTarEntry{
+		name: "skills/rgaa/SKILL.md",
+		body: []byte("---\nname: rgaa\ndescription: fixture\n---\n"),
+	})
+	archive, err := normalizeSkillArchive(bytes.NewReader(raw), "skills/rgaa", "rgaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: projectSkillsRevision, SHA256: hex.EncodeToString(digest[:])}
+	skill := SkillPackage{ID: "official/rgaa", Name: "rgaa", Lock: lock, Archive: archive}
+	client := &fakeMSBClient{
+		exists: true, status: "running", startScript: msbStartScript(IsolationBackend),
+		execCaptureResults: []fakeMSBExecCaptureResult{
+			{stdout: `{"schemaVersion":1,"skills":[]}`},
+			{stdout: `[{"name":"rgaa"}]`},
+		},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationBackend
+	m.cfg.ProjectSkillIDs = []string{skill.ID}
+	m.cfg.ProjectSkillsManaged = true
+	m.cfg.ProjectSkills = []SkillPackage{skill}
+	m.Probe = func(context.Context, string, string, string) HealthProbe { return HealthProbe{Healthy: false} }
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
+	statePath := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := WriteInstanceState(DefaultFS, statePath, desired.toState()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	installAt, restartAt := -1, -1
+	for index, call := range client.calls {
+		if strings.Contains(call, "tar -xzf") {
+			installAt = index
+		}
+		if strings.Contains(call, msbRelaunchCommand) {
+			restartAt = index
+		}
+	}
+	if installAt < 0 || restartAt < 0 || installAt >= restartAt {
+		t.Fatalf("skill install must complete before the backend relaunch: installAt=%d restartAt=%d calls=%v", installAt, restartAt, client.calls)
+	}
+	_ = os.Remove(statePath)
+	_ = os.RemoveAll(filepath.Dir(statePath))
+}
+
 func TestGitHubOriginParticipatesOnlyForResolvedBinding(t *testing.T) {
 	isolateHostState(t)
 	m := newTestMicrosandbox(t, &fakeMSBClient{})

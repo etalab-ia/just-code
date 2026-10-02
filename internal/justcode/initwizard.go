@@ -126,6 +126,63 @@ type InitPlan struct {
 	InstructionsChanged bool
 }
 
+type managedFileMutation struct {
+	path  string
+	mode  os.FileMode
+	write func() error
+}
+
+type managedFileSnapshot struct {
+	path   string
+	data   []byte
+	mode   os.FileMode
+	exists bool
+}
+
+func applyManagedFileMutations(fs FS, mutations []managedFileMutation) error {
+	snapshots := make([]managedFileSnapshot, len(mutations))
+	for i, mutation := range mutations {
+		snapshot := managedFileSnapshot{path: mutation.path, mode: mutation.mode}
+		if info, err := os.Lstat(mutation.path); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%s is a symlink; refusing to replace managed data", mutation.path)
+			}
+			if info.Mode().IsRegular() {
+				snapshot.mode = info.Mode().Perm()
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		data, err := fs.ReadFile(mutation.path)
+		if err == nil {
+			snapshot.data, snapshot.exists = data, true
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("snapshot %s before Apply: %w", mutation.path, err)
+		}
+		snapshots[i] = snapshot
+	}
+	for i, mutation := range mutations {
+		if err := mutation.write(); err != nil {
+			var rollbackErrors []string
+			for j := i - 1; j >= 0; j-- {
+				snapshot := snapshots[j]
+				if snapshot.exists {
+					if rollbackErr := atomicWrite(fs, snapshot.path, snapshot.data, snapshot.mode); rollbackErr != nil {
+						rollbackErrors = append(rollbackErrors, fmt.Sprintf("restore %s: %v", snapshot.path, rollbackErr))
+					}
+				} else if rollbackErr := fs.Remove(snapshot.path); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
+					rollbackErrors = append(rollbackErrors, fmt.Sprintf("remove %s: %v", snapshot.path, rollbackErr))
+				}
+			}
+			if len(rollbackErrors) > 0 {
+				return fmt.Errorf("Apply failed (%v) and rollback was incomplete: %s", err, strings.Join(rollbackErrors, "; "))
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // Plan validates the answers and resolves what they imply. It reads only the
 // existing manifest; nothing is written here, so a user can see the review and
 // walk away.
@@ -524,16 +581,12 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 		}
 		instructionsChanged = string(current) != instructionsAfter
 	}
+	var localSelection LocalSkillSelections
 	if plan.Answers.SkillsLocalOnly {
 		if plan.LocalSkillsPath == "" {
 			return fmt.Errorf("local-only skill state path was not resolved")
 		}
-		selection := LocalSkillSelections{Skills: append([]string(nil), plan.Answers.Skills...), Pins: cloneSkillLocks(plan.SkillLocks)}
-		// Persist host-local data first: a failed state write must leave the
-		// versioned manifest, lock and AGENTS file untouched.
-		if err := WriteLocalSkillSelections(fs, plan.LocalSkillsPath, selection); err != nil {
-			return fmt.Errorf("save host-local skill state before applying project files: %w", err)
-		}
+		localSelection = LocalSkillSelections{Skills: append([]string(nil), plan.Answers.Skills...), Pins: cloneSkillLocks(plan.SkillLocks)}
 	}
 	// The manifest is secret-free by construction: a credential is referenced
 	// by name, never written here. It also carries no host-absolute path, so a
@@ -550,12 +603,6 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	if !plan.Answers.SkillsLocalOnly {
 		pm.Skills = append([]string(nil), plan.Answers.Skills...)
 	}
-	if err := fs.MkdirAll(filepath.Dir(plan.ManifestPath), 0o755); err != nil {
-		return err
-	}
-	if err := WriteProjectManifest(fs, plan.ManifestPath, pm); err != nil {
-		return err
-	}
 	// The lockfile is written even though nothing is pinned yet: it is where
 	// the skills and images of later chantiers record their resolved
 	// revisions, and an empty lock is the honest "nothing pinned" state. An
@@ -571,13 +618,25 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	if !plan.Answers.SkillsLocalOnly && len(plan.Answers.Skills) > 0 {
 		lock.Skills = cloneSkillLocks(plan.SkillLocks)
 	}
-	if err := WriteLockfile(fs, plan.LockPath, lock); err != nil {
-		return err
+	mutations := make([]managedFileMutation, 0, 4)
+	if plan.Answers.SkillsLocalOnly {
+		mutations = append(mutations, managedFileMutation{
+			path: plan.LocalSkillsPath, mode: 0o600,
+			write: func() error { return WriteLocalSkillSelections(fs, plan.LocalSkillsPath, localSelection) },
+		})
 	}
+	mutations = append(mutations,
+		managedFileMutation{path: plan.ManifestPath, mode: 0o644, write: func() error { return WriteProjectManifest(fs, plan.ManifestPath, pm) }},
+		managedFileMutation{path: plan.LockPath, mode: 0o644, write: func() error { return WriteLockfile(fs, plan.LockPath, lock) }},
+	)
 	if instructionsChanged {
-		if err := atomicWrite(fs, plan.InstructionsPath, []byte(instructionsAfter), 0o644); err != nil {
-			return fmt.Errorf("write managed instructions after project files were written: %w", err)
-		}
+		mutations = append(mutations, managedFileMutation{
+			path: plan.InstructionsPath, mode: 0o644,
+			write: func() error { return atomicWrite(fs, plan.InstructionsPath, []byte(instructionsAfter), 0o644) },
+		})
+	}
+	if err := applyManagedFileMutations(fs, mutations); err != nil {
+		return err
 	}
 	w.print(fmt.Sprintf("Wrote %s\nWrote %s\n", plan.ManifestPath, plan.LockPath))
 	if plan.InstructionsChanged {

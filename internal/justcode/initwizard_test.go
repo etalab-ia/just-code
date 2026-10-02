@@ -545,6 +545,18 @@ func TestInitLocalOnlySkillsStayOutsideTheCheckout(t *testing.T) {
 	}
 }
 
+type failRenameForPathFS struct {
+	FS
+	Path string
+}
+
+func (f failRenameForPathFS) RenameTmp(oldPath, newPath string) error {
+	if newPath == f.Path {
+		return os.ErrPermission
+	}
+	return f.FS.RenameTmp(oldPath, newPath)
+}
+
 func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
 	root := initTestRoot(t)
 	cache, state := t.TempDir(), t.TempDir()
@@ -581,9 +593,9 @@ func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs.failRename = true
+	wizard.FS = failRenameForPathFS{FS: fs, Path: manifestPath}
 	if err := wizard.Apply(plan, true); err == nil {
-		t.Fatal("local-only state write must report the injected disk failure")
+		t.Fatal("manifest failure after staging local pins must be reported")
 	}
 	if !bytes.Equal(fs.files[manifestPath], beforeManifest) || !bytes.Equal(fs.files[lockPath], beforeLock) || !bytes.Equal(fs.files[agentsPath], beforeAgents) {
 		t.Fatal("failed local-only state persistence changed versioned project files")
