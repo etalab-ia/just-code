@@ -297,9 +297,9 @@ func LoadLockedSkillPackages(ids []string, locks map[string]SkillLock) ([]SkillP
 		if lock.Repository != projectSkillsRepository || !isGitRevision(lock.Revision) || !isSHA256(lock.SHA256) {
 			return nil, fmt.Errorf("skill %s has an invalid source lock", id)
 		}
-		name := strings.TrimPrefix(id, "official/")
-		if name == id {
-			name = strings.TrimPrefix(id, "experimental/")
+		_, name, ok := parseProjectSkillID(id)
+		if !ok {
+			return nil, fmt.Errorf("invalid skill id %q", id)
 		}
 		archive, err := readCachedSkillArchive(name, lock)
 		if err != nil {
@@ -461,6 +461,14 @@ func skillPathIdentity(p string) (category, name string, ok bool) {
 	return category, name, true
 }
 
+func parseProjectSkillID(id string) (category, name string, ok bool) {
+	category, name, found := strings.Cut(id, "/")
+	if !found || (category != "official" && category != "experimental") || !skillNamePattern.MatchString(name) {
+		return "", "", false
+	}
+	return category, name, true
+}
+
 func validateSkillIDs(ids []string, known map[string]ProjectSkill) error {
 	if len(ids) > maxProjectSkills {
 		return fmt.Errorf("at most %d project skills may be selected", maxProjectSkills)
@@ -470,8 +478,7 @@ func validateSkillIDs(ids []string, known map[string]ProjectSkill) error {
 		if id == "" || (!strings.HasPrefix(id, "official/") && !strings.HasPrefix(id, "experimental/")) {
 			return fmt.Errorf("invalid skill id %q; use official/<name> or experimental/<name>", id)
 		}
-		name := strings.TrimPrefix(strings.TrimPrefix(id, "official/"), "experimental/")
-		if !skillNamePattern.MatchString(name) || strings.Contains(name, "/") {
+		if _, _, ok := parseProjectSkillID(id); !ok {
 			return fmt.Errorf("invalid skill id %q", id)
 		}
 		if seen[id] {

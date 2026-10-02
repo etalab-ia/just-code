@@ -195,6 +195,14 @@ func TestLoadProjectSkillStateReportsLocalOnlyMode(t *testing.T) {
 	}
 }
 
+func TestValidateProjectSkillIDsRejectsNestedCategoryPrefixes(t *testing.T) {
+	for _, id := range []string{"official/experimental/foo", "experimental/official/foo", "official/foo/bar"} {
+		if err := ValidateProjectSkillIDs([]string{id}); err == nil {
+			t.Errorf("malformed skill ID %q was accepted", id)
+		}
+	}
+}
+
 func TestLoadLockedSkillPackagesUsesOnlyVerifiedCache(t *testing.T) {
 	oldCacheDir := userCacheDirFn
 	cache := t.TempDir()
@@ -214,6 +222,10 @@ func TestLoadLockedSkillPackagesUsesOnlyVerifiedCache(t *testing.T) {
 	packages, err := LoadLockedSkillPackages([]string{skill.ID}, map[string]SkillLock{skill.ID: lock})
 	if err != nil || len(packages) != 1 || !bytes.Equal(packages[0].Archive, archive) {
 		t.Fatalf("packages = %d, err = %v", len(packages), err)
+	}
+	malformedID := "official/experimental/rgaa"
+	if _, err := LoadLockedSkillPackages([]string{malformedID}, map[string]SkillLock{malformedID: lock}); err == nil || !strings.Contains(err.Error(), "invalid skill id") {
+		t.Fatalf("nested category prefix was not rejected before cache access: %v", err)
 	}
 	cachePath, err := skillArchiveCachePath(skill.Name, lock)
 	if err != nil {
