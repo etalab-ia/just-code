@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.5.0...just-code-v0.6.0) (2026-10-02)
+
+
+### Features
+
+* **github:** activer le workflow invité approuvé (P13) ([#105](https://github.com/etalab-ia/just-code/issues/105)) ([51879f7](https://github.com/etalab-ia/just-code/commit/51879f7221499ff15ca87ae52857c368ee53feb6))
+
+
+### Bug Fixes
+
+* **tests:** fiabiliser le laboratoire d identifiants P02 ([#110](https://github.com/etalab-ia/just-code/issues/110)) ([a819397](https://github.com/etalab-ia/just-code/commit/a819397bc10997bc16898f7b74e168e88a417a1e))
+
 ## [0.5.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.4.2...just-code-v0.5.0) (2026-09-28)
 
 
