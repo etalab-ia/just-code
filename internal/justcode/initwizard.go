@@ -286,6 +286,9 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	plan.Answers.SkillsSet = answers.SkillsSet
 	plan.Answers.SkillsLocalOnly = localOnly
 	plan.Answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet
+	if len(selected) > 0 && plan.Answers.Runtime != RuntimeMicrosandbox {
+		return plan, fmt.Errorf("selected project skills require the sealed microsandbox runtime")
+	}
 	if len(selected) > 0 && len(plan.SkillLocks) == 0 {
 		return plan, fmt.Errorf("the selected skills have no pinned lock data")
 	}
@@ -303,7 +306,7 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 	}
 	wasVersionedWithSkills := plan.ExistingManifest != nil && !oldLocalOnly && len(plan.ExistingManifest.Skills) > 0
-	if !localOnly && len(selected) > 0 || localOnly && wasVersionedWithSkills {
+	if len(selected) > 0 || wasVersionedWithSkills {
 		plan.InstructionsPath = filepath.Join(pc.Root, "AGENTS.md")
 		if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
 			if !info.Mode().IsRegular() {

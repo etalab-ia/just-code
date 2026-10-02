@@ -452,6 +452,27 @@ func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T)
 		!bytes.Equal(beforeAgents, readFileForTest(t, filepath.Join(root, "AGENTS.md"))) {
 		t.Fatal("reapplying an unchanged skill selection changed project files")
 	}
+	if _, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeAgentVM}); err == nil || !strings.Contains(err.Error(), "require the sealed microsandbox") {
+		t.Fatalf("preserved project skills with a non-Microsandbox runtime: %v", err)
+	}
+	clear, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clear.InstructionsChanged || strings.Contains(clear.InstructionsAfter, "official/rgaa") {
+		t.Fatalf("clearing skills must remove the bounded block: before=%q after=%q", clear.InstructionsBefore, clear.InstructionsAfter)
+	}
+	if err := wizard.Apply(clear, true); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || len(cleared.Skills) != 0 || cleared.SkillsLocalOnly {
+		t.Fatalf("cleared manifest = %+v, err = %v", cleared, err)
+	}
+	clearedAgents := readFileForTest(t, filepath.Join(root, "AGENTS.md"))
+	if !bytes.HasPrefix(clearedAgents, []byte(userText)) || bytes.Contains(clearedAgents, []byte("official/rgaa")) {
+		t.Fatalf("clearing skills damaged user instructions or kept a managed skill: %q", clearedAgents)
+	}
 }
 
 func TestInitLocalOnlySkillsStayOutsideTheCheckout(t *testing.T) {
