@@ -35,8 +35,42 @@ dépréciation, mais n'entrent pas dans la nouvelle résolution.
 | Fichier | Rôle | Version de schéma |
 |---|---|---|
 | `~/.config/just-code/settings.json` | Réglages globaux utilisateur (sans secrets) | 1 |
-| `.just-code/project.json` | Manifeste projet, versionné (sans secrets, sans chemins absolus hôte) | 1 |
-| `.just-code/lock.json` | Verrou : révisions résolues des éléments épinglés | 1 |
+| `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 2 |
+| `.just-code/lock.json` | Verrou : révisions et digests des éléments épinglés | 2 |
+
+## Skills de projet (P14)
+
+Les skills sélectionnés pendant `just-code init` sont épinglés à une révision
+du dépôt `etalab-ia/skills`. En mode versionné, les IDs sont dans
+`.just-code/project.json`, et le commit source avec le SHA-256 de chaque
+archive sont dans `.just-code/lock.json`. Chaque archive inclut la licence
+amont MIT. Les archives vérifiées sont conservées dans le cache utilisateur :
+le lancement lit uniquement le lock et ce cache, sans
+suivre une branche distante ni exécuter d'installateur côté hôte.
+
+Dans l'invité Microsandbox, les fichiers sont installés sous le répertoire
+skills global d'OpenCode (`$XDG_CONFIG_HOME/opencode/skills`, ou
+`~/.config/opencode/skills`). Les skills restent hors du checkout invité; une
+collision avec un skill existant est refusée sans l'écraser. Les archives sont
+limitées aux fichiers réguliers : symlinks, chemins traversants, doublons,
+archives corrompues et contenu modifié après installation font échouer la
+préparation.
+
+La commande interactive `init` présente le catalogue officiel et les entrées
+expérimentales explicitement marquées. En script, répéter `--skill` pour chaque
+sélection, par exemple `--skill official/rgaa`. La désélection se fait avec
+`--clear-skills`. Le mode versionné ajoute uniquement une zone bornée gérée
+dans `AGENTS.md`; tout le texte hors de cette zone est préservé. Avec
+`--local-only-skills`, IDs et pins sont stockés dans l'état hôte de l'instance,
+et aucun texte de skill n'est ajouté au checkout. Si le projet avait auparavant
+une zone gérée versionnée dans `AGENTS.md`, son retrait est montré avant Apply;
+le texte utilisateur hors de cette zone reste intact. Pour changer la
+sélection ou les pins après création du guest, recrée explicitement
+l'environnement après avoir exporté les éventuels changements invités.
+Le passage du mode versionné au mode local-only ne rafraîchit pas la copie
+scellée d'`AGENTS.md` du guest. Si elle porte encore l'ancienne zone gérée,
+`start` et `attach` refusent de poursuivre : exporte les changements invités,
+puis lance `just-code workspace sync` ou recrée le guest.
 
 Chaque fichier porte un `schemaVersion`. Un schéma plus récent que la version
 supportée par le binaire est une erreur explicite (mettre à jour just-code), pas

@@ -162,15 +162,21 @@ type ProjectManifest struct {
 	// location has readers today, so nothing writes this; the field is read
 	// for backward compatibility and shown in the setup review.
 	Storage string `json:"storage,omitempty"`
+	// Skills are catalogue IDs selected for this project. Their immutable
+	// source revisions and content digests live in the lockfile.
+	Skills []string `json:"skills,omitempty"`
+	// SkillsLocalOnly keeps selections in host state instead of project files.
+	// A checkout with this flag never receives generated skill instructions.
+	SkillsLocalOnly bool `json:"skillsLocalOnly,omitempty"`
 }
 
 // projectManifestSchemaVersion is the current project.json format version.
-const projectManifestSchemaVersion = 1
+const projectManifestSchemaVersion = 2
 
 // maxSupportedManifestSchema is the highest manifest schemaVersion this build
 // reads. A newer version is a hard error: the file was written by a binary
 // this one cannot interpret.
-const maxSupportedManifestSchema = 1
+const maxSupportedManifestSchema = 2
 
 // Lockfile is the project lock (.just-code/lock.json): resolved revisions of
 // everything the manifest pins (skills, images, connector packages), so a
@@ -179,13 +185,15 @@ type Lockfile struct {
 	SchemaVersion int `json:"schemaVersion"`
 	// Entries maps a manifest pin name to its resolved revision.
 	Entries map[string]string `json:"entries,omitempty"`
+	// Skills pins the selected catalogue artifacts by ID.
+	Skills map[string]SkillLock `json:"skills,omitempty"`
 }
 
-const lockfileSchemaVersion = 1
+const lockfileSchemaVersion = 2
 
 // maxSupportedLockfileSchema is the highest lock.json schemaVersion this
 // build reads.
-const maxSupportedLockfileSchema = 1
+const maxSupportedLockfileSchema = 2
 
 // checkSchemaVersion rejects a version this build cannot interpret. It is
 // shared by all three file formats so the failure mode is uniform.

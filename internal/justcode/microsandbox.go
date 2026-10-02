@@ -382,7 +382,15 @@ func (m *MicrosandboxRuntime) Start(ctx context.Context) error {
 // The two steps are separate because provisioning needs a running guest: the
 // transfer is written into the sandbox, so it can only happen after boot.
 func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBinding) error {
-	if err := m.startInstance(ctx, bindings); err != nil {
+	skillsReconciledBeforeLaunch := false
+	preflightSkills := func() error {
+		if err := m.installProjectSkills(ctx); err != nil {
+			return err
+		}
+		skillsReconciledBeforeLaunch = true
+		return nil
+	}
+	if err := m.startInstanceWithBackendPreflight(ctx, bindings, preflightSkills); err != nil {
 		return err
 	}
 	// Idempotent: a guest that already carries its repository is left
@@ -392,10 +400,22 @@ func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBind
 	if err := m.ProvisionGuestWorkspace(ctx, SyncOptions{}); err != nil {
 		return err
 	}
+	if !skillsReconciledBeforeLaunch {
+		if err := m.installProjectSkills(ctx); err != nil {
+			return err
+		}
+	}
 	return m.configureGitHubWorkspace(ctx, bindings)
 }
 
 func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []resolvedBinding) error {
+	return m.startInstanceWithBackendPreflight(ctx, bindings, nil)
+}
+
+func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Context, bindings []resolvedBinding, beforeBackendLaunch func() error) error {
+	if beforeBackendLaunch == nil {
+		beforeBackendLaunch = func() error { return m.installProjectSkills(ctx) }
+	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
@@ -458,6 +478,9 @@ func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []reso
 			fmt.Printf("%s is running with a healthy OpenCode backend.\n", m.InstanceName())
 			return nil
 		}
+		if err := beforeBackendLaunch(); err != nil {
+			return err
+		}
 		fmt.Printf("%s is running but the OpenCode backend is not responding; restarting it inside the microVM...\n", m.InstanceName())
 		return m.launchBackend(ctx)
 	}
@@ -493,7 +516,11 @@ func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []reso
 			return nil
 		}
 		// Booting a stopped VM does not re-run the container entrypoint, so the
-		// backend has to be launched explicitly.
+		// backend has to be launched explicitly. Reconcile managed skills first
+		// so an orphaned skill can never be served by the restarted backend.
+		if err := beforeBackendLaunch(); err != nil {
+			return err
+		}
 		fmt.Printf("Launching OpenCode inside %s...\n", m.InstanceName())
 		return m.launchBackend(ctx)
 	}
@@ -951,7 +978,15 @@ func (m *MicrosandboxRuntime) rejectRecreationOnlyStates(ctx context.Context) er
 	}
 	// Port mappings are also creation-fixed: refuse before Stop so a stale
 	// full-mode instance remains available until the user approves recreation.
-	return m.rejectFullServerPortForwarding(ctx)
+	if err := m.rejectFullServerPortForwarding(ctx); err != nil {
+		return err
+	}
+	if sandbox.Status == "running" {
+		if _, _, err := m.preflightProjectSkills(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rejectResourceSizingChange refuses a restart when the applied state records

@@ -439,6 +439,14 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 		pending = journalToOps(applied.Pending)
 		fmt.Printf("Resuming interrupted apply for %s at: %s\n", m.InstanceName(), joinOps(pending))
 	} else if plan.IsNoOp() {
+		// Skill selections are guest-local managed data (P14), not part of the
+		// VM configuration revision. Reconcile them before a successful no-op
+		// return so init on a running project does not silently defer them.
+		if m.cfg.ProjectSkillsManaged {
+			if err := m.installProjectSkills(ctx); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -476,6 +484,14 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	}
 	return withHostSecrets(bindings, func() error {
 		for i, op := range pending {
+			// The backend-restart operation relaunches OpenCode without going
+			// through Start. Reconcile selected guest skills first so the
+			// restarted server cannot miss an init change made while unhealthy.
+			if op == OpRestartBackend && m.cfg.ProjectSkillsManaged {
+				if err := m.installProjectSkills(ctx); err != nil {
+					return fmt.Errorf("reconcile project skills before restarting the backend: %w", err)
+				}
+			}
 			if err := m.applyReconcileOp(ctx, op, bindings); err != nil {
 				// Journal the remaining ops: the next run resumes here.
 				st.Pending = opsToJournal(pending[i:])
@@ -643,6 +659,15 @@ func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op Reconcile
 	case OpRestartBackend:
 		return m.launchBackend(ctx)
 	case OpRestartVM:
+		running, err := m.IsRunning(ctx)
+		if err != nil {
+			return err
+		}
+		if running {
+			if _, _, err := m.preflightProjectSkills(ctx); err != nil {
+				return err
+			}
+		}
 		if err := m.Stop(ctx); err != nil {
 			return err
 		}

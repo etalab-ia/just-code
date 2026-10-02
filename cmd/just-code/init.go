@@ -42,16 +42,18 @@ func initCmd(args []string) (int, error) {
 // initOptions is the flag surface, and doubles as the answers already supplied
 // on the command line.
 type initOptions struct {
-	Root          string
-	Runtime       string
-	Isolation     string
-	Model         string
-	CPUs          int
-	MemoryMB      int
-	CredentialRef string
-	GitHub        bool
-	Replace       bool
-	Yes           bool
+	Root            string
+	Runtime         string
+	Isolation       string
+	Model           string
+	CPUs            int
+	MemoryMB        int
+	CredentialRef   string
+	GitHub          bool
+	Skills          []string
+	SkillsLocalOnly bool
+	Replace         bool
+	Yes             bool
 	// FromLaunch records that the launch flow is driving the setup, which only
 	// changes the closing message.
 	FromLaunch bool
@@ -85,6 +87,27 @@ func parseInitArgs(args []string) (initOptions, error) {
 			opts.Yes = true
 		case a == "--github":
 			opts.GitHub, opts.Set["github"] = true, true
+		case a == "--skill":
+			v, err := value()
+			if err != nil {
+				return opts, err
+			}
+			if opts.Set["clear-skills"] {
+				return opts, fmt.Errorf("--skill and --clear-skills cannot be used together")
+			}
+			opts.Skills = append(opts.Skills, v)
+			opts.Set["skills"] = true
+		case a == "--clear-skills":
+			if opts.Set["skills"] {
+				return opts, fmt.Errorf("--skill and --clear-skills cannot be used together")
+			}
+			opts.Set["clear-skills"], opts.Set["skills"] = true, true
+		case a == "--local-only-skills" || a == "--versioned-skills":
+			if opts.Set["skills-storage"] {
+				return opts, fmt.Errorf("choose only one skill storage mode")
+			}
+			opts.Set["skills-storage"] = true
+			opts.SkillsLocalOnly = a == "--local-only-skills"
 		case a == "--root":
 			v, err := value()
 			if err != nil {
@@ -146,14 +169,18 @@ func parseInitArgs(args []string) (initOptions, error) {
 // so the non-TTY contract can be exercised without a terminal.
 func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	answers := justcode.InitAnswers{
-		Root:           opts.Root,
-		Runtime:        justcode.Runtime(opts.Runtime),
-		Isolation:      justcode.Isolation(opts.Isolation),
-		Model:          opts.Model,
-		CPUs:           opts.CPUs,
-		MemoryMB:       opts.MemoryMB,
-		CredentialRef:  opts.CredentialRef,
-		GitHubWorkflow: opts.GitHub,
+		Root:               opts.Root,
+		Runtime:            justcode.Runtime(opts.Runtime),
+		Isolation:          justcode.Isolation(opts.Isolation),
+		Model:              opts.Model,
+		CPUs:               opts.CPUs,
+		MemoryMB:           opts.MemoryMB,
+		CredentialRef:      opts.CredentialRef,
+		GitHubWorkflow:     opts.GitHub,
+		Skills:             opts.Skills,
+		SkillsSet:          opts.Set["skills"],
+		SkillsLocalOnly:    opts.SkillsLocalOnly,
+		SkillsLocalOnlySet: opts.Set["skills-storage"],
 	}
 	if answers.Root == "" {
 		if cwd, err := os.Getwd(); err == nil {
@@ -164,7 +191,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// nothing, and in a script it is the most likely thing to be wrong.
 	if !tty && !opts.Set["root"] {
 		return 1, fmt.Errorf("no terminal available: name the project explicitly, e.g. 'just-code init --root <dir> --yes'.\n" +
-			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --replace, --yes")
+			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --skill, --clear-skills, --local-only-skills, --versioned-skills, --replace, --yes")
 	}
 
 	// The catalogue check reads the credential reference of the project being
@@ -235,10 +262,17 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	return 0, nil
 }
 
+var projectSkillCatalogueFn = justcode.ProjectSkillCatalogue
+
 // validateInitOptions rejects a bad flag value before any prompt runs. The
 // engine validates everything again; this is only about failing early with the
 // message a command-line user expects.
 func validateInitOptions(opts initOptions) error {
+	if opts.Set["skills"] {
+		if err := justcode.ValidateProjectSkillIDs(opts.Skills); err != nil {
+			return err
+		}
+	}
 	if opts.Set["runtime"] {
 		if _, err := justcode.ResolveRuntime(opts.Runtime, ""); err != nil {
 			return err
@@ -350,6 +384,55 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		answer, _ := promptLine(in, "Approve the GitHub workflow for this project? [y/N]: ")
 		answers.GitHubWorkflow = strings.EqualFold(strings.TrimSpace(answer), "y")
 	}
+	if !opts.Set["skills"] {
+		fmt.Println("\nProject skills — selected artifacts are pinned and installed inside the Microsandbox guest.")
+		catalogue, err := projectSkillCatalogueFn(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", err)
+		} else {
+			for _, skill := range catalogue {
+				label := skill.ID
+				if skill.Experimental {
+					label += " (EXPERIMENTAL; review before adopting)"
+				}
+				fmt.Printf("  %-42s %s\n", label, skill.Description)
+			}
+		}
+		answer, ok := promptLine(in, "  skill IDs (comma-separated; empty keeps current, `none` clears): ")
+		if ok && strings.TrimSpace(answer) != "" {
+			answers.SkillsSet = true
+			if strings.TrimSpace(answer) != "none" {
+				for _, id := range strings.Split(answer, ",") {
+					answers.Skills = append(answers.Skills, strings.TrimSpace(id))
+				}
+			}
+		}
+	}
+	if !opts.Set["skills-storage"] {
+		localOnly := false
+		if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
+			if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
+				localOnly = manifest.SkillsLocalOnly
+			}
+		}
+		defaultStorage := "versioned"
+		if localOnly {
+			defaultStorage = "local-only"
+		}
+		answer, ok := promptLine(in, "  skill storage (versioned or local-only) ["+defaultStorage+"]: ")
+		answers.SkillsLocalOnly = localOnly
+		if ok && strings.TrimSpace(answer) != "" {
+			switch strings.ToLower(strings.TrimSpace(answer)) {
+			case "versioned":
+				answers.SkillsLocalOnly = false
+			case "local-only":
+				answers.SkillsLocalOnly = true
+			default:
+				return answers, fmt.Errorf("skill storage must be versioned or local-only")
+			}
+		}
+		answers.SkillsLocalOnlySet = true
+	}
 	return answers, nil
 }
 
@@ -440,6 +523,10 @@ Options:
   --memory-mb <n>         guest memory in MiB (default 4096)
   --credential-ref <ref>  project credential reference (default: the global one)
   --github                enable the protected GitHub guest workflow
+  --skill <id>            select an exact catalogue skill (repeatable; e.g. official/rgaa)
+  --clear-skills          remove all managed project skills
+  --local-only-skills     keep skill selection and pins in host state, not the checkout
+  --versioned-skills      store skill selection and pins in .just-code/
   --replace               allow replacing an existing manifest
   --yes, -y               accept the review without asking
 

@@ -200,6 +200,26 @@ EOF
 SKILLS="$("$OC" debug skill 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log(j.map(s=>s.name).filter(n=>n!=='customize-opencode').sort().join(','))})")"
 check "C10 skills projet et global découverts" "global-skill,proj-skill" "$SKILLS"
 
+if [ -n "${JUST_CODE_TEST_SKILL_ARCHIVE:-}" ] || [ -n "${JUST_CODE_TEST_SKILL_NAME:-}" ]; then
+  if [ -z "${JUST_CODE_TEST_SKILL_ARCHIVE:-}" ] || [ -z "${JUST_CODE_TEST_SKILL_NAME:-}" ]; then
+    echo "P14 fixture requires both JUST_CODE_TEST_SKILL_ARCHIVE and JUST_CODE_TEST_SKILL_NAME" >&2
+    exit 1
+  fi
+  case "$JUST_CODE_TEST_SKILL_NAME" in *[!a-z0-9-]*|'')
+    echo "P14 fixture skill name is invalid" >&2
+    exit 1
+    ;;
+  esac
+  SKILL_DIR="$XDG_CONFIG_HOME/opencode/skills/$JUST_CODE_TEST_SKILL_NAME"
+  mkdir -p "$SKILL_DIR"
+  gzip -dc "$JUST_CODE_TEST_SKILL_ARCHIVE" > "$LAB/p14-skill.tar"
+  tar -xf "$LAB/p14-skill.tar" -C "$SKILL_DIR"
+fi
+SKILLS="$("$OC" debug skill 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log(j.map(s=>s.name).filter(n=>n!=='customize-opencode').sort().join(','))})")"
+if [ -n "${JUST_CODE_TEST_SKILL_ARCHIVE:-}" ]; then
+  check "P14 skill épinglé visible par OpenCode" "global-skill,proj-skill,$JUST_CODE_TEST_SKILL_NAME" "$SKILLS"
+fi
+
 # C11: OPENCODE_DISABLE_PROJECT_CONFIG ignore la config projet
 # Si debug config échoue (variable devenue non supportée), la sortie vide
 # ne doit pas se faire passer pour une suppression réussie.

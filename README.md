@@ -409,6 +409,36 @@ la création de PR. Le GitHub CLI de l'hôte n'est pas utilisé.
 
 `just-code auth remove` révoque l'accès avant de supprimer l'entrée du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. La révocation raisonne par **entrée de magasin**, pas par nom de liaison : un `credentialRef` peut alimenter la liaison Albert depuis une entrée nommée autrement, et c'est la liaison invitée effectivement alimentée qui est retirée (l'instantané le consigne sous la forme `entrée@magasin#liaison`). Supprimer l'entrée d'un magasin ne touche pas les instances liées à l'autre magasin ; une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée, cette variable n'appartenant pas à just-code ; une source non confirmable est révoquée puis signalée. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne — y compris lorsque l'entrée supprimée n'est pas nommée `albert` mais alimente la liaison Albert — car retirer la copie du magasin ne révoquerait rien.
 
+### Skills et instructions de projet (P14)
+
+L'initialisation interactive propose les skills du catalogue épinglé
+`etalab-ia/skills`; les entrées expérimentales sont signalées. En mode script,
+sélectionne un ID exact et répétable :
+
+```bash
+just-code init --root . --skill official/rgaa --skill official/anssi-guides --yes
+just-code init --root . --skill experimental/rag-parse --yes
+just-code init --root . --clear-skills --replace --yes
+```
+
+Par défaut, IDs, commit source et digests SHA-256 sont revus puis écrits dans
+`.just-code/project.json` / `.just-code/lock.json`; les seules lignes ajoutées
+à `AGENTS.md` sont dans une zone gérée délimitée. Le texte utilisateur hors de
+cette zone est conservé. `--local-only-skills` garde la sélection dans l'état
+hôte de cette instance, sans ajouter de sélection ou de règle gérée au
+checkout. Si le projet avait une zone gérée versionnée, sa suppression est
+affichée dans la revue et le texte hors de la zone reste intact;
+`--versioned-skills` sélectionne explicitement le mode versionné.
+
+Les archives sont vérifiées et mises en cache par l'hôte. Le démarrage ne
+contacte pas le catalogue : il consomme les pins et le cache local, puis
+installe les fichiers réguliers dans le répertoire global des skills d'OpenCode
+à l'intérieur de l'invité Microsandbox. Aucun script de skill n'est exécuté par
+just-code sur l'hôte. Un conflit avec un skill déjà présent dans l'invité est
+refusé plutôt qu'écrasé; une modification de sélection nécessitant le
+remplacement d'un skill invité passe par `just-code recreate` (exporte d'abord
+les changements invités que tu veux garder).
+
 ### Configuration OpenCode composée et confiance locale (P10)
 
 La configuration OpenCode effective est composée au lancement : l'asset embarqué (provider Albert, permissions) fusionné avec la **couche gérée** (`OPENCODE_CONFIG_CONTENT`), qui ne porte que les champs managés — aujourd'hui `model` et `small_model`. OpenCode fusionne le contenu inline **en dernier** (contrat D-001), donc la couche gérée gagne champ par champ contre la config projet et la config utilisateur, sans jamais réécrire un fichier JSONC utilisateur.

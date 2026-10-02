@@ -1,12 +1,16 @@
 package justcode
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -195,6 +199,292 @@ func (f *fakeMSBClient) WriteFile(_ context.Context, name, guestPath string, dat
 	}
 	f.written = append(f.written, fakeMSBWrite{guestPath: guestPath, data: append([]byte(nil), data...)})
 	return nil
+}
+
+func TestMicrosandboxInstallsPinnedSkillInOpenCodeGlobalDirectory(t *testing.T) {
+	raw := skillSourceTar(t, skillTarEntry{
+		name: "skills/rgaa/SKILL.md",
+		body: []byte("---\nname: rgaa\ndescription: fixture\n---\n"),
+	})
+	archive, err := normalizeSkillArchive(bytes.NewReader(raw), "skills/rgaa", "rgaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: projectSkillsRevision, SHA256: hex.EncodeToString(digest[:])}
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{stdout: `{"schemaVersion":1,"skills":[]}`},
+		{stdout: `[{"name":"rgaa"}]`},
+	}}
+	m := NewMicrosandboxRuntime(Config{
+		ProjectSkillIDs: []string{"official/rgaa"}, ProjectSkillsManaged: true,
+		ProjectSkills: []SkillPackage{{ID: "official/rgaa", Name: "rgaa", Lock: lock, Archive: archive}},
+	})
+	m.Client = client
+	if err := m.installProjectSkills(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.written) != 2 || client.written[0].guestPath != "/tmp/just-code-project-skills.json" ||
+		client.written[1].guestPath != "/tmp/just-code-skill-rgaa-"+lock.SHA256+".tar.gz" {
+		t.Fatalf("guest writes = %+v", client.written)
+	}
+	if !strings.Contains(string(client.written[0].data), "official/rgaa") {
+		t.Fatal("project selection inventory was not staged before package installation")
+	}
+	if !bytes.Equal(client.written[1].data, archive) {
+		t.Fatal("guest payload differs from the verified lock archive")
+	}
+	var installCommand string
+	for _, call := range client.calls {
+		if strings.Contains(call, "tar -xzf") {
+			installCommand = call
+		}
+	}
+	for _, expected := range []string{"${XDG_CONFIG_HOME", "parent=\"$config_home/opencode/skills\"", "dest=\"$parent/rgaa\"", "sha256sum -c", "tar -xzf", "refusing to overwrite"} {
+		if !strings.Contains(installCommand, expected) {
+			t.Fatalf("guest install command lacks %q: %s", expected, installCommand)
+		}
+	}
+	if strings.Contains(installCommand, "/workspace/.opencode/skills") {
+		t.Fatalf("guest skill was installed in the agent checkout: %s", installCommand)
+	}
+	if !hasCall(client, "execcapture "+m.InstanceName()+" opencode debug skill") {
+		t.Fatal("startup did not verify that OpenCode discovered the installed skill")
+	}
+}
+
+func TestGuestSkillInventoryScriptRejectsOrphanedManagedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("guest inventory script requires POSIX path semantics")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	home := t.TempDir()
+	run := func() ([]byte, error) {
+		cmd := exec.Command(sh, "-c", readGuestSkillInventoryScript())
+		cmd.Env = []string{"HOME=" + home}
+		return cmd.CombinedOutput()
+	}
+	output, err := run()
+	if err != nil || strings.TrimSpace(string(output)) != `{"schemaVersion":1,"skills":[]}` {
+		t.Fatalf("fresh guest inventory = %q, err = %v", output, err)
+	}
+	managedDir := filepath.Join(home, ".config", "opencode", "skills", "rgaa")
+	if err := os.MkdirAll(managedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managedDir, ".just-code-source"), []byte("pinned-source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err = run()
+	if err == nil || !strings.Contains(string(output), "managed skill directory exists without its project-skill inventory") {
+		t.Fatalf("orphaned managed skill was accepted: output = %q, err = %v", output, err)
+	}
+}
+
+func TestGuestSkillPreflightFindsManagedDirectoriesOmittedFromInventory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("guest preflight script requires POSIX path semantics")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	home := t.TempDir()
+	run := func(allowedNames []string) ([]byte, error) {
+		cmd := exec.Command(sh, "-c", guestSkillPathsPrelude()+guestSkillInventoryOrphanCheckScript(allowedNames))
+		cmd.Env = []string{"HOME=" + home}
+		return cmd.CombinedOutput()
+	}
+	managedDir := filepath.Join(home, ".config", "opencode", "skills", "rgaa")
+	if err := os.MkdirAll(managedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := run(nil); err != nil || len(output) != 0 {
+		t.Fatalf("unmarked user directory should pass an empty-inventory preflight: output=%q err=%v", output, err)
+	}
+	if err := os.WriteFile(filepath.Join(managedDir, ".just-code-source"), []byte("pinned-source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := run(nil); err == nil || !strings.Contains(string(output), "project-skill inventory") {
+		t.Fatalf("managed directory omitted from an empty inventory was accepted: output=%q err=%v", output, err)
+	}
+	if output, err := run([]string{"rgaa"}); err != nil || len(output) != 0 {
+		t.Fatalf("managed directory listed in the inventory should pass the orphan check: output=%q err=%v", output, err)
+	}
+	client := &fakeMSBClient{}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true})
+	m.Client = client
+	if err := m.preflightGuestSkills(context.Background(), guestSkillInventory{SchemaVersion: guestSkillInventorySchema}, nil); err != nil {
+		t.Fatalf("empty-selection guest preflight: %v", err)
+	}
+	if len(client.calls) != 1 || !strings.Contains(client.calls[0], "for dest in \"$parent\"/*") || !strings.Contains(client.calls[0], ".just-code-source") {
+		t.Fatalf("guest preflight omitted its managed-directory scan: %v", client.calls)
+	}
+}
+
+func TestLocalOnlyInstructionPreflightRetriesAndExplainsRecovery(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{err: errors.New("guest agent is not ready")},
+		{stdout: "before\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n- official/rgaa\n<!-- END JUST-CODE MANAGED SKILLS -->\nafter\n"},
+	}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true, ProjectSkillsLocalOnly: true})
+	m.Client = client
+	m.launchRetryDelay = time.Millisecond
+	err := m.preflightLocalOnlySkillInstructions(context.Background())
+	if err == nil {
+		t.Fatal("versioned managed instructions should block local-only startup")
+	}
+	for _, expected := range []string{"workspace export", "workspace sync", "while the guest is running", "just-code recreate"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("recovery error %q does not mention %q", err, expected)
+		}
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("guard attempts = %d, want retry after one transient error: %v", len(client.calls), client.calls)
+	}
+	if len(client.written) != 0 {
+		t.Fatalf("read-only instruction preflight wrote guest data: %+v", client.written)
+	}
+}
+
+func TestEmptySelectionFailsClosedWhenGuestInventoryIsMissing(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{
+		stderr: "managed skill directory exists without its project-skill inventory", code: 1,
+	}}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true})
+	m.Client = client
+	err := m.installProjectSkills(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
+		t.Fatalf("empty selection should reject an orphaned managed directory, got %v", err)
+	}
+	if len(client.written) != 0 || hasCall(client, "execcapture "+m.InstanceName()+" opencode debug skill") {
+		t.Fatalf("reconciliation continued despite missing inventory: writes=%+v calls=%+v", client.written, client.calls)
+	}
+	if len(client.calls) != 1 || !strings.Contains(client.calls[0], "for marker in ") || !strings.Contains(client.calls[0], ".just-code-source") {
+		t.Fatalf("inventory read did not check for orphaned managed directories: %+v", client.calls)
+	}
+}
+
+func TestReadGuestSkillInventoryRetriesTransientGuestAgentError(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{err: errors.New("guest agent is not ready")},
+		{stdout: `{"schemaVersion":1,"skills":[]}`},
+	}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true})
+	m.Client = client
+	m.launchRetryDelay = time.Millisecond
+
+	inventory, err := m.readGuestSkillInventory(context.Background())
+	if err != nil {
+		t.Fatalf("transient guest-agent error should be retried: %v", err)
+	}
+	if inventory.SchemaVersion != guestSkillInventorySchema || len(inventory.Skills) != 0 {
+		t.Fatalf("inventory = %+v", inventory)
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("inventory attempts = %d, want 2: %v", len(client.calls), client.calls)
+	}
+}
+
+func TestProjectSkillInstallRecoversAfterInventoryCommit(t *testing.T) {
+	raw := skillSourceTar(t, skillTarEntry{
+		name: "skills/rgaa/SKILL.md",
+		body: []byte("---\nname: rgaa\ndescription: fixture\n---\n"),
+	})
+	archive, err := normalizeSkillArchive(bytes.NewReader(raw), "skills/rgaa", "rgaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: projectSkillsRevision, SHA256: hex.EncodeToString(digest[:])}
+	indexed := `{"schemaVersion":1,"skills":[{"id":"official/rgaa","name":"rgaa","revision":"` + lock.Revision + `","sha256":"` + lock.SHA256 + `"}]}`
+	client := &fakeMSBClient{
+		execResults: []fakeMSBExecResult{{}, {}, {code: 1, stderr: "simulated install failure"}},
+		execCaptureResults: []fakeMSBExecCaptureResult{
+			{stdout: `{"schemaVersion":1,"skills":[]}`},
+			{stdout: indexed},
+			{stdout: `[{"name":"rgaa"}]`},
+		},
+	}
+	m := NewMicrosandboxRuntime(Config{
+		ProjectSkillIDs: []string{"official/rgaa"}, ProjectSkillsManaged: true,
+		ProjectSkills: []SkillPackage{{ID: "official/rgaa", Name: "rgaa", Lock: lock, Archive: archive}},
+	})
+	m.Client = client
+	if err := m.installProjectSkills(context.Background()); err == nil || !strings.Contains(err.Error(), "simulated install failure") {
+		t.Fatalf("first install should fail after committing inventory, got %v", err)
+	}
+	if err := m.installProjectSkills(context.Background()); err != nil {
+		t.Fatalf("retry should install the selected skill without rewriting its committed inventory: %v", err)
+	}
+	inventoryWrites := 0
+	for _, write := range client.written {
+		if write.guestPath == "/tmp/just-code-project-skills.json" {
+			inventoryWrites++
+		}
+	}
+	if inventoryWrites != 1 {
+		t.Fatalf("inventory writes = %d, want one commit before the interrupted install", inventoryWrites)
+	}
+}
+
+func TestVerifyProjectSkillsRejectsDuplicateDiscovery(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{
+		stdout: `[{"name":"rgaa"},{"name":"rgaa"}]`,
+	}}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkills: []SkillPackage{{Name: "rgaa"}}})
+	m.Client = client
+	err := m.verifyProjectSkills(context.Background())
+	if err == nil || !strings.Contains(err.Error(), `reports the pinned skill "rgaa" more than once`) {
+		t.Fatalf("duplicate discovery error = %v", err)
+	}
+}
+
+func TestSkillDeselectionRequiresExplicitGuestRecreation(t *testing.T) {
+	old := guestSkillInventory{SchemaVersion: guestSkillInventorySchema, Skills: []guestSkillEntry{{
+		ID: "official/rgaa", Name: "rgaa", Revision: projectSkillsRevision, SHA256: strings.Repeat("a", 64),
+	}}}
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{{
+		stdout: `{"schemaVersion":1,"skills":[{"id":"official/rgaa","name":"rgaa","revision":"` + projectSkillsRevision + `","sha256":"` + strings.Repeat("a", 64) + `"}]}`,
+	}}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true})
+	m.Client = client
+	if err := m.installProjectSkills(context.Background()); err == nil || !strings.Contains(err.Error(), "just-code recreate") {
+		t.Fatalf("deselection error = %v", err)
+	}
+	if len(client.written) != 0 {
+		t.Fatalf("deselection changed guest files before the explicit recreation: %+v", client.written)
+	}
+	if err := ensureGuestSkillSelectionCompatible(old, nil); err == nil || !strings.Contains(err.Error(), "just-code recreate") {
+		t.Fatalf("deselection compatibility error = %v", err)
+	}
+	if err := ensureGuestSkillSelectionCompatible(old, map[string]SkillPackage{
+		"official/rgaa": {ID: "official/rgaa", Name: "rgaa", Lock: SkillLock{Revision: projectSkillsRevision, SHA256: strings.Repeat("a", 64)}},
+	}); err != nil {
+		t.Fatalf("unchanged selected skill: %v", err)
+	}
+}
+
+func TestLocalOnlySkillsRefuseStaleManagedInstructions(t *testing.T) {
+	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
+		{stdout: `{"schemaVersion":1,"skills":[]}`},
+		{stdout: "user-authored instructions\n\n" + `<!-- BEGIN JUST-CODE MANAGED SKILLS -->` + "\n" +
+			"## Managed project skills\n\n- `official/rgaa` at `" + projectSkillsRevision + "`\n" +
+			`<!-- END JUST-CODE MANAGED SKILLS -->` + "\n"},
+	}}
+	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true, ProjectSkillsLocalOnly: true})
+	m.Client = client
+
+	err := m.installProjectSkills(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "just-code workspace sync") {
+		t.Fatalf("stale guest instructions should require an explicit workspace refresh: %v", err)
+	}
+	if len(client.written) != 0 || len(client.calls) != 2 {
+		t.Fatalf("stale instructions should block before any guest mutation: writes=%+v calls=%+v", client.written, client.calls)
+	}
 }
 
 func (f *fakeMSBClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {
@@ -625,6 +915,62 @@ func TestMicrosandboxFullModeRejectsPersistedServerPortMapping(t *testing.T) {
 	}
 	if hasCall(client, "start "+msbSandbox) || hasCall(client, "create") || hasCall(client, "modify "+msbSandbox) {
 		t.Fatalf("an instance with the stale port mapping must not be started or changed in place: %v", client.calls)
+	}
+}
+
+func TestBackendLaunchWaitsForGuestSkillInventory(t *testing.T) {
+	for _, status := range []string{"stopped", "running"} {
+		t.Run(status, func(t *testing.T) {
+			client := &fakeMSBClient{
+				exists: true, status: status, startScript: msbStartScript(IsolationBackend),
+				execCaptureResults: []fakeMSBExecCaptureResult{{
+					stderr: "managed skill directory exists without its project-skill inventory", code: 1,
+				}},
+			}
+			m := newTestMicrosandbox(t, client)
+			m.cfg.Isolation = IsolationBackend
+			m.cfg.ProjectSkillsManaged = true
+			err := m.startInstance(context.Background(), nil)
+			if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
+				t.Fatalf("start error = %v, want orphaned skill inventory refusal", err)
+			}
+			if hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+				t.Fatalf("backend launched before skill inventory refusal: %v", client.calls)
+			}
+			if status == "stopped" && !hasCall(client, "start "+msbSandbox) {
+				t.Fatalf("stopped VM was not booted before checking its inventory: %v", client.calls)
+			}
+			if status == "running" && hasCall(client, "start "+msbSandbox) {
+				t.Fatalf("running VM was unexpectedly started again: %v", client.calls)
+			}
+		})
+	}
+}
+
+func TestStoppedBackendLaunchesAfterGuestSkillInventoryCheck(t *testing.T) {
+	client := &fakeMSBClient{
+		exists: true, status: "stopped", startScript: msbStartScript(IsolationBackend),
+		execCaptureResults: []fakeMSBExecCaptureResult{{stdout: `{"schemaVersion":1,"skills":[]}`}},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationBackend
+	m.cfg.ProjectSkillsManaged = true
+	if err := m.startInstance(context.Background(), nil); err != nil {
+		t.Fatalf("startInstance: %v", err)
+	}
+	startAt, inventoryAt, launchAt := -1, -1, -1
+	for i, call := range client.calls {
+		switch {
+		case call == "start "+msbSandbox:
+			startAt = i
+		case strings.HasPrefix(call, "execcapture "+msbSandbox):
+			inventoryAt = i
+		case call == "exec "+msbSandbox+" "+msbRelaunchCommand:
+			launchAt = i
+		}
+	}
+	if startAt < 0 || inventoryAt <= startAt || launchAt <= inventoryAt {
+		t.Fatalf("VM boot, inventory validation, and backend launch must occur in order: %v", client.calls)
 	}
 }
 
@@ -1593,6 +1939,50 @@ func TestMicrosandboxRestartLeavesMismatchedSandboxRunning(t *testing.T) {
 	}
 	if hasCall(client, "stop "+msbSandbox) {
 		t.Fatalf("a mismatched sandbox must not be stopped by restart: %v", client.calls)
+	}
+}
+
+func TestMicrosandboxRestartLeavesGuestRunningWhenSkillPreflightFails(t *testing.T) {
+	client := &fakeMSBClient{
+		exists: true, status: "running", startScript: msbStartScript(IsolationBackend),
+		execCaptureResults: []fakeMSBExecCaptureResult{{
+			stderr: "managed skill directory exists without its project-skill inventory", code: 1,
+		}},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationBackend
+	m.cfg.ProjectSkillsManaged = true
+	err := m.Restart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
+		t.Fatalf("Restart error = %v, want a managed skill preflight refusal", err)
+	}
+	if hasCall(client, "stop "+msbSandbox) {
+		t.Fatalf("Restart stopped the working guest before skill preflight: %v", client.calls)
+	}
+	if len(client.written) != 0 {
+		t.Fatalf("read-only restart preflight wrote guest data: %+v", client.written)
+	}
+}
+
+func TestReconcileVMRestartLeavesGuestRunningWhenSkillPreflightFails(t *testing.T) {
+	client := &fakeMSBClient{
+		exists: true, status: "running",
+		execCaptureResults: []fakeMSBExecCaptureResult{{
+			stderr: "managed skill directory exists without its project-skill inventory", code: 1,
+		}},
+	}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.Isolation = IsolationBackend
+	m.cfg.ProjectSkillsManaged = true
+	err := m.applyReconcileOp(context.Background(), OpRestartVM, nil)
+	if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
+		t.Fatalf("reconcile restart error = %v, want a managed skill preflight refusal", err)
+	}
+	if hasCall(client, "stop "+msbSandbox) || hasCall(client, "start "+msbSandbox) {
+		t.Fatalf("reconcile stopped the running guest before skill preflight: %v", client.calls)
+	}
+	if len(client.written) != 0 {
+		t.Fatalf("read-only reconcile preflight wrote guest data: %+v", client.written)
 	}
 }
 

@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,6 +47,14 @@ type InitAnswers struct {
 	// GitHubRemote is the sanitized origin shown in the review. It is derived
 	// from the host Git config and is not persisted by InitWizard.
 	GitHubRemote GitHubRemote
+	// Skills are catalogue IDs selected by this init invocation. SkillsSet
+	// distinguishes an unchanged empty answer from an explicit deselection.
+	Skills    []string
+	SkillsSet bool
+	// SkillsLocalOnly stores selections and pins outside the checkout. Its
+	// boolean has a separate presence bit so a rerun preserves current mode.
+	SkillsLocalOnly    bool
+	SkillsLocalOnlySet bool
 }
 
 // InitWizard validates project setup answers and writes what they imply.
@@ -53,12 +62,18 @@ type InitAnswers struct {
 // catalogue, the file system, and the review screen.
 type InitWizard struct {
 	FS FS
+	// StateDir contains host-local per-project settings used only when the
+	// user explicitly selects local-only skill storage.
+	StateDir string
 	// ValidateModel checks a model against the Albert catalogue (P10). Nil
 	// skips validation; a rejection is an error (the answer must change), an
 	// unreachable catalogue is a warning (the model is still recorded).
 	ValidateModel func(model string) (warning string, err error)
 	// Print receives the review screen. Nil means stdout.
 	Print func(string)
+	// ResolveSkills pins and caches selected catalogue entries. Nil selects
+	// the production pinned catalogue; tests inject fixture content.
+	ResolveSkills func(context.Context, []string) ([]ProjectSkill, map[string]SkillLock, error)
 }
 
 // Note on the FS seam: it carries the manifest and lockfile. Path validation
@@ -71,6 +86,13 @@ func (w InitWizard) fs() FS {
 		return w.FS
 	}
 	return DefaultFS
+}
+
+func (w InitWizard) stateDir() string {
+	if w.StateDir != "" {
+		return w.StateDir
+	}
+	return DefaultStateDir()
 }
 
 func (w InitWizard) print(msg string) {
@@ -94,7 +116,71 @@ type InitPlan struct {
 	// decisions someone else committed.
 	ExistingManifest *ProjectManifest
 	// Warnings are non-fatal notes shown in the review.
-	Warnings []string
+	Warnings            []string
+	SkillEntries        []ProjectSkill
+	SkillLocks          map[string]SkillLock
+	LocalSkillsPath     string
+	InstructionsPath    string
+	InstructionsBefore  string
+	InstructionsAfter   string
+	InstructionsChanged bool
+}
+
+type managedFileMutation struct {
+	path  string
+	mode  os.FileMode
+	write func() error
+}
+
+type managedFileSnapshot struct {
+	path   string
+	data   []byte
+	mode   os.FileMode
+	exists bool
+}
+
+func applyManagedFileMutations(fs FS, mutations []managedFileMutation) error {
+	snapshots := make([]managedFileSnapshot, len(mutations))
+	for i, mutation := range mutations {
+		snapshot := managedFileSnapshot{path: mutation.path, mode: mutation.mode}
+		if info, err := os.Lstat(mutation.path); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%s is a symlink; refusing to replace managed data", mutation.path)
+			}
+			if info.Mode().IsRegular() {
+				snapshot.mode = info.Mode().Perm()
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		data, err := fs.ReadFile(mutation.path)
+		if err == nil {
+			snapshot.data, snapshot.exists = data, true
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("snapshot %s before Apply: %w", mutation.path, err)
+		}
+		snapshots[i] = snapshot
+	}
+	for i, mutation := range mutations {
+		if err := mutation.write(); err != nil {
+			var rollbackErrors []string
+			for j := i - 1; j >= 0; j-- {
+				snapshot := snapshots[j]
+				if snapshot.exists {
+					if rollbackErr := atomicWrite(fs, snapshot.path, snapshot.data, snapshot.mode); rollbackErr != nil {
+						rollbackErrors = append(rollbackErrors, fmt.Sprintf("restore %s: %v", snapshot.path, rollbackErr))
+					}
+				} else if rollbackErr := fs.Remove(snapshot.path); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
+					rollbackErrors = append(rollbackErrors, fmt.Sprintf("remove %s: %v", snapshot.path, rollbackErr))
+				}
+			}
+			if len(rollbackErrors) > 0 {
+				return fmt.Errorf("Apply failed (%v) and rollback was incomplete: %s", err, strings.Join(rollbackErrors, "; "))
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // Plan validates the answers and resolves what they imply. It reads only the
@@ -201,6 +287,109 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		// not present a review that quietly ignores it.
 		return plan, err
 	}
+
+	// A rerun without skill flags preserves the prior selection and pin. An
+	// explicit selection resolves now so the review can show the exact source
+	// revision and content digest before Apply changes project files.
+	selected := []string(nil)
+	localOnly := false
+	oldLocalOnly := false
+	var lock Lockfile
+	if plan.ExistingManifest != nil {
+		selected = append(selected, plan.ExistingManifest.Skills...)
+		oldLocalOnly = plan.ExistingManifest.SkillsLocalOnly
+		localOnly = oldLocalOnly
+		if oldLocalOnly {
+			plan.LocalSkillsPath, err = LocalSkillSelectionsPath(w.stateDir(), pc.InstanceName())
+			if err != nil {
+				return plan, err
+			}
+			local, readErr := ReadLocalSkillSelections(fs, plan.LocalSkillsPath)
+			if readErr != nil {
+				return plan, readErr
+			}
+			selected = append([]string(nil), local.Skills...)
+			plan.SkillLocks = local.Pins
+		} else if len(plan.ExistingManifest.Skills) > 0 && !answers.SkillsSet {
+			lock, err = ReadLockfile(fs, plan.LockPath)
+			if err != nil {
+				return plan, err
+			}
+			plan.SkillLocks = lock.Skills
+		}
+	}
+	if answers.SkillsLocalOnlySet {
+		localOnly = answers.SkillsLocalOnly
+	}
+	if answers.SkillsSet {
+		selected = append([]string(nil), answers.Skills...)
+		if len(selected) > 0 {
+			if err := validateProjectSkillRuntime(plan.Answers.Runtime, selected); err != nil {
+				return plan, err
+			}
+			resolve := w.ResolveSkills
+			if resolve == nil {
+				resolve = ResolveProjectSkills
+			}
+			plan.SkillEntries, plan.SkillLocks, err = resolve(context.Background(), selected)
+			if err != nil {
+				return plan, err
+			}
+		} else {
+			plan.SkillLocks = map[string]SkillLock{}
+		}
+	}
+	plan.Answers.Skills = selected
+	plan.Answers.SkillsSet = answers.SkillsSet
+	plan.Answers.SkillsLocalOnly = localOnly
+	plan.Answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet
+	if err := validateProjectSkillRuntime(plan.Answers.Runtime, selected); err != nil {
+		return plan, err
+	}
+	if len(selected) > 0 && len(plan.SkillLocks) == 0 {
+		return plan, fmt.Errorf("the selected skills have no pinned lock data")
+	}
+	if len(selected) > 0 {
+		if _, err := LoadLockedSkillPackages(selected, plan.SkillLocks); err != nil {
+			return plan, err
+		}
+	}
+	if localOnly {
+		if plan.LocalSkillsPath == "" {
+			plan.LocalSkillsPath, err = LocalSkillSelectionsPath(w.stateDir(), pc.InstanceName())
+			if err != nil {
+				return plan, err
+			}
+		}
+	}
+	wasVersionedWithSkills := plan.ExistingManifest != nil && !oldLocalOnly && len(plan.ExistingManifest.Skills) > 0
+	ownsVersionedSkillState := plan.ExistingManifest != nil && plan.ExistingManifest.SchemaVersion >= projectManifestSchemaVersion && (!oldLocalOnly || !localOnly)
+	if len(selected) > 0 || wasVersionedWithSkills || ownsVersionedSkillState {
+		plan.InstructionsPath = filepath.Join(pc.Root, "AGENTS.md")
+		if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
+			if !info.Mode().IsRegular() {
+				return plan, fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
+			}
+			data, readErr := fs.ReadFile(plan.InstructionsPath)
+			if readErr != nil {
+				return plan, readErr
+			}
+			plan.InstructionsBefore = string(data)
+		} else if !os.IsNotExist(statErr) {
+			return plan, statErr
+		}
+		instructionsSkills := selected
+		instructionsLocks := plan.SkillLocks
+		if localOnly {
+			instructionsSkills = nil
+			instructionsLocks = nil
+		}
+		plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, instructionsSkills, instructionsLocks)
+		if err != nil {
+			return plan, err
+		}
+		plan.InstructionsChanged = plan.InstructionsBefore != plan.InstructionsAfter
+	}
 	if !pc.IsGit {
 		plan.Warnings = append(plan.Warnings, "this directory is not a Git repository: the manifest in .just-code/ will not be versioned with the project")
 	}
@@ -243,6 +432,23 @@ func FormatInitReview(plan InitPlan) string {
 	} else {
 		b.WriteString("  GitHub       no new approval; existing host-local approvals remain unchanged\n")
 	}
+	if len(a.Skills) == 0 {
+		b.WriteString("  skills       no managed project skills selected\n")
+	} else {
+		storage := "versioned in .just-code/lock.json"
+		if a.SkillsLocalOnly {
+			storage = "host-local; not shared with repository clones"
+		}
+		fmt.Fprintf(&b, "  skills       %s\n", storage)
+		for _, id := range a.Skills {
+			lock := plan.SkillLocks[id]
+			fmt.Fprintf(&b, "               %s at %s (sha256:%s)\n", id, lock.Revision, lock.SHA256[:12])
+		}
+		b.WriteString("               selected skills are instruction artifacts, not a security boundary\n")
+		if a.SkillsLocalOnly {
+			b.WriteString("               local-only selection does not add managed rules to AGENTS.md\n")
+		}
+	}
 	b.WriteString("  state        versioned in .just-code/ (shared with whoever clones the repository)\n")
 	fmt.Fprintf(&b, "  manifest     %s\n", plan.ManifestPath)
 	if a.Runtime == RuntimeMicrosandbox {
@@ -259,7 +465,30 @@ func FormatInitReview(plan InitPlan) string {
 		b.WriteString("\nA project manifest already exists and would be REPLACED:\n")
 		b.WriteString(formatManifestSummary(*plan.ExistingManifest))
 	}
+	if plan.InstructionsChanged {
+		before, _ := managedSkillZone(plan.InstructionsBefore)
+		after, _ := managedSkillZone(plan.InstructionsAfter)
+		b.WriteString("\nAGENTS.md managed-zone diff (all text outside this block is preserved byte-for-byte):\n")
+		b.WriteString("If the workspace filter marks AGENTS.md ignored or secret-like, it will not reach the guest without a per-file allow decision.\n")
+		if before == "" {
+			b.WriteString("  current: no managed skills block\n")
+		} else {
+			fmt.Fprintf(&b, "--- current ---\n%s", ensureReviewNewline(before))
+		}
+		if after == "" {
+			b.WriteString("+++ proposed: remove the managed block\n")
+		} else {
+			fmt.Fprintf(&b, "+++ proposed +++\n%s", ensureReviewNewline(after))
+		}
+	}
 	return b.String()
+}
+
+func ensureReviewNewline(s string) string {
+	if s != "" && !strings.HasSuffix(s, "\n") {
+		return s + "\n"
+	}
+	return s
 }
 
 func resolvedCPUs(cpus int) int {
@@ -297,6 +526,12 @@ func formatManifestSummary(pm ProjectManifest) string {
 	}
 	add("credential", pm.CredentialRef)
 	add("storage", pm.Storage)
+	if len(pm.Skills) > 0 {
+		add("skills", strings.Join(pm.Skills, ", "))
+	}
+	if pm.SkillsLocalOnly {
+		add("skillStorage", "local-only")
+	}
 	if len(lines) == 0 {
 		return "    (the existing manifest sets nothing)\n"
 	}
@@ -319,22 +554,55 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 		// An unreadable manifest must not be silently replaced either.
 		return readErr
 	}
+	// Validate the lock before writing any project file: a malformed or
+	// unreadable lock must not leave a new manifest beside discarded pins.
+	kept, err := ReadLockfile(fs, plan.LockPath)
+	if err != nil {
+		return err
+	}
+	instructionsChanged := false
+	instructionsAfter := plan.InstructionsAfter
+	if plan.InstructionsPath != "" {
+		if info, err := os.Lstat(plan.InstructionsPath); err == nil && !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		current, err := fs.ReadFile(plan.InstructionsPath)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		ids, locks := plan.Answers.Skills, plan.SkillLocks
+		if plan.Answers.SkillsLocalOnly {
+			ids, locks = nil, nil
+		}
+		instructionsAfter, err = MergeManagedInstructions(string(current), ids, locks)
+		if err != nil {
+			return err
+		}
+		instructionsChanged = string(current) != instructionsAfter
+	}
+	var localSelection LocalSkillSelections
+	if plan.Answers.SkillsLocalOnly {
+		if plan.LocalSkillsPath == "" {
+			return fmt.Errorf("local-only skill state path was not resolved")
+		}
+		localSelection = LocalSkillSelections{Skills: append([]string(nil), plan.Answers.Skills...), Pins: cloneSkillLocks(plan.SkillLocks)}
+	}
 	// The manifest is secret-free by construction: a credential is referenced
 	// by name, never written here. It also carries no host-absolute path, so a
 	// teammate who clones the repository gets the same project identity.
 	pm := ProjectManifest{
-		Runtime:       string(plan.Answers.Runtime),
-		Isolation:     string(plan.Answers.Isolation),
-		Model:         plan.Answers.Model,
-		CPUs:          plan.Answers.CPUs,
-		MemoryMB:      plan.Answers.MemoryMB,
-		CredentialRef: plan.Answers.CredentialRef,
+		Runtime:         string(plan.Answers.Runtime),
+		Isolation:       string(plan.Answers.Isolation),
+		Model:           plan.Answers.Model,
+		CPUs:            plan.Answers.CPUs,
+		MemoryMB:        plan.Answers.MemoryMB,
+		CredentialRef:   plan.Answers.CredentialRef,
+		SkillsLocalOnly: plan.Answers.SkillsLocalOnly,
 	}
-	if err := fs.MkdirAll(filepath.Dir(plan.ManifestPath), 0o755); err != nil {
-		return err
-	}
-	if err := WriteProjectManifest(fs, plan.ManifestPath, pm); err != nil {
-		return err
+	if !plan.Answers.SkillsLocalOnly {
+		pm.Skills = append([]string(nil), plan.Answers.Skills...)
 	}
 	// The lockfile is written even though nothing is pinned yet: it is where
 	// the skills and images of later chantiers record their resolved
@@ -344,17 +612,39 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	// A lock that cannot be read is NOT replaced with an empty one: that would
 	// discard whatever pins it held, silently, which is the same refusal the
 	// manifest gets above. A missing lock reads as the zero lock, no error.
-	kept, err := ReadLockfile(fs, plan.LockPath)
-	if err != nil {
-		return err
-	}
 	lock := Lockfile{Entries: map[string]string{}}
 	if len(kept.Entries) > 0 {
 		lock.Entries = kept.Entries
 	}
-	if err := WriteLockfile(fs, plan.LockPath, lock); err != nil {
+	if !plan.Answers.SkillsLocalOnly && len(plan.Answers.Skills) > 0 {
+		lock.Skills = cloneSkillLocks(plan.SkillLocks)
+	}
+	mutations := make([]managedFileMutation, 0, 4)
+	if plan.Answers.SkillsLocalOnly {
+		mutations = append(mutations, managedFileMutation{
+			path: plan.LocalSkillsPath, mode: 0o600,
+			write: func() error { return WriteLocalSkillSelections(fs, plan.LocalSkillsPath, localSelection) },
+		})
+	}
+	mutations = append(mutations,
+		managedFileMutation{path: plan.ManifestPath, mode: 0o644, write: func() error { return WriteProjectManifest(fs, plan.ManifestPath, pm) }},
+		managedFileMutation{path: plan.LockPath, mode: 0o644, write: func() error { return WriteLockfile(fs, plan.LockPath, lock) }},
+	)
+	if instructionsChanged {
+		mutations = append(mutations, managedFileMutation{
+			path: plan.InstructionsPath, mode: 0o644,
+			write: func() error { return atomicWrite(fs, plan.InstructionsPath, []byte(instructionsAfter), 0o644) },
+		})
+	}
+	if err := applyManagedFileMutations(fs, mutations); err != nil {
 		return err
 	}
 	w.print(fmt.Sprintf("Wrote %s\nWrote %s\n", plan.ManifestPath, plan.LockPath))
+	if instructionsChanged {
+		w.print(fmt.Sprintf("Updated %s\n", plan.InstructionsPath))
+	}
+	if plan.Answers.SkillsLocalOnly && len(plan.Answers.Skills) > 0 {
+		w.print("Saved host-local project skills outside the checkout.\n")
+	}
 	return nil
 }

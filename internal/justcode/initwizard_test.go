@@ -1,6 +1,8 @@
 package justcode
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -397,6 +399,331 @@ func TestInitApplyRefusesToDiscardAnUnreadableLock(t *testing.T) {
 	if string(raw) != "{not json" {
 		t.Fatalf("the unreadable lock must be left untouched, got %q", raw)
 	}
+}
+
+func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T) {
+	root := initTestRoot(t)
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	const userText = "User-authored rules stay byte-for-byte.\n\n"
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(userText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{StateDir: state, ResolveSkills: fixtureSkillResolver(t)}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(FormatInitReview(plan), "AGENTS.md managed-zone diff") || !plan.InstructionsChanged {
+		t.Fatalf("review omitted the generated instruction diff: %+v", plan)
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || len(manifest.Skills) != 1 || manifest.Skills[0] != "official/rgaa" || manifest.SkillsLocalOnly {
+		t.Fatalf("manifest = %+v, err = %v", manifest, err)
+	}
+	lock, err := ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil || lock.Skills["official/rgaa"].Revision != projectSkillsRevision || !isSHA256(lock.Skills["official/rgaa"].SHA256) {
+		t.Fatalf("lock = %+v, err = %v", lock, err)
+	}
+	agents, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil || !strings.HasPrefix(string(agents), userText) || !strings.Contains(string(agents), projectSkillsRevision) {
+		t.Fatalf("managed AGENTS.md = %q, err = %v", agents, err)
+	}
+	beforeManifest, beforeLock, beforeAgents := readFileForTest(t, ProjectManifestPath(root)), readFileForTest(t, ProjectLockPath(root)), append([]byte(nil), agents...)
+	// A replacement with no skill flags keeps the pinned selection, lock and
+	// managed zone exactly unchanged and needs no network access.
+	wizard.ResolveSkills = nil
+	repeat, err := wizard.Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeat.InstructionsChanged {
+		t.Fatalf("identical pinned selection produced an AGENTS.md diff: before=%q after=%q", repeat.InstructionsBefore, repeat.InstructionsAfter)
+	}
+	if err := wizard.Apply(repeat, true); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeManifest, readFileForTest(t, ProjectManifestPath(root))) ||
+		!bytes.Equal(beforeLock, readFileForTest(t, ProjectLockPath(root))) ||
+		!bytes.Equal(beforeAgents, readFileForTest(t, filepath.Join(root, "AGENTS.md"))) {
+		t.Fatal("reapplying an unchanged skill selection changed project files")
+	}
+	if _, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeAgentVM}); err == nil {
+		t.Fatal("preserved project skills must be rejected with a non-Microsandbox runtime")
+	}
+	clear, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clear.InstructionsChanged || strings.Contains(clear.InstructionsAfter, "official/rgaa") {
+		t.Fatalf("clearing skills must remove the bounded block: before=%q after=%q", clear.InstructionsBefore, clear.InstructionsAfter)
+	}
+	if err := wizard.Apply(clear, true); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || len(cleared.Skills) != 0 || cleared.SkillsLocalOnly {
+		t.Fatalf("cleared manifest = %+v, err = %v", cleared, err)
+	}
+	clearedAgents := readFileForTest(t, filepath.Join(root, "AGENTS.md"))
+	if !bytes.HasPrefix(clearedAgents, []byte(userText)) || bytes.Contains(clearedAgents, []byte("official/rgaa")) {
+		t.Fatalf("clearing skills damaged user instructions or kept a managed skill: %q", clearedAgents)
+	}
+}
+
+func TestInitApplyMergesAGENTSChangesMadeAfterPlan(t *testing.T) {
+	root := initTestRoot(t)
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	wizard := InitWizard{ResolveSkills: fixtureSkillResolver(t)}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const concurrentEdit = "User edit made while the review was open.\n"
+	current := plan.InstructionsAfter + "\n" + concurrentEdit
+	if err := os.WriteFile(plan.InstructionsPath, []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileForTest(t, plan.InstructionsPath)
+	if !bytes.Contains(got, []byte("official/rgaa")) || !bytes.Contains(got, []byte(concurrentEdit)) {
+		t.Fatalf("Apply lost concurrent user text or managed skill: %q", got)
+	}
+}
+
+func TestInitApplyRepairsManagedInstructionsAfterNoDiffReview(t *testing.T) {
+	root := initTestRoot(t)
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	wizard := InitWizard{ResolveSkills: fixtureSkillResolver(t)}
+	answers := InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true}
+	first, err := wizard.Plan(answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(first, false); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := wizard.Plan(answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsChanged {
+		t.Fatal("unchanged versioned skills should have an unchanged managed-zone preview")
+	}
+	const concurrentEdit = "User edit made after an unchanged preview.\n"
+	if err := os.WriteFile(plan.InstructionsPath, []byte(concurrentEdit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileForTest(t, plan.InstructionsPath)
+	if !bytes.Contains(got, []byte("official/rgaa")) || !bytes.Contains(got, []byte(concurrentEdit)) {
+		t.Fatalf("Apply did not restore the managed skill zone or lost concurrent user text: %q", got)
+	}
+}
+
+func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.T) {
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeMicrosandbox), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	const userInstructions = "User policy.\n"
+	instructionsPath := filepath.Join(root, "AGENTS.md")
+	if err := os.WriteFile(instructionsPath, []byte(userInstructions), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{}
+	plan, err := wizard.Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsPath == "" || plan.InstructionsChanged {
+		t.Fatalf("empty schema-v2 selection must own the managed zone without a preview diff: %+v", plan)
+	}
+	pins := map[string]SkillLock{"official/rgaa": {Revision: projectSkillsRevision}}
+	stale, err := MergeManagedInstructions(userInstructions, []string{"official/rgaa"}, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.InstructionsPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileForTest(t, instructionsPath)
+	if !bytes.Contains(got, []byte(userInstructions)) || bytes.Contains(got, []byte("BEGIN JUST-CODE MANAGED SKILLS")) {
+		t.Fatalf("empty versioned selection left stale managed instructions or changed user text: %q", got)
+	}
+}
+
+func TestInitLocalOnlySkillsStayOutsideTheCheckout(t *testing.T) {
+	root := initTestRoot(t)
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	wizard := InitWizard{StateDir: state, ResolveSkills: fixtureSkillResolver(t)}
+	plan, err := wizard.Plan(InitAnswers{
+		Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true,
+		SkillsLocalOnly: true, SkillsLocalOnlySet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsChanged || strings.Contains(FormatInitReview(plan), "AGENTS.md managed-zone diff") {
+		t.Fatal("local-only selection must not preview a project instruction edit")
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || !manifest.SkillsLocalOnly || len(manifest.Skills) != 0 {
+		t.Fatalf("manifest = %+v, err = %v", manifest, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("local-only mode wrote AGENTS.md (stat err = %v)", err)
+	}
+	path, err := LocalSkillSelectionsPath(state, DiscoverInstanceForTest(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(path, root+string(filepath.Separator)) {
+		t.Fatalf("host-local skill state is inside the checkout: %s", path)
+	}
+	local, err := ReadLocalSkillSelections(DefaultFS, path)
+	if err != nil || len(local.Skills) != 1 || local.Pins["official/rgaa"].Revision != projectSkillsRevision {
+		t.Fatalf("local selections = %+v, err = %v", local, err)
+	}
+	packages, err := LoadProjectSkillPackages(DefaultFS, root, state, DiscoverInstanceForTest(t, root))
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("local packages = %d, err = %v", len(packages), err)
+	}
+}
+
+type failRenameForPathFS struct {
+	FS
+	Path string
+}
+
+func (f failRenameForPathFS) RenameTmp(oldPath, newPath string) error {
+	if newPath == f.Path {
+		return os.ErrPermission
+	}
+	return f.FS.RenameTmp(oldPath, newPath)
+}
+
+func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
+	root := initTestRoot(t)
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	ids := []string{"official/rgaa"}
+	_, pins, err := fixtureSkillResolver(t)(context.Background(), ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := newMapFS()
+	agentsPath := filepath.Join(root, "AGENTS.md")
+	agents, err := MergeManagedInstructions("User rules.\n", ids, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentsPath, []byte(agents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs.files[agentsPath] = []byte(agents)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(fs, manifestPath, ProjectManifest{Skills: ids, Runtime: string(RuntimeMicrosandbox), Isolation: string(IsolationFull)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(fs, lockPath, Lockfile{Skills: pins}); err != nil {
+		t.Fatal(err)
+	}
+	beforeManifest := append([]byte(nil), fs.files[manifestPath]...)
+	beforeLock := append([]byte(nil), fs.files[lockPath]...)
+	beforeAgents := append([]byte(nil), fs.files[agentsPath]...)
+	wizard := InitWizard{FS: fs, StateDir: state}
+	plan, err := wizard.Plan(InitAnswers{Root: root, SkillsLocalOnly: true, SkillsLocalOnlySet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wizard.FS = failRenameForPathFS{FS: fs, Path: plan.ManifestPath}
+	if err := wizard.Apply(plan, true); err == nil {
+		t.Fatal("manifest failure after staging local pins must be reported")
+	}
+	if !bytes.Equal(fs.files[manifestPath], beforeManifest) || !bytes.Equal(fs.files[lockPath], beforeLock) || !bytes.Equal(fs.files[agentsPath], beforeAgents) {
+		t.Fatal("failed local-only state persistence changed versioned project files")
+	}
+	localPath, err := LocalSkillSelectionsPath(state, DiscoverInstanceForTest(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fs.files[localPath]; exists {
+		t.Fatal("failed local-only persistence left a partial selection file")
+	}
+}
+
+func TestMergeManagedInstructionsRefusesSymlink(t *testing.T) {
+	root := initTestRoot(t)
+	outside := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "AGENTS.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	wizard := InitWizard{ResolveSkills: fixtureSkillResolver(t)}
+	if _, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("symlinked AGENTS.md error = %v", err)
+	}
+	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+		t.Fatalf("external file changed: %q", got)
+	}
+}
+
+func readFileForTest(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func DiscoverInstanceForTest(t *testing.T, root string) string {
+	t.Helper()
+	project, err := DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project.InstanceName()
 }
 
 // TestInitWarnsForARelativeNestedRoot pins that the "covers the whole
