@@ -1,6 +1,6 @@
 {
-  "msb_cli_version": "0.7.0",
-  "msb_sdk_version": "v0.7.2",
+  "msb_cli_version": "0.7.3",
+  "msb_sdk_version": "v0.7.3",
   "guest_images": {
     "alpine": "alpine",
     "debian": "debian:bookworm-slim"
