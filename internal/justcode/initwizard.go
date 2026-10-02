@@ -363,7 +363,8 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 	}
 	wasVersionedWithSkills := plan.ExistingManifest != nil && !oldLocalOnly && len(plan.ExistingManifest.Skills) > 0
-	if len(selected) > 0 || wasVersionedWithSkills {
+	ownsVersionedSkillState := plan.ExistingManifest != nil && plan.ExistingManifest.SchemaVersion >= projectManifestSchemaVersion && (!oldLocalOnly || !localOnly)
+	if len(selected) > 0 || wasVersionedWithSkills || ownsVersionedSkillState {
 		plan.InstructionsPath = filepath.Join(pc.Root, "AGENTS.md")
 		if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
 			if !info.Mode().IsRegular() {

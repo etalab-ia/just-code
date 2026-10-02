@@ -536,6 +536,47 @@ func TestInitApplyRepairsManagedInstructionsAfterNoDiffReview(t *testing.T) {
 	}
 }
 
+func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.T) {
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeMicrosandbox), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	const userInstructions = "User policy.\n"
+	instructionsPath := filepath.Join(root, "AGENTS.md")
+	if err := os.WriteFile(instructionsPath, []byte(userInstructions), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{}
+	plan, err := wizard.Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsPath == "" || plan.InstructionsChanged {
+		t.Fatalf("empty schema-v2 selection must own the managed zone without a preview diff: %+v", plan)
+	}
+	pins := map[string]SkillLock{"official/rgaa": {Revision: projectSkillsRevision}}
+	stale, err := MergeManagedInstructions(userInstructions, []string{"official/rgaa"}, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.InstructionsPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileForTest(t, instructionsPath)
+	if !bytes.Contains(got, []byte(userInstructions)) || bytes.Contains(got, []byte("BEGIN JUST-CODE MANAGED SKILLS")) {
+		t.Fatalf("empty versioned selection left stale managed instructions or changed user text: %q", got)
+	}
+}
+
 func TestInitLocalOnlySkillsStayOutsideTheCheckout(t *testing.T) {
 	root := initTestRoot(t)
 	cache, state := t.TempDir(), t.TempDir()
