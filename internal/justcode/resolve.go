@@ -174,12 +174,14 @@ type ProjectManifest struct {
 }
 
 // projectManifestSchemaVersion is the current project.json format version.
-const projectManifestSchemaVersion = 2
+// Version 3 makes pre-P15 binaries reject manifests containing MCP selections
+// instead of silently ignoring the new field.
+const projectManifestSchemaVersion = 3
 
 // maxSupportedManifestSchema is the highest manifest schemaVersion this build
 // reads. A newer version is a hard error: the file was written by a binary
 // this one cannot interpret.
-const maxSupportedManifestSchema = 2
+const maxSupportedManifestSchema = 3
 
 // Lockfile is the project lock (.just-code/lock.json): resolved revisions of
 // everything the manifest pins (skills, images, connector packages), so a

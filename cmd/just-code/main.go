@@ -26,9 +26,6 @@ func main() {
 }
 
 func run(args []string) (int, error) {
-	if len(args) > 0 && args[0] == "mcp" {
-		return mcpCommand(args[1:])
-	}
 	// Hidden flag for CI (msb-runtime-watch workflow): prints the Microsandbox
 	// SDK version the binary embeds, without touching config or runtimes.
 	if len(args) == 1 && args[0] == "-print-msb-sdk-version" {
@@ -39,13 +36,17 @@ func run(args []string) (int, error) {
 	// The in-VM bootstrap is a hidden subcommand of this same binary. It runs
 	// inside the Tart guest and must not touch host config or load .env.
 	if len(args) > 0 && args[0] == justcode.GuestBootstrapCommand {
+		mcps, err := parseGuestMCPIDs(argOr(args, justcode.GuestBootstrapMCPArgIndex, ""))
+		if err != nil {
+			return 2, fmt.Errorf("invalid guest bootstrap MCP selection: %w", err)
+		}
 		cfg := justcode.GuestConfig{
 			Port:     argOr(args, 1, ""),
 			Username: argOr(args, 2, ""),
 			MTU:      argOr(args, 3, ""),
 			// The model selection (P10) is non-secret managed configuration
 			// and rides argv; secrets never do.
-			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), MCPConnectors: parseGuestMCPIDs(argOr(args, 7, ""))},
+			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), MCPConnectors: mcps},
 			// The git identity (P11) rides argv the same way: the guest
 			// cannot read the host settings file.
 			GitName:  argOr(args, 5, ""),
@@ -62,10 +63,14 @@ func run(args []string) (int, error) {
 		return exitCodeOf(nil), justcode.RunGuestPrepare(context.Background(), cfg)
 	}
 	if len(args) > 0 && args[0] == justcode.GuestSecretsCommand {
+		mcps, err := parseGuestMCPIDs(argOr(args, justcode.GuestSecretsMCPArgIndex, ""))
+		if err != nil {
+			return 2, fmt.Errorf("invalid guest MCP selection: %w", err)
+		}
 		// The model selection (P10) is the one managed field the in-guest
 		// secrets file must reflect; argv carries no secrets, and the
 		// overlay is non-secret configuration.
-		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), MCPConnectors: parseGuestMCPIDs(argOr(args, 3, ""))}
+		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), MCPConnectors: mcps}
 		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: overlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
@@ -78,6 +83,9 @@ func run(args []string) (int, error) {
 	parsed, err := parseArgs(args)
 	if err != nil {
 		return 2, err
+	}
+	if parsed.action == "mcp" {
+		return mcpCommand(parsed.mcpArgs)
 	}
 
 	if parsed.action == "config" {
@@ -335,12 +343,11 @@ func resolveMCPSelection(projectRoot string) ([]string, error) {
 	return ids, nil
 }
 
-func parseGuestMCPIDs(value string) []string {
+func parseGuestMCPIDs(value string) ([]string, error) {
 	if strings.TrimSpace(value) == "" {
-		return nil
+		return nil, nil
 	}
-	ids, _ := justcode.ValidateMCPConnectorIDs(strings.Split(value, ","))
-	return ids
+	return justcode.ValidateMCPConnectorIDs(strings.Split(value, ","))
 }
 
 // withProjectRootAsWorkspaceSource points the sealed transfer source at the
@@ -430,6 +437,9 @@ type parsedArgs struct {
 	modelsArgs []string
 	// workspaceArgs holds the words after the workspace command.
 	workspaceArgs []string
+	// mcpArgs holds the words belonging to the mcp command; global flags are
+	// still parsed around it by the shared argument pass.
+	mcpArgs []string
 	// initArgs holds the words after the init command.
 	initArgs []string
 	// setupArgs holds the words after the setup command.
@@ -547,6 +557,11 @@ func parseArgs(args []string) (parsedArgs, error) {
 			// Everything after the setup command belongs to it.
 			p.setupArgs = args[i+1:]
 			return p, nil
+		case a == "mcp" && !actionSet:
+			p.action = "mcp"
+			actionSet = true
+		case p.action == "mcp":
+			p.mcpArgs = append(p.mcpArgs, a)
 		case actionNames[a] && !actionSet:
 			p.action = a
 			actionSet = true

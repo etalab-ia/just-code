@@ -8,15 +8,25 @@ import (
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
+var discoverMCPProjectRootFn = func() (string, error) {
+	project, err := justcode.DiscoverProject(".")
+	if err != nil {
+		return "", err
+	}
+	return project.Root, nil
+}
+
+var probeRemoteMCPFn = justcode.ProbeRemoteMCP
+
 func mcpCommand(args []string) (int, error) {
 	if len(args) != 1 || args[0] != "status" {
 		return 2, fmt.Errorf("Usage: just-code mcp status")
 	}
-	project, err := justcode.DiscoverProject(".")
+	projectRoot, err := discoverMCPProjectRootFn()
 	if err != nil {
 		return 1, err
 	}
-	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(project.Root))
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot))
 	if err != nil {
 		return 1, err
 	}
@@ -31,8 +41,8 @@ func mcpCommand(args []string) (int, error) {
 	failed := false
 	for _, id := range ids {
 		connector := connectorByID(id)
-		health := justcode.ProbeRemoteMCP(context.Background(), nil, connector)
-		fmt.Fprintf(os.Stdout, "%-10s %-27s configured -> %s (%s): %s\n", id, connector.Endpoint, health.State, connector.HealthAction, health.Detail)
+		health := probeRemoteMCPFn(context.Background(), nil, connector)
+		fmt.Fprintf(os.Stdout, "%-10s %-28s configured -> %s (%s): %s\n", id, connector.Endpoint, health.State, connector.HealthAction, health.Detail)
 		if health.State != justcode.MCPVerified {
 			failed = true
 		}

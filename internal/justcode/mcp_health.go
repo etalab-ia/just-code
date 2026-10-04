@@ -17,12 +17,12 @@ const mcpProtocolVersion = "2025-03-26"
 type MCPHealthState string
 
 const (
-	MCPConfigured MCPHealthState = "configured"
-	MCPVerified   MCPHealthState = "verified"
-	MCPOffline    MCPHealthState = "offline"
-	MCPAuthNeeded MCPHealthState = "authentication-required"
-	MCPAuthError  MCPHealthState = "bad-credentials"
-	MCPDrift      MCPHealthState = "endpoint-or-schema-drift"
+	MCPConfigured   MCPHealthState = "configured"
+	MCPVerified     MCPHealthState = "verified"
+	MCPOffline      MCPHealthState = "offline"
+	MCPAuthNeeded   MCPHealthState = "authentication-required"
+	MCPAccessDenied MCPHealthState = "access-denied"
+	MCPDrift        MCPHealthState = "endpoint-or-schema-drift"
 )
 
 type MCPHealth struct {
@@ -71,7 +71,7 @@ func ProbeRemoteMCP(ctx context.Context, client *http.Client, connector MCPConne
 		return result
 	}
 	if resp.StatusCode == http.StatusForbidden {
-		result.State, result.Detail = MCPAuthError, "the remote service rejected authentication"
+		result.State, result.Detail = MCPAccessDenied, "the remote service denied the anonymous request"
 		return result
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusUnsupportedMediaType {
@@ -102,10 +102,14 @@ func ProbeRemoteMCP(ctx context.Context, client *http.Client, connector MCPConne
 			Message string `json:"message"`
 		} `json:"error"`
 	}
+	// The request ID is the JSON number 1, so JSON-RPC requires the response
+	// to echo that exact value and type.
 	if json.Unmarshal(message, &envelope) != nil || envelope.JSONRPC != "2.0" || string(bytes.TrimSpace(envelope.ID)) != "1" {
 		result.State, result.Detail = MCPDrift, "response did not match JSON-RPC MCP initialize"
 		return result
 	}
+	// Verify the version we explicitly requested; a different negotiated value
+	// is reported as drift until the new version is qualified end to end.
 	if envelope.Error != nil || envelope.Result.ProtocolVersion != mcpProtocolVersion {
 		result.State, result.Detail = MCPDrift, "server did not negotiate the supported MCP protocol version"
 		return result
@@ -120,14 +124,36 @@ func mcpResponseJSON(data []byte) ([]byte, error) {
 		return bytes.TrimSpace(data), nil
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	var dataLines []string
+	flush := func() ([]byte, bool) {
+		if len(dataLines) == 0 {
+			return nil, false
+		}
+		candidate := []byte(strings.Join(dataLines, "\n"))
+		dataLines = nil
+		if json.Valid(candidate) {
+			return candidate, true
+		}
+		return nil, false
+	}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "data:") {
-			candidate := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if json.Valid([]byte(candidate)) {
-				return []byte(candidate), nil
+		if line == "" {
+			if candidate, ok := flush(); ok {
+				return candidate, nil
 			}
+			continue
 		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read MCP event stream: %w", err)
+	}
+	if candidate, ok := flush(); ok {
+		return candidate, nil
 	}
 	return nil, fmt.Errorf("no JSON-RPC data in stream")
 }

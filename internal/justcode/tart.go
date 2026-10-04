@@ -289,7 +289,20 @@ func (t *Tart) guestRun(ctx context.Context, args ...string) error {
 // selection (P10) and the git identity (P11) ride argv: both are non-secret
 // managed configuration.
 func BackendArgs(vm, localBinary, port, username, mtu, model, gitName, gitEmail string, mcps ...string) []string {
-	args := []string{"exec", "-i", vm, localBinary, GuestBootstrapCommand, port, username, mtu, model, gitName, gitEmail}
+	args := []string{"exec", "-i", vm, localBinary}
+	return append(args, guestBootstrapArgs(port, username, mtu, model, gitName, gitEmail, mcps)...)
+}
+
+func guestBootstrapArgs(port, username, mtu, model, gitName, gitEmail string, mcps []string) []string {
+	args := []string{GuestBootstrapCommand, port, username, mtu, model, gitName, gitEmail}
+	if len(mcps) > 0 {
+		args = append(args, strings.Join(mcps, ","))
+	}
+	return args
+}
+
+func guestSecretsArgs(username, model string, mcps []string) []string {
+	args := []string{GuestSecretsCommand, username, model}
 	if len(mcps) > 0 {
 		args = append(args, strings.Join(mcps, ","))
 	}
@@ -623,10 +636,7 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 		return err
 	}
 	model := t.OpenCodeOverlay.EffectiveOverlay().Model
-	secretArgs := []string{"tart", "exec", "-i", vm, guestLocalBinary, GuestSecretsCommand, cfg.Username, model}
-	if len(t.OpenCodeOverlay.MCPConnectors) > 0 {
-		secretArgs = append(secretArgs, strings.Join(t.OpenCodeOverlay.MCPConnectors, ","))
-	}
+	secretArgs := append([]string{"tart", "exec", "-i", vm, guestLocalBinary}, guestSecretsArgs(cfg.Username, model, t.OpenCodeOverlay.MCPConnectors)...)
 	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key), secretArgs[0], secretArgs[1:]...); err != nil {
 		return err
 	}

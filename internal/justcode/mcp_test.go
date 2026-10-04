@@ -81,7 +81,7 @@ func TestProbeRemoteMCPDistinguishesVerificationAuthenticationAndDrift(t *testin
 	}{
 		{"verified", http.StatusOK, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`, MCPVerified},
 		{"authentication required", http.StatusUnauthorized, `{}`, MCPAuthNeeded},
-		{"bad credentials", http.StatusForbidden, `{}`, MCPAuthError},
+		{"anonymous access denied", http.StatusForbidden, `{}`, MCPAccessDenied},
 		{"endpoint drift", http.StatusNotFound, `{}`, MCPDrift},
 		{"schema drift", http.StatusOK, `{"unexpected":true}`, MCPDrift},
 		{"mismatched JSON-RPC response ID", http.StatusOK, `{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-03-26"}}`, MCPDrift},
@@ -112,5 +112,20 @@ func TestProbeRemoteMCPReportsUnavailableEndpoint(t *testing.T) {
 	result := ProbeRemoteMCP(context.Background(), nil, MCPConnector{ID: "offline", Endpoint: endpoint})
 	if result.State != MCPOffline {
 		t.Fatalf("state = %q, want offline", result.State)
+	}
+}
+
+func TestMCPResponseJSONReadsMultilineAndLongSSEData(t *testing.T) {
+	multiline := []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":1,\"result\":{\"protocolVersion\":\"2025-03-26\"}}\n\n")
+	for name, input := range map[string][]byte{
+		"multiline": multiline,
+		"long line": []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-03-26\",\"padding\":\"" + strings.Repeat("x", 70_000) + "\"}}\n\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := mcpResponseJSON(input)
+			if err != nil || !json.Valid(got) {
+				t.Fatalf("mcpResponseJSON = %q, %v", got, err)
+			}
+		})
 	}
 }

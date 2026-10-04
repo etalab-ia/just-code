@@ -29,6 +29,14 @@ const GuestPrepareCommand = "__guest-prepare"
 const GuestSecretsCommand = "__guest-secrets"
 
 const (
+	// GuestBootstrapMCPArgIndex is the zero-based position in the hidden
+	// bootstrap's os.Args[1:] vector containing the selected MCP IDs.
+	GuestBootstrapMCPArgIndex = 7
+	// GuestSecretsMCPArgIndex is the corresponding position for __guest-secrets.
+	GuestSecretsMCPArgIndex = 3
+)
+
+const (
 	// guestShareDir is the read-only share mounted into the VM. It holds only
 	// the staged binary, never the checkout or its .env.
 	guestShareDir = "/Volumes/My Shared Files/just-code"

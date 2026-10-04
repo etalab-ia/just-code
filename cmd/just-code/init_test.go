@@ -42,6 +42,15 @@ func initTestProject(t *testing.T) string {
 	return root
 }
 
+func stubMCPBindingStateDir(t *testing.T) string {
+	t.Helper()
+	stateDir := t.TempDir()
+	original := mcpBindingStateDirFn
+	mcpBindingStateDirFn = func() string { return stateDir }
+	t.Cleanup(func() { mcpBindingStateDirFn = original })
+	return stateDir
+}
+
 // TestParseInitArgs pins the flag surface, including the two numeric options.
 func TestParseInitArgs(t *testing.T) {
 	opts, err := parseInitArgs([]string{
@@ -233,6 +242,7 @@ func TestClearingContext7SelectionRevokesItsHostApproval(t *testing.T) {
 	}
 	t.Cleanup(func() { revokeMCPBindingFn = originalRevoke })
 	root := initTestProject(t)
+	stateDir := stubMCPBindingStateDir(t)
 	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{MCPConnectors: []string{"context7"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +251,7 @@ func TestClearingContext7SelectionRevokesItsHostApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	instance := project.InstanceName()
-	approvalPath := justcode.BindingApprovalsPath(justcode.DefaultStateDir(), instance)
+	approvalPath := justcode.BindingApprovalsPath(stateDir, instance)
 	if err := justcode.ApproveBinding(justcode.DefaultFS, approvalPath, justcode.CredentialContext7); err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +271,88 @@ func TestClearingContext7SelectionRevokesItsHostApproval(t *testing.T) {
 	}
 	if !guestRevoked {
 		t.Fatal("guest Context7 binding was not revoked")
+	}
+}
+
+func TestContext7RevocationFailureKeepsSelectionForRetry(t *testing.T) {
+	originalRevoke := revokeMCPBindingFn
+	callCount := 0
+	revokeMCPBindingFn = func(context.Context, string, justcode.CredentialKind) (bool, bool, error) {
+		callCount++
+		if callCount == 1 {
+			return false, false, fmt.Errorf("simulated guest revoke failure")
+		}
+		return true, true, nil
+	}
+	t.Cleanup(func() { revokeMCPBindingFn = originalRevoke })
+	root := initTestProject(t)
+	stateDir := stubMCPBindingStateDir(t)
+	manifestPath := justcode.ProjectManifestPath(root)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, manifestPath, justcode.ProjectManifest{MCPConnectors: []string{"context7"}}); err != nil {
+		t.Fatal(err)
+	}
+	project, err := justcode.DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalPath := justcode.BindingApprovalsPath(stateDir, project.InstanceName())
+	if err := justcode.ApproveBinding(justcode.DefaultFS, approvalPath, justcode.CredentialContext7); err != nil {
+		t.Fatal(err)
+	}
+	clear := initOptions{
+		Root: root, Replace: true, Yes: true,
+		Set: map[string]bool{"root": true, "mcps": true, "clear-mcps": true},
+	}
+	if code, err := initRun(clear, bufio.NewReader(strings.NewReader("")), false); code == 0 || err == nil {
+		t.Fatalf("failed revocation should fail init, got code=%d err=%v", code, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, manifestPath)
+	if err != nil || !containsConnector(manifest.MCPConnectors, "context7") {
+		t.Fatalf("selection after failed revocation = %v, %v; want context7 retained for retry", manifest.MCPConnectors, err)
+	}
+	if code, err := initRun(clear, bufio.NewReader(strings.NewReader("")), false); code != 0 || err != nil {
+		t.Fatalf("retry init: code=%d err=%v", code, err)
+	}
+	manifest, err = justcode.ReadProjectManifest(justcode.DefaultFS, manifestPath)
+	if err != nil || containsConnector(manifest.MCPConnectors, "context7") || callCount != 2 {
+		t.Fatalf("selection after successful retry = %v, calls=%d, err=%v", manifest.MCPConnectors, callCount, err)
+	}
+}
+
+func TestClearingContext7OnNonMicrosandboxRuntimeSkipsGuestRevocation(t *testing.T) {
+	originalRevoke := revokeMCPBindingFn
+	revokeCalls := 0
+	revokeMCPBindingFn = func(context.Context, string, justcode.CredentialKind) (bool, bool, error) {
+		revokeCalls++
+		return false, false, fmt.Errorf("Microsandbox control plane unavailable")
+	}
+	t.Cleanup(func() { revokeMCPBindingFn = originalRevoke })
+	root := initTestProject(t)
+	stateDir := stubMCPBindingStateDir(t)
+	manifestPath := justcode.ProjectManifestPath(root)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, manifestPath, justcode.ProjectManifest{
+		Runtime: string(justcode.RuntimeTart), MCPConnectors: []string{"context7"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	project, err := justcode.DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalPath := justcode.BindingApprovalsPath(stateDir, project.InstanceName())
+	if err := justcode.ApproveBinding(justcode.DefaultFS, approvalPath, justcode.CredentialContext7); err != nil {
+		t.Fatal(err)
+	}
+	code, err := initRun(initOptions{
+		Root: root, Replace: true, Yes: true,
+		Set: map[string]bool{"root": true, "mcps": true, "clear-mcps": true},
+	}, bufio.NewReader(strings.NewReader("")), false)
+	if code != 0 || err != nil || revokeCalls != 0 {
+		t.Fatalf("non-Microsandbox deselection: code=%d err=%v revoke calls=%d", code, err, revokeCalls)
+	}
+	approvals, err := justcode.ReadBindingApprovals(justcode.DefaultFS, approvalPath)
+	if err != nil || approvals.Approves(justcode.CredentialContext7) {
+		t.Fatalf("Context7 approval after deselection = %+v, %v", approvals, err)
 	}
 }
 

@@ -261,22 +261,31 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			return 1, fmt.Errorf("cancelled; nothing was written")
 		}
 	}
+	revokeContext7 := plan.ExistingManifest != nil && containsConnector(plan.ExistingManifest.MCPConnectors, "context7") && !containsConnector(plan.Answers.MCPConnectors, "context7")
+	context7Revoked, context7Live := false, false
+	if revokeContext7 {
+		instance := justcode.InstanceName(plan.Answers.Root, filepath.Base(plan.Answers.Root))
+		path := justcode.BindingApprovalsPath(mcpBindingStateDirFn(), instance)
+		if err := justcode.RevokeBindingApproval(justcode.DefaultFS, path, justcode.CredentialContext7); err != nil {
+			return 1, fmt.Errorf("Context7 credential approval could not be revoked; project selection was not changed: %w", err)
+		}
+		if plan.ExistingManifest.Runtime == "" || plan.ExistingManifest.Runtime == string(justcode.RuntimeMicrosandbox) {
+			context7Revoked, context7Live, err = revokeMCPBindingFn(context.Background(), instance, justcode.CredentialContext7)
+			if err != nil {
+				return 1, fmt.Errorf("Context7 host approval was revoked, but the Microsandbox credential could not be revoked; project selection was not changed: %w", err)
+			}
+		}
+	}
 	if err := wizard.Apply(plan, opts.Replace); err != nil {
+		if revokeContext7 {
+			return 1, fmt.Errorf("project configuration was not written; Context7 authorization was revoked: %w", err)
+		}
 		return 1, err
 	}
-	if plan.ExistingManifest != nil && containsConnector(plan.ExistingManifest.MCPConnectors, "context7") && !containsConnector(plan.Answers.MCPConnectors, "context7") {
-		instance := justcode.InstanceName(plan.Answers.Root, filepath.Base(plan.Answers.Root))
-		path := justcode.BindingApprovalsPath(justcode.DefaultStateDir(), instance)
-		if err := justcode.RevokeBindingApproval(justcode.DefaultFS, path, justcode.CredentialContext7); err != nil {
-			return 1, fmt.Errorf("project configuration was written, but Context7 credential approval could not be revoked: %w", err)
-		}
-		revoked, live, err := revokeMCPBindingFn(context.Background(), instance, justcode.CredentialContext7)
-		if err != nil {
-			return 1, fmt.Errorf("project configuration and Context7 approval were updated, but the guest credential could not be revoked: %w", err)
-		}
-		if revoked && live {
+	if revokeContext7 {
+		if context7Revoked && context7Live {
 			fmt.Println("Context7 credential approval revoked and removed from the running guest.")
-		} else if revoked {
+		} else if context7Revoked {
 			fmt.Println("Context7 credential approval revoked and removed from the stopped guest.")
 		} else {
 			fmt.Println("Context7 credential approval revoked on this host.")
@@ -535,6 +544,7 @@ func approveGitHubForProject(root string) error {
 
 var approveGitHubForProjectFn = approveGitHubForProject
 var revokeMCPBindingFn = justcode.RevokeInstanceBinding
+var mcpBindingStateDirFn = justcode.DefaultStateDir
 
 // resolvedOrDefault renders the value a reader can reason about: what will
 // actually be used, rather than a zero meaning "unset".

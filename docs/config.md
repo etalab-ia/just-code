@@ -140,9 +140,11 @@ appels anonymes avec une limite plus basse ; le connecteur géré utilise ce
 mode et `init` n'exige ni ne transmet de clé.
 
 `just-code mcp status` envoie un MCP `initialize` depuis l'hôte et distingue la
-configuration, la vérification du protocole, une erreur d'authentification,
-une indisponibilité réseau et une dérive de contrat. Ce contrôle ne prouve pas
-la connectivité du guest ni l'exécution d'un appel d'outil depuis OpenCode.
+configuration, la vérification du protocole, l'authentification requise, un
+accès refusé, une indisponibilité réseau et une dérive de contrat. Le contrôle
+est anonyme et ne qualifie donc jamais une réponse 403 d'identifiants invalides.
+Il ne prouve pas la connectivité du guest ni l'exécution d'un appel d'outil
+depuis OpenCode.
 
 ## `just-code config`
 
