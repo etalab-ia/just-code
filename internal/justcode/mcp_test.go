@@ -84,6 +84,7 @@ func TestProbeRemoteMCPDistinguishesVerificationAuthenticationAndDrift(t *testin
 		{"bad credentials", http.StatusForbidden, `{}`, MCPAuthError},
 		{"endpoint drift", http.StatusNotFound, `{}`, MCPDrift},
 		{"schema drift", http.StatusOK, `{"unexpected":true}`, MCPDrift},
+		{"mismatched JSON-RPC response ID", http.StatusOK, `{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-03-26"}}`, MCPDrift},
 		{"unsupported protocol version", http.StatusOK, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2030-01-01"}}`, MCPDrift},
 	}
 	for _, tc := range tests {
