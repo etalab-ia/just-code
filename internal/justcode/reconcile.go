@@ -194,6 +194,13 @@ type DesiredState struct {
 	Username string
 	// GitHubOrigin participates only when the optional binding is resolved.
 	GitHubOrigin string
+	// MCPConnectors is the desired curated remote connector selection (P15).
+	// It participates in the revision because deselection is an authorization
+	// surface: a removed connector must not stay enabled in a healthy running
+	// guest until the next manual boot. The managed Model is deliberately
+	// excluded: a model change is a rendering preference, effective at the
+	// next boot by design, not a security state.
+	MCPConnectors []string
 }
 
 // ConfigRevision hashes the non-secret configuration. Credential values
@@ -215,6 +222,16 @@ func (d DesiredState) ConfigRevision() string {
 	// initialized; otherwise every existing non-GitHub guest would restart.
 	if d.GitHubOrigin != "" {
 		parts = append(parts, "github:"+d.GitHubOrigin)
+	}
+	// Same shape contract as GitHubOrigin: an empty selection contributes
+	// nothing, so pre-P15 state (no MCP field ever set) keeps its revision and
+	// existing guests do not restart for a feature they never used. The ids
+	// are sorted because validation canonicalizes the order; the revision
+	// must not depend on how the caller listed them.
+	if len(d.MCPConnectors) > 0 {
+		sorted := append([]string(nil), d.MCPConnectors...)
+		sort.Strings(sorted)
+		parts = append(parts, "mcps:"+strings.Join(sorted, ","))
 	}
 	for _, part := range parts {
 		_, _ = h.Write([]byte(part))
@@ -520,12 +537,13 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 // the revision cannot leave a stale refresh unperformed.
 func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBinding, applied *InstanceState) DesiredState {
 	d := DesiredState{
-		Instance:  m.InstanceName(),
-		Isolation: m.cfg.Isolation,
-		Image:     msbImage,
-		Username:  m.cfg.Username,
-		CPUs:      m.cfg.CPUs,
-		MemoryMB:  m.cfg.MemoryMB,
+		Instance:      m.InstanceName(),
+		Isolation:     m.cfg.Isolation,
+		Image:         msbImage,
+		Username:      m.cfg.Username,
+		CPUs:          m.cfg.CPUs,
+		MemoryMB:      m.cfg.MemoryMB,
+		MCPConnectors: append([]string(nil), m.OpenCodeOverlay.MCPConnectors...),
 	}
 	if resolved {
 		if hasResolvedGitHubBinding(bindings) {

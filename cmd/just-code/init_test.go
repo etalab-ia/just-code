@@ -319,12 +319,18 @@ func TestContext7RevocationFailureKeepsSelectionForRetry(t *testing.T) {
 	}
 }
 
-func TestClearingContext7OnNonMicrosandboxRuntimeSkipsGuestRevocation(t *testing.T) {
+// TestClearingContext7OnNonMicrosandboxRuntimeStillAttemptsGuestRevocation
+// pins that deselection attempts the guest revoke even when the recorded
+// runtime is not Microsandbox: the recorded runtime can lag a runtime switch,
+// and a preserved sandbox from the previous runtime would otherwise keep its
+// stale proxy registration. The revoke itself reports revoked=false for a
+// nonexistent instance, so the attempt is safe.
+func TestClearingContext7OnNonMicrosandboxRuntimeStillAttemptsGuestRevocation(t *testing.T) {
 	originalRevoke := revokeMCPBindingFn
 	revokeCalls := 0
 	revokeMCPBindingFn = func(context.Context, string, justcode.CredentialKind) (bool, bool, error) {
 		revokeCalls++
-		return false, false, fmt.Errorf("Microsandbox control plane unavailable")
+		return false, false, nil
 	}
 	t.Cleanup(func() { revokeMCPBindingFn = originalRevoke })
 	root := initTestProject(t)
@@ -347,7 +353,7 @@ func TestClearingContext7OnNonMicrosandboxRuntimeSkipsGuestRevocation(t *testing
 		Root: root, Replace: true, Yes: true,
 		Set: map[string]bool{"root": true, "mcps": true, "clear-mcps": true},
 	}, bufio.NewReader(strings.NewReader("")), false)
-	if code != 0 || err != nil || revokeCalls != 0 {
+	if code != 0 || err != nil || revokeCalls != 1 {
 		t.Fatalf("non-Microsandbox deselection: code=%d err=%v revoke calls=%d", code, err, revokeCalls)
 	}
 	approvals, err := justcode.ReadBindingApprovals(justcode.DefaultFS, approvalPath)

@@ -269,11 +269,15 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		if err := justcode.RevokeBindingApproval(justcode.DefaultFS, path, justcode.CredentialContext7); err != nil {
 			return 1, fmt.Errorf("Context7 credential approval could not be revoked; project selection was not changed: %w", err)
 		}
-		if plan.ExistingManifest.Runtime == "" || plan.ExistingManifest.Runtime == string(justcode.RuntimeMicrosandbox) {
-			context7Revoked, context7Live, err = revokeMCPBindingFn(context.Background(), instance, justcode.CredentialContext7)
-			if err != nil {
-				return 1, fmt.Errorf("Context7 host approval was revoked, but the Microsandbox credential could not be revoked; project selection was not changed: %w", err)
-			}
+		// The revoke is attempted regardless of the recorded runtime: the
+		// recorded runtime can lag a runtime switch, and a preserved sandbox
+		// from the previous runtime would keep its proxy registration (and
+		// the guest's enabled connector) until its next boot. A nonexistent
+		// instance is revoked=false, nil, so the call is safe when no
+		// Microsandbox instance was ever created.
+		context7Revoked, context7Live, err = revokeMCPBindingFn(context.Background(), instance, justcode.CredentialContext7)
+		if err != nil {
+			return 1, fmt.Errorf("Context7 host approval was revoked, but the Microsandbox credential could not be revoked; project selection was not changed: %w", err)
 		}
 	}
 	if err := wizard.Apply(plan, opts.Replace); err != nil {
