@@ -174,8 +174,10 @@ type ProjectManifest struct {
 }
 
 // projectManifestSchemaVersion is the current project.json format version.
-// Version 3 makes pre-P15 binaries reject manifests containing MCP selections
-// instead of silently ignoring the new field.
+// The bump is unconditional: any manifest written by this build is v3, so
+// pre-P15 binaries reject it outright instead of silently ignoring the new
+// mcpConnectors field. (Re-initializing a project with this build therefore
+// makes it unreadable to older binaries even with no MCP selection.)
 const projectManifestSchemaVersion = 3
 
 // maxSupportedManifestSchema is the highest manifest schemaVersion this build

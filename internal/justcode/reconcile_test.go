@@ -145,8 +145,19 @@ func TestConfigRevisionIncludesMCPSelection(t *testing.T) {
 	if selected.ConfigRevision() == deselected.ConfigRevision() {
 		t.Fatal("deselecting a connector must change the revision back")
 	}
-	if base.ConfigRevision() != deselected.ConfigRevision() {
-		t.Fatal("an empty selection must keep the pre-P15 revision (legacy state compatibility)")
+	// The compatibility claim is pinned against the hardcoded pre-P15 hash
+	// shape, not by comparing two revisions computed by the same code: a
+	// regression that made an empty selection contribute a part would move
+	// both sides together and stay green, while every pre-P15 state file
+	// would silently mismatch (mass spurious restarts).
+	legacyHash := sha256.New()
+	for _, part := range []string{"jc-state-v1", base.Instance, string(base.Isolation), base.Image, base.Username,
+		"rev:" + base.CredentialRev, "gen:" + base.CredentialGeneration} {
+		_, _ = legacyHash.Write([]byte(part))
+		_, _ = legacyHash.Write([]byte{0})
+	}
+	if got, want := deselected.ConfigRevision(), hex.EncodeToString(legacyHash.Sum(nil))[:16]; got != want {
+		t.Fatalf("empty selection revision = %s, want unchanged pre-P15 hash %s (legacy state compatibility)", got, want)
 	}
 	reordered := selected
 	reordered.MCPConnectors = []string{"context7", "data-gouv"}
@@ -177,6 +188,25 @@ func TestPlanReconcileRestartsRunningGuestOnMCPChange(t *testing.T) {
 	plan = PlanReconcile(&same, desired, ReconcileFacts{Exists: true, Running: true, Healthy: true})
 	if !plan.IsNoOp() {
 		t.Fatalf("identical MCP selection must stay a no-op, got %v", plan.Ops)
+	}
+}
+
+// TestDesiredStateCarriesOverlayMCPSelection pins the wiring the revision
+// tests abstract away: the overlay the dispatcher installs must reach the
+// desired state, or a changed selection would compute the same revision as
+// the applied one and reconcile back to a silent no-op — the exact bug the
+// revision participation exists to fix.
+func TestDesiredStateCarriesOverlayMCPSelection(t *testing.T) {
+	isolateHostState(t)
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	without := m.desiredState(true, nil, nil)
+	m.OpenCodeOverlay = ManagedOverlay{MCPConnectors: []string{"data-gouv", "context7"}}
+	with := m.desiredState(true, nil, nil)
+	if len(with.MCPConnectors) != 2 {
+		t.Fatalf("desiredState.MCPConnectors = %v, want the overlay selection", with.MCPConnectors)
+	}
+	if without.ConfigRevision() == with.ConfigRevision() {
+		t.Fatal("an overlay selection must change the revision, or reconcile cannot see it")
 	}
 }
 

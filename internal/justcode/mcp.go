@@ -62,6 +62,9 @@ func mcpOverlay(ids []string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The managed entries are anonymous by design: no headers, no env
+	// reference. The proxied CONTEXT7_API_KEY binding serves user-owned
+	// `mcp` entries in the guest's own config, not this curated overlay.
 	entries := make(map[string]any, len(valid))
 	for _, id := range valid {
 		connector := mcpCatalogue[id]

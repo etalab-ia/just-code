@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -274,10 +275,21 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		// from the previous runtime would keep its proxy registration (and
 		// the guest's enabled connector) until its next boot. A nonexistent
 		// instance is revoked=false, nil, so the call is safe when no
-		// Microsandbox instance was ever created.
+		// Microsandbox instance was ever created. When the control plane
+		// cannot be reached to verify the instance, the deselection proceeds
+		// with a warning: the host approval is already revoked (the primary
+		// authorization), a stale registration in a preserved sandbox is
+		// inert without it, and the next reconcile strips it because absence
+		// is authoritative in the binding refresh.
 		context7Revoked, context7Live, err = revokeMCPBindingFn(context.Background(), instance, justcode.CredentialContext7)
 		if err != nil {
-			return 1, fmt.Errorf("Context7 host approval was revoked, but the Microsandbox credential could not be revoked; project selection was not changed: %w", err)
+			if errors.Is(err, justcode.ErrLookupFailed) {
+				fmt.Fprintf(os.Stderr, "Warning: could not verify the Microsandbox instance %s to remove the Context7 registration (%v); the host approval is revoked and the stale registration will be removed at the next start.\n", instance, err)
+				context7Revoked, context7Live = false, false
+				err = nil
+			} else {
+				return 1, fmt.Errorf("Context7 host approval was revoked, but the Microsandbox credential could not be revoked; project selection was not changed: %w", err)
+			}
 		}
 	}
 	if err := wizard.Apply(plan, opts.Replace); err != nil {

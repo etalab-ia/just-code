@@ -362,6 +362,51 @@ func TestClearingContext7OnNonMicrosandboxRuntimeStillAttemptsGuestRevocation(t 
 	}
 }
 
+// TestClearingContext7WhenControlPlaneUnreachableProceedsWithWarning pins
+// the availability contract: a tart-only user with no reachable Microsandbox
+// control plane must still be able to deselect the connector. The host
+// approval revocation is the primary authorization, and the stale guest
+// registration is inert without it, so an unverifiable lookup must warn and
+// proceed rather than block the deselection forever.
+func TestClearingContext7WhenControlPlaneUnreachableProceedsWithWarning(t *testing.T) {
+	originalRevoke := revokeMCPBindingFn
+	revokeMCPBindingFn = func(context.Context, string, justcode.CredentialKind) (bool, bool, error) {
+		return false, false, fmt.Errorf("%w: Microsandbox control plane unavailable", justcode.ErrLookupFailed)
+	}
+	t.Cleanup(func() { revokeMCPBindingFn = originalRevoke })
+	root := initTestProject(t)
+	stateDir := stubMCPBindingStateDir(t)
+	manifestPath := justcode.ProjectManifestPath(root)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, manifestPath, justcode.ProjectManifest{
+		Runtime: string(justcode.RuntimeTart), MCPConnectors: []string{"context7"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	project, err := justcode.DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalPath := justcode.BindingApprovalsPath(stateDir, project.InstanceName())
+	if err := justcode.ApproveBinding(justcode.DefaultFS, approvalPath, justcode.CredentialContext7); err != nil {
+		t.Fatal(err)
+	}
+	code, err := initRun(initOptions{
+		Root: root, Replace: true, Yes: true,
+		Set: map[string]bool{"root": true, "mcps": true, "clear-mcps": true},
+	}, bufio.NewReader(strings.NewReader("")), false)
+	if code != 0 || err != nil {
+		t.Fatalf("unreachable control plane must not block deselection: code=%d err=%v", code, err)
+	}
+	approvals, err := justcode.ReadBindingApprovals(justcode.DefaultFS, approvalPath)
+	if err != nil || approvals.Approves(justcode.CredentialContext7) {
+		t.Fatalf("Context7 approval after deselection = %+v, %v", approvals, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, manifestPath)
+	if err != nil || containsConnector(manifest.MCPConnectors, "context7") {
+		t.Fatalf("selection after deselection = %v, %v; want context7 removed", manifest.MCPConnectors, err)
+	}
+}
+
 // TestInitInteractiveUsesDefaultsOnEmptyAnswers pins that pressing enter
 // through the questions is a valid path: every question has a default, and the
 // engine's defaults are what get written.
