@@ -236,7 +236,11 @@ func TestClearingContext7SelectionRevokesItsHostApproval(t *testing.T) {
 	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{MCPConnectors: []string{"context7"}}); err != nil {
 		t.Fatal(err)
 	}
-	instance := justcode.InstanceName(root, filepath.Base(root))
+	project, err := justcode.DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := project.InstanceName()
 	approvalPath := justcode.BindingApprovalsPath(justcode.DefaultStateDir(), instance)
 	if err := justcode.ApproveBinding(justcode.DefaultFS, approvalPath, justcode.CredentialContext7); err != nil {
 		t.Fatal(err)
