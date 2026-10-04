@@ -22,12 +22,16 @@ import (
 // manages. Only these fields may appear in the overlay: every field placed
 // here overrides the same field from the project and user configs (final
 // merge wins), so an unconsidered addition silently disables user settings.
+// Selected curated MCP entries are added separately by the catalogue.
 type ManagedOverlay struct {
 	// Model is the effective model ("provider/model-id"). Empty keeps the
 	// embedded default.
 	Model string
 	// SmallModel is the model for background tasks. Defaults to Model.
 	SmallModel string
+	// MCPConnectors selects entries from the built-in remote connector
+	// catalogue. User-owned entries with other names remain untouched.
+	MCPConnectors []string
 }
 
 // opencodeManagedField describes one top-level field the overlay may set.
@@ -36,9 +40,8 @@ type opencodeManagedField struct {
 	value func(o ManagedOverlay) string
 }
 
-// managedOverlayFields lists the managed fields in a stable order. Field
-// additions are deliberate: a new field must be registered here to be
-// conflict-checked, and the conflict report must name it.
+// managedOverlayFields lists the scalar managed fields in a stable order.
+// Curated MCP entries are checked separately against the connector catalogue.
 var managedOverlayFields = []opencodeManagedField{
 	{"model", func(o ManagedOverlay) string { return o.Model }},
 	{"small_model", func(o ManagedOverlay) string { return o.SmallModel }},
@@ -118,6 +121,13 @@ func renderOverlayJSON(o ManagedOverlay) (string, error) {
 			fields[f.name] = v
 		}
 	}
+	if len(o.MCPConnectors) > 0 {
+		mcp, err := mcpOverlay(o.MCPConnectors)
+		if err != nil {
+			return "", err
+		}
+		fields["mcp"] = mcp
+	}
 	// Stable key order: the content travels through env files sourced by
 	// shells and is diffed in tests; a canonical form avoids noise.
 	keys := make([]string, 0, len(fields))
@@ -190,6 +200,15 @@ func DetectOverlayConflicts(project map[string]any, overlay ManagedOverlay) []Co
 			})
 		}
 	}
+	managedMCP, err := mcpOverlay(overlay.MCPConnectors)
+	if err == nil {
+		projectMCP, _ := project["mcp"].(map[string]any)
+		for name, managed := range managedMCP {
+			if projectValue, exists := projectMCP[name]; exists && canonicalMCPEntry(projectValue) != canonicalMCPEntry(managed) {
+				conflicts = append(conflicts, ConfigConflict{Field: "mcp." + name, ProjectValue: canonicalMCPEntry(projectValue), ManagedValue: canonicalMCPEntry(managed)})
+			}
+		}
+	}
 	return conflicts
 }
 
@@ -204,7 +223,7 @@ func FormatConflicts(conflicts []ConfigConflict) string {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Field < sorted[j].Field })
 	var lines []string
 	for _, c := range sorted {
-		lines = append(lines, fmt.Sprintf("  %s: project=%s, just-code=%s (the just-code value wins; set the project field to match or change the model selection)", c.Field, c.ProjectValue, c.ManagedValue))
+		lines = append(lines, fmt.Sprintf("  %s: project=%s, just-code=%s (the just-code value wins; set the project field to match or change the managed selection)", c.Field, c.ProjectValue, c.ManagedValue))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -189,7 +189,8 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 		code, err := initRun(initOptions{
 			Root: root, Isolation: "backend", CPUs: 4, MemoryMB: 2048,
 			Replace: true, Yes: true,
-			Set: map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true},
+			MCPConnectors: []string{"context7", "data-gouv"},
+			Set:           map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true, "mcps": true},
 		}, bufio.NewReader(strings.NewReader("")), false)
 		if code != 0 || err != nil {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
@@ -205,6 +206,58 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 	if pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.Isolation != string(justcode.IsolationBackend) {
 		t.Fatalf("manifest = %+v", pm)
 	}
+	if strings.Join(pm.MCPConnectors, ",") != "context7,data-gouv" {
+		t.Fatalf("MCP connectors = %v", pm.MCPConnectors)
+	}
+}
+
+func TestParseInitMCPFlags(t *testing.T) {
+	opts, err := parseInitArgs([]string{"--root", ".", "--mcp", "context7", "--mcp", "data-gouv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.Set["mcps"] || strings.Join(opts.MCPConnectors, ",") != "context7,data-gouv" {
+		t.Fatalf("options = %+v", opts)
+	}
+	if _, err := parseInitArgs([]string{"--clear-mcps", "--mcp", "context7"}); err == nil {
+		t.Fatal("--clear-mcps and --mcp must be mutually exclusive")
+	}
+}
+
+func TestClearingContext7SelectionRevokesItsHostApproval(t *testing.T) {
+	originalRevoke := revokeMCPBindingFn
+	guestRevoked := false
+	revokeMCPBindingFn = func(context.Context, string, justcode.CredentialKind) (bool, bool, error) {
+		guestRevoked = true
+		return false, false, nil
+	}
+	t.Cleanup(func() { revokeMCPBindingFn = originalRevoke })
+	root := initTestProject(t)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{MCPConnectors: []string{"context7"}}); err != nil {
+		t.Fatal(err)
+	}
+	instance := justcode.InstanceName(root, filepath.Base(root))
+	approvalPath := justcode.BindingApprovalsPath(justcode.DefaultStateDir(), instance)
+	if err := justcode.ApproveBinding(justcode.DefaultFS, approvalPath, justcode.CredentialContext7); err != nil {
+		t.Fatal(err)
+	}
+	code, err := initRun(initOptions{
+		Root: root, Replace: true, Yes: true,
+		Set: map[string]bool{"root": true, "mcps": true, "clear-mcps": true},
+	}, bufio.NewReader(strings.NewReader("")), false)
+	if code != 0 || err != nil {
+		t.Fatalf("initRun: code=%d err=%v", code, err)
+	}
+	approvals, err := justcode.ReadBindingApprovals(justcode.DefaultFS, approvalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approvals.Approves(justcode.CredentialContext7) {
+		t.Fatal("Context7 approval remained after the selected connector was removed")
+	}
+	if !guestRevoked {
+		t.Fatal("guest Context7 binding was not revoked")
+	}
 }
 
 // TestInitInteractiveUsesDefaultsOnEmptyAnswers pins that pressing enter
@@ -213,7 +266,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
-	input := root + "\n\n\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, skills, storage, apply
+	input := root + "\n\n\n\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, skills, storage, MCPs, apply
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -305,7 +358,7 @@ func TestIsTTYTreatsDevNullAsNonInteractive(t *testing.T) {
 func TestInitSkipsQuestionsAnsweredByFlags(t *testing.T) {
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	root := initTestProject(t)
-	input := "\n\n" // GitHub defaults to off, then the apply confirmation
+	input := "\n\n\n" // GitHub defaults to off, then MCPs and apply confirmation
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{
 			Root: root, Runtime: "microsandbox", Isolation: "backend", Model: "albert/x",
@@ -502,8 +555,8 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	stubProjectSkills(t)
 	root := initTestProject(t)
-	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, skills, storage, apply
-	input := "\n\nbackend\n\n\n\n\n\n\n\n\n"
+	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, skills, storage, MCPs, apply
+	input := "\n\nbackend\n\n\n\n\n\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.

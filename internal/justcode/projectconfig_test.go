@@ -99,6 +99,9 @@ func TestDiscoverProjectExecutionInputs(t *testing.T) {
 	if len(inputs.MCPCommands) != 1 || inputs.MCPCommands[0] != "npx" {
 		t.Fatalf("mcp commands = %v (remote URLs are not commands)", inputs.MCPCommands)
 	}
+	if len(inputs.MCPEndpoints) != 1 || inputs.MCPEndpoints[0] != "https://example.com/sse" {
+		t.Fatalf("mcp endpoints = %v", inputs.MCPEndpoints)
+	}
 	if len(inputs.AutoDiscoveredPlugins) != 2 {
 		t.Fatalf("auto-discovered = %v (mjs must be excluded)", inputs.AutoDiscoveredPlugins)
 	}

@@ -53,6 +53,26 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestResolveMCPSelection(t *testing.T) {
+	root := t.TempDir()
+	if ids, err := resolveMCPSelection(root); err != nil || len(ids) != 0 {
+		t.Fatalf("missing manifest selection = %v, %v", ids, err)
+	}
+	path := justcode.ProjectManifestPath(root)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, path, justcode.ProjectManifest{MCPConnectors: []string{"context7", "data-gouv"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := resolveMCPSelection(root); err != nil || strings.Join(ids, ",") != "context7,data-gouv" {
+		t.Fatalf("valid manifest selection = %v, %v", ids, err)
+	}
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, path, justcode.ProjectManifest{MCPConnectors: []string{"browser"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := resolveMCPSelection(root); err == nil || len(ids) != 0 || !strings.Contains(err.Error(), "unknown remote MCP") {
+		t.Fatalf("invalid manifest selection = %v, %v; want a hard validation error", ids, err)
+	}
+}
+
 func TestOpenCodeAttachArgsResumesLastSession(t *testing.T) {
 	resumeArgs, warn := justcode.OpenCodeResumeArgs(true, nil, "--continue continue the last session", nil)
 	if warn {

@@ -293,6 +293,14 @@ P22 was added in the 22 September revision (sealed workspace); its identifier pr
 
 **Boundary/compatibility:** verify upstream URLs/auth mechanisms during implementation rather than infer them from names. Remote service availability/version remains external even when the local connector is pinned. Existing custom MCP config is preserved but requires local trust when execution-relevant inputs change.
 
+**Deferred manual guest test (run at the end of this PR run):** the live OpenCode tool-call check is not yet complete. Host-side MCP `initialize` handshakes succeeded for both public endpoints, but this does not prove guest networking, OpenCode tool discovery, or tool execution. On a Mac with Microsandbox and pinned OpenCode available:
+
+1. Provide a credential-safe inference route from the disposable guest to Gemini 3.8 Flash. Keep provider credentials on the host or behind a host-side proxy; never copy them into the guest. If no safe route is available, leave the test blocked rather than weakening credential isolation.
+2. Create a disposable guest and select only `data-gouv` and `context7`. Do not use or modify the existing user sandbox. Use Context7 anonymously; no API key is required by the verified contract.
+3. From inside that guest, inspect OpenCode's MCP status and record the tools returned for both server names. Confirm the configured endpoints match the curated catalogue.
+4. Through OpenCode in the guest, ask Gemini to use one read-only tool from each server. Choose the tool after inspecting `tools/list`; record the tool name, sanitized arguments, and result. Do not invoke tools that mutate or publish remote data.
+5. Confirm both calls completed through the guest's OpenCode process, then remove only the disposable guest and test files. Record the OpenCode/MSB versions, outcome, and any endpoint or auth error. Do not count the host-side `just-code mcp status` handshake as a substitute.
+
 ### P16. Browser capability and browser MCPs
 
 **Purpose:** ship working Playwright and Chrome DevTools, not just configuration entries.

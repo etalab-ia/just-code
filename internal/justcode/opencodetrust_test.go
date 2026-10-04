@@ -99,6 +99,28 @@ func TestTrustRecordNeverInRepository(t *testing.T) {
 	}
 }
 
+func TestRemoteMCPEndpointChangeRequiresFreshTrust(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "opencode.json")
+	if err := os.WriteFile(cfg, []byte(`{"mcp":{"docs":{"type":"remote","url":"https://docs.example/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	if got, err := DiscoverUnapprovedInputs(DefaultFS, stateDir, root); err != nil || len(got) != 1 {
+		t.Fatalf("remote endpoint config should require approval: %+v, %v", got, err)
+	}
+	if err := ApproveExecutionInputs(DefaultFS, stateDir, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte(`{"mcp":{"docs":{"type":"remote","url":"https://changed.example/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiscoverUnapprovedInputs(DefaultFS, stateDir, root)
+	if err != nil || len(got) != 1 || got[0].Reason != "changed since approval" {
+		t.Fatalf("changed endpoint should require fresh approval: %+v, %v", got, err)
+	}
+}
+
 func TestTrustRecordRefusesSymlink(t *testing.T) {
 	root := t.TempDir()
 	pluginDir := filepath.Join(root, ".opencode", "plugin")

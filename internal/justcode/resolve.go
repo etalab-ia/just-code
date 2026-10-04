@@ -168,6 +168,9 @@ type ProjectManifest struct {
 	// SkillsLocalOnly keeps selections in host state instead of project files.
 	// A checkout with this flag never receives generated skill instructions.
 	SkillsLocalOnly bool `json:"skillsLocalOnly,omitempty"`
+	// MCPConnectors are selected entries from the curated remote connector
+	// catalogue. They contain identifiers only, never credentials.
+	MCPConnectors []string `json:"mcpConnectors,omitempty"`
 }
 
 // projectManifestSchemaVersion is the current project.json format version.

@@ -26,6 +26,9 @@ func main() {
 }
 
 func run(args []string) (int, error) {
+	if len(args) > 0 && args[0] == "mcp" {
+		return mcpCommand(args[1:])
+	}
 	// Hidden flag for CI (msb-runtime-watch workflow): prints the Microsandbox
 	// SDK version the binary embeds, without touching config or runtimes.
 	if len(args) == 1 && args[0] == "-print-msb-sdk-version" {
@@ -42,7 +45,7 @@ func run(args []string) (int, error) {
 			MTU:      argOr(args, 3, ""),
 			// The model selection (P10) is non-secret managed configuration
 			// and rides argv; secrets never do.
-			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, "")},
+			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), MCPConnectors: parseGuestMCPIDs(argOr(args, 7, ""))},
 			// The git identity (P11) rides argv the same way: the guest
 			// cannot read the host settings file.
 			GitName:  argOr(args, 5, ""),
@@ -62,7 +65,7 @@ func run(args []string) (int, error) {
 		// The model selection (P10) is the one managed field the in-guest
 		// secrets file must reflect; argv carries no secrets, and the
 		// overlay is non-secret configuration.
-		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, "")}
+		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), MCPConnectors: parseGuestMCPIDs(argOr(args, 3, ""))}
 		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: overlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
@@ -176,7 +179,14 @@ func run(args []string) (int, error) {
 	// composed OPENCODE_CONFIG_CONTENT carrying it, field conflicts
 	// surfaced against the project config, and execution inputs gated
 	// behind the host-local trust record.
-	overlay := justcode.ManagedOverlay{Model: resolveModelSelection(projectRoot)}
+	mcpSelection, mcpErr := resolveMCPSelection(projectRoot)
+	if mcpErr != nil {
+		if isLaunchAction(parsed.action) {
+			return 1, fmt.Errorf("cannot resolve the project's managed MCP selection: %w", mcpErr)
+		}
+		fmt.Fprintf(os.Stderr, "Warning: the project's managed MCP selection cannot be read (%v); continuing without it\n", mcpErr)
+	}
+	overlay := justcode.ManagedOverlay{Model: resolveModelSelection(projectRoot), MCPConnectors: mcpSelection}
 	conflictMsg, err := opencodeConfigReview(projectRoot, overlay)
 	startPath := isLaunchAction(parsed.action)
 	if err != nil {
@@ -308,6 +318,29 @@ func run(args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
 	}
+}
+
+func resolveMCPSelection(projectRoot string) ([]string, error) {
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	ids, err := justcode.ValidateMCPConnectorIDs(manifest.MCPConnectors)
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func parseGuestMCPIDs(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	ids, _ := justcode.ValidateMCPConnectorIDs(strings.Split(value, ","))
+	return ids
 }
 
 // withProjectRootAsWorkspaceSource points the sealed transfer source at the
@@ -938,9 +971,10 @@ Commands:
   trust      Approve execution-relevant project OpenCode inputs (status,
              approve)
   models     List the validated Albert models (live, or last-known-good)
-  init       Configure this project: sharing mode, model, guest resources and
-             credential reference. Interactive by default; every answer can be
-             given as a flag (see 'just-code init --help' for the surface).
+  mcp        Check configured remote MCP endpoints (status)
+  init       Configure this project: sharing mode, model, guest resources,
+             remote MCPs and credential reference. Interactive by default;
+             see 'just-code init --help' for the flag surface.
   workspace  Manage the sealed guest workspace: what crosses into the guest,
              per-file re-inclusions, refresh and reviewed export (status,
              sync, allow, deny, export). The host checkout is never mounted.

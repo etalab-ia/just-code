@@ -120,10 +120,29 @@ dernier-known-good persisté dans l'état hôte. Une sélection absente du
 catalogue est signalée, jamais effacée.
 
 Les entrées de projet exécutant du code au chargement d'OpenCode (plugins
-déclarés et auto-découverts, commandes MCP locales) sont approuvées par
+déclarés et auto-découverts, commandes MCP locales, destinations MCP distantes)
+sont approuvées par
 contenu via `just-code trust approve` (enregistrement hôte, hors dépôt) ;
 `start` refuse tant qu'une entrée est non approuvée ou modifiée depuis
 l'approbation.
+
+## MCP distants (P15)
+
+`just-code init --mcp data-gouv --mcp context7` sélectionne les connecteurs
+distants gérés ; `--clear-mcps` les désélectionne tous. Le manifeste ne contient
+que leurs identifiants et la configuration générée est injectée dans OpenCode
+sans modifier les fichiers du projet. Les entrées personnalisées portant un
+nom différent restent intactes.
+
+Les destinations sont `https://mcp.data.gouv.fr/mcp` et
+`https://mcp.context7.com/mcp`. data.gouv.fr est public. Context7 accepte les
+appels anonymes avec une limite plus basse ; le connecteur géré utilise ce
+mode et `init` n'exige ni ne transmet de clé.
+
+`just-code mcp status` envoie un MCP `initialize` depuis l'hôte et distingue la
+configuration, la vérification du protocole, une erreur d'authentification,
+une indisponibilité réseau et une dérive de contrat. Ce contrôle ne prouve pas
+la connectivité du guest ni l'exécution d'un appel d'outil depuis OpenCode.
 
 ## `just-code config`
 

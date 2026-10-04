@@ -148,7 +148,7 @@ func DiscoverUnapprovedInputs(fs FS, stateDir, projectRoot string) ([]Unapproved
 	}
 	// The config file (when it declares plugins or MCP commands) is itself
 	// an execution input: its content hash covers every declaration inside.
-	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0) {
+	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0 || len(inputs.MCPEndpoints) > 0) {
 		rel, err := filepath.Rel(projectRoot, inputs.ConfigPath)
 		if err == nil {
 			check(rel)
@@ -178,7 +178,7 @@ func ApproveExecutionInputs(fs FS, stateDir, projectRoot string) error {
 	// plugin's approval must not survive to re-approve a re-created file
 	// of the same name with different content).
 	live := map[string]bool{}
-	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0) {
+	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0 || len(inputs.MCPEndpoints) > 0) {
 		if rel, err := filepath.Rel(projectRoot, inputs.ConfigPath); err == nil {
 			live[rel] = true
 		}
@@ -201,7 +201,7 @@ func ApproveExecutionInputs(fs FS, stateDir, projectRoot string) error {
 		keep[rel] = hash
 		return nil
 	}
-	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0) {
+	if inputs.ConfigPath != "" && (len(inputs.Plugins) > 0 || len(inputs.MCPCommands) > 0 || len(inputs.MCPEndpoints) > 0) {
 		if rel, err := filepath.Rel(projectRoot, inputs.ConfigPath); err == nil {
 			if err := add(rel); err != nil {
 				return err

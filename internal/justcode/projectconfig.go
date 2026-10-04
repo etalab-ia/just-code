@@ -162,6 +162,10 @@ type ProjectExecutionInputs struct {
 	// the project config (local servers only; remote URLs are endpoints,
 	// gated by the endpoint check instead).
 	MCPCommands []string
+	// MCPEndpoints lists the URL of every remote MCP server declared in the
+	// project config. The config content hash makes endpoint changes require
+	// fresh host-local approval.
+	MCPEndpoints []string
 }
 
 // DiscoverProjectExecutionInputs inspects the project root for the inputs
@@ -193,6 +197,9 @@ func DiscoverProjectExecutionInputs(root string) (ProjectExecutionInputs, error)
 				if cmd, ok := m["command"].(string); ok && cmd != "" {
 					out.MCPCommands = append(out.MCPCommands, cmd)
 				}
+				if endpoint, ok := m["url"].(string); ok && endpoint != "" {
+					out.MCPEndpoints = append(out.MCPEndpoints, endpoint)
+				}
 			}
 		}
 	}
@@ -214,5 +221,6 @@ func DiscoverProjectExecutionInputs(root string) (ProjectExecutionInputs, error)
 	sort.Strings(out.Plugins)
 	sort.Strings(out.AutoDiscoveredPlugins)
 	sort.Strings(out.MCPCommands)
+	sort.Strings(out.MCPEndpoints)
 	return out, nil
 }
