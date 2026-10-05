@@ -244,8 +244,9 @@ func TestProjectLockAcquireRelease(t *testing.T) {
 // alive, which processAlive's conservative Windows behaviour cannot steal
 // back, wedging the project.
 func TestProjectLockReleaseRetriesTransientRemoveFailure(t *testing.T) {
-	fs := &flakyRemoveFS{FS: DefaultFS, failFor: 3}
-	lock := &ProjectLock{Path: filepath.Join(t.TempDir(), "project-update.lock"), FS: fs}
+	dir := t.TempDir()
+	fs := &flakyRemoveFS{FS: DefaultFS, failFor: 3, path: filepath.Join(dir, "project-update.lock")}
+	lock := &ProjectLock{Path: fs.path, FS: fs}
 	release, err := lock.Acquire()
 	if err != nil {
 		t.Fatal(err)
@@ -259,15 +260,38 @@ func TestProjectLockReleaseRetriesTransientRemoveFailure(t *testing.T) {
 	}
 }
 
-// flakyRemoveFS fails Remove on the path under FailForPath the first
-// failFor times, mirroring a transient sharing violation.
+// TestProjectLockReleaseGivesUpAfterBoundedAttempts pins the retry cap: a
+// permanently failing Remove must not spin forever.
+func TestProjectLockReleaseGivesUpAfterBoundedAttempts(t *testing.T) {
+	dir := t.TempDir()
+	fs := &flakyRemoveFS{FS: DefaultFS, failFor: 100, path: filepath.Join(dir, "project-update.lock")}
+	lock := &ProjectLock{Path: fs.path, FS: fs, WaitTimeout: time.Second}
+	release, err := lock.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if fs.attempts > 8 {
+		t.Fatalf("release retried %d times; want the 8-attempt cap", fs.attempts)
+	}
+	if _, err := os.Stat(fs.path); os.IsNotExist(err) {
+		t.Fatal("lock file was removed despite permanent remove failures")
+	}
+}
+
+// flakyRemoveFS fails Remove on path the first failFor times, mirroring a
+// transient sharing violation. Other paths delegate untouched.
 type flakyRemoveFS struct {
 	FS
 	failFor  int
+	path     string
 	attempts int
 }
 
 func (f *flakyRemoveFS) Remove(path string) error {
+	if path != f.path {
+		return f.FS.Remove(path)
+	}
 	f.attempts++
 	if f.attempts <= f.failFor {
 		return fmt.Errorf("sharing violation (transient)")

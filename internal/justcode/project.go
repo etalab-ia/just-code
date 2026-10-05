@@ -513,6 +513,9 @@ func removeProjectLockIfOwned(fs FS, path string, token []byte) {
 		// a lock whose PID still looks alive — processAlive is
 		// deliberately conservative on Windows, so the steal path cannot
 		// recover it and the project wedges.
+		// Ownership is re-checked before each retry: if the file changed
+		// hands or vanished between attempts, it is no longer ours to
+		// remove.
 		delay := 10 * time.Millisecond
 		for attempt := 0; ; attempt++ {
 			err := fs.Remove(path)
@@ -520,6 +523,9 @@ func removeProjectLockIfOwned(fs FS, path string, token []byte) {
 				return
 			}
 			if attempt >= 7 {
+				return
+			}
+			if !projectLockFileOwned(fs, path, token) {
 				return
 			}
 			time.Sleep(delay)
