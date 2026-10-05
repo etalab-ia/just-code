@@ -54,6 +54,8 @@ type projectUpdateJournal struct {
 	InstructionsExisted bool   `json:"instructionsExisted,omitempty"`
 }
 
+var projectUpdateStateDirFn = DefaultStateDir
+
 // LatestProjectSkillsRevision resolves the public skills repository's current
 // default HEAD to an immutable commit ID. It never checks out or executes the
 // repository.
@@ -264,6 +266,9 @@ func (p ProjectUpdatePlan) Apply(fs FS) error {
 }
 
 func (p ProjectUpdatePlan) applyLocked(fs FS) error {
+	if err := ensureProjectStateDirectory(p.root); err != nil {
+		return fmt.Errorf("validate project state directory: %w", err)
+	}
 	if err := recoverProjectUpdateLocked(fs, p.root); err != nil {
 		return fmt.Errorf("recover prior project update: %w", err)
 	}
@@ -350,6 +355,112 @@ func RecoverProjectUpdate(fs FS, root string) error {
 	return withProjectUpdateLock(fs, root, func() error { return recoverProjectUpdateLocked(fs, root) })
 }
 
+// RollbackProjectUpdate restores the journaled previous manifest and lock.
+// Before writing, it backs up the current managed files under .just-code so
+// explicit recovery never discards unjournaled edits.
+func RollbackProjectUpdate(fs FS, root string) (string, error) {
+	var backupDir string
+	err := withProjectUpdateLock(fs, root, func() error {
+		var err error
+		backupDir, err = rollbackProjectUpdateLocked(fs, root)
+		return err
+	})
+	return backupDir, err
+}
+
+func rollbackProjectUpdateLocked(fs FS, root string) (string, error) {
+	var backupDir string
+	if err := ensureProjectStateDirectory(root); err != nil {
+		return "", err
+	}
+	journalPath := ProjectUpdateJournalPath(root)
+	if err := ensureRegularManagedFile(journalPath); err != nil {
+		return "", err
+	}
+	data, err := fs.ReadFile(journalPath)
+	if err != nil {
+		return "", fmt.Errorf("read project update journal %s: %w", journalPath, err)
+	}
+	var journal projectUpdateJournal
+	if err := json.Unmarshal(data, &journal); err != nil || journal.SchemaVersion != 1 || len(journal.OldManifest) == 0 || len(journal.OldLock) == 0 || len(journal.NewManifest) == 0 || len(journal.NewLock) == 0 {
+		return "", fmt.Errorf("project update journal %s is invalid; refusing rollback", journalPath)
+	}
+	oldManifest, oldLock, err := validateUpdateJournalPair(journal.OldManifest, journal.OldLock)
+	if err != nil {
+		return "", fmt.Errorf("project update journal %s has an invalid previous pair: %w", journalPath, err)
+	}
+	if _, _, err := validateUpdateJournalPair(journal.NewManifest, journal.NewLock); err != nil {
+		return "", fmt.Errorf("project update journal %s has an invalid proposed pair: %w", journalPath, err)
+	}
+	paths := map[string]string{
+		"project.json": ProjectManifestPath(root),
+		"lock.json":    ProjectLockPath(root),
+		"AGENTS.md":    filepath.Join(root, "AGENTS.md"),
+	}
+	current := make(map[string][]byte, len(paths))
+	for name, path := range paths {
+		if err := ensureRegularManagedFile(path); err != nil {
+			return "", err
+		}
+		contents, err := fs.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("read current %s before rollback: %w", path, err)
+		}
+		current[name] = contents
+	}
+	previousSkills, previousLocks := oldManifest.Skills, oldLock.Skills
+	if !journal.InstructionsExisted {
+		previousSkills, previousLocks = nil, nil
+	}
+	mergedInstructions, err := MergeManagedInstructions(string(current["AGENTS.md"]), previousSkills, previousLocks)
+	if err != nil {
+		return "", fmt.Errorf("prepare previous managed instructions: %w", err)
+	}
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate recovery backup name: %w", err)
+	}
+	backupRoot := filepath.Join(ProjectStateDir(root), "recovery-backups")
+	if info, err := os.Lstat(backupRoot); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("%s is not a regular recovery backup directory", backupRoot)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	backupDir = filepath.Join(backupRoot, hex.EncodeToString(suffix[:]))
+	if err := fs.MkdirAll(backupDir, 0o700); err != nil {
+		return "", fmt.Errorf("create recovery backup directory: %w", err)
+	}
+	for name, contents := range current {
+		if err := atomicWrite(fs, filepath.Join(backupDir, name), contents, 0o600); err != nil {
+			return backupDir, fmt.Errorf("back up current %s before rollback: %w", name, err)
+		}
+	}
+	if err := atomicWrite(fs, paths["project.json"], journal.OldManifest, 0o644); err != nil {
+		return backupDir, fmt.Errorf("restore previous project manifest: %w", err)
+	}
+	if err := atomicWrite(fs, paths["lock.json"], journal.OldLock, 0o644); err != nil {
+		return backupDir, fmt.Errorf("restore previous project lockfile: %w", err)
+	}
+	if mergedInstructions == "" && !journal.InstructionsExisted {
+		if err := fs.Remove(paths["AGENTS.md"]); err != nil && !os.IsNotExist(err) {
+			return backupDir, fmt.Errorf("remove update-created AGENTS.md during rollback: %w", err)
+		}
+	} else if _, existed := current["AGENTS.md"]; existed || (journal.InstructionsExisted && len(oldManifest.Skills) > 0) {
+		if err := atomicWrite(fs, paths["AGENTS.md"], []byte(mergedInstructions), 0o644); err != nil {
+			return backupDir, fmt.Errorf("restore previous managed instructions: %w", err)
+		}
+	}
+	if err := fs.Remove(journalPath); err != nil && !os.IsNotExist(err) {
+		return backupDir, fmt.Errorf("remove rolled-back project update journal: %w", err)
+	}
+	return backupDir, nil
+}
+
 func recoverProjectUpdateLocked(fs FS, root string) error {
 	_, err := recoverProjectUpdateLockedResult(fs, root)
 	return err
@@ -389,11 +500,17 @@ func recoverProjectUpdateLockedResult(fs FS, root string) (bool, error) {
 	}
 	currentManifest, mErr := fs.ReadFile(manifestPath)
 	currentLock, lErr := fs.ReadFile(lockPath)
-	if mErr != nil || (!equalBytes(currentManifest, journal.OldManifest) && !equalBytes(currentManifest, journal.NewManifest)) {
-		return false, fmt.Errorf("project manifest changed outside the pending update journal; refusing recovery")
+	if mErr != nil {
+		return false, fmt.Errorf("read current project manifest while recovering journal %s: %w", journalPath, mErr)
 	}
-	if lErr != nil || (!equalBytes(currentLock, journal.OldLock) && !equalBytes(currentLock, journal.NewLock)) {
-		return false, fmt.Errorf("project lockfile changed outside the pending update journal; refusing recovery")
+	if !equalBytes(currentManifest, journal.OldManifest) && !equalBytes(currentManifest, journal.NewManifest) {
+		return false, fmt.Errorf("project manifest %s contains bytes not recorded in pending journal %s; refusing recovery", manifestPath, journalPath)
+	}
+	if lErr != nil {
+		return false, fmt.Errorf("read current project lockfile while recovering journal %s: %w", journalPath, lErr)
+	}
+	if !equalBytes(currentLock, journal.OldLock) && !equalBytes(currentLock, journal.NewLock) {
+		return false, fmt.Errorf("project lockfile %s contains bytes not recorded in pending journal %s; refusing recovery", lockPath, journalPath)
 	}
 	rollForward := mErr == nil && lErr == nil && equalBytes(currentManifest, journal.NewManifest) && equalBytes(currentLock, journal.NewLock)
 	chosenManifest, chosenLock := journal.OldManifest, journal.OldLock
@@ -501,7 +618,7 @@ func withProjectUpdateLock(fs FS, root string, action func() error) error {
 
 func projectUpdateLockPath(root string) string {
 	instance := InstanceName(root, filepath.Base(root))
-	return filepath.Join(InstanceStateDir(DefaultStateDir(), instance), "project-update.lock")
+	return filepath.Join(InstanceStateDir(projectUpdateStateDirFn(), instance), "project-update.lock")
 }
 
 func ensureRegularManagedFile(path string) error {

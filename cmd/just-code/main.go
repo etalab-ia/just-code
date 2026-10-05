@@ -125,9 +125,10 @@ func run(args []string) (int, error) {
 	if projErr == nil {
 		projectRoot = pc.Root
 	}
-	if projErr == nil && (parsed.action == "init" || parsed.action == "update" || isLaunchAction(parsed.action)) {
+	manualRecovery := parsed.action == "update" && updateCommandSkipsStartupRecovery(parsed.updateArgs)
+	if projErr == nil && (parsed.action == "init" || parsed.action == "update" || isLaunchAction(parsed.action)) && !manualRecovery {
 		if err := justcode.RecoverProjectUpdate(justcode.DefaultFS, projectRoot); err != nil {
-			return 1, fmt.Errorf("cannot recover the project's dependency update: %w", err)
+			return 1, fmt.Errorf("cannot recover the project's dependency update: %w\nIf recovery refused edits to the managed files, inspect the journal and run 'just-code update --recover --rollback' to restore the previous pair with backups", err)
 		}
 	}
 	if parsed.action == "update" {

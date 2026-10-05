@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -364,17 +365,34 @@ type ProjectLock struct {
 	// Path is the lockfile path in host state.
 	Path string
 	FS   FS
+	// WaitTimeout and PollInterval allow bounded, deterministic lock waits.
+	// Zero values use conservative defaults.
+	WaitTimeout  time.Duration
+	PollInterval time.Duration
 }
 
-// Acquire takes the lock, blocking until it is available. It returns a
+var projectLockTokenCounter uint64
+
+// Acquire takes the lock, waiting for at most WaitTimeout. It returns a
 // release function. Exclusivity is enforced by the OS, not by a check-then-
 // write race: the lockfile is created with O_CREATE|O_EXCL, which fails
-// atomically when it already exists. A stale lock from a dead process is
-// removed (best-effort) rather than deadlocking forever.
+// atomically when it already exists. Dead owners and abandoned takeover
+// markers are reclaimed; live lock holders or unreapable markers produce a
+// path/PID error instead of blocking launches indefinitely.
 func (l *ProjectLock) Acquire() (release func(), err error) {
 	if err := l.FS.MkdirAll(filepath.Dir(l.Path), 0o755); err != nil {
 		return nil, err
 	}
+	waitTimeout := l.WaitTimeout
+	if waitTimeout <= 0 {
+		waitTimeout = 30 * time.Second
+	}
+	pollInterval := l.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = 50 * time.Millisecond
+	}
+	started := time.Now()
+	ownerToken := projectLockToken()
 	// The steal file proves ownership of a stale-lock removal: two waiters
 	// can both observe the same dead PID, and an unconditional Remove would
 	// let the second waiter delete the first waiter's freshly created live
@@ -382,10 +400,15 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 	// lockfile, and it re-reads the PID immediately before removing, so a
 	// replacement lock created in between is never destroyed.
 	stealPath := l.Path + ".steal"
+	firstAttempt := true
 	for {
-		err := l.FS.CreateExclusive(l.Path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600)
+		if !firstAttempt && time.Since(started) >= waitTimeout {
+			return nil, projectLockWaitError(l.FS, l.Path, stealPath, waitTimeout)
+		}
+		firstAttempt = false
+		err := l.FS.CreateExclusive(l.Path, ownerToken, 0o600)
 		if err == nil {
-			return func() { _ = l.FS.Remove(l.Path) }, nil
+			return func() { removeProjectLockIfOwned(l.FS, l.Path, ownerToken) }, nil
 		}
 		if !os.IsExist(err) {
 			return nil, err
@@ -396,30 +419,148 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 		if rerr != nil {
 			// The holder released between the failed create and this read;
 			// retry immediately.
+			if os.IsNotExist(rerr) {
+				continue
+			}
+			return nil, fmt.Errorf("read project lock %s: %w", l.Path, rerr)
+		}
+		pid, hasPID := projectLockPID(data)
+		if hasPID && processAlive(pid) {
+			if time.Since(started) >= waitTimeout {
+				return nil, projectLockWaitError(l.FS, l.Path, stealPath, waitTimeout)
+			}
+			time.Sleep(pollInterval)
 			continue
 		}
-		var pid int
-		if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && processAlive(pid) {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		if serr := l.FS.CreateExclusive(stealPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); serr != nil {
-			// Another waiter is already stealing this lock; let it finish.
+		if !hasPID {
+			// A newly created lock is visible just before its PID bytes are
+			// written; give that tiny window a second read before treating it
+			// as abandoned.
 			time.Sleep(20 * time.Millisecond)
+			fresh, ferr := l.FS.ReadFile(l.Path)
+			if ferr != nil || !bytesEqual(fresh, data) {
+				continue
+			}
+		}
+		stealToken := projectLockToken()
+		if serr := l.FS.CreateExclusive(stealPath, stealToken, 0o600); serr != nil {
+			// Another waiter is already stealing this lock; let it finish.
+			if os.IsExist(serr) {
+				reapStaleProjectLockMarker(l.FS, stealPath)
+				if time.Since(started) >= waitTimeout {
+					return nil, projectLockWaitError(l.FS, l.Path, stealPath, waitTimeout)
+				}
+				time.Sleep(pollInterval)
+				continue
+			}
+			return nil, serr
+		}
+		// Re-read both ownership files under the steal: if either changed,
+		// another waiter has already advanced the lock.
+		if !projectLockFileOwned(l.FS, stealPath, stealToken) {
 			continue
 		}
-		// Re-read under the steal: if the PID changed, the lockfile was
-		// already replaced by a new live holder — do not remove it.
 		fresh, rerr2 := l.FS.ReadFile(l.Path)
 		if rerr2 != nil {
-			_ = l.FS.Remove(stealPath)
+			removeProjectLockIfOwned(l.FS, stealPath, stealToken)
 			continue
 		}
-		if bytesEqual(fresh, data) {
+		freshPID, freshHasPID := projectLockPID(fresh)
+		if bytesEqual(fresh, data) && (!freshHasPID || !processAlive(freshPID)) && projectLockFileOwned(l.FS, stealPath, stealToken) {
 			_ = l.FS.Remove(l.Path)
 		}
-		_ = l.FS.Remove(stealPath)
+		removeProjectLockIfOwned(l.FS, stealPath, stealToken)
 	}
+}
+
+func projectLockWaitError(fs FS, lockPath, stealPath string, waited time.Duration) error {
+	if data, err := fs.ReadFile(lockPath); err == nil {
+		if pid, ok := projectLockPID(data); ok && processAlive(pid) {
+			return fmt.Errorf("timed out after %s waiting for project lock %s held by PID %d", waited, lockPath, pid)
+		}
+	}
+	if data, err := fs.ReadFile(stealPath); err == nil {
+		if pid, ok := projectLockPID(data); ok {
+			return fmt.Errorf("timed out after %s waiting for project lock %s; takeover marker %s is held by PID %d", waited, lockPath, stealPath, pid)
+		}
+	}
+	return fmt.Errorf("timed out after %s waiting for project lock %s", waited, lockPath)
+}
+
+func projectLockToken() []byte {
+	sequence := atomic.AddUint64(&projectLockTokenCounter, 1)
+	return []byte(fmt.Sprintf("%d %d %d\n", os.Getpid(), time.Now().UnixNano(), sequence))
+}
+
+func projectLockPID(data []byte) (int, bool) {
+	var pid int
+	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+func projectLockFileOwned(fs FS, path string, token []byte) bool {
+	data, err := fs.ReadFile(path)
+	return err == nil && bytesEqual(data, token)
+}
+
+func removeProjectLockIfOwned(fs FS, path string, token []byte) {
+	if projectLockFileOwned(fs, path, token) {
+		_ = fs.Remove(path)
+	}
+}
+
+// reapStaleProjectLockMarker renames an abandoned marker to a unique path
+// before deleting it. A concurrent replacement is never removed by pathname.
+func reapStaleProjectLockMarker(fs FS, path string) (bool, int) {
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		return false, 0
+	}
+	pid, hasPID := projectLockPID(data)
+	if hasPID && processAlive(pid) {
+		return false, pid
+	}
+	if !hasPID {
+		time.Sleep(20 * time.Millisecond)
+		fresh, err := fs.ReadFile(path)
+		if err != nil || !bytesEqual(fresh, data) {
+			return false, 0
+		}
+		if pid, hasPID = projectLockPID(fresh); hasPID && processAlive(pid) {
+			return false, pid
+		}
+	}
+	sequence := atomic.AddUint64(&projectLockTokenCounter, 1)
+	quarantine := fmt.Sprintf("%s.stale-%d-%d-%d", path, os.Getpid(), time.Now().UnixNano(), sequence)
+	if err := fs.RenameTmp(path, quarantine); err != nil {
+		return false, pid
+	}
+	moved, err := fs.ReadFile(quarantine)
+	if err != nil {
+		_ = fs.Remove(quarantine)
+		return false, pid
+	}
+	movedPID, movedHasPID := projectLockPID(moved)
+	if !bytesEqual(moved, data) && !movedHasPID {
+		// A replacement may have been observed between the initial read and
+		// rename. Do not discard an ambiguous in-creation marker.
+		if err := fs.CreateExclusive(path, moved, 0o600); err == nil {
+			_ = fs.Remove(quarantine)
+		}
+		return false, 0
+	}
+	if movedHasPID && processAlive(movedPID) {
+		// A live marker replaced the stale bytes between the read and rename.
+		// Restore it only if the original path is still vacant.
+		if err := fs.CreateExclusive(path, moved, 0o600); err == nil {
+			_ = fs.Remove(quarantine)
+		}
+		return false, movedPID
+	}
+	_ = fs.Remove(quarantine)
+	return true, 0
 }
 
 // bytesEqual compares two byte slices without pulling in bytes for one use.
@@ -443,6 +584,10 @@ func processAlive(pid int) bool {
 		return false
 	}
 	if runtime.GOOS == "windows" {
+		// FindProcess opens a process handle on Windows. Release it immediately;
+		// PID checks there are intentionally conservative and the bounded lock
+		// wait is the backstop for stale/recycled PIDs.
+		_ = p.Release()
 		return true
 	}
 	// Signal 0 probes existence without delivering anything.

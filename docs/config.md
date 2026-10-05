@@ -54,7 +54,7 @@ skills global d'OpenCode (`$XDG_CONFIG_HOME/opencode/skills`, ou
 collision avec un skill existant est refusée sans l'écraser. Les archives sont
 limitées aux fichiers réguliers : symlinks, chemins traversants, doublons,
 archives corrompues et contenu modifié après installation font échouer la
-	préparation.
+préparation.
 
 La commande interactive `init` présente le catalogue officiel et les entrées
 expérimentales explicitement marquées. En script, répéter `--skill` pour chaque
@@ -108,6 +108,14 @@ contient que les snapshots validés du manifeste et du lock, jamais les octets
 d'`AGENTS.md`. La zone de skills gérée est recalculée en préservant le texte
 utilisateur hors marqueurs. Un lancement refuse toute paire dont les
 identifiants de génération divergent.
+
+Si le manifeste ou le lock contient des octets qui ne correspondent ni à
+l'ancienne ni à la nouvelle version du journal, la récupération automatique
+refuse d'écraser ces modifications et nomme le journal concerné. Après examen,
+`just-code update --recover --rollback` restaure la paire précédente et recalcule
+uniquement la zone gérée dans `AGENTS.md`. Les copies des fichiers gérés présents
+sont conservées dans `.just-code/recovery-backups/`. En mode non interactif,
+ajouter `--yes` pour approuver explicitement le rollback.
 
 Cette commande met à jour les dépendances projet, pas le binaire just-code.
 L'image de base Microsandbox est épinglée au digest OCI

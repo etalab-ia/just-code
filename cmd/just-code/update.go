@@ -5,18 +5,30 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
+func updateCommandSkipsStartupRecovery(args []string) bool {
+	for _, arg := range args {
+		if arg == "--recover" || arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
 func updateCmd(args []string, projectRoot string) (int, error) {
 	var selected []string
 	approve := false
+	recover := false
+	rollback := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--help", "-h":
-			fmt.Println("Usage: just-code update [--skill <catalogue/id>]... [--yes]\n\nReview selected versioned project skills against the current catalogue.\nWithout --yes, apply requires an interactive confirmation. A non-TTY run\nwithout --yes is preview-only.")
+			fmt.Println("Usage: just-code update [--skill <catalogue/id>]... [--yes]\n       just-code update --recover [--rollback] [--yes]\n\nReview selected versioned project skills against the current catalogue.\nWithout --yes, apply requires an interactive confirmation. A non-TTY run\nwithout --yes is preview-only. --recover --rollback restores the journaled\nprevious manifest and lock after backing up current managed files.")
 			return 0, nil
 		case "--skill":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
@@ -26,9 +38,46 @@ func updateCmd(args []string, projectRoot string) (int, error) {
 			selected = append(selected, args[i])
 		case "--yes":
 			approve = true
+		case "--recover":
+			recover = true
+		case "--rollback":
+			rollback = true
 		default:
 			return 2, fmt.Errorf("unknown update option %q", args[i])
 		}
+	}
+	if rollback && !recover {
+		return 2, fmt.Errorf("--rollback requires --recover")
+	}
+	if recover {
+		if len(selected) > 0 {
+			return 2, fmt.Errorf("--recover cannot be combined with --skill")
+		}
+		if !rollback {
+			if err := justcode.RecoverProjectUpdate(justcode.DefaultFS, projectRoot); err != nil {
+				return 1, fmt.Errorf("%w\nIf the current managed files contain intentional edits, inspect the journal and run 'just-code update --recover --rollback' to restore the previous pair with backups", err)
+			}
+			fmt.Println("Pending project update recovered, or no recovery was needed.")
+			return 0, nil
+		}
+		if !approve {
+			if !isTTY() {
+				fmt.Println("Preview only: rollback restores the journaled previous manifest and lock, merging only the managed just-code section in AGENTS.md. Current managed files will be backed up under .just-code/recovery-backups/. Re-run with --yes to approve.")
+				return 0, nil
+			}
+			fmt.Print("Restore the journaled previous project configuration? Current managed files will be backed up first. [y/N] ")
+			reply, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if !strings.EqualFold(strings.TrimSpace(reply), "y") && !strings.EqualFold(strings.TrimSpace(reply), "yes") {
+				fmt.Println("No changes applied.")
+				return 0, nil
+			}
+		}
+		backupDir, err := justcode.RollbackProjectUpdate(justcode.DefaultFS, projectRoot)
+		if err != nil {
+			return 1, err
+		}
+		fmt.Printf("Previous project configuration restored. Current managed files backed up under .just-code/recovery-backups/%s.\n", filepath.Base(backupDir))
+		return 0, nil
 	}
 	if err := justcode.RecoverProjectUpdate(justcode.DefaultFS, projectRoot); err != nil {
 		return 1, fmt.Errorf("recover project update: %w", err)

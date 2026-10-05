@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,36 @@ func TestPlanProjectUpdateNoOpDoesNotChangeProjectFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(ProjectUpdateJournalPath(root)); !os.IsNotExist(err) {
 		t.Fatalf("no-op update left a journal: %v", err)
+	}
+}
+
+func TestApplyProjectUpdateRefusesSymlinkedProjectStateDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating directory symlinks may require elevated privileges on Windows")
+	}
+	root, _, _ := updateFixture(t, "official/rgaa")
+	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := ProjectStateDir(root)
+	outside := filepath.Join(root, ".just-code-real")
+	if err := os.Rename(stateDir, outside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	manifestBefore := readFileForTest(t, filepath.Join(outside, "project.json"))
+	lockBefore := readFileForTest(t, filepath.Join(outside, "lock.json"))
+	if err := plan.Apply(DefaultFS); err == nil || !strings.Contains(err.Error(), "not a regular project state directory") {
+		t.Fatalf("Apply error = %v; want symlink refusal", err)
+	}
+	if !equalBytes(manifestBefore, readFileForTest(t, filepath.Join(outside, "project.json"))) || !equalBytes(lockBefore, readFileForTest(t, filepath.Join(outside, "lock.json"))) {
+		t.Fatal("Apply modified project files through the symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, projectUpdateJournalName)); !os.IsNotExist(err) {
+		t.Fatalf("Apply wrote a journal through the symlink: %v", err)
 	}
 }
 
@@ -226,7 +257,7 @@ func TestRecoverProjectUpdateRefusesUnknownManifestOrLockEdits(t *testing.T) {
 			}
 			manifestBefore := readFileForTest(t, ProjectManifestPath(root))
 			lockBefore := readFileForTest(t, ProjectLockPath(root))
-			if err := RecoverProjectUpdate(DefaultFS, root); err == nil || !strings.Contains(err.Error(), "changed outside the pending update journal") {
+			if err := RecoverProjectUpdate(DefaultFS, root); err == nil || !strings.Contains(err.Error(), "contains bytes not recorded in pending journal") {
 				t.Fatalf("recovery error = %v, want refusal for unknown %s bytes", err, name)
 			}
 			if !equalBytes(manifestBefore, readFileForTest(t, ProjectManifestPath(root))) || !equalBytes(lockBefore, readFileForTest(t, ProjectLockPath(root))) {
@@ -236,6 +267,112 @@ func TestRecoverProjectUpdateRefusesUnknownManifestOrLockEdits(t *testing.T) {
 				t.Fatalf("recovery removed the journal after refusing unknown bytes: %v", err)
 			}
 		})
+	}
+}
+
+func TestRollbackProjectUpdateBacksUpUnknownEditsAndRestoresPreviousPair(t *testing.T) {
+	root, _, _ := updateFixture(t, "official/rgaa")
+	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUpdateJournalForTest(t, root, plan)
+	currentManifest := []byte("{\"untrackedEdit\":true}\n")
+	currentLock := []byte("{\"untrackedLockEdit\":true}\n")
+	currentAgents := append(append([]byte(nil), plan.newInstructions...), []byte("User policy added during recovery.\n")...)
+	for path, contents := range map[string][]byte{
+		ProjectManifestPath(root):        currentManifest,
+		ProjectLockPath(root):            currentLock,
+		filepath.Join(root, "AGENTS.md"): currentAgents,
+	} {
+		if err := os.WriteFile(path, contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backupDir, err := RollbackProjectUpdate(DefaultFS, root)
+	if err != nil {
+		t.Fatalf("RollbackProjectUpdate: %v", err)
+	}
+	if !equalBytes(readFileForTest(t, ProjectManifestPath(root)), plan.oldManifest) || !equalBytes(readFileForTest(t, ProjectLockPath(root)), plan.oldLock) {
+		t.Fatal("rollback did not restore the journaled previous pair")
+	}
+	for name, want := range map[string][]byte{"project.json": currentManifest, "lock.json": currentLock, "AGENTS.md": currentAgents} {
+		if got := readFileForTest(t, filepath.Join(backupDir, name)); !equalBytes(got, want) {
+			t.Fatalf("backup %s = %q; want %q", name, got, want)
+		}
+	}
+	agents := string(readFileForTest(t, filepath.Join(root, "AGENTS.md")))
+	if !strings.Contains(agents, "User policy added during recovery.") || !strings.Contains(agents, projectSkillsRevision) {
+		t.Fatalf("rollback lost user-authored instructions or previous skill pin: %q", agents)
+	}
+	if _, err := os.Stat(ProjectUpdateJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("rollback left the journal: %v", err)
+	}
+}
+
+func TestRollbackProjectUpdateRemovesInstructionsCreatedByPendingUpdate(t *testing.T) {
+	root, _, _ := updateFixture(t, "official/rgaa")
+	if err := os.Remove(filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.instructionsExisted {
+		t.Fatal("fixture unexpectedly had AGENTS.md")
+	}
+	writeUpdateJournalForTest(t, root, plan)
+	if err := atomicWrite(DefaultFS, filepath.Join(root, "AGENTS.md"), plan.newInstructions, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RollbackProjectUpdate(DefaultFS, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("rollback retained update-created instructions without user text: %v", err)
+	}
+}
+
+func TestRecoverProjectUpdateReportsMissingManagedFile(t *testing.T) {
+	for _, name := range []string{"manifest", "lockfile"} {
+		t.Run(name, func(t *testing.T) {
+			root, _, _ := updateFixture(t, "official/rgaa")
+			plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeUpdateJournalForTest(t, root, plan)
+			path := ProjectManifestPath(root)
+			if name == "lockfile" {
+				path = ProjectLockPath(root)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			err = RecoverProjectUpdate(DefaultFS, root)
+			if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), ProjectUpdateJournalPath(root)) {
+				t.Fatalf("recovery error = %v; want wrapped missing-file error naming journal", err)
+			}
+			if _, err := os.Stat(ProjectUpdateJournalPath(root)); err != nil {
+				t.Fatalf("recovery removed journal after refusing a missing file: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoverProjectUpdatePreservesManifestReadError(t *testing.T) {
+	root, _, _ := updateFixture(t, "official/rgaa")
+	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUpdateJournalForTest(t, root, plan)
+	readErr := errors.New("injected manifest read failure")
+	fs := failUpdateReadPathFS{FS: DefaultFS, Path: ProjectManifestPath(root), Err: readErr}
+	err = RecoverProjectUpdate(&fs, root)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("recovery error = %v; want wrapped read error", err)
 	}
 }
 
@@ -351,6 +488,35 @@ func TestProjectUpdateApplyReturnsSuccessWhenRecoveryRollsForward(t *testing.T) 
 	}
 	if _, err := os.Stat(ProjectUpdateJournalPath(root)); !os.IsNotExist(err) {
 		t.Fatalf("successful roll-forward left a journal: %v", err)
+	}
+}
+
+func TestProjectUpdateApplyRetriesJournalRemovalAfterRollForward(t *testing.T) {
+	root, _, oldLock := updateFixture(t, "official/rgaa")
+	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(oldLock.Skills))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := failUpdateRemoveOnceFS{FS: DefaultFS, Path: ProjectUpdateJournalPath(root)}
+	if err := plan.Apply(&fs); err != nil {
+		t.Fatalf("Apply after transient journal removal failure: %v", err)
+	}
+	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateDependencySet(manifest, lock); err != nil {
+		t.Fatal(err)
+	}
+	if lock.Skills["official/rgaa"].Revision != strings.Repeat("c", 40) {
+		t.Fatalf("project update rolled back after journal-removal failure: %+v", lock.Skills)
+	}
+	if _, err := os.Stat(ProjectUpdateJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("journal remains after successful recovery: %v", err)
 	}
 }
 
@@ -475,6 +641,33 @@ type failUpdateRenameOnceFS struct {
 	FS
 	Path string
 	Done bool
+}
+
+type failUpdateReadPathFS struct {
+	FS
+	Path string
+	Err  error
+}
+
+type failUpdateRemoveOnceFS struct {
+	FS
+	Path string
+	Done bool
+}
+
+func (f *failUpdateRemoveOnceFS) Remove(path string) error {
+	if path == f.Path && !f.Done {
+		f.Done = true
+		return errors.New("injected journal removal failure")
+	}
+	return f.FS.Remove(path)
+}
+
+func (f *failUpdateReadPathFS) ReadFile(path string) ([]byte, error) {
+	if path == f.Path {
+		return nil, f.Err
+	}
+	return f.FS.ReadFile(path)
 }
 
 func (f *failUpdateRenameOnceFS) RenameTmp(oldPath, newPath string) error {
