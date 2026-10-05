@@ -97,7 +97,7 @@ func TestResolveMCPSelection(t *testing.T) {
 	if err := justcode.WriteProjectManifest(justcode.DefaultFS, path, justcode.ProjectManifest{MCPConnectors: []string{"browser"}}); err != nil {
 		t.Fatal(err)
 	}
-	if ids, err := resolveMCPSelection(root); err == nil || len(ids) != 0 || !strings.Contains(err.Error(), "unknown remote MCP") {
+	if ids, err := resolveMCPSelection(root); err == nil || len(ids) != 0 || !strings.Contains(err.Error(), "unknown managed MCP") {
 		t.Fatalf("invalid manifest selection = %v, %v; want a hard validation error", ids, err)
 	}
 }

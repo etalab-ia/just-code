@@ -146,6 +146,35 @@ est anonyme et ne qualifie donc jamais une réponse 403 d'identifiants invalides
 Il ne prouve pas la connectivité du guest ni l'exécution d'un appel d'outil
 depuis OpenCode.
 
+## MCP navigateur (P16)
+
+`playwright` et `chrome-devtools` sont des processus locaux au guest, distincts
+des destinations distantes :
+
+```bash
+just-code init --root . --mcp playwright --mcp chrome-devtools --yes
+```
+
+La sélection compose ces outils dans OpenCode sans démarrer de navigateur sur
+l'hôte. Playwright utilise Chromium headless installé dans le guest ;
+Chrome DevTools se connecte au serveur de débogage lié à `127.0.0.1:9222`
+dans ce même guest. Le statut MCP sur l'hôte ne sonde pas ces processus.
+
+Le profil navigateur est séparé du guest léger : Debian bookworm-slim est
+épinglé par digest, avec Chromium `154.0.8037.92`, `fonts-liberation`, Node.js
+`22.14.0`, Playwright MCP `0.0.82` et Chrome DevTools MCP `1.10.1`. Le
+provisionnement vérifie les empreintes et marqueurs avant de déclarer le profil
+prêt. Les paquets navigateur sont téléchargés lors du premier démarrage du
+profil ; l'initialisation n'installe ni ne redémarre rien dans un guest en
+cours. Un changement de profil d'image demande une recréation explicite, qui
+efface l'état invité : exporter d'abord les éventuels changements non exportés.
+
+L'accès au serveur local de développement est possible seulement si ce serveur
+est joignable depuis le guest. Aucun tunnel automatique vers `localhost` de
+l'hôte n'est fourni. La qualification réelle du profil doit être exécutée sur
+macOS arm64 et x86_64 ; le passage sur le runtime hôte Linux/KVM reste également
+à qualifier.
+
 ## `just-code config`
 
 - `just-code config explain` : affiche chaque champ géré avec sa valeur

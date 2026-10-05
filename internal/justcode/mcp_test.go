@@ -17,7 +17,7 @@ func TestValidateMCPConnectorIDs(t *testing.T) {
 	if strings.Join(got, ",") != "context7,data-gouv" {
 		t.Fatalf("connector IDs = %v", got)
 	}
-	if _, err := ValidateMCPConnectorIDs([]string{"playwright"}); err == nil {
+	if _, err := ValidateMCPConnectorIDs([]string{"uncurated-tool"}); err == nil {
 		t.Fatal("uncurated connector was accepted")
 	}
 }

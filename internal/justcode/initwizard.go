@@ -43,6 +43,8 @@ type InitAnswers struct {
 	// optional GitHub binding on this host. It is not written to the manifest:
 	// binding approval is a local trust decision (P09).
 	GitHubWorkflow bool
+	// BrowserResourceGuidance is host-specific review text, never persisted.
+	BrowserResourceGuidance string
 	// GitHubRemote is the sanitized origin shown in the review. It is derived
 	// from the host Git config and is not persisted by InitWizard.
 	GitHubRemote GitHubRemote
@@ -428,6 +430,9 @@ func FormatInitReview(plan InitPlan) string {
 		b.WriteString("  model        the built-in default\n")
 	}
 	fmt.Fprintf(&b, "  resources    %d CPUs, %d MiB (fixed when the guest is created)\n", resolvedCPUs(a.CPUs), resolvedMemoryMB(a.MemoryMB))
+	if a.BrowserResourceGuidance != "" {
+		fmt.Fprintf(&b, "  host fit     %s\n", a.BrowserResourceGuidance)
+	}
 	if a.CredentialRef != "" {
 		fmt.Fprintf(&b, "  credential   reference %q\n", a.CredentialRef)
 	} else {
@@ -449,9 +454,19 @@ func FormatInitReview(plan InitPlan) string {
 		b.WriteString("  MCPs         none selected\n")
 	} else {
 		fmt.Fprintf(&b, "  MCPs         %s\n", strings.Join(a.MCPConnectors, ", "))
-		for _, connector := range MCPConnectors() {
-			if containsMCPConnector(a.MCPConnectors, connector.ID) {
-				fmt.Fprintf(&b, "               %s -> %s (%s; auth: %s)\n", connector.Name, connector.Endpoint, connector.Transport, connector.Credential)
+		for _, choice := range MCPSelections() {
+			if !containsMCPConnector(a.MCPConnectors, choice.ID) {
+				continue
+			}
+			if choice.Local {
+				fmt.Fprintf(&b, "               %s -> %s\n", choice.ID, choice.Description)
+				continue
+			}
+			for _, connector := range MCPConnectors() {
+				if connector.ID == choice.ID {
+					fmt.Fprintf(&b, "               %s -> %s (%s; auth: %s)\n", connector.Name, connector.Endpoint, connector.Transport, connector.Credential)
+					break
+				}
 			}
 		}
 	}
@@ -474,6 +489,31 @@ func FormatInitReview(plan InitPlan) string {
 	}
 	b.WriteString("  state        versioned in .just-code/ (shared with whoever clones the repository)\n")
 	fmt.Fprintf(&b, "  manifest     %s\n", plan.ManifestPath)
+	fmt.Fprintf(&b, "  lockfile     %s\n", plan.LockPath)
+	if plan.LocalSkillsPath != "" {
+		action := "previous host-local selection will be removed after migration to versioned storage"
+		if a.SkillsLocalOnly {
+			action = "selected IDs and pins stored here (mode 0600; not committed)"
+			if len(a.Skills) == 0 {
+				action = "empty selection; existing local pins will be cleared (mode 0600; not committed)"
+			}
+		}
+		fmt.Fprintf(&b, "  local skills %s (%s)\n", plan.LocalSkillsPath, action)
+	}
+	b.WriteString("\nDownloads and activation:\n")
+	if len(plan.SkillEntries) > 0 {
+		b.WriteString("  Selected skill archives are resolved and verified in the host cache for these pins; the guest installs them on its next launch.\n")
+	} else if len(a.Skills) > 0 {
+		b.WriteString("  Existing skill pins are preserved; the guest reconciles them on its next launch.\n")
+	} else {
+		b.WriteString("  No project skill archives are selected.\n")
+	}
+	if HasBrowserMCPSelection(a.MCPConnectors) {
+		b.WriteString("  The digest-pinned Debian browser profile and selected MCP packages download inside the guest on first launch; no host browser is used.\n")
+		b.WriteString("  DevTools listens only on guest loopback. Changing to or from this image on an existing guest requires explicit recreation; init never recreates a guest.\n")
+	}
+	b.WriteString("  Init does not boot or restart a VM. Clearing Context7 also revokes its host approval and guest binding before project files change.\n")
+	b.WriteString("  Managed MCP changes apply on the next launch, which may restart a running guest non-destructively.\n")
 	if a.Runtime == RuntimeMicrosandbox {
 		b.WriteString("\nThe guest receives a filtered copy of the project: .env files, ignored files,\n" +
 			"symlinks and anything gitleaks flags are excluded by default ('just-code workspace status').\n")

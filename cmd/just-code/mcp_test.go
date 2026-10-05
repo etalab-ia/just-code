@@ -44,3 +44,17 @@ func TestMCPStatusReturnsFailureForUnverifiedEndpoint(t *testing.T) {
 		t.Fatalf("mcp status: code=%d err=%v, want verification failure", code, err)
 	}
 }
+
+func TestMCPStatusDoesNotProbeGuestLocalBrowserServerFromHost(t *testing.T) {
+	stubMCPProject(t, []string{"playwright"})
+	oldProbe := probeRemoteMCPFn
+	probeCalls := 0
+	probeRemoteMCPFn = func(context.Context, *http.Client, justcode.MCPConnector) justcode.MCPHealth {
+		probeCalls++
+		return justcode.MCPHealth{State: justcode.MCPVerified}
+	}
+	t.Cleanup(func() { probeRemoteMCPFn = oldProbe })
+	if code, err := mcpCommand([]string{"status"}); code != 0 || err != nil || probeCalls != 0 {
+		t.Fatalf("mcp status: code=%d err=%v probes=%d", code, err, probeCalls)
+	}
+}

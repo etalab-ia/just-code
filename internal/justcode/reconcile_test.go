@@ -213,7 +213,7 @@ func TestDesiredStateCarriesOverlayMCPSelection(t *testing.T) {
 func TestInstanceStateRoundTripAndSchemaGuard(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "reconcile.json")
-	st := DesiredState{Instance: "i", Isolation: IsolationFull, Image: "img", Username: "u"}.toState()
+	st := DesiredState{Instance: "i", Isolation: IsolationFull, Image: "img", GuestProfile: "browser-profile-v1", Username: "u"}.toState()
 	st.Pending = []string{"refresh-credentials", "restart-vm"}
 	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
 		t.Fatalf("write: %v", err)
@@ -222,7 +222,7 @@ func TestInstanceStateRoundTripAndSchemaGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if got.ConfigRevision != st.ConfigRevision || len(got.Pending) != 2 {
+	if got.ConfigRevision != st.ConfigRevision || got.GuestProfile != st.GuestProfile || got.SchemaVersion != instanceStateSchemaVersion || len(got.Pending) != 2 {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 	// Missing file is not an error: the instance predates state tracking.

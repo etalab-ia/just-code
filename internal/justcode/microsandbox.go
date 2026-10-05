@@ -13,6 +13,19 @@ import (
 
 const (
 	msbImage = "ghcr.io/anomalyco/opencode:latest"
+	// The browser profile uses a multi-arch Debian index pinned to the digest
+	// verified against Docker Hub on 2026-10-04.
+	msbBrowserImage = "debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251"
+
+	msbBrowserAptSnapshot            = "20261002T000000Z"
+	msbBrowserChromiumPackageVersion = "154.0.8037.92-1~deb12u1"
+	msbBrowserChromiumVersion        = "154.0.8037.92"
+	msbBrowserFontsLiberationVersion = "1:2.1.5-3"
+	msbBrowserNodeVersion            = "22.14.0"
+	msbBrowserNodeNPMVersion         = "10.9.2"
+	msbBrowserNodeSHA256AMD64        = "69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec"
+	msbBrowserNodeSHA256ARM64        = "08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050"
+	msbBrowserOpenCodeVersion        = "1.18.32"
 
 	// msbSandbox is the legacy singleton instance name, used before project
 	// identity (P05). It is kept only to recognize the legacy instance: an
@@ -31,7 +44,13 @@ const (
 	// msbToolchainMarker is written by guest-prep.sh once the toolchain
 	// install completes. It doubles as the readiness signal for full mode,
 	// which has no health endpoint.
-	msbToolchainMarker = "/var/lib/just-code/toolchain-ready"
+	msbToolchainMarker  = "/var/lib/just-code/toolchain-ready"
+	msbBrowserMCPMarker = "/var/lib/just-code/browser-mcps-ready"
+
+	msbBrowserMCPIDsEnv         = "JUST_CODE_BROWSER_MCP_IDS"
+	msbBrowserMCPPackagesEnv    = "JUST_CODE_BROWSER_MCP_PACKAGES"
+	msbBrowserMCPBinariesEnv    = "JUST_CODE_BROWSER_MCP_BINARIES"
+	msbBrowserMCPFingerprintEnv = "JUST_CODE_BROWSER_MCP_FINGERPRINT"
 
 	// msbGuestPrepareProbe reports the guest's preparation state through its
 	// exit code (Exec surfaces stderr only): ready, preparing, or idle with
@@ -40,7 +59,9 @@ const (
 	// pgrep is absent exactly when "is something preparing?" matters. The
 	// probe skips its own PID: its command line necessarily contains the
 	// entrypoint path it greps for.
-	msbGuestPrepareProbe = "if [ -f " + msbToolchainMarker + " ]; then exit 0; fi; " +
+	msbGuestPrepareProbe = "fingerprint=\"${" + msbBrowserMCPFingerprintEnv + ":-}\"; " +
+		"if [ -f " + msbToolchainMarker + " ]; then " +
+		"if [ -z \"$fingerprint\" ] || [ \"$(cat " + msbBrowserMCPMarker + " 2>/dev/null)\" = \"$fingerprint\" ]; then exit 0; fi; fi; " +
 		"self=$$; " +
 		"for p in /proc/[0-9]*/cmdline; do " +
 		"[ \"$p\" = \"/proc/$self/cmdline\" ] && continue; " +
@@ -615,16 +636,17 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 // spec carries binding metadata only — values transit exclusively through
 // withHostSecrets.
 func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandboxSpec {
+	mcpIDs := m.OpenCodeOverlay.MCPConnectors
 	return msbSandboxSpec{
 		Name:            m.InstanceName(),
-		Image:           msbImage,
+		Image:           msbImageForMCPs(mcpIDs),
 		Isolation:       m.cfg.Isolation,
 		Env:             m.sandboxEnv(),
 		SealedWorkspace: true,
 		CPUs:            m.cfg.CPUs,
 		MemoryMB:        m.cfg.MemoryMB,
 		Bindings:        bindingsMetadata(bindings),
-		StartScript:     msbStartScript(m.cfg.Isolation),
+		StartScript:     msbStartScriptFor(m.cfg.Isolation, mcpIDs),
 	}
 }
 
@@ -641,13 +663,17 @@ func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
 		content = opencodeConfigContent
 	}
 	name, email := guestGitIdentity(m.guestGitConfig())
-	return map[string]string{
+	env := map[string]string{
 		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
 		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
 		"OPENCODE_CONFIG_CONTENT":  content,
 		msbGitNameEnv:              name,
 		msbGitEmailEnv:             email,
 	}
+	for key, value := range browserGuestEnv(m.OpenCodeOverlay.MCPConnectors) {
+		env[key] = value
+	}
+	return env
 }
 
 // sandboxEnv builds the guest environment for the sandbox. As with
@@ -672,6 +698,9 @@ func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
 	name, email := guestGitIdentity(m.guestGitConfig())
 	env[msbGitNameEnv] = name
 	env[msbGitEmailEnv] = email
+	for key, value := range browserGuestEnv(m.OpenCodeOverlay.MCPConnectors) {
+		env[key] = value
+	}
 	return env
 }
 

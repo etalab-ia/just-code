@@ -284,6 +284,21 @@ func skillSourceTar(t *testing.T, entries ...skillTarEntry) []byte {
 	return out.Bytes()
 }
 
+func TestSearchProjectSkillsMatchesWordsAcrossFields(t *testing.T) {
+	catalogue := []ProjectSkill{
+		{ID: "official/react", Name: "React UI", Description: "Build component interfaces"},
+		{ID: "official/python", Name: "Python", Description: "Data analysis"},
+		{ID: "experimental/react-native", Name: "React Native", Description: "Mobile interfaces"},
+	}
+	got := SearchProjectSkills(catalogue, "REACT interfaces")
+	if len(got) != 2 || got[0].ID != "official/react" || got[1].ID != "experimental/react-native" {
+		t.Fatalf("search results = %+v", got)
+	}
+	if got := SearchProjectSkills(catalogue, "   "); len(got) != len(catalogue) {
+		t.Fatalf("empty search should list the catalogue, got %+v", got)
+	}
+}
+
 func fixtureSkillResolver(t *testing.T) func(context.Context, []string) ([]ProjectSkill, map[string]SkillLock, error) {
 	t.Helper()
 	return func(_ context.Context, ids []string) ([]ProjectSkill, map[string]SkillLock, error) {

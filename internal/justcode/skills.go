@@ -49,6 +49,30 @@ type ProjectSkill struct {
 	Experimental bool
 }
 
+// SearchProjectSkills filters catalogue entries by case-insensitive words in
+// the id, name, or description. Every query word must match.
+func SearchProjectSkills(catalogue []ProjectSkill, query string) []ProjectSkill {
+	words := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	if len(words) == 0 {
+		return append([]ProjectSkill(nil), catalogue...)
+	}
+	result := make([]ProjectSkill, 0, len(catalogue))
+	for _, skill := range catalogue {
+		searchable := strings.ToLower(skill.ID + " " + skill.Name + " " + skill.Description)
+		matched := true
+		for _, word := range words {
+			if !strings.Contains(searchable, word) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			result = append(result, skill)
+		}
+	}
+	return result
+}
+
 // SkillLock pins the source commit and the exact guest artifact bytes.
 type SkillLock struct {
 	Repository string `json:"repository"`

@@ -185,3 +185,39 @@ contient plus de balise `<h1>` ; le harnais cherche désormais le titre
 
 **Conclusion :** Aucune régression des capacités invité dans
 Microsandbox v0.7.3. Le runtime passe la matrice complète.
+
+## État d'implémentation navigateur P16 (2026-10-04, qualification en attente)
+
+Le changement P16 ajoute un profil navigateur distinct, sans modifier l'image
+légère par défaut. Le profil utilise Debian bookworm-slim, index multi-architecture
+épinglé par digest `sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251`,
+le snapshot APT `20261002T000000Z`, Chromium `154.0.8037.92`,
+`fonts-liberation` `1:2.1.5-3` et Node.js `22.14.0` vérifié par SHA-256 sur
+amd64 et arm64. OpenCode reste à `1.18.32`; les MCP locaux sont Playwright
+`0.0.82` et Chrome DevTools `1.10.1`.
+
+Les MCP navigateur ne sont pas qualifiés par le résultat P03 v0.7.3 ci-dessus :
+ce résultat vérifie le runtime et le MCP Playwright de la matrice, pas le nouveau
+profil épinglé, le cycle d'idempotence de son provisionnement, ni son overlay
+OpenCode dans les deux architectures. Ils ne sont pas encore exécutés dans un
+guest réel au moment de cette note.
+
+**Qualification P16 à réaliser avant de revendiquer la parité navigateur :**
+
+- Rejouer le démarrage, la persistance et le provisionnement sur macOS arm64 et
+  x86_64 ; vérifier `node`, Chromium, les versions des deux MCP et les marqueurs
+  de profil dans le guest.
+- Ajouter les deux MCP puis chacun séparément ; confirmer que `tools/list` de
+  l'OpenCode invité les expose, et qu'un second démarrage avec la même empreinte
+  ne retélécharge ni ne réinstalle les paquets.
+- Exercer Playwright sur un serveur de développement démarré dans le guest ;
+  confirmer qu'aucun tunnel ou accès au `localhost` de l'hôte n'est présumé.
+- Vérifier que le listener DevTools est lié à `127.0.0.1:9222` dans le guest,
+  qu'il n'est pas joignable depuis l'hôte, et qu'un changement de profil refuse
+  de reprendre un guest existant sans recréation explicite.
+- Rejouer la matrice de ressources sur les hôtes macOS, Windows et Linux : les
+  valeurs détectées doivent rester des recommandations, jamais une réduction
+  silencieuse des demandes de l'utilisateur.
+
+La couverture Go et la syntaxe du script de préparation ne remplacent pas ces
+tests d'intégration. Le runtime hôte Linux/KVM reste une qualification séparée.
