@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.4](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.3...just-code-v0.7.4) (2026-10-05)
+
+
+### Bug Fixes
+
+* **ci:** donner au dispatch manuel le contexte de dépôt à gh ([473bd81](https://github.com/etalab-ia/just-code/commit/473bd811128d24674296eecf5292f65f40b2d416))
+* **ci:** donner au dispatch manuel le contexte de dépôt à gh ([6807ba5](https://github.com/etalab-ia/just-code/commit/6807ba5196506b556cfe5532cac06e04dec2470e))
+* **project:** réessayer la lecture du lock face aux échecs transitoires ([bfd77a8](https://github.com/etalab-ia/just-code/commit/bfd77a8c5afe3e1daee1cfe27212d0645fffcef0))
+* **project:** réessayer la lecture du lock face aux échecs transitoires ([b0baac6](https://github.com/etalab-ia/just-code/commit/b0baac6e47329166e54dc4eb3ada7387a2799211))
+* **project:** remonter la dernière erreur de lecture du lock à l'expiration ([b5088fa](https://github.com/etalab-ia/just-code/commit/b5088fa18ad7ab73fae6b3b636bd33ec7b14705e))
+
 ## [0.7.3](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.2...just-code-v0.7.3) (2026-10-05)
 
 
