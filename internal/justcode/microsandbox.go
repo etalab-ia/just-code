@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	msbImage = "ghcr.io/anomalyco/opencode:latest"
+	msbImage = "ghcr.io/anomalyco/opencode@sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631"
 	// The browser profile uses a multi-arch Debian index pinned to the digest
 	// verified against Docker Hub on 2026-10-04.
 	msbBrowserImage = "debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251"

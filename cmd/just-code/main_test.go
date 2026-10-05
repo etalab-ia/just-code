@@ -69,6 +69,41 @@ func TestParseMCPArgsAroundGlobalRuntimeFlags(t *testing.T) {
 	}
 }
 
+func TestParseUpdateArgs(t *testing.T) {
+	parsed, err := parseArgs([]string{"update", "--skill", "official/rgaa", "--yes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.action != "update" || strings.Join(parsed.updateArgs, " ") != "--skill official/rgaa --yes" {
+		t.Fatalf("parsed = action %q, update args %v", parsed.action, parsed.updateArgs)
+	}
+}
+
+func TestUpdateCommandSkipsStartupRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--recover"}, true},
+		{[]string{"--help"}, true},
+		{[]string{"-h"}, true},
+		{[]string{"--skill", "official/rgaa"}, false},
+	} {
+		if got := updateCommandSkipsStartupRecovery(tc.args); got != tc.want {
+			t.Errorf("updateCommandSkipsStartupRecovery(%v) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+func TestUpdateRecoveryFlagValidationAndPreview(t *testing.T) {
+	if code, err := updateCmd([]string{"--rollback"}, t.TempDir()); code != 2 || err == nil {
+		t.Fatalf("--rollback without --recover = (%d, %v); want usage error", code, err)
+	}
+	if code, err := updateCmd([]string{"--recover", "--rollback"}, t.TempDir()); code != 0 || err != nil {
+		t.Fatalf("non-approved rollback preview = (%d, %v); want read-only preview", code, err)
+	}
+}
+
 func TestParseGuestMCPIDs(t *testing.T) {
 	ids, err := parseGuestMCPIDs("data-gouv,context7")
 	if err != nil || strings.Join(ids, ",") != "context7,data-gouv" {

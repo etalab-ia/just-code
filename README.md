@@ -439,6 +439,24 @@ refusé plutôt qu'écrasé; une modification de sélection nécessitant le
 remplacement d'un skill invité passe par `just-code recreate` (exporte d'abord
 les changements invités que tu veux garder).
 
+### Mettre à jour les skills de projet (P18)
+
+Les mises à jour des skills versionnés sont explicites et révisables ; elles ne
+s'appliquent jamais au lancement :
+
+```bash
+just-code update
+just-code update --skill official/rgaa
+just-code update --yes  # approbation explicite non interactive
+```
+
+La commande affiche les révisions et digests avant confirmation, met à jour le
+lock et la zone gérée d'`AGENTS.md`, et préserve le texte utilisateur. Une
+erreur de catalogue ou d'intégrité ne change pas le projet. Les versions du
+CLI et de ses images/outils invités restent séparées des mises à jour de skills.
+Voir [docs/config.md](docs/config.md) pour le journal de récupération et la
+compatibilité des invités issus de just-code 0.7.0.
+
 ### Configuration OpenCode composée et confiance locale (P10)
 
 La configuration OpenCode effective est composée au lancement : l'asset embarqué (provider Albert, permissions) fusionné avec la **couche gérée** (`OPENCODE_CONFIG_CONTENT`), qui ne porte que les champs managés — aujourd'hui `model` et `small_model`. OpenCode fusionne le contenu inline **en dernier** (contrat D-001), donc la couche gérée gagne champ par champ contre la config projet et la config utilisateur, sans jamais réécrire un fichier JSONC utilisateur.

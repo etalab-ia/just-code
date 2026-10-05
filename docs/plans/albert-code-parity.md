@@ -329,7 +329,7 @@ P22 was added in the 22 September revision (sealed workspace); its identifier pr
 
 **Purpose:** keep project environments current without changing them unexpectedly during launch.
 
-**Scope:** `update` compares pinned skill/MCP/image/rules revisions with available revisions, builds a reviewable plan, refreshes lock data and applies approved operations. Reuse the reconciler and trust checks. Catalogue refresh failure retains the known-good environment. Distinguish CLI/runtime updates from project dependency updates.
+**Scope:** `update` compares versioned skill artifacts and their generated managed rules with the exact current catalogue revision, builds a reviewable plan and applies approved changes. Catalogue refresh failure retains the known-good environment. The current runtime image is digest-pinned in the CLI and changes through a CLI release; curated remote MCP definitions are also CLI-owned, while the remote services expose no immutable version to compare. Therefore project `update` does not mutate/recreate the runtime or remote MCPs: those upgrades remain explicit CLI releases, and no floating reference is resolved during launch. This makes the CLI/runtime versus project-dependency boundary explicit rather than inventing lock revisions for external services that do not publish them.
 
 **Likely files:** update command, catalogue resolvers, lock writer, managed rules and reconcile integration.
 

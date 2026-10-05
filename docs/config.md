@@ -35,8 +35,8 @@ dépréciation, mais n'entrent pas dans la nouvelle résolution.
 | Fichier | Rôle | Version de schéma |
 |---|---|---|
 | `~/.config/just-code/settings.json` | Réglages globaux utilisateur (sans secrets) | 1 |
-| `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 2 |
-| `.just-code/lock.json` | Verrou : révisions et digests des éléments épinglés | 2 |
+| `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 4 |
+| `.just-code/lock.json` | Verrou : révisions et digests des éléments épinglés | 3 |
 
 ## Skills de projet (P14)
 
@@ -83,6 +83,50 @@ La valeur référencée par `credentialRef` vit dans le magasin natif de l'OS
 `just-code auth` (P08). Sur les hôtes sans magasin natif, un repli fichier
 `0600` existe mais n'est jamais créé sans consentement explicite
 (`just-code auth add --fallback`).
+
+## Mises à jour projet (P18)
+
+`just-code update` compare les skills versionnés du projet avec la révision
+HEAD du catalogue officiel. La commande affiche les révisions et digests
+proposés, puis demande confirmation ; `--skill <id>` répété limite la sélection.
+Sans TTY, elle reste en aperçu sauf si `--yes` approuve explicitement toutes
+les mises à jour affichées. Une panne réseau ou une archive invalide ne modifie
+ni le manifeste, ni le lock, ni les instructions gérées. La résolution peut
+alimenter le cache utilisateur avant confirmation ; aucun fichier projet n'est
+écrit avant l'approbation.
+
+Les archives sont adressées par révision et SHA-256 dans le cache utilisateur.
+P18 ne les purge pas automatiquement : d'anciens locks doivent rester
+utilisables hors ligne. Les entrées devenues inutiles ne peuvent être supprimées
+qu'après vérification qu'aucun projet ne référence encore leur révision.
+
+Après confirmation, le manifeste et le lock reçoivent le même identifiant de
+génération. Un journal temporaire `.just-code/update-journal.json` permet de
+restaurer l'ancienne paire si l'écriture s'interrompt ; le prochain `start`,
+`init` ou `update` récupère le journal avant de lire la configuration. Il ne
+contient que les snapshots validés du manifeste et du lock, jamais les octets
+d'`AGENTS.md`. La zone de skills gérée est recalculée en préservant le texte
+utilisateur hors marqueurs. Un lancement refuse toute paire dont les
+identifiants de génération divergent.
+
+Si le manifeste ou le lock contient des octets qui ne correspondent ni à
+l'ancienne ni à la nouvelle version du journal, la récupération automatique
+refuse d'écraser ces modifications et nomme le journal concerné. Après examen,
+`just-code update --recover --rollback` restaure la paire précédente et recalcule
+uniquement la zone gérée dans `AGENTS.md`. Les copies des fichiers gérés présents
+sont conservées dans `.just-code/recovery-backups/`. En mode non interactif,
+ajouter `--yes` pour approuver explicitement le rollback.
+
+Cette commande met à jour les dépendances projet, pas le binaire just-code.
+L'image de base Microsandbox est épinglée au digest OCI
+`sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631` ;
+les MCP distants sont des services HTTP sans révision immuable exposée. Les
+images et outils livrés avec une version du CLI se mettent à jour via une
+version ultérieure du CLI, pas silencieusement au lancement. Lors d'une mise à
+niveau depuis just-code 0.7.0, un invité existant créé avec l'ancienne référence
+flottante peut demander une recréation explicite. Celle-ci détruit ses sessions,
+outils installés et fichiers invités : synchroniser ou exporter le travail
+avant de confirmer.
 
 ## Résolution de l'identifiant Albert (P09)
 

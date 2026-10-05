@@ -125,6 +125,18 @@ func run(args []string) (int, error) {
 	if projErr == nil {
 		projectRoot = pc.Root
 	}
+	manualRecovery := parsed.action == "update" && updateCommandSkipsStartupRecovery(parsed.updateArgs)
+	if projErr == nil && (parsed.action == "init" || parsed.action == "update" || isLaunchAction(parsed.action)) && !manualRecovery {
+		if err := justcode.RecoverProjectUpdate(justcode.DefaultFS, projectRoot); err != nil {
+			return 1, fmt.Errorf("cannot recover the project's dependency update: %w\nIf recovery refused edits to the managed files, inspect the journal and run 'just-code update --recover --rollback' to restore the previous pair with backups", err)
+		}
+	}
+	if parsed.action == "update" {
+		if projErr != nil {
+			return 2, fmt.Errorf("update requires a configured project directory: %w", projErr)
+		}
+		return updateCmd(parsed.updateArgs, projectRoot)
+	}
 	// The sealed transfer source (P22/P12).
 	cfg = withProjectRootAsWorkspaceSource(cfg, pc, projErr)
 	// A project with no configuration yet is offered one before the guest is
@@ -444,6 +456,8 @@ type parsedArgs struct {
 	initArgs []string
 	// setupArgs holds the words after the setup command.
 	setupArgs []string
+	// updateArgs holds the words after the update command.
+	updateArgs []string
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
@@ -457,6 +471,7 @@ var actionNames = map[string]bool{
 	"auth": true, "bindings": true,
 	"workspace": true,
 	"init":      true,
+	"update":    true,
 }
 
 func runtimeFlag(a string) bool {
@@ -556,6 +571,12 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the setup command belongs to it.
 			p.setupArgs = args[i+1:]
+			return p, nil
+		case a == "update" && !actionSet:
+			p.action = "update"
+			actionSet = true
+			// Everything after the update command belongs to it.
+			p.updateArgs = args[i+1:]
 			return p, nil
 		case a == "mcp" && !actionSet:
 			p.action = "mcp"
@@ -996,6 +1017,7 @@ Commands:
   setup      Configure the machine: preflight, credentials, identity, model,
              then install the managed runtime (setup doctor for the
              read-only diagnosis)
+  update     Review and apply pinned project skill updates
   version    Print the build identity
   help       Show this help
 

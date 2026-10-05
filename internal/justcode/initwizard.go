@@ -606,10 +606,20 @@ func formatManifestSummary(pm ProjectManifest) string {
 // is not something a re-run should do quietly.
 func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	fs := w.fs()
+	return withProjectUpdateLock(fs, plan.Answers.Root, func() error {
+		if err := recoverProjectUpdateLocked(fs, plan.Answers.Root); err != nil {
+			return fmt.Errorf("recover prior project update: %w", err)
+		}
+		return w.applyLocked(plan, replace)
+	})
+}
+
+func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
+	fs := w.fs()
 	// Re-read rather than trusting the plan's snapshot: a manifest created
 	// between Plan and Apply must not be overwritten without consent, and the
 	// guarantee would be only as strong as the snapshot.
-	_, readErr := ReadProjectManifest(fs, plan.ManifestPath)
+	existingManifest, readErr := ReadProjectManifest(fs, plan.ManifestPath)
 	if readErr == nil && !replace {
 		return fmt.Errorf("%s already exists; re-run with the replace option, or edit it directly", plan.ManifestPath)
 	}
@@ -622,6 +632,23 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	kept, err := ReadLockfile(fs, plan.LockPath)
 	if err != nil {
 		return err
+	}
+	if readErr == nil {
+		if err := ValidateDependencySet(existingManifest, kept); err != nil {
+			return fmt.Errorf("recover or repair the project before reinitializing: %w", err)
+		}
+	}
+	dependencySetID := ""
+	if readErr == nil {
+		dependencySetID = existingManifest.DependencySetID
+	} else if isUpdateID(kept.DependencySetID) {
+		dependencySetID = kept.DependencySetID
+	}
+	if dependencySetID == "" {
+		dependencySetID, err = newDependencySetID()
+		if err != nil {
+			return fmt.Errorf("create dependency-set identity: %w", err)
+		}
 	}
 	instructionsChanged := false
 	instructionsAfter := plan.InstructionsAfter
@@ -664,6 +691,7 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 		CredentialRef:   plan.Answers.CredentialRef,
 		SkillsLocalOnly: plan.Answers.SkillsLocalOnly,
 		MCPConnectors:   append([]string(nil), plan.Answers.MCPConnectors...),
+		DependencySetID: dependencySetID,
 	}
 	if !plan.Answers.SkillsLocalOnly {
 		pm.Skills = append([]string(nil), plan.Answers.Skills...)
@@ -676,7 +704,7 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	// A lock that cannot be read is NOT replaced with an empty one: that would
 	// discard whatever pins it held, silently, which is the same refusal the
 	// manifest gets above. A missing lock reads as the zero lock, no error.
-	lock := Lockfile{Entries: map[string]string{}}
+	lock := Lockfile{Entries: map[string]string{}, DependencySetID: dependencySetID}
 	if len(kept.Entries) > 0 {
 		lock.Entries = kept.Entries
 	}

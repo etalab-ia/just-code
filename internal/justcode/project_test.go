@@ -434,3 +434,78 @@ func TestProjectLockStaleStealDoesNotDeleteLiveLock(t *testing.T) {
 		t.Fatalf("lockfile must be released, err = %v", err)
 	}
 }
+
+func TestProjectLockReapsAbandonedStealMarker(t *testing.T) {
+	fs := newMapFS()
+	lockPath := "/reg/proj/update.lock"
+	if err := fs.MkdirAll("/reg/proj", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := []byte("2147483647 1 1\n")
+	if err := fs.CreateExclusive(lockPath, stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.CreateExclusive(lockPath+".steal", stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock := &ProjectLock{Path: lockPath, FS: fs, WaitTimeout: time.Second, PollInterval: time.Millisecond}
+	release, err := lock.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire with abandoned steal marker: %v", err)
+	}
+	release()
+	for _, path := range []string{lockPath, lockPath + ".steal"} {
+		if _, err := fs.ReadFile(path); !os.IsNotExist(err) {
+			t.Fatalf("stale lock path %s remains, err = %v", path, err)
+		}
+	}
+}
+
+func TestProjectLockTimesOutWithPathAndHolderPID(t *testing.T) {
+	fs := newMapFS()
+	lockPath := "/reg/proj/live.lock"
+	if err := fs.MkdirAll("/reg/proj", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(lockPath, []byte(fmt.Sprintf("%d 1 1\n", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock := &ProjectLock{Path: lockPath, FS: fs, WaitTimeout: 60 * time.Millisecond, PollInterval: 5 * time.Millisecond}
+	if _, err := lock.Acquire(); err == nil || !strings.Contains(err.Error(), lockPath) || !strings.Contains(err.Error(), fmt.Sprint(os.Getpid())) {
+		t.Fatalf("Acquire error = %v; want bounded error naming path and holder PID", err)
+	}
+}
+
+func TestProjectLockTimeoutCoversRepeatedOwnershipChanges(t *testing.T) {
+	lockPath := "/reg/proj/churning.lock"
+	fs := &churningProjectLockFS{FS: newMapFS(), Path: lockPath}
+	lock := &ProjectLock{Path: lockPath, FS: fs, WaitTimeout: 35 * time.Millisecond, PollInterval: time.Millisecond}
+	started := time.Now()
+	if _, err := lock.Acquire(); err == nil || !strings.Contains(err.Error(), lockPath) {
+		t.Fatalf("Acquire error = %v; want bounded timeout naming lock path", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("Acquire exceeded bounded wait under lock-file churn: %s", elapsed)
+	}
+}
+
+type churningProjectLockFS struct {
+	FS
+	Path  string
+	Reads int
+}
+
+func (f *churningProjectLockFS) CreateExclusive(path string, _ []byte, _ os.FileMode) error {
+	if path == f.Path {
+		return os.ErrExist
+	}
+	return f.FS.CreateExclusive(path, nil, 0o600)
+}
+
+func (f *churningProjectLockFS) ReadFile(path string) ([]byte, error) {
+	if path == f.Path {
+		f.Reads++
+		return []byte(fmt.Sprintf("changing-%d", f.Reads)), nil
+	}
+	return f.FS.ReadFile(path)
+}

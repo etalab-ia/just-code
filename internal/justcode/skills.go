@@ -135,6 +135,21 @@ func LoadProjectSkillPackages(fs FS, projectRoot, stateDir, instance string) ([]
 // version owns guest-skill reconciliation (needed for deselection), and
 // whether the selection is host-local rather than versioned in the checkout.
 func LoadProjectSkillState(fs FS, projectRoot, stateDir, instance string) ([]SkillPackage, []string, bool, bool, error) {
+	var packages []SkillPackage
+	var ids []string
+	var manages, localOnly bool
+	err := withProjectUpdateLock(fs, projectRoot, func() error {
+		if err := recoverProjectUpdateLocked(fs, projectRoot); err != nil {
+			return err
+		}
+		var err error
+		packages, ids, manages, localOnly, err = loadProjectSkillStateLocked(fs, projectRoot, stateDir, instance)
+		return err
+	})
+	return packages, ids, manages, localOnly, err
+}
+
+func loadProjectSkillStateLocked(fs FS, projectRoot, stateDir, instance string) ([]SkillPackage, []string, bool, bool, error) {
 	manifest, err := ReadProjectManifest(fs, ProjectManifestPath(projectRoot))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -142,8 +157,15 @@ func LoadProjectSkillState(fs FS, projectRoot, stateDir, instance string) ([]Ski
 		}
 		return nil, nil, false, false, err
 	}
+	lock, err := ReadLockfile(fs, ProjectLockPath(projectRoot))
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	if err := ValidateDependencySet(manifest, lock); err != nil {
+		return nil, nil, false, false, err
+	}
 	ids := manifest.Skills
-	var pins map[string]SkillLock
+	pins := lock.Skills
 	if manifest.SkillsLocalOnly {
 		path, err := LocalSkillSelectionsPath(stateDir, instance)
 		if err != nil {
@@ -154,12 +176,6 @@ func LoadProjectSkillState(fs FS, projectRoot, stateDir, instance string) ([]Ski
 			return nil, nil, false, false, err
 		}
 		ids, pins = local.Skills, local.Pins
-	} else {
-		lock, err := ReadLockfile(fs, ProjectLockPath(projectRoot))
-		if err != nil {
-			return nil, nil, false, false, err
-		}
-		pins = lock.Skills
 	}
 	packages, err := LoadLockedSkillPackages(ids, pins)
 	if err != nil {
@@ -206,13 +222,23 @@ type skillTreeEntry struct {
 // ProjectSkillCatalogue returns the official and explicitly labeled
 // experimental skills at the source revision recorded in this binary.
 func ProjectSkillCatalogue(ctx context.Context) ([]ProjectSkill, error) {
+	return ProjectSkillCatalogueAtRevision(ctx, projectSkillsRevision)
+}
+
+// ProjectSkillCatalogueAtRevision returns the skill catalogue at an exact Git
+// commit. Update uses this to inspect a candidate revision without changing
+// the revision used by ordinary init.
+func ProjectSkillCatalogueAtRevision(ctx context.Context, revision string) ([]ProjectSkill, error) {
+	if !isGitRevision(revision) {
+		return nil, fmt.Errorf("invalid project skills revision %q", revision)
+	}
 	ctx, cancel := context.WithTimeout(ctx, skillSourceTimeout)
 	defer cancel()
-	repo, err := cachedProjectSkillsRepo(ctx)
+	repo, err := cachedProjectSkillsRepoAt(ctx, revision)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := readSkillTree(ctx, repo)
+	entries, err := readSkillTreeAt(ctx, repo, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -261,9 +287,19 @@ func parseProjectSkillCatalogue(entries []skillTreeEntry, readBlob func(string) 
 // ResolveProjectSkills validates user selections, builds archives from the
 // pinned repository tree, verifies them, and places them in the host cache.
 func ResolveProjectSkills(ctx context.Context, ids []string) ([]ProjectSkill, map[string]SkillLock, error) {
+	return ResolveProjectSkillsAtRevision(ctx, ids, projectSkillsRevision)
+}
+
+// ResolveProjectSkillsAtRevision resolves selected skill archives at an exact
+// source commit. Archives are content-addressed in the host cache before the
+// lock can be written to a project.
+func ResolveProjectSkillsAtRevision(ctx context.Context, ids []string, revision string) ([]ProjectSkill, map[string]SkillLock, error) {
+	if !isGitRevision(revision) {
+		return nil, nil, fmt.Errorf("invalid project skills revision %q", revision)
+	}
 	ctx, cancel := context.WithTimeout(ctx, skillSourceTimeout)
 	defer cancel()
-	catalogue, err := ProjectSkillCatalogue(ctx)
+	catalogue, err := ProjectSkillCatalogueAtRevision(ctx, revision)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -274,7 +310,7 @@ func ResolveProjectSkills(ctx context.Context, ids []string) ([]ProjectSkill, ma
 	if err := validateSkillIDs(ids, byID); err != nil {
 		return nil, nil, err
 	}
-	repo, err := cachedProjectSkillsRepo(ctx)
+	repo, err := cachedProjectSkillsRepoAt(ctx, revision)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -283,7 +319,7 @@ func ResolveProjectSkills(ctx context.Context, ids []string) ([]ProjectSkill, ma
 	var totalBytes int64
 	for _, id := range ids {
 		skill := byID[id]
-		raw, err := gitOutput(ctx, repo, "archive", "--format=tar", projectSkillsRevision, "LICENSE", skill.Path)
+		raw, err := gitOutput(ctx, repo, "archive", "--format=tar", revision, "LICENSE", skill.Path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("archive selected skill %s: %w", id, err)
 		}
@@ -296,9 +332,13 @@ func ResolveProjectSkills(ctx context.Context, ids []string) ([]ProjectSkill, ma
 			return nil, nil, fmt.Errorf("selected skills exceed the %d-byte total cache/guest limit", maxSkillSetBytes)
 		}
 		digest := sha256.Sum256(archive)
-		lock := SkillLock{Repository: projectSkillsRepository, Revision: projectSkillsRevision, SHA256: hex.EncodeToString(digest[:])}
+		lock := SkillLock{Repository: projectSkillsRepository, Revision: revision, SHA256: hex.EncodeToString(digest[:])}
 		if err := cacheSkillArchive(skill, lock, archive); err != nil {
 			return nil, nil, err
+		}
+		cached, err := readCachedSkillArchive(skill.Name, lock)
+		if err != nil || !equalBytes(cached, archive) {
+			return nil, nil, fmt.Errorf("skill %s failed its post-cache SHA-256 integrity check", id)
 		}
 		selected = append(selected, skill)
 		locks[id] = lock
@@ -736,19 +776,26 @@ func sortedSkillFiles(files map[string][]byte) []string {
 }
 
 func cachedProjectSkillsRepo(ctx context.Context) (string, error) {
+	return cachedProjectSkillsRepoAt(ctx, projectSkillsRevision)
+}
+
+func cachedProjectSkillsRepoAt(ctx context.Context, revision string) (string, error) {
+	if !isGitRevision(revision) {
+		return "", fmt.Errorf("invalid project skills revision %q", revision)
+	}
 	cache, err := userCacheDirFn()
 	if err != nil {
 		return "", fmt.Errorf("resolve the user cache directory: %w", err)
 	}
 	parent := filepath.Join(cache, "just-code", "skill-sources")
-	dest := filepath.Join(parent, projectSkillsRevision)
+	dest := filepath.Join(parent, revision)
 	if info, err := os.Lstat(dest); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", fmt.Errorf("skill source cache %s is not a regular directory", dest)
 		}
 		got, err := gitOutput(ctx, dest, "rev-parse", "FETCH_HEAD")
-		if err != nil || strings.TrimSpace(string(got)) != projectSkillsRevision {
-			return "", fmt.Errorf("skill source cache %s does not match pinned revision %s", dest, projectSkillsRevision)
+		if err != nil || strings.TrimSpace(string(got)) != revision {
+			return "", fmt.Errorf("skill source cache %s does not match pinned revision %s", dest, revision)
 		}
 		return dest, nil
 	} else if !os.IsNotExist(err) {
@@ -768,19 +815,19 @@ func cachedProjectSkillsRepo(ctx context.Context) (string, error) {
 	if _, err := runGit(ctx, tmp, "remote", "add", "origin", projectSkillsRepository); err != nil {
 		return "", err
 	}
-	if _, err := runGit(ctx, tmp, "fetch", "--depth=1", "origin", projectSkillsRevision); err != nil {
-		return "", fmt.Errorf("fetch the pinned project skills catalogue: %w", err)
+	if _, err := runGit(ctx, tmp, "fetch", "--depth=1", "origin", revision); err != nil {
+		return "", fmt.Errorf("fetch project skills catalogue at %s: %w", revision, err)
 	}
 	// Read directly from fetched Git objects. A checkout would invoke any
 	// user-configured smudge filter named by the external repository.
 	got, err := gitOutput(ctx, tmp, "rev-parse", "FETCH_HEAD")
-	if err != nil || strings.TrimSpace(string(got)) != projectSkillsRevision {
-		return "", errors.New("the skills source did not resolve to its pinned commit")
+	if err != nil || strings.TrimSpace(string(got)) != revision {
+		return "", errors.New("the skills source did not resolve to the requested commit")
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		if info, statErr := os.Lstat(dest); statErr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			got, checkErr := gitOutput(ctx, dest, "rev-parse", "FETCH_HEAD")
-			if checkErr == nil && strings.TrimSpace(string(got)) == projectSkillsRevision {
+			if checkErr == nil && strings.TrimSpace(string(got)) == revision {
 				return dest, nil
 			}
 		}
@@ -790,7 +837,11 @@ func cachedProjectSkillsRepo(ctx context.Context) (string, error) {
 }
 
 func readSkillTree(ctx context.Context, repo string) ([]skillTreeEntry, error) {
-	data, err := gitOutput(ctx, repo, "ls-tree", "-r", "-z", projectSkillsRevision)
+	return readSkillTreeAt(ctx, repo, projectSkillsRevision)
+}
+
+func readSkillTreeAt(ctx context.Context, repo, revision string) ([]skillTreeEntry, error) {
+	data, err := gitOutput(ctx, repo, "ls-tree", "-r", "-z", revision)
 	if err != nil {
 		return nil, err
 	}
