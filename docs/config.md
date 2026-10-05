@@ -161,7 +161,8 @@ Chrome DevTools se connecte au serveur de débogage lié à `127.0.0.1:9222`
 dans ce même guest. Le statut MCP sur l'hôte ne sonde pas ces processus.
 
 Le profil navigateur est séparé du guest léger : Debian bookworm-slim est
-épinglé par digest, avec Chromium `154.0.8037.92`, `fonts-liberation`, Node.js
+épinglé par digest, avec Chromium `154.0.8037.92` (amd64) / `154.0.8037.57`
+(arm64), `fonts-liberation` `1:1.07.4-11`, Node.js
 `22.14.0`, Playwright MCP `0.0.82` et Chrome DevTools MCP `1.10.1`. Le
 provisionnement vérifie les empreintes et marqueurs avant de déclarer le profil
 prêt. Les paquets navigateur sont téléchargés lors du premier démarrage du
