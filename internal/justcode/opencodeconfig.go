@@ -29,8 +29,8 @@ type ManagedOverlay struct {
 	Model string
 	// SmallModel is the model for background tasks. Defaults to Model.
 	SmallModel string
-	// MCPConnectors selects entries from the built-in remote connector
-	// catalogue. User-owned entries with other names remain untouched.
+	// MCPConnectors selects managed remote and guest-local entries. User-owned
+	// entries with other names remain untouched.
 	MCPConnectors []string
 }
 
@@ -122,7 +122,7 @@ func renderOverlayJSON(o ManagedOverlay) (string, error) {
 		}
 	}
 	if len(o.MCPConnectors) > 0 {
-		mcp, err := mcpOverlay(o.MCPConnectors)
+		mcp, err := managedMCPOverlay(o.MCPConnectors)
 		if err != nil {
 			return "", err
 		}
@@ -200,7 +200,7 @@ func DetectOverlayConflicts(project map[string]any, overlay ManagedOverlay) []Co
 			})
 		}
 	}
-	managedMCP, err := mcpOverlay(overlay.MCPConnectors)
+	managedMCP, err := managedMCPOverlay(overlay.MCPConnectors)
 	if err == nil {
 		projectMCP, _ := project["mcp"].(map[string]any)
 		for name, managed := range managedMCP {

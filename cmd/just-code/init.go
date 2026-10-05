@@ -213,6 +213,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		return 1, fmt.Errorf("no terminal available: name the project explicitly, e.g. 'just-code init --root <dir> --yes'.\n" +
 			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --skill, --clear-skills, --mcp, --clear-mcps, --local-only-skills, --versioned-skills, --replace, --yes")
 	}
+	answers = seedInitAnswersFromManifest(opts, answers)
 
 	// The catalogue check reads the credential reference of the project being
 	// configured, not of whatever directory the caller happens to run from,
@@ -230,37 +231,50 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	if err := validateInitOptions(opts); err != nil {
 		return 2, err
 	}
-	if tty && !opts.Yes {
-		var err error
-		answers, err = askInitQuestions(in, opts, answers)
+	var plan justcode.InitPlan
+	var err error
+	for {
+		if tty && !opts.Yes {
+			answers, err = askInitQuestions(in, opts, answers)
+			if err != nil {
+				return 1, err
+			}
+		}
+		answers = withBrowserResourceGuidance(answers)
+		if answers.GitHubWorkflow {
+			remote, err := githubInitPreflightFn(answers.Root)
+			if err != nil {
+				return 1, err
+			}
+			answers.GitHubRemote = remote
+		}
+		plan, err = wizard.Plan(answers)
 		if err != nil {
 			return 1, err
 		}
-	}
-	if answers.GitHubWorkflow {
-		remote, err := githubInitPreflightFn(answers.Root)
-		if err != nil {
-			return 1, err
+		fmt.Print(justcode.FormatInitReview(plan))
+		if plan.ExistingManifest != nil && !opts.Replace {
+			return 1, fmt.Errorf("%s already exists; re-run with --replace to overwrite it, or edit it directly", plan.ManifestPath)
 		}
-		answers.GitHubRemote = remote
-	}
-
-	plan, err := wizard.Plan(answers)
-	if err != nil {
-		return 1, err
-	}
-	fmt.Print(justcode.FormatInitReview(plan))
-	if plan.ExistingManifest != nil && !opts.Replace {
-		return 1, fmt.Errorf("%s already exists; re-run with --replace to overwrite it, or edit it directly", plan.ManifestPath)
-	}
-	if tty && !opts.Yes {
-		answer, ok := promptLine(in, "\nApply? [Y/n]: ")
+		if !tty || opts.Yes {
+			break
+		}
+		answer, ok := promptLine(in, "\nApply? [Y/n/edit]: ")
 		if !ok {
 			return 1, fmt.Errorf("no answer; nothing was written")
 		}
-		if strings.EqualFold(strings.TrimSpace(answer), "n") {
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "y", "yes":
+			break
+		case "n", "no":
 			return 1, fmt.Errorf("cancelled; nothing was written")
+		case "e", "edit", "back":
+			fmt.Println("Reopening setup choices; blank answers keep the current selection.")
+			continue
+		default:
+			return 1, fmt.Errorf("enter yes, no, or edit")
 		}
+		break
 	}
 	revokeContext7 := plan.ExistingManifest != nil && containsConnector(plan.ExistingManifest.MCPConnectors, "context7") && !containsConnector(plan.Answers.MCPConnectors, "context7")
 	context7Revoked, context7Live := false, false
@@ -324,6 +338,51 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	return 0, nil
 }
 
+func withBrowserResourceGuidance(answers justcode.InitAnswers) justcode.InitAnswers {
+	if !justcode.HasBrowserMCPSelection(answers.MCPConnectors) {
+		answers.BrowserResourceGuidance = ""
+		return answers
+	}
+	if answers.BrowserResourceGuidance == "" {
+		host, err := detectHostResourcesFn()
+		answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, answers.CPUs, answers.MemoryMB, err)
+	}
+	return answers
+}
+
+func seedInitAnswersFromManifest(opts initOptions, answers justcode.InitAnswers) justcode.InitAnswers {
+	project, err := justcode.DiscoverProject(answers.Root)
+	if err != nil {
+		return answers
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(project.Root))
+	if err != nil {
+		return answers
+	}
+	if !opts.Set["runtime"] {
+		answers.Runtime = justcode.Runtime(manifest.Runtime)
+	}
+	if !opts.Set["isolation"] {
+		answers.Isolation = justcode.Isolation(manifest.Isolation)
+	}
+	if !opts.Set["model"] {
+		answers.Model = manifest.Model
+	}
+	if !opts.Set["cpus"] {
+		answers.CPUs = manifest.CPUs
+	}
+	if !opts.Set["memory-mb"] {
+		answers.MemoryMB = manifest.MemoryMB
+	}
+	if !opts.Set["credential-ref"] {
+		answers.CredentialRef = manifest.CredentialRef
+	}
+	if !opts.Set["mcps"] {
+		answers.MCPConnectors = append([]string(nil), manifest.MCPConnectors...)
+	}
+	return answers
+}
+
 func containsConnector(ids []string, wanted string) bool {
 	for _, id := range ids {
 		if id == wanted {
@@ -334,6 +393,33 @@ func containsConnector(ids []string, wanted string) bool {
 }
 
 var projectSkillCatalogueFn = justcode.ProjectSkillCatalogue
+var detectHostResourcesFn = justcode.DetectHostResources
+
+func currentProjectSkillSelection(root string) ([]string, error) {
+	project, err := justcode.DiscoverProject(root)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(project.Root))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !manifest.SkillsLocalOnly {
+		return append([]string(nil), manifest.Skills...), nil
+	}
+	path, err := justcode.LocalSkillSelectionsPath(justcode.DefaultStateDir(), project.InstanceName())
+	if err != nil {
+		return nil, err
+	}
+	selection, err := justcode.ReadLocalSkillSelections(justcode.DefaultFS, path)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), selection.Skills...), nil
+}
 
 // validateInitOptions rejects a bad flag value before any prompt runs. The
 // engine validates everything again; this is only about failing early with the
@@ -377,9 +463,13 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 	fmt.Println("just-code init — project configuration")
 	fmt.Println()
 	if !opts.Set["root"] {
+		currentRoot := answers.Root
 		fmt.Printf("Project root [%s]:\n", answers.Root)
 		if answer, ok := promptLine(in, "  root: "); ok && strings.TrimSpace(answer) != "" {
 			answers.Root = strings.TrimSpace(answer)
+			if answers.Root != currentRoot {
+				answers = seedInitAnswersFromManifest(opts, answers)
+			}
 		}
 	}
 
@@ -388,8 +478,16 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		fmt.Println("Runtime — where the guest comes from ('just-code doctor' checks the selected one):")
 		fmt.Println("  microsandbox (default): the sealed microVM")
 		fmt.Println("  tart / agent-vm: a full VM that mounts the project (see the review)")
-		if answer, ok := promptLine(in, "  runtime [microsandbox]: "); ok && strings.TrimSpace(answer) != "" {
-			answers.Runtime = justcode.Runtime(strings.TrimSpace(answer))
+		current := answers.Runtime
+		if current == "" {
+			current = justcode.RuntimeMicrosandbox
+		}
+		if answer, ok := promptLine(in, "  runtime ["+string(current)+"] (type `default` for microsandbox): "); ok && strings.TrimSpace(answer) != "" {
+			if strings.EqualFold(strings.TrimSpace(answer), "default") {
+				answers.Runtime = justcode.RuntimeMicrosandbox
+			} else {
+				answers.Runtime = justcode.Runtime(strings.TrimSpace(answer))
+			}
 		}
 	}
 
@@ -400,17 +498,32 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		fmt.Println("  backend: the TUI runs here and attaches to the guest")
 		// Nothing has supplied this value at this point (the branch requires
 		// the flag to be absent), so the effective default is the engine's.
-		fmt.Printf("  isolation [%s]: ", justcode.IsolationFull)
-		if answer, ok := promptLine(in, ""); ok && strings.TrimSpace(answer) != "" {
-			answers.Isolation = justcode.Isolation(strings.TrimSpace(answer))
+		current := answers.Isolation
+		if current == "" {
+			current = justcode.IsolationFull
+		}
+		if answer, ok := promptLine(in, "  isolation ["+string(current)+"] (type `default` for full): "); ok && strings.TrimSpace(answer) != "" {
+			if strings.EqualFold(strings.TrimSpace(answer), "default") {
+				answers.Isolation = justcode.IsolationFull
+			} else {
+				answers.Isolation = justcode.Isolation(strings.TrimSpace(answer))
+			}
 		}
 	}
 
 	if !opts.Set["model"] {
 		fmt.Println()
-		fmt.Println("Model — leave empty for the built-in default ('just-code models' lists the catalogue):")
-		if answer, ok := promptLine(in, "  model: "); ok && strings.TrimSpace(answer) != "" {
-			answers.Model = strings.TrimSpace(answer)
+		current := answers.Model
+		if current == "" {
+			current = "built-in default"
+		}
+		fmt.Println("Model — enter `default` to use the built-in model ('just-code models' lists the catalogue):")
+		if answer, ok := promptLine(in, "  model ["+current+"]: "); ok && strings.TrimSpace(answer) != "" {
+			if strings.EqualFold(strings.TrimSpace(answer), "default") {
+				answers.Model = ""
+			} else {
+				answers.Model = strings.TrimSpace(answer)
+			}
 		}
 	}
 
@@ -418,29 +531,35 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		fmt.Println()
 		fmt.Printf("Guest resources [%d CPUs, %d MiB]:\n", resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs), resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
 		if !opts.Set["cpus"] {
-			if answer, ok := promptLine(in, "  cpus: "); ok && strings.TrimSpace(answer) != "" {
-				n, err := strconv.Atoi(strings.TrimSpace(answer))
-				if err != nil {
-					return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
+			if answer, ok := promptLine(in, "  cpus (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
+				if strings.EqualFold(strings.TrimSpace(answer), "default") {
+					answers.CPUs = 0
+				} else {
+					n, err := strconv.Atoi(strings.TrimSpace(answer))
+					if err != nil {
+						return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
+					}
+					if n < 1 || n > justcode.MaxSandboxCPUs {
+						return answers, fmt.Errorf("cpus must be 1 to %d, got %d", justcode.MaxSandboxCPUs, n)
+					}
+					answers.CPUs = n
 				}
-				// Symmetry with --cpus: a typed 0 is out of range, not a
-				// secret way to mean "default" (leave the answer empty).
-				if n < 1 || n > justcode.MaxSandboxCPUs {
-					return answers, fmt.Errorf("cpus must be 1 to %d, got %d", justcode.MaxSandboxCPUs, n)
-				}
-				answers.CPUs = n
 			}
 		}
 		if !opts.Set["memory-mb"] {
-			if answer, ok := promptLine(in, "  memory MiB: "); ok && strings.TrimSpace(answer) != "" {
-				n, err := strconv.Atoi(strings.TrimSpace(answer))
-				if err != nil {
-					return answers, fmt.Errorf("memory must be a whole number of MiB, got %q", answer)
+			if answer, ok := promptLine(in, "  memory MiB (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
+				if strings.EqualFold(strings.TrimSpace(answer), "default") {
+					answers.MemoryMB = 0
+				} else {
+					n, err := strconv.Atoi(strings.TrimSpace(answer))
+					if err != nil {
+						return answers, fmt.Errorf("memory must be a whole number of MiB, got %q", answer)
+					}
+					if n < 1 || n > justcode.MaxSandboxMemoryMB {
+						return answers, fmt.Errorf("memory must be 1 to %d MiB, got %d", justcode.MaxSandboxMemoryMB, n)
+					}
+					answers.MemoryMB = n
 				}
-				if n < 1 || n > justcode.MaxSandboxMemoryMB {
-					return answers, fmt.Errorf("memory must be 1 to %d MiB, got %d", justcode.MaxSandboxMemoryMB, n)
-				}
-				answers.MemoryMB = n
 			}
 		}
 	}
@@ -448,8 +567,16 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 	if !opts.Set["credential-ref"] {
 		fmt.Println()
 		fmt.Println("Credential — the global Albert credential is used unless you name another (P08 reference):")
-		if answer, ok := promptLine(in, "  reference: "); ok && strings.TrimSpace(answer) != "" {
-			answers.CredentialRef = strings.TrimSpace(answer)
+		current := answers.CredentialRef
+		if current == "" {
+			current = "global Albert credential"
+		}
+		if answer, ok := promptLine(in, "  reference ["+current+"] (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
+			if strings.EqualFold(strings.TrimSpace(answer), "default") {
+				answers.CredentialRef = ""
+			} else {
+				answers.CredentialRef = strings.TrimSpace(answer)
+			}
 		}
 	}
 	if !opts.Set["github"] {
@@ -457,8 +584,13 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		fmt.Println("GitHub guest workflow (optional): the Microsandbox guest can push branches and open draft PRs to this origin.")
 		fmt.Println("It uses the stored GitHub credential through the secret proxy; approval is local to this host and not shared with clones.")
 		fmt.Println("Existing approvals remain unchanged; 'just-code bindings revoke github' disables the grant.")
-		answer, _ := promptLine(in, "Approve the GitHub workflow for this project? [y/N]: ")
-		answers.GitHubWorkflow = strings.EqualFold(strings.TrimSpace(answer), "y")
+		prompt := "Approve the GitHub workflow for this project? [y/N]: "
+		if answers.GitHubWorkflow {
+			prompt = "Approve the GitHub workflow for this project? [Y/n]: "
+		}
+		if answer, ok := promptLine(in, prompt); ok && strings.TrimSpace(answer) != "" {
+			answers.GitHubWorkflow = strings.EqualFold(strings.TrimSpace(answer), "y")
+		}
 	}
 	if !opts.Set["skills"] {
 		fmt.Println("\nProject skills — selected artifacts are pinned and installed inside the Microsandbox guest.")
@@ -466,52 +598,93 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", err)
 		} else {
-			for _, skill := range catalogue {
-				label := skill.ID
-				if skill.Experimental {
-					label += " (EXPERIMENTAL; review before adopting)"
-				}
-				fmt.Printf("  %-42s %s\n", label, skill.Description)
-			}
+			printProjectSkills(catalogue)
 		}
-		answer, ok := promptLine(in, "  skill IDs (comma-separated; empty keeps current, `none` clears): ")
-		if ok && strings.TrimSpace(answer) != "" {
-			answers.SkillsSet = true
-			if strings.TrimSpace(answer) != "none" {
-				for _, id := range strings.Split(answer, ",") {
+		if !answers.SkillsSet {
+			current, err := currentProjectSkillSelection(answers.Root)
+			if err != nil {
+				return answers, fmt.Errorf("read current project skills: %w", err)
+			}
+			answers.Skills = current
+		}
+	skillInput:
+		for {
+			current := "none"
+			if len(answers.Skills) > 0 {
+				current = strings.Join(answers.Skills, ",")
+			}
+			answer, ok := promptLine(in, "  skills ["+current+"] (IDs, `search <term>`, `list`, `none`; Enter keeps): ")
+			if !ok || strings.TrimSpace(answer) == "" {
+				break
+			}
+			value := strings.TrimSpace(answer)
+			lower := strings.ToLower(value)
+			switch {
+			case lower == "none":
+				answers.Skills = nil
+				answers.SkillsSet = true
+				break skillInput
+			case lower == "list":
+				printProjectSkills(catalogue)
+			case strings.HasPrefix(lower, "search "):
+				matches := justcode.SearchProjectSkills(catalogue, strings.TrimSpace(value[len("search "):]))
+				if len(matches) == 0 {
+					fmt.Println("  No matching skills.")
+					continue
+				}
+				printProjectSkills(matches)
+			default:
+				answers.Skills = nil
+				for _, id := range strings.Split(value, ",") {
 					answers.Skills = append(answers.Skills, strings.TrimSpace(id))
 				}
+				answers.SkillsSet = true
+				break skillInput
 			}
 		}
 	}
 	if !opts.Set["mcps"] {
-		fmt.Println("\nRemote MCPs — curated remote services called from the guest:")
-		for _, connector := range justcode.MCPConnectors() {
-			fmt.Printf("  %-12s %s (%s; auth: %s)\n", connector.ID, connector.Endpoint, connector.Destination, connector.Credential)
+		fmt.Println("\nMCPs — curated remote services and optional guest-local browser tools:")
+		for _, choice := range justcode.MCPSelections() {
+			fmt.Printf("  %-16s %s\n", choice.ID, choice.Description)
 		}
-		current := []string(nil)
-		if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
-			if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
-				current = manifest.MCPConnectors
+		current := append([]string(nil), answers.MCPConnectors...)
+		if !answers.MCPsSet {
+			current = nil
+			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
+				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
+					current = manifest.MCPConnectors
+				}
 			}
+			answers.MCPConnectors = append([]string(nil), current...)
 		}
-		answer, ok := promptLine(in, "  connector IDs (comma-separated; empty keeps current, `none` clears): ")
+		currentLabel := strings.Join(current, ",")
+		if currentLabel == "" {
+			currentLabel = "none"
+		}
+		answer, ok := promptLine(in, "  MCP IDs ["+currentLabel+"] (comma-separated; Enter keeps, `none` clears): ")
 		if ok && strings.TrimSpace(answer) != "" {
 			answers.MCPsSet = true
-			if strings.TrimSpace(answer) != "none" {
+			answers.MCPConnectors = nil
+			if !strings.EqualFold(strings.TrimSpace(answer), "none") {
 				for _, id := range strings.Split(answer, ",") {
 					answers.MCPConnectors = append(answers.MCPConnectors, strings.TrimSpace(id))
 				}
 			}
-		} else {
-			answers.MCPConnectors = current
 		}
 	}
+	if justcode.HasBrowserMCPSelection(answers.MCPConnectors) {
+		host, detectErr := detectHostResourcesFn()
+		answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, answers.CPUs, answers.MemoryMB, detectErr)
+		fmt.Println("\n" + answers.BrowserResourceGuidance)
+	}
 	if !opts.Set["skills-storage"] {
-		localOnly := false
-		if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
-			if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
-				localOnly = manifest.SkillsLocalOnly
+		localOnly := answers.SkillsLocalOnly
+		if !answers.SkillsLocalOnlySet {
+			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
+				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
+					localOnly = manifest.SkillsLocalOnly
+				}
 			}
 		}
 		defaultStorage := "versioned"
@@ -533,6 +706,16 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		answers.SkillsLocalOnlySet = true
 	}
 	return answers, nil
+}
+
+func printProjectSkills(skills []justcode.ProjectSkill) {
+	for _, skill := range skills {
+		label := skill.ID
+		if skill.Experimental {
+			label += " (EXPERIMENTAL; review before adopting)"
+		}
+		fmt.Printf("  %-42s %s\n", label, skill.Description)
+	}
 }
 
 // githubInitPreflightFn resolves the stored token and the host origin before

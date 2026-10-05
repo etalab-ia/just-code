@@ -132,6 +132,10 @@ type InstanceState struct {
 	// it must not look like a difference the sandbox was created with.
 	Isolation string `json:"isolation"`
 	Image     string `json:"image"`
+	// GuestProfile identifies creation-fixed browser provisioning details
+	// embedded in the guest start script. A profile change requires explicit
+	// recreation because the runtime cannot replace that persisted script.
+	GuestProfile string `json:"guestProfile,omitempty"`
 	// CPUs and MemoryMB are creation-fixed too: the sandbox SDK sets them at
 	// creation and cannot resize a running guest, so a change must ask for a
 	// recreation instead of silently keeping the old sizing.
@@ -163,18 +167,19 @@ type InstanceState struct {
 	Pending []string `json:"pending,omitempty"`
 }
 
-const instanceStateSchemaVersion = 1
+const instanceStateSchemaVersion = 2
 
 // maxSupportedInstanceStateSchema is the newest state schema this build can
 // read. A newer schema is an error, never a trigger for deletion: unknown
 // persisted state must not destroy anything.
-const maxSupportedInstanceStateSchema = 1
+const maxSupportedInstanceStateSchema = 2
 
 // DesiredState is the configuration just-code wants the instance to have.
 type DesiredState struct {
-	Instance  string
-	Isolation Isolation
-	Image     string
+	Instance     string
+	Isolation    Isolation
+	Image        string
+	GuestProfile string
 	// CPUs and MemoryMB are the guest sizing the instance should have. They
 	// are creation-fixed, so a change is reported as a recreation.
 	CPUs     int
@@ -194,7 +199,7 @@ type DesiredState struct {
 	Username string
 	// GitHubOrigin participates only when the optional binding is resolved.
 	GitHubOrigin string
-	// MCPConnectors is the desired curated remote connector selection (P15).
+	// MCPConnectors is the desired managed remote/local connector selection.
 	// It participates in the revision because deselection is an authorization
 	// surface: a removed connector must not stay enabled in a healthy running
 	// guest until the next manual boot. The managed Model is deliberately
@@ -282,7 +287,7 @@ func PlanReconcile(applied *InstanceState, desired DesiredState, facts Reconcile
 			// became a provenance check in P22) or omit one it does (guest
 			// sizing), because it is the only thing the user sees before
 			// deciding whether to lose the guest's state.
-			Reason: "the isolation level, the image, the workspace provenance or the guest sizing changed; these are fixed at creation",
+			Reason: "the isolation level, the image, the guest profile, the workspace provenance or the guest sizing changed; these are fixed at creation",
 		}
 	}
 	if applied == nil {
@@ -539,11 +544,14 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 	d := DesiredState{
 		Instance:      m.InstanceName(),
 		Isolation:     m.cfg.Isolation,
-		Image:         msbImage,
+		Image:         msbImageForMCPs(m.OpenCodeOverlay.MCPConnectors),
 		Username:      m.cfg.Username,
 		CPUs:          m.cfg.CPUs,
 		MemoryMB:      m.cfg.MemoryMB,
 		MCPConnectors: append([]string(nil), m.OpenCodeOverlay.MCPConnectors...),
+	}
+	if len(browserMCPIDs(m.OpenCodeOverlay.MCPConnectors)) > 0 {
+		d.GuestProfile = browserGuestProfileRevision()
 	}
 	if resolved {
 		if hasResolvedGitHubBinding(bindings) {
@@ -579,6 +587,7 @@ func (d DesiredState) toState() InstanceState {
 		Instance:         d.Instance,
 		Isolation:        string(d.Isolation),
 		Image:            d.Image,
+		GuestProfile:     d.GuestProfile,
 		CPUs:             d.CPUs,
 		MemoryMB:         d.MemoryMB,
 		ConfigRevision:   d.ConfigRevision(),
@@ -619,6 +628,7 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 			(applied.MemoryMB != 0 && applied.MemoryMB != desired.MemoryMB)
 		creationFixed := applied.Isolation != string(desired.Isolation) ||
 			applied.Image != desired.Image ||
+			applied.GuestProfile != desired.GuestProfile ||
 			resourcesChanged
 		if creationFixed {
 			facts.CreationFixedChanged = true

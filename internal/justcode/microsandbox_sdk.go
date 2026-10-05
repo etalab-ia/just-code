@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +22,9 @@ import (
 
 // Guest assets are read directly from the binary, without writing host files.
 var (
-	guestPrepScript       = mustAsset("guest-prep.sh")
-	opencodeConfigContent = mustAsset("opencode-config.json")
+	guestPrepScript        = mustAsset("guest-prep.sh")
+	browserGuestPrepScript = mustAsset("browser-guest-prep.sh")
+	opencodeConfigContent  = mustAsset("opencode-config.json")
 )
 
 // msbStartScript composes the guest start script: the shared prep (toolchain,
@@ -29,11 +32,106 @@ var (
 // execs `opencode serve`; in full mode the sandbox is only kept alive — the
 // TUI is launched interactively by RunAgent, not by the entrypoint.
 func msbStartScript(iso Isolation) string {
+	return msbStartScriptFor(iso, nil)
+}
+
+func msbStartScriptFor(iso Isolation, mcpIDs []string) string {
 	tail := "exec opencode serve --hostname 0.0.0.0 --port " + strconv.Itoa(DefaultPort)
 	if iso == IsolationFull {
 		tail = "exec sleep infinity"
 	}
-	return guestPrepScript + tail + "\n"
+	prep := guestPrepScript
+	if len(browserMCPIDs(mcpIDs)) > 0 {
+		prep = browserGuestPrepScript + githubCLIInstallScript() + browserDevToolsStartScript()
+	}
+	return prep + tail + "\n"
+}
+
+func msbImageForMCPs(mcpIDs []string) string {
+	if len(browserMCPIDs(mcpIDs)) > 0 {
+		return msbBrowserImage
+	}
+	return msbImage
+}
+
+func browserGuestProfileRevision() string {
+	parts := []string{
+		msbBrowserImage,
+		browserGuestPrepScript,
+		githubCLIInstallScript(),
+		msbBrowserAptSnapshot,
+		msbBrowserChromiumPackageVersion,
+		msbBrowserFontsLiberationVersion,
+		msbBrowserNodeVersion,
+		msbBrowserNodeNPMVersion,
+		msbBrowserNodeSHA256AMD64,
+		msbBrowserNodeSHA256ARM64,
+		msbBrowserOpenCodeVersion,
+	}
+	for _, browser := range BrowserMCPs() {
+		parts = append(parts, browser.ID, browser.Package+"@"+browser.Version, browser.Command)
+	}
+	revision := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(revision[:])
+}
+
+func browserMCPFingerprint(ids []string) string {
+	browserIDs := browserMCPIDs(ids)
+	if len(browserIDs) == 0 {
+		return ""
+	}
+	parts := []string{
+		browserGuestProfileRevision(),
+		strings.Join(browserIDs, ","),
+		strings.Join(browserMCPInstallPackages(browserIDs), "\x00"),
+		strings.Join(browserMCPBinaries(browserIDs), "\x00"),
+	}
+	fingerprint := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(fingerprint[:])
+}
+
+func browserGuestEnv(ids []string) map[string]string {
+	browserIDs := browserMCPIDs(ids)
+	if len(browserIDs) == 0 {
+		return nil
+	}
+	return map[string]string{
+		"JUST_CODE_APT_SNAPSHOT":             msbBrowserAptSnapshot,
+		"JUST_CODE_CHROMIUM_PACKAGE_VERSION": msbBrowserChromiumPackageVersion,
+		"JUST_CODE_CHROMIUM_VERSION":         msbBrowserChromiumVersion,
+		"JUST_CODE_FONTS_LIBERATION_VERSION": msbBrowserFontsLiberationVersion,
+		"JUST_CODE_NODE_VERSION":             msbBrowserNodeVersion,
+		"JUST_CODE_NODE_NPM_VERSION":         msbBrowserNodeNPMVersion,
+		"JUST_CODE_NODE_SHA256_AMD64":        msbBrowserNodeSHA256AMD64,
+		"JUST_CODE_NODE_SHA256_ARM64":        msbBrowserNodeSHA256ARM64,
+		"JUST_CODE_OPENCODE_VERSION":         msbBrowserOpenCodeVersion,
+		"JUST_CODE_BROWSER_PROFILE":          browserGuestProfileRevision(),
+		msbBrowserMCPIDsEnv:                  strings.Join(browserIDs, ","),
+		msbBrowserMCPPackagesEnv:             strings.Join(browserMCPInstallPackages(browserIDs), " "),
+		msbBrowserMCPBinariesEnv:             strings.Join(browserMCPBinaries(browserIDs), " "),
+		msbBrowserMCPFingerprintEnv:          browserMCPFingerprint(browserIDs),
+	}
+}
+
+func browserDevToolsStartScript() string {
+	// The start script is persisted at creation, so inspect the current guest
+	// env at every boot rather than baking in the initial connector selection.
+	// P03 requires --no-sandbox when Chromium runs as guest root; the microVM
+	// remains the isolation boundary and CDP is guest-loopback only.
+	return "case \",${" + msbBrowserMCPIDsEnv + ":-},\" in\n" +
+		"  *,chrome-devtools,*)\n" +
+		"    mkdir -p /var/log/just-code\n" +
+		"    if ! curl -fsS http://127.0.0.1:9222/json/version >/dev/null 2>&1; then\n" +
+		"      chromium --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=/var/lib/just-code/chromium-profile >/var/log/just-code/chromium.log 2>&1 &\n" +
+		"    fi\n" +
+		"    attempt=0\n" +
+		"    until curl -fsS http://127.0.0.1:9222/json/version >/dev/null 2>&1; do\n" +
+		"      attempt=$((attempt + 1))\n" +
+		"      if [ \"$attempt\" -ge 30 ]; then echo 'guest Chromium DevTools endpoint did not become ready' >&2; exit 1; fi\n" +
+		"      sleep 1\n" +
+		"    done\n" +
+		"    ;;\n" +
+		"esac\n"
 }
 
 func mustAsset(name string) string {

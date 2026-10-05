@@ -35,11 +35,15 @@ func mcpCommand(args []string) (int, error) {
 		return 1, err
 	}
 	if len(ids) == 0 {
-		fmt.Println("No managed remote MCPs configured.")
+		fmt.Println("No managed MCPs configured.")
 		return 0, nil
 	}
 	failed := false
 	for _, id := range ids {
+		if browser, ok := justcode.BrowserMCPByID(id); ok {
+			fmt.Fprintf(os.Stdout, "%-16s guest-local configured (%s@%s); not probed from host\n", id, browser.Package, browser.Version)
+			continue
+		}
 		connector := connectorByID(id)
 		health := probeRemoteMCPFn(context.Background(), nil, connector)
 		fmt.Fprintf(os.Stdout, "%-10s %-28s configured -> %s (%s): %s\n", id, connector.Endpoint, health.State, connector.HealthAction, health.Detail)

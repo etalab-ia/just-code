@@ -435,6 +435,83 @@ func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	}
 }
 
+func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	input := strings.Join([]string{
+		"tart", "backend", "test-model", "3", "2048", "work", "n", "", "context7", "versioned",
+		"edit",
+		"", "", "", "", "", "", "", "", "", "", "", "",
+	}, "\n")
+	code, err := initRun(initOptions{Root: root, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+	if code != 0 || err != nil {
+		t.Fatalf("initRun: code=%d err=%v", code, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Runtime != "tart" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "context7" {
+		t.Fatalf("edit/back lost prior choices: %+v", manifest)
+	}
+}
+
+func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
+	root := initTestProject(t)
+	originalCatalogue := projectSkillCatalogueFn
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return []justcode.ProjectSkill{{ID: "experimental/example", Name: "example", Description: "fixture", Experimental: true}}, nil
+	}
+	t.Cleanup(func() { projectSkillCatalogueFn = originalCatalogue })
+	answers := justcode.InitAnswers{Root: root}
+	set := map[string]bool{
+		"root": true, "runtime": true, "isolation": true, "model": true,
+		"cpus": true, "memory-mb": true, "credential-ref": true, "github": true,
+		"mcps": true, "skills-storage": true,
+	}
+	input := "search fixture\nexperimental/example\n"
+	var got justcode.InitAnswers
+	out := captureStdout(t, func() {
+		var err error
+		got, err = askInitQuestions(bufio.NewReader(strings.NewReader(input)), initOptions{Set: set}, answers)
+		if err != nil {
+			t.Fatalf("askInitQuestions: %v", err)
+		}
+	})
+	if !got.SkillsSet || len(got.Skills) != 1 || got.Skills[0] != "experimental/example" {
+		t.Fatalf("searched selection = %+v", got)
+	}
+	if strings.Count(out, "EXPERIMENTAL; review before adopting") < 2 {
+		t.Fatalf("experimental entries must stay marked in catalogue and search results: %q", out)
+	}
+}
+
+func TestInitSeedsUnspecifiedAnswersFromExistingManifest(t *testing.T) {
+	root := initTestProject(t)
+	wizard := justcode.InitWizard{}
+	plan, err := wizard.Plan(justcode.InitAnswers{
+		Root: root, Runtime: justcode.RuntimeTart, Isolation: justcode.IsolationBackend,
+		Model: "test-model", CPUs: 3, MemoryMB: 2048, CredentialRef: "work",
+		MCPConnectors: []string{"context7"}, MCPsSet: true,
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, justcode.InitAnswers{Root: root})
+	if got.Runtime != justcode.RuntimeTart || got.Isolation != justcode.IsolationBackend || got.Model != "test-model" || got.CPUs != 3 || got.MemoryMB != 2048 || got.CredentialRef != "work" || strings.Join(got.MCPConnectors, ",") != "context7" {
+		t.Fatalf("seeded answers = %+v", got)
+	}
+}
+
 // TestInitRefusesToReplaceWithoutTheFlag pins the guard at the CLI level: the
 // engine refuses too, but the message has to reach the user before anything is
 // written.
