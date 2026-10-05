@@ -326,6 +326,9 @@ func TestContext7RevocationFailureKeepsSelectionForRetry(t *testing.T) {
 // stale proxy registration. The revoke itself reports revoked=false for a
 // nonexistent instance, so the attempt is safe.
 func TestClearingContext7OnNonMicrosandboxRuntimeStillAttemptsGuestRevocation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Tart is not supported on Windows")
+	}
 	originalRevoke := revokeMCPBindingFn
 	revokeCalls := 0
 	revokeMCPBindingFn = func(context.Context, string, justcode.CredentialKind) (bool, bool, error) {
@@ -369,6 +372,9 @@ func TestClearingContext7OnNonMicrosandboxRuntimeStillAttemptsGuestRevocation(t 
 // registration is inert without it, so an unverifiable lookup must warn and
 // proceed rather than block the deselection forever.
 func TestClearingContext7WhenControlPlaneUnreachableProceedsWithWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Tart is not supported on Windows")
+	}
 	originalRevoke := revokeMCPBindingFn
 	revokeMCPBindingFn = func(context.Context, string, justcode.CredentialKind) (bool, bool, error) {
 		return false, false, fmt.Errorf("%w: Microsandbox control plane unavailable", justcode.ErrLookupFailed)
@@ -445,7 +451,7 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 	input := strings.Join([]string{
-		"tart", "backend", "test-model", "3", "2048", "work", "n", "", "context7", "versioned",
+		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "context7", "versioned",
 		"edit",
 		"", "", "", "", "", "", "", "", "", "", "", "",
 	}, "\n")
@@ -457,7 +463,7 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Runtime != "tart" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "context7" {
+	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "context7" {
 		t.Fatalf("edit/back lost prior choices: %+v", manifest)
 	}
 }
@@ -496,7 +502,7 @@ func TestInitSeedsUnspecifiedAnswersFromExistingManifest(t *testing.T) {
 	root := initTestProject(t)
 	wizard := justcode.InitWizard{}
 	plan, err := wizard.Plan(justcode.InitAnswers{
-		Root: root, Runtime: justcode.RuntimeTart, Isolation: justcode.IsolationBackend,
+		Root: root, Runtime: justcode.RuntimeMicrosandbox, Isolation: justcode.IsolationBackend,
 		Model: "test-model", CPUs: 3, MemoryMB: 2048, CredentialRef: "work",
 		MCPConnectors: []string{"context7"}, MCPsSet: true,
 	})
@@ -507,7 +513,7 @@ func TestInitSeedsUnspecifiedAnswersFromExistingManifest(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, justcode.InitAnswers{Root: root})
-	if got.Runtime != justcode.RuntimeTart || got.Isolation != justcode.IsolationBackend || got.Model != "test-model" || got.CPUs != 3 || got.MemoryMB != 2048 || got.CredentialRef != "work" || strings.Join(got.MCPConnectors, ",") != "context7" {
+	if got.Runtime != justcode.RuntimeMicrosandbox || got.Isolation != justcode.IsolationBackend || got.Model != "test-model" || got.CPUs != 3 || got.MemoryMB != 2048 || got.CredentialRef != "work" || strings.Join(got.MCPConnectors, ",") != "context7" {
 		t.Fatalf("seeded answers = %+v", got)
 	}
 }
