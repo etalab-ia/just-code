@@ -54,6 +54,12 @@ function Set-InstallerTestChecksum {
 	$global:InstallerTestSums = "$Hash  just-code-windows-x64.exe`n"
 }
 
+$releaseMetadata = Get-JustCodeReleaseMetadataFromUri -Uri 'https://github.com/etalab-ia/just-code/releases/tag/just-code-v1.2.3'
+Assert-InstallerTest ($releaseMetadata.tag_name -eq 'just-code-v1.2.3') 'latest-release URL parser returned the wrong tag'
+$unexpectedReleaseUriRejected = $false
+try { Get-JustCodeReleaseMetadataFromUri -Uri 'https://example.com/etalab-ia/just-code/releases/tag/just-code-v1.2.3' } catch { $unexpectedReleaseUriRejected = $true }
+Assert-InstallerTest $unexpectedReleaseUriRejected 'latest-release URL parser accepted a non-GitHub URL'
+
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "just-code installer tests $([guid]::NewGuid().ToString('N'))"
 $null = New-Item -ItemType Directory -Path $tempRoot
 try {

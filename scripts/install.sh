@@ -52,6 +52,7 @@ if [ -e "$target" ] && [ ! -f "$target" ]; then
 	die "$target is not a regular file; refusing to replace it"
 fi
 
+command -v curl >/dev/null 2>&1 || die 'curl is required to download the release assets'
 release_url=$(curl --fail --silent --show-error --location --output /dev/null --write-out '%{url_effective}' "$RELEASE_PAGE") || die 'could not resolve the latest stable GitHub release'
 case "$release_url" in
 	"$RELEASE_PREFIX"*) tag=${release_url#"$RELEASE_PREFIX"} ;;

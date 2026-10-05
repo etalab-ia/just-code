@@ -6,15 +6,40 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $script:JustCodeRepository = 'etalab-ia/just-code'
-$script:JustCodeApi = "https://api.github.com/repos/$script:JustCodeRepository"
+$script:JustCodeReleasePage = "https://github.com/$script:JustCodeRepository/releases/latest"
 $script:JustCodeDownload = "https://github.com/$script:JustCodeRepository/releases/download"
 
-function Get-JustCodeLatestRelease {
-	$headers = @{
-		Accept = 'application/vnd.github+json'
-		'User-Agent' = 'just-code-installer'
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+	[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+}
+
+function Get-JustCodeReleaseMetadataFromUri {
+	param([Parameter(Mandatory = $true)][System.Uri]$Uri)
+
+	$tagPrefix = "/$script:JustCodeRepository/releases/tag/"
+	if ($Uri.Scheme -ne 'https' -or $Uri.Host -ine 'github.com' -or -not $Uri.AbsolutePath.StartsWith($tagPrefix, [System.StringComparison]::Ordinal)) {
+		throw "Unexpected GitHub release URL '$Uri'."
 	}
-	Invoke-RestMethod -Uri "$script:JustCodeApi/releases/latest" -Headers $headers -ErrorAction Stop
+	$tag = $Uri.AbsolutePath.Substring($tagPrefix.Length)
+	if (-not $tag -or $tag.Contains('/')) {
+		throw "Unexpected GitHub release URL '$Uri'."
+	}
+	[pscustomobject]@{ tag_name = $tag }
+}
+
+function Get-JustCodeLatestRelease {
+	$response = Invoke-WebRequest -Uri $script:JustCodeReleasePage -Method Head -UserAgent 'just-code-installer' -MaximumRedirection 10 -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+	$baseResponse = $response.BaseResponse
+	$resolvedUri = $null
+	if ($baseResponse -and $baseResponse.PSObject.Properties['ResponseUri']) {
+		$resolvedUri = $baseResponse.ResponseUri
+	} elseif ($baseResponse -and $baseResponse.RequestMessage) {
+		$resolvedUri = $baseResponse.RequestMessage.RequestUri
+	}
+	if (-not $resolvedUri) {
+		throw 'GitHub did not return a resolved release URL.'
+	}
+	Get-JustCodeReleaseMetadataFromUri -Uri $resolvedUri
 }
 
 function Get-JustCodeAssetName {
@@ -37,8 +62,7 @@ function Save-JustCodeReleaseAsset {
 		[Parameter(Mandatory = $true)][string]$Path
 	)
 
-	$headers = @{ 'User-Agent' = 'just-code-installer' }
-	Invoke-WebRequest -Uri $Uri -OutFile $Path -Headers $headers -MaximumRedirection 10 -UseBasicParsing -ErrorAction Stop
+	Invoke-WebRequest -Uri $Uri -OutFile $Path -UserAgent 'just-code-installer' -MaximumRedirection 10 -TimeoutSec 300 -UseBasicParsing -ErrorAction Stop
 	if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or (Get-Item -LiteralPath $Path).Length -eq 0) {
 		throw "Download was empty: $Uri"
 	}
@@ -62,7 +86,11 @@ function Replace-JustCodeBinary {
 		if (Test-Path -LiteralPath $BackupPath) {
 			Remove-Item -LiteralPath $BackupPath -Force
 		}
-		[System.IO.File]::Replace($StagedPath, $TargetPath, $BackupPath)
+		try {
+			[System.IO.File]::Replace($StagedPath, $TargetPath, $BackupPath)
+		} catch {
+			throw "Could not atomically replace $TargetPath. Close any running just-code processes, check write access, and retry. The current executable was not replaced. Details: $($_.Exception.Message)"
+		}
 	} else {
 		[System.IO.File]::Move($StagedPath, $TargetPath)
 	}
@@ -155,7 +183,8 @@ function Install-JustCode {
 		$pathEntries = @($env:Path -split ';' | ForEach-Object { $_.TrimEnd('\') })
 		if (-not ($pathEntries | Where-Object { $_ -ieq $InstallDirectory.TrimEnd('\') })) {
 			Write-Host 'Add the installation directory to PATH for future shells. For this PowerShell session run:'
-			Write-Host '  $env:Path = "$env:LOCALAPPDATA\Programs\just-code;$env:Path"'
+			$pathLiteral = $InstallDirectory.Replace("'", "''")
+			Write-Host "  `$env:Path = '$pathLiteral;' + `$env:Path"
 			Write-Host 'The installer does not edit user profiles or environment settings.'
 		}
 	} finally {

@@ -56,13 +56,6 @@ jobs:
           test "$(go env GOARCH)" = "${{ matrix.arch }}"
       - run: go test ./...
       - run: go build ./cmd/just-code
-      - name: Test POSIX installer on macOS
-        if: matrix.os == 'darwin'
-        run: sh tests/installers/test-posix.sh
-      - name: Test PowerShell installer
-        if: matrix.os == 'windows'
-        shell: pwsh
-        run: ./tests/installers/test-windows.ps1
 
   # The SDK embeds a platform-specific FFI library and uses CGO, so macOS and
   # Windows are built and tested on native runners. These jobs do not boot a
@@ -84,6 +77,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Test POSIX installer on macOS
+        if: matrix.os == 'darwin'
+        run: sh tests/installers/test-posix.sh
+      - name: Test PowerShell installer
+        if: matrix.os == 'windows'
+        shell: powershell
+        run: ./tests/installers/test-windows.ps1
       # The runner's gcc is an x86_64 MinGW cross compiler, which cannot
       # assemble arm64. CGO needs a GNU-ABI aarch64 compiler, so the pinned
       # LLVM-MinGW toolchain is installed for the Windows arm64 leg.
