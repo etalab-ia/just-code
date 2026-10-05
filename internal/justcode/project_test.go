@@ -279,6 +279,84 @@ func TestProjectLockReleaseGivesUpAfterBoundedAttempts(t *testing.T) {
 	}
 }
 
+// TestProjectLockAcquireRetriesTransientReadFailure proves the waiter
+// survives a ReadFile that fails transiently on the lock path — the
+// Windows shape where an antivirus/indexer handle briefly denies read
+// access to the freshly written lockfile. Aborting on the first read
+// error made a concurrent second invocation fail to acquire the lock.
+func TestProjectLockAcquireRetriesTransientReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "project-update.lock")
+	// The holder uses the plain FS: the flaky wrapper is the waiter's
+	// view of the lock, whose ReadFile hits the transient failures.
+	holder := &ProjectLock{Path: lockPath, FS: DefaultFS}
+	holderRelease, err := holder.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holderRelease()
+	fs := &flakyReadFS{FS: DefaultFS, path: lockPath, failFor: 3}
+	lock := &ProjectLock{Path: lockPath, FS: fs, WaitTimeout: 5 * time.Second, PollInterval: time.Millisecond}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		holderRelease()
+	}()
+	if _, err := lock.Acquire(); err != nil {
+		t.Fatalf("waiter failed to acquire through transient read failures: %v", err)
+	}
+	if fs.reads < fs.failFor {
+		t.Fatalf("waiter did not retry through read failures (reads: %d)", fs.reads)
+	}
+}
+
+// TestProjectLockAcquireReturnsPermanentReadError pins that a permanently
+// unreadable lock path (e.g. a directory at the lock path) fails fast with
+// the underlying read error, not a generic timeout after spinning for the
+// full wait budget.
+func TestProjectLockAcquireReturnsPermanentReadError(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "project-update.lock")
+	if err := os.Mkdir(lockPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := &ProjectLock{Path: lockPath, FS: DefaultFS, WaitTimeout: 300 * time.Millisecond, PollInterval: time.Millisecond}
+	started := time.Now()
+	_, err := lock.Acquire()
+	if err == nil {
+		t.Fatal("Acquire succeeded with a directory at the lock path")
+	}
+	// The underlying error surfaces via different branches per OS (on
+	// Windows the exclusive create on a directory fails directly), so
+	// assert on what the code owns: the actionable error, not a generic
+	// timeout.
+	if strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %v; want the underlying read error, not a generic timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Acquire spun for %s; want it to stop at the wait deadline", elapsed)
+	}
+}
+
+// flakyReadFS fails ReadFile on path the first failFor times, mirroring a
+// transient sharing violation. Other paths delegate untouched.
+type flakyReadFS struct {
+	FS
+	failFor int
+	path    string
+	reads   int
+}
+
+func (f *flakyReadFS) ReadFile(path string) ([]byte, error) {
+	if path != f.path {
+		return f.FS.ReadFile(path)
+	}
+	f.reads++
+	if f.reads <= f.failFor {
+		return nil, fmt.Errorf("sharing violation (transient)")
+	}
+	return f.FS.ReadFile(path)
+}
+
 // flakyRemoveFS fails Remove on path the first failFor times, mirroring a
 // transient sharing violation. Other paths delegate untouched.
 type flakyRemoveFS struct {
