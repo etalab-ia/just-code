@@ -237,6 +237,44 @@ func TestProjectLockAcquireRelease(t *testing.T) {
 	release2()
 }
 
+// TestProjectLockReleaseRetriesTransientRemoveFailure proves the release
+// path survives a Remove that fails a few times before succeeding — the
+// Windows shape where an antivirus/indexer handle briefly denies delete
+// access. A single-attempt release leaks a lock whose PID still looks
+// alive, which processAlive's conservative Windows behaviour cannot steal
+// back, wedging the project.
+func TestProjectLockReleaseRetriesTransientRemoveFailure(t *testing.T) {
+	fs := &flakyRemoveFS{FS: DefaultFS, failFor: 3}
+	lock := &ProjectLock{Path: filepath.Join(t.TempDir(), "project-update.lock"), FS: fs}
+	release, err := lock.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if _, err := os.Stat(lock.Path); !os.IsNotExist(err) {
+		t.Fatalf("lock file survived release: %v (remove attempts: %d)", err, fs.attempts)
+	}
+	if fs.attempts != fs.failFor+1 {
+		t.Fatalf("release gave up after %d attempts; want %d (retry through transient failures)", fs.attempts, fs.failFor+1)
+	}
+}
+
+// flakyRemoveFS fails Remove on the path under FailForPath the first
+// failFor times, mirroring a transient sharing violation.
+type flakyRemoveFS struct {
+	FS
+	failFor  int
+	attempts int
+}
+
+func (f *flakyRemoveFS) Remove(path string) error {
+	f.attempts++
+	if f.attempts <= f.failFor {
+		return fmt.Errorf("sharing violation (transient)")
+	}
+	return f.FS.Remove(path)
+}
+
 func TestProjectLockConcurrentSetupSingleWinner(t *testing.T) {
 	// The mapFS WriteFile cannot fail, so the lock's exclusive property is
 	// exercised against the real filesystem: two concurrent Acquires must
