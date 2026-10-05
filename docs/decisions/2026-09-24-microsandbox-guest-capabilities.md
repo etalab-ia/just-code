@@ -191,8 +191,9 @@ Microsandbox v0.7.3. Le runtime passe la matrice complète.
 Le changement P16 ajoute un profil navigateur distinct, sans modifier l'image
 légère par défaut. Le profil utilise Debian bookworm-slim, index multi-architecture
 épinglé par digest `sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251`,
-le snapshot APT `20261002T000000Z`, Chromium `154.0.8037.92`,
-`fonts-liberation` `1:2.1.5-3` et Node.js `22.14.0` vérifié par SHA-256 sur
+le snapshot APT `20261002T000000Z`, Chromium `154.0.8037.92` (amd64) /
+`154.0.8037.57` (arm64), `fonts-liberation` `1:1.07.4-11` et Node.js
+`22.14.0` vérifié par SHA-256 sur
 amd64 et arm64. OpenCode reste à `1.18.32`; les MCP locaux sont Playwright
 `0.0.82` et Chrome DevTools `1.10.1`.
 
