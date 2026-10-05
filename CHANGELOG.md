@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.0...just-code-v0.7.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **mcp:** réparer les épingles apt du profil navigateur (P16) ([#118](https://github.com/etalab-ia/just-code/issues/118)) ([7e87dfe](https://github.com/etalab-ia/just-code/commit/7e87dfed3d13b334611d8dd2ffaca75fb0189600))
+
 ## [0.7.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.6.0...just-code-v0.7.0) (2026-10-05)
 
 
