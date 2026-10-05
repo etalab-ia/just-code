@@ -52,7 +52,7 @@ if [ ! -f "$toolchain_marker" ]; then
   rm -f "$node_archive"
 
   test "$(node --version)" = "v${JUST_CODE_NODE_VERSION}"
-  test "$(npm --version)" = "$JUST_CODE_NPM_VERSION"
+  test "$(npm --version)" = "$JUST_CODE_NODE_NPM_VERSION"
   npm install --global "opencode-ai@${JUST_CODE_OPENCODE_VERSION}"
   test "$(opencode --version)" = "$JUST_CODE_OPENCODE_VERSION"
   test "$(dpkg-query -W -f='${Version}' chromium)" = "$chromium_package_version"
