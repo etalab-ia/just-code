@@ -85,6 +85,47 @@ func TestGitHubCLIInstallScriptIsVersionAndChecksumPinned(t *testing.T) {
 	}
 }
 
+// TestGitHubCLIInstallScriptCannotExitComposedStartScript pins the P16 fix:
+// the installer is concatenated into the guest start script (prep + gh +
+// devtools + exec opencode serve), so an early `exit 0` when gh is already
+// installed would terminate the whole script and leave the backend down on
+// every restart. The early exit must be scoped to the installer function.
+func TestGitHubCLIInstallScriptCannotExitComposedStartScript(t *testing.T) {
+	script := githubCLIInstallScript()
+	if !strings.Contains(script, "just_code_install_gh() (") {
+		t.Fatal("installer must be wrapped in a function so its early exit cannot terminate the composed start script")
+	}
+	// Simulate the composed script: everything after the installer must run
+	// even when the installer takes its already-installed early exit.
+	composed := script + "echo reached-tail\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "start")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+composed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A fake preinstalled gh at the pinned version triggers the early exit.
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ghPath := filepath.Join(bin, "gh")
+	ghScript := "#!/bin/sh\necho \"gh version " + githubCLIVersion + "\"\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", path)
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"HOME="+dir)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("composed start script must survive an already-installed gh: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "reached-tail") {
+		t.Fatalf("tail after the installer did not run; output: %s", out)
+	}
+}
+
 func TestGitHubBranchNameIsUniqueAndScoped(t *testing.T) {
 	first, err := GitHubBranchName("project name/with spaces")
 	if err != nil {
