@@ -301,6 +301,15 @@ func TestReadProjectManifestSecretFieldRejected(t *testing.T) {
 	}
 }
 
+func TestReadLockfileSecretFieldRejected(t *testing.T) {
+	fs := newMapFS()
+	fs.files["/root/.just-code/lock.json"] = []byte(`{"schemaVersion": 3, "entries": {}, "token": "ghp_literal"}`)
+	_, err := ReadLockfile(fs, "/root/.just-code/lock.json")
+	if err == nil || !strings.Contains(err.Error(), "token") {
+		t.Fatalf("err = %v, want secret-field rejection naming token", err)
+	}
+}
+
 func TestProjectManifestMCPSelectionBumpsSchemaAndReadsPreviousVersion(t *testing.T) {
 	fs := newMapFS()
 	path := "/root/.just-code/project.json"
@@ -312,10 +321,10 @@ func TestProjectManifestMCPSelectionBumpsSchemaAndReadsPreviousVersion(t *testin
 	if err := WriteProjectManifest(fs, path, manifest); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(fs.files[path]), `"schemaVersion": 3`) {
-		t.Fatalf("updated manifest did not write schema version 3: %s", fs.files[path])
+	if !strings.Contains(string(fs.files[path]), `"schemaVersion": 4`) {
+		t.Fatalf("updated manifest did not write schema version 4: %s", fs.files[path])
 	}
-	fs.files[path] = []byte(`{"schemaVersion":4}`)
+	fs.files[path] = []byte(`{"schemaVersion":5}`)
 	if _, err := ReadProjectManifest(fs, path); err == nil || !strings.Contains(err.Error(), "newer than this build supports") {
 		t.Fatalf("unsupported future manifest schema error = %v", err)
 	}
@@ -340,7 +349,7 @@ func TestReadLockfileMissingIsEmpty(t *testing.T) {
 
 func TestReadLockfileNewerSchemaRejected(t *testing.T) {
 	fs := newMapFS()
-	fs.files["/root/.just-code/lock.json"] = []byte(`{"schemaVersion": 3, "entries": {}}`)
+	fs.files["/root/.just-code/lock.json"] = []byte(`{"schemaVersion": 4, "entries": {}}`)
 	_, err := ReadLockfile(fs, "/root/.just-code/lock.json")
 	if err == nil || !strings.Contains(err.Error(), "newer than this build supports") {
 		t.Fatalf("err = %v, want unsupported-schema error", err)

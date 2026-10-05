@@ -221,3 +221,13 @@ guest réel au moment de cette note.
 
 La couverture Go et la syntaxe du script de préparation ne remplacent pas ces
 tests d'intégration. Le runtime hôte Linux/KVM reste une qualification séparée.
+
+## Épinglage de l'image Microsandbox par défaut (2026-10-05)
+
+P18 remplace la référence flottante `ghcr.io/anomalyco/opencode:latest` par
+l'index OCI multi-architecture immuable
+`ghcr.io/anomalyco/opencode@sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631`.
+Le digest a été lu dans `Docker-Content-Digest` sur le registre GHCR pour le
+manifest accepté OCI. Une mise à niveau depuis just-code 0.7.0 peut donc
+classer un invité existant comme nécessitant une recréation ; celle-ci reste
+explicite et détruit les sessions, outils et fichiers propres à l'invité.

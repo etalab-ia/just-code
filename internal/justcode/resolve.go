@@ -171,36 +171,40 @@ type ProjectManifest struct {
 	// MCPConnectors are selected entries from the curated remote connector
 	// catalogue. They contain identifiers only, never credentials.
 	MCPConnectors []string `json:"mcpConnectors,omitempty"`
+	// DependencySetID binds this manifest to the lockfile generation written
+	// by an explicit project update. Empty is accepted for pre-P18 projects.
+	DependencySetID string `json:"dependencySetId,omitempty"`
 }
 
 // projectManifestSchemaVersion is the current project.json format version.
-// The bump is unconditional: any manifest written by this build is v3, so
-// pre-P15 binaries reject it outright instead of silently ignoring the new
-// mcpConnectors field. (Re-initializing a project with this build therefore
-// makes it unreadable to older binaries even with no MCP selection.)
-const projectManifestSchemaVersion = 3
+// P18 adds a dependency-set generation so a launch can reject a partially
+// written manifest/lock pair after an interrupted update.
+const projectManifestSchemaVersion = 4
 
 // maxSupportedManifestSchema is the highest manifest schemaVersion this build
 // reads. A newer version is a hard error: the file was written by a binary
 // this one cannot interpret.
-const maxSupportedManifestSchema = 3
+const maxSupportedManifestSchema = 4
 
 // Lockfile is the project lock (.just-code/lock.json): resolved revisions of
 // everything the manifest pins (skills, images, connector packages), so a
 // launch is reproducible without floating "latest" references.
 type Lockfile struct {
 	SchemaVersion int `json:"schemaVersion"`
+	// DependencySetID must match the manifest when set. Empty is accepted for
+	// pre-P18 projects.
+	DependencySetID string `json:"dependencySetId,omitempty"`
 	// Entries maps a manifest pin name to its resolved revision.
 	Entries map[string]string `json:"entries,omitempty"`
 	// Skills pins the selected catalogue artifacts by ID.
 	Skills map[string]SkillLock `json:"skills,omitempty"`
 }
 
-const lockfileSchemaVersion = 2
+const lockfileSchemaVersion = 3
 
 // maxSupportedLockfileSchema is the highest lock.json schemaVersion this
 // build reads.
-const maxSupportedLockfileSchema = 2
+const maxSupportedLockfileSchema = 3
 
 // checkSchemaVersion rejects a version this build cannot interpret. It is
 // shared by all three file formats so the failure mode is uniform.

@@ -69,6 +69,16 @@ func TestParseMCPArgsAroundGlobalRuntimeFlags(t *testing.T) {
 	}
 }
 
+func TestParseUpdateArgs(t *testing.T) {
+	parsed, err := parseArgs([]string{"update", "--skill", "official/rgaa", "--yes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.action != "update" || strings.Join(parsed.updateArgs, " ") != "--skill official/rgaa --yes" {
+		t.Fatalf("parsed = action %q, update args %v", parsed.action, parsed.updateArgs)
+	}
+}
+
 func TestParseGuestMCPIDs(t *testing.T) {
 	ids, err := parseGuestMCPIDs("data-gouv,context7")
 	if err != nil || strings.Join(ids, ",") != "context7,data-gouv" {

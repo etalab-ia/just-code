@@ -40,6 +40,16 @@ func TestBrowserMCPOverlayUsesPinnedGuestLocalCommands(t *testing.T) {
 	}
 }
 
+func TestDefaultMicrosandboxImageIsDigestPinned(t *testing.T) {
+	if strings.Contains(msbImage, ":latest") || !strings.Contains(msbImage, "@sha256:") {
+		t.Fatalf("default Microsandbox image is floating: %q", msbImage)
+	}
+	digest := strings.TrimPrefix(msbImage[strings.LastIndex(msbImage, "@sha256:"):], "@sha256:")
+	if !isSHA256(digest) {
+		t.Fatalf("default Microsandbox image has an invalid digest: %q", digest)
+	}
+}
+
 func TestMCPSelectionCombinesRemoteAndBrowserWithoutInstallingUnselectedTools(t *testing.T) {
 	ids, err := ValidateMCPConnectorIDs([]string{"playwright", "data-gouv"})
 	if err != nil || strings.Join(ids, ",") != "data-gouv,playwright" {

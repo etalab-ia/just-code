@@ -147,10 +147,29 @@ func ReadLockfile(fs FS, path string) (Lockfile, error) {
 	if err := json.Unmarshal(data, &lf); err != nil {
 		return Lockfile{}, fmt.Errorf("lockfile %s: %w", path, err)
 	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return Lockfile{}, fmt.Errorf("lockfile %s: invalid JSON: %w", path, err)
+	}
+	if err := checkNoSecretFields("project lockfile", raw); err != nil {
+		return Lockfile{}, err
+	}
 	if err := checkSchemaVersion("lockfile", lf.SchemaVersion, maxSupportedLockfileSchema); err != nil {
 		return Lockfile{}, err
 	}
 	return lf, nil
+}
+
+// ValidateDependencySet rejects a manifest/lock pair split by an interrupted
+// update. Legacy pairs with no generation remain readable.
+func ValidateDependencySet(pm ProjectManifest, lf Lockfile) error {
+	if pm.DependencySetID == "" && lf.DependencySetID == "" {
+		return nil
+	}
+	if !isUpdateID(pm.DependencySetID) || pm.DependencySetID != lf.DependencySetID {
+		return fmt.Errorf("project manifest and lockfile belong to different dependency sets; repair the pair before launch")
+	}
+	return nil
 }
 
 // atomicWrite writes data to path via a temp file + rename, creating parent
