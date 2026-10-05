@@ -110,7 +110,9 @@ func validGitHubRepo(s string) bool {
 // the Microsandbox guest only. The release checksums are embedded; no host gh
 // executable or host credential helper is used by the guest workflow.
 func githubCLIInstallScript() string {
-	return fmt.Sprintf(`set -eu
+	return fmt.Sprintf(`
+just_code_install_gh() (
+  set -eu
 version=%s
 case "$(uname -m)" in
   x86_64|amd64) arch=amd64; digest=%s ;;
@@ -133,6 +135,8 @@ cp "$tmp/gh_${version}_linux_${arch}/bin/gh" "$tmp/gh"
 chmod 0755 "$tmp/gh"
 mv "$tmp/gh" "$binary"
 "$binary" --version | grep -q "^gh version $version"
+)
+just_code_install_gh
 `, githubCLIVersion, githubCLIAMD64SHA, githubCLIARM64SHA, githubCLIVersion)
 }
 
