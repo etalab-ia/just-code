@@ -37,19 +37,27 @@ Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence
 
 ### Binaire précompilé (recommandé)
 
-Chaque [release](https://github.com/etalab-ia/just-code/releases) publie des binaires pour `darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe` et `windows-arm64.exe`, avec un fichier `SHA256SUMS`.
+Chaque [release](https://github.com/etalab-ia/just-code/releases) publie des binaires pour `darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe` et `windows-arm64.exe`, avec un fichier `SHA256SUMS`. macOS Intel n'est pas pris en charge : le SDK Microsandbox ne fournit pas de bibliothèque FFI pour `darwin/amd64`.
 
-Exemple sur Mac Apple Silicon :
+Sur macOS ou Linux, télécharge et lance l'installateur POSIX :
 
-```bash
-curl -fsSLO https://github.com/etalab-ia/just-code/releases/latest/download/just-code-darwin-arm64
-curl -fsSLO https://github.com/etalab-ia/just-code/releases/latest/download/SHA256SUMS
-shasum -a 256 -c SHA256SUMS --ignore-missing
-chmod +x just-code-darwin-arm64
-sudo mv just-code-darwin-arm64 /usr/local/bin/just-code
+```sh
+curl -fsSL https://raw.githubusercontent.com/etalab-ia/just-code/main/scripts/install.sh -o install-just-code.sh
+sh install-just-code.sh
 ```
 
-Adapte le nom de l'asset à ta plateforme (`just-code-linux-x64`, `just-code-linux-arm64`, `just-code-windows-x64.exe`, `just-code-windows-arm64.exe`). Sur Linux, remplace `shasum -a 256` par `sha256sum`. macOS Intel n'est pas publié (le SDK Microsandbox ne fournit pas de bibliothèque FFI pour `darwin/amd64`).
+Dans PowerShell sous Windows :
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/etalab-ia/just-code/main/scripts/install.ps1 -OutFile install-just-code.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-just-code.ps1
+```
+
+L'installateur choisit une seule release stable, télécharge le binaire et `SHA256SUMS` depuis cette même release, puis compare l'empreinte avant de remplacer l'installation. Le binaire est installé sans privilèges élevés sous `~/.local/bin` (macOS/Linux) ou `$env:LOCALAPPDATA\Programs\just-code` (Windows). Une mise à niveau conserve le binaire précédent sous `just-code.previous` (macOS/Linux) ou `just-code.previous.exe` (Windows). Sous Windows, ferme les sessions `just-code` en cours avant la mise à niveau. Si `just-code setup` échoue, restaure le binaire précédent dans le même répertoire ; sous Windows, par exemple : `Copy-Item -LiteralPath "$env:LOCALAPPDATA\Programs\just-code\just-code.previous.exe" -Destination "$env:LOCALAPPDATA\Programs\just-code\just-code.exe" -Force`. L'assistant `just-code setup` est lancé après l'installation.
+
+Si le répertoire d'installation n'est pas déjà dans `PATH`, l'installateur affiche la commande à exécuter dans la session courante. Il ne modifie pas les profils de shell ni les variables d'environnement persistantes. Sous Windows, l'exécution utilise `-ExecutionPolicy Bypass` uniquement pour le processus PowerShell lancé par cette commande ; aucune stratégie permanente n'est changée.
+
+La somme SHA-256 détecte une altération ou un mélange d'assets, mais elle est téléchargée depuis la même release GitHub que le binaire. Les releases des binaires `just-code` ne publient pas d'attestation vérifiée de provenance : cette vérification ne prouve donc pas l'identité de l'éditeur. Les scripts d'installation ne sont pas signés ni attestés non plus ; leur provenance doit être évaluée séparément.
 
 Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-hoc (requise pour exécuter un binaire non signé sur Apple Silicon). `curl` ne pose pas l'attribut `com.apple.quarantine`, donc Gatekeeper ne bloque pas ce chemin d'installation ; un téléchargement via navigateur reste à débloquer avec `xattr -d com.apple.quarantine <binaire>`. La notarisation complète exigerait une adhésion Apple Developer et un certificat Developer ID.
 

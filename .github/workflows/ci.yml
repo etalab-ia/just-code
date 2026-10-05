@@ -21,6 +21,8 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Test POSIX installer
+        run: sh tests/installers/test-posix.sh
 
   # Linux builds inside Ubuntu 20.04 so the binary remains compatible with the
   # SDK's glibc baseline instead of inheriting the runner host's newer glibc.
@@ -75,6 +77,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Test POSIX installer on macOS
+        if: matrix.os == 'darwin'
+        run: sh tests/installers/test-posix.sh
+      - name: Test PowerShell installer
+        if: matrix.os == 'windows'
+        shell: powershell
+        run: ./tests/installers/test-windows.ps1
       # The runner's gcc is an x86_64 MinGW cross compiler, which cannot
       # assemble arm64. CGO needs a GNU-ABI aarch64 compiler, so the pinned
       # LLVM-MinGW toolchain is installed for the Windows arm64 leg.
