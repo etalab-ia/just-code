@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.1...just-code-v0.7.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* **mcp:** corriger le nom de la variable npm dans le script de préparation ([#121](https://github.com/etalab-ia/just-code/issues/121)) ([fdd532a](https://github.com/etalab-ia/just-code/commit/fdd532a892bc5f5ac874bd13e5ffef8258015b1a))
+
 ## [0.7.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.0...just-code-v0.7.1) (2026-10-05)
 
 
