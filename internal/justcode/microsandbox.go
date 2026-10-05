@@ -18,9 +18,14 @@ const (
 	msbBrowserImage = "debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251"
 
 	msbBrowserAptSnapshot            = "20261002T000000Z"
-	msbBrowserChromiumPackageVersion = "154.0.8037.92-1~deb12u1"
-	msbBrowserChromiumVersion        = "154.0.8037.92"
-	msbBrowserFontsLiberationVersion = "1:2.1.5-3"
+	// Chromium point releases differ between architectures in the pinned
+	// snapshot (bookworm-security carries .92 for amd64 and .57 for arm64),
+	// so the package pin is per-architecture like the Node SHA-256 below.
+	msbBrowserChromiumPackageVersionAMD64 = "154.0.8037.92-1~deb12u1"
+	msbBrowserChromiumPackageVersionARM64 = "154.0.8037.57-1~deb12u1"
+	msbBrowserChromiumVersionAMD64        = "154.0.8037.92"
+	msbBrowserChromiumVersionARM64        = "154.0.8037.57"
+	msbBrowserFontsLiberationVersion      = "1:1.07.4-11"
 	msbBrowserNodeVersion            = "22.14.0"
 	msbBrowserNodeNPMVersion         = "10.9.2"
 	msbBrowserNodeSHA256AMD64        = "69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec"

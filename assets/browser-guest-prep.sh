@@ -12,9 +12,23 @@ if [ ! -f "$toolchain_marker" ]; then
     "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${JUST_CODE_APT_SNAPSHOT} bookworm-security main" \
     > /etc/apt/sources.list
   apt-get -o Acquire::Check-Valid-Until=false update
+  case "$(uname -m)" in
+    x86_64|amd64)
+      chromium_package_version=$JUST_CODE_CHROMIUM_PACKAGE_VERSION_AMD64
+      chromium_version=$JUST_CODE_CHROMIUM_VERSION_AMD64
+      ;;
+    aarch64|arm64)
+      chromium_package_version=$JUST_CODE_CHROMIUM_PACKAGE_VERSION_ARM64
+      chromium_version=$JUST_CODE_CHROMIUM_VERSION_ARM64
+      ;;
+    *)
+      echo "Chromium is not qualified for $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
   apt-get install -y --no-install-recommends \
     ca-certificates curl git xz-utils \
-    "chromium=${JUST_CODE_CHROMIUM_PACKAGE_VERSION}" \
+    "chromium=${chromium_package_version}" \
     "fonts-liberation=${JUST_CODE_FONTS_LIBERATION_VERSION}"
 
   case "$(uname -m)" in
@@ -41,9 +55,9 @@ if [ ! -f "$toolchain_marker" ]; then
   test "$(npm --version)" = "$JUST_CODE_NPM_VERSION"
   npm install --global "opencode-ai@${JUST_CODE_OPENCODE_VERSION}"
   test "$(opencode --version)" = "$JUST_CODE_OPENCODE_VERSION"
-  test "$(dpkg-query -W -f='${Version}' chromium)" = "$JUST_CODE_CHROMIUM_PACKAGE_VERSION"
+  test "$(dpkg-query -W -f='${Version}' chromium)" = "$chromium_package_version"
   test "$(dpkg-query -W -f='${Version}' fonts-liberation)" = "$JUST_CODE_FONTS_LIBERATION_VERSION"
-  test "$(chromium --version | sed 's/^Chromium //; s/ .*//')" = "$JUST_CODE_CHROMIUM_VERSION"
+  test "$(chromium --version | sed 's/^Chromium //; s/ .*//')" = "$chromium_version"
 
   printf '%s\n' "$JUST_CODE_BROWSER_PROFILE" > "${toolchain_marker}.tmp"
   mv "${toolchain_marker}.tmp" "$toolchain_marker"

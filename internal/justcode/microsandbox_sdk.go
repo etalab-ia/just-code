@@ -60,7 +60,8 @@ func browserGuestProfileRevision() string {
 		browserGuestPrepScript,
 		githubCLIInstallScript(),
 		msbBrowserAptSnapshot,
-		msbBrowserChromiumPackageVersion,
+		msbBrowserChromiumPackageVersionAMD64,
+		msbBrowserChromiumPackageVersionARM64,
 		msbBrowserFontsLiberationVersion,
 		msbBrowserNodeVersion,
 		msbBrowserNodeNPMVersion,
@@ -97,8 +98,10 @@ func browserGuestEnv(ids []string) map[string]string {
 	}
 	return map[string]string{
 		"JUST_CODE_APT_SNAPSHOT":             msbBrowserAptSnapshot,
-		"JUST_CODE_CHROMIUM_PACKAGE_VERSION": msbBrowserChromiumPackageVersion,
-		"JUST_CODE_CHROMIUM_VERSION":         msbBrowserChromiumVersion,
+		"JUST_CODE_CHROMIUM_PACKAGE_VERSION_AMD64": msbBrowserChromiumPackageVersionAMD64,
+		"JUST_CODE_CHROMIUM_PACKAGE_VERSION_ARM64": msbBrowserChromiumPackageVersionARM64,
+		"JUST_CODE_CHROMIUM_VERSION_AMD64":         msbBrowserChromiumVersionAMD64,
+		"JUST_CODE_CHROMIUM_VERSION_ARM64":         msbBrowserChromiumVersionARM64,
 		"JUST_CODE_FONTS_LIBERATION_VERSION": msbBrowserFontsLiberationVersion,
 		"JUST_CODE_NODE_VERSION":             msbBrowserNodeVersion,
 		"JUST_CODE_NODE_NPM_VERSION":         msbBrowserNodeNPMVersion,
