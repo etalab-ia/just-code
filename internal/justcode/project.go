@@ -401,8 +401,12 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 	// replacement lock created in between is never destroyed.
 	stealPath := l.Path + ".steal"
 	firstAttempt := true
+	var lastReadErr error
 	for {
 		if !firstAttempt && time.Since(started) >= waitTimeout {
+			if lastReadErr != nil {
+				return nil, lastReadErr
+			}
 			return nil, projectLockWaitError(l.FS, l.Path, stealPath, waitTimeout)
 		}
 		firstAttempt = false
@@ -422,7 +426,20 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 			if os.IsNotExist(rerr) {
 				continue
 			}
-			return nil, fmt.Errorf("read project lock %s: %w", l.Path, rerr)
+			// A transient read failure — on Windows, an antivirus or
+			// indexer handle on the freshly written lockfile can deny
+			// read access for a short window — is retried within the
+			// bounded wait instead of aborting the acquisition. The last
+			// read error is kept: if the deadline expires, it is returned
+			// so a permanently unreadable lock path (e.g. a directory)
+			// stays diagnosable instead of degrading into a generic
+			// timeout.
+			lastReadErr = fmt.Errorf("read project lock %s: %w", l.Path, rerr)
+			if time.Since(started) < waitTimeout {
+				time.Sleep(pollInterval)
+				continue
+			}
+			return nil, lastReadErr
 		}
 		pid, hasPID := projectLockPID(data)
 		if hasPID && processAlive(pid) {
@@ -507,7 +524,30 @@ func projectLockFileOwned(fs FS, path string, token []byte) bool {
 
 func removeProjectLockIfOwned(fs FS, path string, token []byte) {
 	if projectLockFileOwned(fs, path, token) {
-		_ = fs.Remove(path)
+		// Removal is retried with backoff: on Windows, antivirus or
+		// indexer handles on a freshly written lockfile can deny delete
+		// access for a short window. A single ignored failure would leak
+		// a lock whose PID still looks alive — processAlive is
+		// deliberately conservative on Windows, so the steal path cannot
+		// recover it and the project wedges.
+		// Ownership is re-checked before each retry: if the file changed
+		// hands or vanished between attempts, it is no longer ours to
+		// remove.
+		delay := 10 * time.Millisecond
+		for attempt := 0; ; attempt++ {
+			err := fs.Remove(path)
+			if err == nil || os.IsNotExist(err) {
+				return
+			}
+			if attempt >= 7 {
+				return
+			}
+			if !projectLockFileOwned(fs, path, token) {
+				return
+			}
+			time.Sleep(delay)
+			delay *= 2
+		}
 	}
 }
 

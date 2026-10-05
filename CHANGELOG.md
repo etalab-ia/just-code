@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.2...just-code-v0.7.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* **mcp:** empêcher l'installateur gh de terminer le script de démarrage ([#123](https://github.com/etalab-ia/just-code/issues/123)) ([c0f2d46](https://github.com/etalab-ia/just-code/commit/c0f2d4624f209e57359102611e3b51d7cbd52628))
+
 ## [0.7.2](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.1...just-code-v0.7.2) (2026-10-05)
 
 

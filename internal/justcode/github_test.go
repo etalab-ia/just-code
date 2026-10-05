@@ -85,6 +85,45 @@ func TestGitHubCLIInstallScriptIsVersionAndChecksumPinned(t *testing.T) {
 	}
 }
 
+// TestGitHubCLIInstallScriptCannotExitComposedStartScript pins the P16 fix:
+// the installer is concatenated into the guest start script (prep + gh +
+// devtools + exec opencode serve), so an early `exit 0` when gh is already
+// installed would terminate the whole script and leave the backend down on
+// every restart. The early exit must be scoped to the installer function.
+func TestGitHubCLIInstallScriptCannotExitComposedStartScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("guest start script uses POSIX shell commands")
+	}
+	script := githubCLIInstallScript()
+	if !strings.Contains(script, "just_code_install_gh() (") {
+		t.Fatal("installer must be wrapped in a function so its early exit cannot terminate the composed start script")
+	}
+	// Simulate the composed script: everything after the installer must run
+	// even when the installer takes its already-installed early exit. The
+	// installer checks a fixed path, so point that path at a fake preinstalled
+	// gh in the test sandbox instead of relying on the host's /usr/local/bin.
+	ghPath := filepath.Join(t.TempDir(), "gh")
+	ghScript := "#!/bin/sh\necho \"gh version " + githubCLIVersion + "\"\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composed := strings.Replace(script, "binary=/usr/local/bin/gh", "binary="+ghPath, 1) + "echo reached-tail\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "start")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+composed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", path)
+	cmd.Env = append(os.Environ(), "HOME="+dir)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("composed start script must survive an already-installed gh: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "reached-tail") {
+		t.Fatalf("tail after the installer did not run; output: %s", out)
+	}
+}
+
 func TestGitHubBranchNameIsUniqueAndScoped(t *testing.T) {
 	first, err := GitHubBranchName("project name/with spaces")
 	if err != nil {
