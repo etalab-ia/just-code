@@ -237,6 +237,68 @@ func TestProjectLockAcquireRelease(t *testing.T) {
 	release2()
 }
 
+// TestProjectLockReleaseRetriesTransientRemoveFailure proves the release
+// path survives a Remove that fails a few times before succeeding — the
+// Windows shape where an antivirus/indexer handle briefly denies delete
+// access. A single-attempt release leaks a lock whose PID still looks
+// alive, which processAlive's conservative Windows behaviour cannot steal
+// back, wedging the project.
+func TestProjectLockReleaseRetriesTransientRemoveFailure(t *testing.T) {
+	dir := t.TempDir()
+	fs := &flakyRemoveFS{FS: DefaultFS, failFor: 3, path: filepath.Join(dir, "project-update.lock")}
+	lock := &ProjectLock{Path: fs.path, FS: fs}
+	release, err := lock.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if _, err := os.Stat(lock.Path); !os.IsNotExist(err) {
+		t.Fatalf("lock file survived release: %v (remove attempts: %d)", err, fs.attempts)
+	}
+	if fs.attempts != fs.failFor+1 {
+		t.Fatalf("release gave up after %d attempts; want %d (retry through transient failures)", fs.attempts, fs.failFor+1)
+	}
+}
+
+// TestProjectLockReleaseGivesUpAfterBoundedAttempts pins the retry cap: a
+// permanently failing Remove must not spin forever.
+func TestProjectLockReleaseGivesUpAfterBoundedAttempts(t *testing.T) {
+	dir := t.TempDir()
+	fs := &flakyRemoveFS{FS: DefaultFS, failFor: 100, path: filepath.Join(dir, "project-update.lock")}
+	lock := &ProjectLock{Path: fs.path, FS: fs, WaitTimeout: time.Second}
+	release, err := lock.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if fs.attempts > 8 {
+		t.Fatalf("release retried %d times; want the 8-attempt cap", fs.attempts)
+	}
+	if _, err := os.Stat(fs.path); os.IsNotExist(err) {
+		t.Fatal("lock file was removed despite permanent remove failures")
+	}
+}
+
+// flakyRemoveFS fails Remove on path the first failFor times, mirroring a
+// transient sharing violation. Other paths delegate untouched.
+type flakyRemoveFS struct {
+	FS
+	failFor  int
+	path     string
+	attempts int
+}
+
+func (f *flakyRemoveFS) Remove(path string) error {
+	if path != f.path {
+		return f.FS.Remove(path)
+	}
+	f.attempts++
+	if f.attempts <= f.failFor {
+		return fmt.Errorf("sharing violation (transient)")
+	}
+	return f.FS.Remove(path)
+}
+
 func TestProjectLockConcurrentSetupSingleWinner(t *testing.T) {
 	// The mapFS WriteFile cannot fail, so the lock's exclusive property is
 	// exercised against the real filesystem: two concurrent Acquires must
