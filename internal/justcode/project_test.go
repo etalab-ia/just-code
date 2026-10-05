@@ -279,6 +279,56 @@ func TestProjectLockReleaseGivesUpAfterBoundedAttempts(t *testing.T) {
 	}
 }
 
+// TestProjectLockAcquireRetriesTransientReadFailure proves the waiter
+// survives a ReadFile that fails transiently on the lock path — the
+// Windows shape where an antivirus/indexer handle briefly denies read
+// access to the freshly written lockfile. Aborting on the first read
+// error made a concurrent second invocation fail to acquire the lock.
+func TestProjectLockAcquireRetriesTransientReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "project-update.lock")
+	// The holder uses the plain FS: the flaky wrapper is the waiter's
+	// view of the lock, whose ReadFile hits the transient failures.
+	holder := &ProjectLock{Path: lockPath, FS: DefaultFS}
+	holderRelease, err := holder.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holderRelease()
+	fs := &flakyReadFS{FS: DefaultFS, path: lockPath, failFor: 3}
+	lock := &ProjectLock{Path: lockPath, FS: fs, WaitTimeout: 5 * time.Second, PollInterval: time.Millisecond}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		holderRelease()
+	}()
+	if _, err := lock.Acquire(); err != nil {
+		t.Fatalf("waiter failed to acquire through transient read failures: %v", err)
+	}
+	if fs.reads < fs.failFor {
+		t.Fatalf("waiter did not retry through read failures (reads: %d)", fs.reads)
+	}
+}
+
+// flakyReadFS fails ReadFile on path the first failFor times, mirroring a
+// transient sharing violation. Other paths delegate untouched.
+type flakyReadFS struct {
+	FS
+	failFor int
+	path    string
+	reads   int
+}
+
+func (f *flakyReadFS) ReadFile(path string) ([]byte, error) {
+	if path != f.path {
+		return f.FS.ReadFile(path)
+	}
+	f.reads++
+	if f.reads <= f.failFor {
+		return nil, fmt.Errorf("sharing violation (transient)")
+	}
+	return f.FS.ReadFile(path)
+}
+
 // flakyRemoveFS fails Remove on path the first failFor times, mirroring a
 // transient sharing violation. Other paths delegate untouched.
 type flakyRemoveFS struct {

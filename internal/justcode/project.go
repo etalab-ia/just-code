@@ -422,6 +422,14 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 			if os.IsNotExist(rerr) {
 				continue
 			}
+			// A transient read failure — on Windows, an antivirus or
+			// indexer handle on the freshly written lockfile can deny
+			// read access for a short window — is retried within the
+			// bounded wait instead of aborting the acquisition.
+			if time.Since(started) < waitTimeout {
+				time.Sleep(pollInterval)
+				continue
+			}
 			return nil, fmt.Errorf("read project lock %s: %w", l.Path, rerr)
 		}
 		pid, hasPID := projectLockPID(data)
