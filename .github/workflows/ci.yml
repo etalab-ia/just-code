@@ -21,6 +21,8 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Test POSIX installer
+        run: sh tests/installers/test-posix.sh
 
   # Linux builds inside Ubuntu 20.04 so the binary remains compatible with the
   # SDK's glibc baseline instead of inheriting the runner host's newer glibc.
@@ -54,6 +56,13 @@ jobs:
           test "$(go env GOARCH)" = "${{ matrix.arch }}"
       - run: go test ./...
       - run: go build ./cmd/just-code
+      - name: Test POSIX installer on macOS
+        if: matrix.os == 'darwin'
+        run: sh tests/installers/test-posix.sh
+      - name: Test PowerShell installer
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: ./tests/installers/test-windows.ps1
 
   # The SDK embeds a platform-specific FFI library and uses CGO, so macOS and
   # Windows are built and tested on native runners. These jobs do not boot a
