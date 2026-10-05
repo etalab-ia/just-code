@@ -309,6 +309,30 @@ func TestProjectLockAcquireRetriesTransientReadFailure(t *testing.T) {
 	}
 }
 
+// TestProjectLockAcquireReturnsPermanentReadError pins that a permanently
+// unreadable lock path (e.g. a directory at the lock path) fails fast with
+// the underlying read error, not a generic timeout after spinning for the
+// full wait budget.
+func TestProjectLockAcquireReturnsPermanentReadError(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "project-update.lock")
+	if err := os.Mkdir(lockPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := &ProjectLock{Path: lockPath, FS: DefaultFS, WaitTimeout: 300 * time.Millisecond, PollInterval: time.Millisecond}
+	started := time.Now()
+	_, err := lock.Acquire()
+	if err == nil {
+		t.Fatal("Acquire succeeded with a directory at the lock path")
+	}
+	if !strings.Contains(err.Error(), "read project lock") {
+		t.Fatalf("error = %v; want the underlying read error, not a generic timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Acquire spun for %s; want it to stop at the wait deadline", elapsed)
+	}
+}
+
 // flakyReadFS fails ReadFile on path the first failFor times, mirroring a
 // transient sharing violation. Other paths delegate untouched.
 type flakyReadFS struct {

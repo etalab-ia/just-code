@@ -401,8 +401,12 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 	// replacement lock created in between is never destroyed.
 	stealPath := l.Path + ".steal"
 	firstAttempt := true
+	var lastReadErr error
 	for {
 		if !firstAttempt && time.Since(started) >= waitTimeout {
+			if lastReadErr != nil {
+				return nil, lastReadErr
+			}
 			return nil, projectLockWaitError(l.FS, l.Path, stealPath, waitTimeout)
 		}
 		firstAttempt = false
@@ -425,12 +429,17 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 			// A transient read failure — on Windows, an antivirus or
 			// indexer handle on the freshly written lockfile can deny
 			// read access for a short window — is retried within the
-			// bounded wait instead of aborting the acquisition.
+			// bounded wait instead of aborting the acquisition. The last
+			// read error is kept: if the deadline expires, it is returned
+			// so a permanently unreadable lock path (e.g. a directory)
+			// stays diagnosable instead of degrading into a generic
+			// timeout.
+			lastReadErr = fmt.Errorf("read project lock %s: %w", l.Path, rerr)
 			if time.Since(started) < waitTimeout {
 				time.Sleep(pollInterval)
 				continue
 			}
-			return nil, fmt.Errorf("read project lock %s: %w", l.Path, rerr)
+			return nil, lastReadErr
 		}
 		pid, hasPID := projectLockPID(data)
 		if hasPID && processAlive(pid) {
