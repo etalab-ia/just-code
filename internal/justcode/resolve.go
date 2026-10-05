@@ -168,15 +168,22 @@ type ProjectManifest struct {
 	// SkillsLocalOnly keeps selections in host state instead of project files.
 	// A checkout with this flag never receives generated skill instructions.
 	SkillsLocalOnly bool `json:"skillsLocalOnly,omitempty"`
+	// MCPConnectors are selected entries from the curated remote connector
+	// catalogue. They contain identifiers only, never credentials.
+	MCPConnectors []string `json:"mcpConnectors,omitempty"`
 }
 
 // projectManifestSchemaVersion is the current project.json format version.
-const projectManifestSchemaVersion = 2
+// The bump is unconditional: any manifest written by this build is v3, so
+// pre-P15 binaries reject it outright instead of silently ignoring the new
+// mcpConnectors field. (Re-initializing a project with this build therefore
+// makes it unreadable to older binaries even with no MCP selection.)
+const projectManifestSchemaVersion = 3
 
 // maxSupportedManifestSchema is the highest manifest schemaVersion this build
 // reads. A newer version is a hard error: the file was written by a binary
 // this one cannot interpret.
-const maxSupportedManifestSchema = 2
+const maxSupportedManifestSchema = 3
 
 // Lockfile is the project lock (.just-code/lock.json): resolved revisions of
 // everything the manifest pins (skills, images, connector packages), so a

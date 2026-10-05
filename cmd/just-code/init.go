@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -51,6 +53,7 @@ type initOptions struct {
 	CredentialRef   string
 	GitHub          bool
 	Skills          []string
+	MCPConnectors   []string
 	SkillsLocalOnly bool
 	Replace         bool
 	Yes             bool
@@ -102,6 +105,21 @@ func parseInitArgs(args []string) (initOptions, error) {
 				return opts, fmt.Errorf("--skill and --clear-skills cannot be used together")
 			}
 			opts.Set["clear-skills"], opts.Set["skills"] = true, true
+		case a == "--mcp":
+			v, err := value()
+			if err != nil {
+				return opts, err
+			}
+			if opts.Set["clear-mcps"] {
+				return opts, fmt.Errorf("--mcp and --clear-mcps cannot be used together")
+			}
+			opts.MCPConnectors = append(opts.MCPConnectors, v)
+			opts.Set["mcps"] = true
+		case a == "--clear-mcps":
+			if opts.Set["mcps"] {
+				return opts, fmt.Errorf("--mcp and --clear-mcps cannot be used together")
+			}
+			opts.Set["clear-mcps"], opts.Set["mcps"] = true, true
 		case a == "--local-only-skills" || a == "--versioned-skills":
 			if opts.Set["skills-storage"] {
 				return opts, fmt.Errorf("choose only one skill storage mode")
@@ -178,6 +196,8 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		CredentialRef:      opts.CredentialRef,
 		GitHubWorkflow:     opts.GitHub,
 		Skills:             opts.Skills,
+		MCPConnectors:      opts.MCPConnectors,
+		MCPsSet:            opts.Set["mcps"],
 		SkillsSet:          opts.Set["skills"],
 		SkillsLocalOnly:    opts.SkillsLocalOnly,
 		SkillsLocalOnlySet: opts.Set["skills-storage"],
@@ -191,7 +211,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// nothing, and in a script it is the most likely thing to be wrong.
 	if !tty && !opts.Set["root"] {
 		return 1, fmt.Errorf("no terminal available: name the project explicitly, e.g. 'just-code init --root <dir> --yes'.\n" +
-			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --skill, --clear-skills, --local-only-skills, --versioned-skills, --replace, --yes")
+			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --skill, --clear-skills, --mcp, --clear-mcps, --local-only-skills, --versioned-skills, --replace, --yes")
 	}
 
 	// The catalogue check reads the credential reference of the project being
@@ -242,8 +262,50 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			return 1, fmt.Errorf("cancelled; nothing was written")
 		}
 	}
+	revokeContext7 := plan.ExistingManifest != nil && containsConnector(plan.ExistingManifest.MCPConnectors, "context7") && !containsConnector(plan.Answers.MCPConnectors, "context7")
+	context7Revoked, context7Live := false, false
+	if revokeContext7 {
+		instance := justcode.InstanceName(plan.Answers.Root, filepath.Base(plan.Answers.Root))
+		path := justcode.BindingApprovalsPath(mcpBindingStateDirFn(), instance)
+		if err := justcode.RevokeBindingApproval(justcode.DefaultFS, path, justcode.CredentialContext7); err != nil {
+			return 1, fmt.Errorf("Context7 credential approval could not be revoked; project selection was not changed: %w", err)
+		}
+		// The revoke is attempted regardless of the recorded runtime: the
+		// recorded runtime can lag a runtime switch, and a preserved sandbox
+		// from the previous runtime would keep its proxy registration (and
+		// the guest's enabled connector) until its next boot. A nonexistent
+		// instance is revoked=false, nil, so the call is safe when no
+		// Microsandbox instance was ever created. When the control plane
+		// cannot be reached to verify the instance, the deselection proceeds
+		// with a warning: the host approval is already revoked (the primary
+		// authorization), a stale registration in a preserved sandbox is
+		// inert without it, and the next reconcile strips it because absence
+		// is authoritative in the binding refresh.
+		context7Revoked, context7Live, err = revokeMCPBindingFn(context.Background(), instance, justcode.CredentialContext7)
+		if err != nil {
+			if errors.Is(err, justcode.ErrLookupFailed) {
+				fmt.Fprintf(os.Stderr, "Warning: could not verify the Microsandbox instance %s to remove the Context7 registration (%v); the host approval is revoked and the stale registration will be removed at the next start.\n", instance, err)
+				context7Revoked, context7Live = false, false
+				err = nil
+			} else {
+				return 1, fmt.Errorf("Context7 host approval was revoked, but the Microsandbox credential could not be revoked; project selection was not changed: %w", err)
+			}
+		}
+	}
 	if err := wizard.Apply(plan, opts.Replace); err != nil {
+		if revokeContext7 {
+			return 1, fmt.Errorf("project configuration was not written; Context7 authorization was revoked: %w", err)
+		}
 		return 1, err
+	}
+	if revokeContext7 {
+		if context7Revoked && context7Live {
+			fmt.Println("Context7 credential approval revoked and removed from the running guest.")
+		} else if context7Revoked {
+			fmt.Println("Context7 credential approval revoked and removed from the stopped guest.")
+		} else {
+			fmt.Println("Context7 credential approval revoked on this host.")
+		}
 	}
 	if plan.Answers.GitHubWorkflow {
 		if err := approveGitHubForProjectFn(plan.Answers.Root); err != nil {
@@ -260,6 +322,15 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		fmt.Println("\nNext: run 'just-code' in this directory to start the agent in its sealed workspace.")
 	}
 	return 0, nil
+}
+
+func containsConnector(ids []string, wanted string) bool {
+	for _, id := range ids {
+		if id == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 var projectSkillCatalogueFn = justcode.ProjectSkillCatalogue
@@ -290,6 +361,11 @@ func validateInitOptions(opts initOptions) error {
 	}
 	if opts.Set["memory-mb"] && (opts.MemoryMB < 1 || opts.MemoryMB > justcode.MaxSandboxMemoryMB) {
 		return fmt.Errorf("--memory-mb must be 1 to %d, got %d", justcode.MaxSandboxMemoryMB, opts.MemoryMB)
+	}
+	if opts.Set["mcps"] {
+		if _, err := justcode.ValidateMCPConnectorIDs(opts.MCPConnectors); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -408,6 +484,29 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			}
 		}
 	}
+	if !opts.Set["mcps"] {
+		fmt.Println("\nRemote MCPs — curated remote services called from the guest:")
+		for _, connector := range justcode.MCPConnectors() {
+			fmt.Printf("  %-12s %s (%s; auth: %s)\n", connector.ID, connector.Endpoint, connector.Destination, connector.Credential)
+		}
+		current := []string(nil)
+		if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
+			if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
+				current = manifest.MCPConnectors
+			}
+		}
+		answer, ok := promptLine(in, "  connector IDs (comma-separated; empty keeps current, `none` clears): ")
+		if ok && strings.TrimSpace(answer) != "" {
+			answers.MCPsSet = true
+			if strings.TrimSpace(answer) != "none" {
+				for _, id := range strings.Split(answer, ",") {
+					answers.MCPConnectors = append(answers.MCPConnectors, strings.TrimSpace(id))
+				}
+			}
+		} else {
+			answers.MCPConnectors = current
+		}
+	}
 	if !opts.Set["skills-storage"] {
 		localOnly := false
 		if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
@@ -460,6 +559,8 @@ func approveGitHubForProject(root string) error {
 }
 
 var approveGitHubForProjectFn = approveGitHubForProject
+var revokeMCPBindingFn = justcode.RevokeInstanceBinding
+var mcpBindingStateDirFn = justcode.DefaultStateDir
 
 // resolvedOrDefault renders the value a reader can reason about: what will
 // actually be used, rather than a zero meaning "unset".
@@ -509,7 +610,7 @@ func initUsage() {
 	fmt.Print(`Usage: just-code init [options]
 
 Configure this project: where the agent runs, which model it uses, how much
-machine it gets, and which credential it may use. The result is
+machine it gets, which remote MCPs it may use, and which credential it may use. The result is
 .just-code/project.json (plus lock.json), read by the launch path.
 
 Options:
@@ -525,6 +626,8 @@ Options:
   --github                enable the protected GitHub guest workflow
   --skill <id>            select an exact catalogue skill (repeatable; e.g. official/rgaa)
   --clear-skills          remove all managed project skills
+  --mcp <id>              select data-gouv or context7 (repeatable)
+  --clear-mcps            remove all managed remote MCPs
   --local-only-skills     keep skill selection and pins in host state, not the checkout
   --versioned-skills      store skill selection and pins in .just-code/
   --replace               allow replacing an existing manifest

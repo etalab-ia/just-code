@@ -129,6 +129,87 @@ func TestConfigRevisionExcludesSecrets(t *testing.T) {
 	}
 }
 
+// TestConfigRevisionIncludesMCPSelection pins the P15 revision contract for
+// the curated remote connector selection: a change must flip the revision so
+// reconciliation applies it to a running healthy guest (deselection is an
+// authorization surface), while an empty selection must not move the revision
+// so pre-P15 state stays compatible.
+func TestConfigRevisionIncludesMCPSelection(t *testing.T) {
+	base := DesiredState{Instance: "i", Isolation: IsolationBackend, Image: "img", Username: "u"}
+	selected := base
+	selected.MCPConnectors = []string{"context7"}
+	if base.ConfigRevision() == selected.ConfigRevision() {
+		t.Fatal("selecting a connector must change the revision")
+	}
+	deselected := base
+	if selected.ConfigRevision() == deselected.ConfigRevision() {
+		t.Fatal("deselecting a connector must change the revision back")
+	}
+	// The compatibility claim is pinned against the hardcoded pre-P15 hash
+	// shape, not by comparing two revisions computed by the same code: a
+	// regression that made an empty selection contribute a part would move
+	// both sides together and stay green, while every pre-P15 state file
+	// would silently mismatch (mass spurious restarts).
+	legacyHash := sha256.New()
+	for _, part := range []string{"jc-state-v1", base.Instance, string(base.Isolation), base.Image, base.Username,
+		"rev:" + base.CredentialRev, "gen:" + base.CredentialGeneration} {
+		_, _ = legacyHash.Write([]byte(part))
+		_, _ = legacyHash.Write([]byte{0})
+	}
+	if got, want := deselected.ConfigRevision(), hex.EncodeToString(legacyHash.Sum(nil))[:16]; got != want {
+		t.Fatalf("empty selection revision = %s, want unchanged pre-P15 hash %s (legacy state compatibility)", got, want)
+	}
+	reordered := selected
+	reordered.MCPConnectors = []string{"context7", "data-gouv"}
+	canonical := selected
+	canonical.MCPConnectors = []string{"data-gouv", "context7"}
+	if reordered.ConfigRevision() != canonical.ConfigRevision() {
+		t.Fatal("the revision must not depend on the order the connectors were listed in")
+	}
+}
+
+// TestPlanReconcileRestartsRunningGuestOnMCPChange pins the classification
+// that makes a deselection effective: a changed connector selection on a
+// running, healthy guest must not take the no-op path.
+func TestPlanReconcileRestartsRunningGuestOnMCPChange(t *testing.T) {
+	base := DesiredState{Instance: "i", Isolation: IsolationBackend, Image: "img", Username: "u"}
+	applied := base.toState()
+	desired := base
+	desired.MCPConnectors = []string{"context7"}
+	plan := PlanReconcile(&applied, desired, ReconcileFacts{Exists: true, Running: true, Healthy: true})
+	if plan.IsNoOp() {
+		t.Fatal("a changed MCP selection must not be a no-op on a healthy running guest")
+	}
+	if !sameOps(plan.Ops, []ReconcileOp{OpRefreshCredentials, OpRestartVM}) {
+		t.Fatalf("ops = %v, want refresh-credentials + restart-vm (reason: %s)", plan.Ops, plan.Reason)
+	}
+	// Identical selection on a healthy running guest stays a no-op.
+	same := desired.toState()
+	plan = PlanReconcile(&same, desired, ReconcileFacts{Exists: true, Running: true, Healthy: true})
+	if !plan.IsNoOp() {
+		t.Fatalf("identical MCP selection must stay a no-op, got %v", plan.Ops)
+	}
+}
+
+// TestDesiredStateCarriesOverlayMCPSelection pins the wiring the revision
+// tests abstract away: the overlay the dispatcher installs must reach the
+// desired state, or a changed selection would compute the same revision as
+// the applied one and reconcile back to a silent no-op — the exact bug the
+// revision participation exists to fix.
+func TestDesiredStateCarriesOverlayMCPSelection(t *testing.T) {
+	isolateHostState(t)
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	without := m.desiredState(true, nil, nil)
+	m.OpenCodeOverlay = ManagedOverlay{MCPConnectors: []string{"data-gouv", "context7"}}
+	with := m.desiredState(true, nil, nil)
+	if len(with.MCPConnectors) != 2 {
+		t.Fatalf("desiredState.MCPConnectors = %v, want the overlay selection", with.MCPConnectors)
+	}
+	if without.ConfigRevision() == with.ConfigRevision() {
+		t.Fatal("an overlay selection must change the revision, or reconcile cannot see it")
+	}
+}
+
 func TestInstanceStateRoundTripAndSchemaGuard(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "reconcile.json")

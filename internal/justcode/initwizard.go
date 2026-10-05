@@ -14,12 +14,11 @@ import (
 // setup already uses (setupwizard.go).
 //
 // What the setup collects is exactly what the launch path applies, and nothing
-// else: where the project is, how the agent is isolated, which model it uses,
-// how much machine it gets, and which credential it may use. A question whose
-// answer nothing reads is worse than no question — so there is no name
-// question (instance naming derives from the root, P05) and no storage
-// question (the versioned location is the only one with readers). Skills,
-// connectors and browser MCPs arrive with their own chantiers.
+// else: where the project is, how the agent is isolated, which model and
+// curated remote MCPs it uses, how much machine it gets, and which credential
+// it may use. A question whose answer nothing reads is worse than no question:
+// instance naming derives from the root, and the versioned location is the
+// only supported storage mode.
 
 // InitAnswers is one set of project-setup decisions.
 type InitAnswers struct {
@@ -55,6 +54,10 @@ type InitAnswers struct {
 	// boolean has a separate presence bit so a rerun preserves current mode.
 	SkillsLocalOnly    bool
 	SkillsLocalOnlySet bool
+	// MCPConnectors is the selected curated remote connector set. MCPsSet
+	// distinguishes an unchanged empty answer from explicit deselection.
+	MCPConnectors []string
+	MCPsSet       bool
 }
 
 // InitWizard validates project setup answers and writes what they imply.
@@ -296,6 +299,9 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	oldLocalOnly := false
 	var lock Lockfile
 	if plan.ExistingManifest != nil {
+		if !answers.MCPsSet {
+			plan.Answers.MCPConnectors = append([]string(nil), plan.ExistingManifest.MCPConnectors...)
+		}
 		selected = append(selected, plan.ExistingManifest.Skills...)
 		oldLocalOnly = plan.ExistingManifest.SkillsLocalOnly
 		localOnly = oldLocalOnly
@@ -317,6 +323,13 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			}
 			plan.SkillLocks = lock.Skills
 		}
+	}
+	if answers.MCPsSet {
+		connectors, err := ValidateMCPConnectorIDs(answers.MCPConnectors)
+		if err != nil {
+			return plan, err
+		}
+		plan.Answers.MCPConnectors = connectors
 	}
 	if answers.SkillsLocalOnlySet {
 		localOnly = answers.SkillsLocalOnly
@@ -431,6 +444,16 @@ func FormatInitReview(plan InitPlan) string {
 		b.WriteString("               GitHub token approval is host-local and is not written to the project\n")
 	} else {
 		b.WriteString("  GitHub       no new approval; existing host-local approvals remain unchanged\n")
+	}
+	if len(a.MCPConnectors) == 0 {
+		b.WriteString("  MCPs         none selected\n")
+	} else {
+		fmt.Fprintf(&b, "  MCPs         %s\n", strings.Join(a.MCPConnectors, ", "))
+		for _, connector := range MCPConnectors() {
+			if containsMCPConnector(a.MCPConnectors, connector.ID) {
+				fmt.Fprintf(&b, "               %s -> %s (%s; auth: %s)\n", connector.Name, connector.Endpoint, connector.Transport, connector.Credential)
+			}
+		}
 	}
 	if len(a.Skills) == 0 {
 		b.WriteString("  skills       no managed project skills selected\n")
@@ -600,6 +623,7 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 		MemoryMB:        plan.Answers.MemoryMB,
 		CredentialRef:   plan.Answers.CredentialRef,
 		SkillsLocalOnly: plan.Answers.SkillsLocalOnly,
+		MCPConnectors:   append([]string(nil), plan.Answers.MCPConnectors...),
 	}
 	if !plan.Answers.SkillsLocalOnly {
 		pm.Skills = append([]string(nil), plan.Answers.Skills...)

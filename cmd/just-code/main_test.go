@@ -53,6 +53,55 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestParseMCPArgsAroundGlobalRuntimeFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"mcp", "status"},
+		{"--microsandbox", "mcp", "status"},
+		{"mcp", "status", "--microsandbox"},
+	} {
+		parsed, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("parseArgs(%v): %v", args, err)
+		}
+		if parsed.action != "mcp" || strings.Join(parsed.mcpArgs, " ") != "status" {
+			t.Errorf("parseArgs(%v) = action %q, mcpArgs %v", args, parsed.action, parsed.mcpArgs)
+		}
+	}
+}
+
+func TestParseGuestMCPIDs(t *testing.T) {
+	ids, err := parseGuestMCPIDs("data-gouv,context7")
+	if err != nil || strings.Join(ids, ",") != "context7,data-gouv" {
+		t.Fatalf("guest MCP IDs = %v, %v", ids, err)
+	}
+	if ids, err := parseGuestMCPIDs(" "); err != nil || len(ids) != 0 {
+		t.Fatalf("empty guest MCP IDs = %v, %v", ids, err)
+	}
+	if ids, err := parseGuestMCPIDs("context7,unknown"); err == nil || len(ids) != 0 {
+		t.Fatalf("invalid guest MCP IDs = %v, %v; want an error", ids, err)
+	}
+}
+
+func TestResolveMCPSelection(t *testing.T) {
+	root := t.TempDir()
+	if ids, err := resolveMCPSelection(root); err != nil || len(ids) != 0 {
+		t.Fatalf("missing manifest selection = %v, %v", ids, err)
+	}
+	path := justcode.ProjectManifestPath(root)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, path, justcode.ProjectManifest{MCPConnectors: []string{"context7", "data-gouv"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := resolveMCPSelection(root); err != nil || strings.Join(ids, ",") != "context7,data-gouv" {
+		t.Fatalf("valid manifest selection = %v, %v", ids, err)
+	}
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, path, justcode.ProjectManifest{MCPConnectors: []string{"browser"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := resolveMCPSelection(root); err == nil || len(ids) != 0 || !strings.Contains(err.Error(), "unknown remote MCP") {
+		t.Fatalf("invalid manifest selection = %v, %v; want a hard validation error", ids, err)
+	}
+}
+
 func TestOpenCodeAttachArgsResumesLastSession(t *testing.T) {
 	resumeArgs, warn := justcode.OpenCodeResumeArgs(true, nil, "--continue continue the last session", nil)
 	if warn {

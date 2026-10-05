@@ -226,6 +226,19 @@ func TestBackendArgsExcludeSecrets(t *testing.T) {
 	}
 }
 
+func TestGuestMCPArgumentPositions(t *testing.T) {
+	bootstrap := guestBootstrapArgs("4096", "opencode", "1280", "albert/model", "Luis", "luis@example.test", []string{"context7", "data-gouv"})
+	if got := bootstrap[GuestBootstrapMCPArgIndex]; got != "context7,data-gouv" {
+		t.Fatalf("bootstrap MCP argv[%d] = %q", GuestBootstrapMCPArgIndex, got)
+	}
+	if got := guestSecretsArgs("opencode", "albert/model", []string{"context7"})[GuestSecretsMCPArgIndex]; got != "context7" {
+		t.Fatalf("guest-secrets MCP argv[%d] = %q", GuestSecretsMCPArgIndex, got)
+	}
+	if got := len(guestBootstrapArgs("4096", "opencode", "1280", "albert/model", "Luis", "luis@example.test", nil)); got != GuestBootstrapMCPArgIndex {
+		t.Fatalf("empty bootstrap argv length = %d, want legacy shape %d", got, GuestBootstrapMCPArgIndex)
+	}
+}
+
 func TestSecretsReader(t *testing.T) {
 	data, err := io.ReadAll(SecretsReader("pw", "key"))
 	if err != nil {

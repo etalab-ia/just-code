@@ -1453,6 +1453,30 @@ func TestMicrosandboxFullModeSpecUsesProxySecret(t *testing.T) {
 	}
 }
 
+func TestMCPOverlayPropagatesToInitialAndNextStartGuestConfig(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	m.OpenCodeOverlay.MCPConnectors = []string{"context7"}
+	for name, content := range map[string]string{
+		"initial":    m.sandboxEnv()["OPENCODE_CONFIG_CONTENT"],
+		"next start": m.nextStartEnv()["OPENCODE_CONFIG_CONTENT"],
+	} {
+		var config struct {
+			MCP map[string]struct {
+				Type    string `json:"type"`
+				URL     string `json:"url"`
+				Enabled bool   `json:"enabled"`
+			} `json:"mcp"`
+		}
+		if err := json.Unmarshal([]byte(content), &config); err != nil {
+			t.Fatalf("%s config: %v", name, err)
+		}
+		connector, ok := config.MCP["context7"]
+		if !ok || connector.Type != "remote" || connector.URL != "https://mcp.context7.com/mcp" || !connector.Enabled {
+			t.Fatalf("%s MCP config = %+v", name, config.MCP)
+		}
+	}
+}
+
 // TestMicrosandboxSpecNeverLeaksRealKey is the regression guard for the whole
 // change: whatever the isolation level, no sandbox spec may place the host
 // secret in the guest environment.

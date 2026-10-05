@@ -301,6 +301,26 @@ func TestReadProjectManifestSecretFieldRejected(t *testing.T) {
 	}
 }
 
+func TestProjectManifestMCPSelectionBumpsSchemaAndReadsPreviousVersion(t *testing.T) {
+	fs := newMapFS()
+	path := "/root/.just-code/project.json"
+	fs.files[path] = []byte(`{"schemaVersion":2,"mcpConnectors":["context7"]}`)
+	manifest, err := ReadProjectManifest(fs, path)
+	if err != nil || manifest.SchemaVersion != 2 || len(manifest.MCPConnectors) != 1 || manifest.MCPConnectors[0] != "context7" {
+		t.Fatalf("previous schema selection = %+v, %v", manifest, err)
+	}
+	if err := WriteProjectManifest(fs, path, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fs.files[path]), `"schemaVersion": 3`) {
+		t.Fatalf("updated manifest did not write schema version 3: %s", fs.files[path])
+	}
+	fs.files[path] = []byte(`{"schemaVersion":4}`)
+	if _, err := ReadProjectManifest(fs, path); err == nil || !strings.Contains(err.Error(), "newer than this build supports") {
+		t.Fatalf("unsupported future manifest schema error = %v", err)
+	}
+}
+
 func TestReadProjectManifestMissingIsNotExists(t *testing.T) {
 	_, err := ReadProjectManifest(newMapFS(), "/root/.just-code/project.json")
 	if !os.IsNotExist(err) {

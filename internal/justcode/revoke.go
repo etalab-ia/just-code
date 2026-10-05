@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -428,7 +429,12 @@ func BoundStoreMarkers(fs FS, stateDir, instance string) []string {
 // RevokeInstanceBinding drops kind's proxy binding from a single Microsandbox
 // instance: live when it is running, persisted for the next boot when it is
 // stopped. It backs `bindings revoke`, which is project-scoped. revoked is
-// false (with nil error) when the instance does not exist.
+// false (with nil error) when the instance does not exist. A lookup failure
+// (control plane unreachable) is returned as a LookupFailed error so callers
+// can distinguish "cannot verify" from "verified absent": the distinction
+// matters because a stale registration in a preserved sandbox is inert once
+// the host approval is revoked, and the next reconcile strips it anyway
+// (absence is authoritative in the binding refresh).
 func RevokeInstanceBinding(ctx context.Context, instance string, kind CredentialKind) (revoked bool, live bool, err error) {
 	binding, ok := bindingForKind(kind)
 	if !ok {
@@ -436,8 +442,11 @@ func RevokeInstanceBinding(ctx context.Context, instance string, kind Credential
 	}
 	client := sdkMSBClient{}
 	sb, exists, err := client.Lookup(ctx, instance)
-	if err != nil || !exists {
-		return false, false, err
+	if err != nil {
+		return false, false, fmt.Errorf("%w: %v", ErrLookupFailed, err)
+	}
+	if !exists {
+		return false, false, nil
 	}
 	live = sb.Status == "running"
 	if err := client.RemoveSecrets(ctx, instance, []string{binding.GuestEnv}, live); err != nil {
@@ -445,3 +454,9 @@ func RevokeInstanceBinding(ctx context.Context, instance string, kind Credential
 	}
 	return true, live, nil
 }
+
+// ErrLookupFailed marks a revoke that could not determine whether the
+// instance exists (Microsandbox control plane unreachable). It is not a
+// verdict on the registration: callers treat it as "cannot verify" and
+// decide whether to proceed.
+var ErrLookupFailed = errors.New("microsandbox lookup failed")
