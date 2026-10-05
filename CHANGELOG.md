@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.6.0...just-code-v0.7.0) (2026-10-05)
+
+
+### Features
+
+* **mcp:** ajouter les MCP navigateur et unifier init (P16/P17) ([#116](https://github.com/etalab-ia/just-code/issues/116)) ([bfc1748](https://github.com/etalab-ia/just-code/commit/bfc17488d59dac8be2e818565326a385723e2cff))
+* **mcp:** configurer data.gouv et Context7 (P15) ([#115](https://github.com/etalab-ia/just-code/issues/115)) ([7fe8bbe](https://github.com/etalab-ia/just-code/commit/7fe8bbe488f6325be5b9cc457a3b484edea1baa9))
+* **skills:** gérer les skills projet épinglées (P14) ([#113](https://github.com/etalab-ia/just-code/issues/113)) ([26e942e](https://github.com/etalab-ia/just-code/commit/26e942efdb8437472aec427184a28eeac4c155b5))
+
 ## [0.6.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.5.0...just-code-v0.6.0) (2026-10-02)
 
 
