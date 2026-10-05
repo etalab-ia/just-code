@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func updateFixture(t *testing.T, ids ...string) (string, ProjectManifest, Lockfile) {
@@ -206,6 +207,48 @@ func TestRecoverProjectUpdateRollsBackSplitPair(t *testing.T) {
 	}
 }
 
+func TestRecoverProjectUpdateRefusesUnknownManifestOrLockEdits(t *testing.T) {
+	for _, name := range []string{"manifest", "lockfile"} {
+		t.Run(name, func(t *testing.T) {
+			root, _, _ := updateFixture(t, "official/rgaa")
+			plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeUpdateJournalForTest(t, root, plan)
+			path := ProjectManifestPath(root)
+			if name == "lockfile" {
+				path = ProjectLockPath(root)
+			}
+			changed := append(readFileForTest(t, path), []byte(" \n")...)
+			if err := atomicWrite(DefaultFS, path, changed, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			manifestBefore := readFileForTest(t, ProjectManifestPath(root))
+			lockBefore := readFileForTest(t, ProjectLockPath(root))
+			if err := RecoverProjectUpdate(DefaultFS, root); err == nil || !strings.Contains(err.Error(), "changed outside the pending update journal") {
+				t.Fatalf("recovery error = %v, want refusal for unknown %s bytes", err, name)
+			}
+			if !equalBytes(manifestBefore, readFileForTest(t, ProjectManifestPath(root))) || !equalBytes(lockBefore, readFileForTest(t, ProjectLockPath(root))) {
+				t.Fatalf("recovery overwrote user-edited %s", name)
+			}
+			if _, err := os.Stat(ProjectUpdateJournalPath(root)); err != nil {
+				t.Fatalf("recovery removed the journal after refusing unknown bytes: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoverProjectUpdateWithoutJournalDoesNotMutateCheckout(t *testing.T) {
+	root := t.TempDir()
+	if err := RecoverProjectUpdate(DefaultFS, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ProjectStateDir(root)); !os.IsNotExist(err) {
+		t.Fatalf("recovery created project state without a journal: %v", err)
+	}
+}
+
 func TestRecoverProjectUpdateFinishesCommittedPairWithoutStoringUserInstructions(t *testing.T) {
 	root, _, _ := updateFixture(t, "official/rgaa")
 	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(nil))
@@ -281,6 +324,36 @@ func TestProjectUpdateApplyRollsBackOnSecondWriteFailure(t *testing.T) {
 	}
 }
 
+func TestProjectUpdateApplyReturnsSuccessWhenRecoveryRollsForward(t *testing.T) {
+	root, _, _ := updateFixture(t, "official/rgaa")
+	target := strings.Repeat("c", 40)
+	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, target, updateResolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := &failUpdateRenameOnceFS{FS: DefaultFS, Path: filepath.Join(root, "AGENTS.md")}
+	if err := plan.Apply(fs); err != nil {
+		t.Fatalf("Apply returned error although recovery completed the update: %v", err)
+	}
+	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateDependencySet(manifest, lock); err != nil {
+		t.Fatal(err)
+	}
+	if lock.Skills["official/rgaa"].Revision != target || !strings.Contains(string(readFileForTest(t, filepath.Join(root, "AGENTS.md"))), target) {
+		t.Fatal("recovery did not complete the proposed skill update")
+	}
+	if _, err := os.Stat(ProjectUpdateJournalPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("successful roll-forward left a journal: %v", err)
+	}
+}
+
 func TestProjectUpdateRejectsStalePlan(t *testing.T) {
 	root, _, oldLock := updateFixture(t, "official/rgaa")
 	plan, err := PlanProjectUpdate(context.Background(), DefaultFS, root, nil, strings.Repeat("c", 40), updateResolver(oldLock.Skills))
@@ -303,23 +376,55 @@ func TestProjectUpdateRejectsStalePlan(t *testing.T) {
 	}
 }
 
-func TestProjectUpdateLockRejectsConcurrentWriter(t *testing.T) {
+func TestProjectUpdateLockUsesHostStateAndSerializesActions(t *testing.T) {
 	root := t.TempDir()
-	dir := ProjectStateDir(root)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	lock := &ProjectLock{Path: projectUpdateLockPath(root), FS: DefaultFS}
+	release, err := lock.Acquire()
+	if err != nil {
 		t.Fatal(err)
 	}
-	lockPath := filepath.Join(dir, "update.lock")
-	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+	started := make(chan struct{}, 1)
+	finished := make(chan error, 1)
+	go func() {
+		finished <- withProjectUpdateLock(DefaultFS, root, func() error {
+			started <- struct{}{}
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+		t.Fatal("second project update entered while the first held the host-state lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := os.Stat(ProjectStateDir(root)); !os.IsNotExist(err) {
+		t.Fatalf("lock created a directory inside the project checkout: %v", err)
+	}
+	release()
+	released = true
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("second update failed after the lock was released: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second update did not proceed after the host-state lock was released")
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("second update callback never ran")
+	}
+	if err := RecoverProjectUpdate(DefaultFS, root); err != nil {
 		t.Fatal(err)
 	}
-	called := false
-	err := withProjectUpdateLock(DefaultFS, root, func() error {
-		called = true
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "another project update") || called {
-		t.Fatalf("lock result: err=%v, action called=%v", err, called)
+	if _, err := os.Stat(ProjectStateDir(root)); !os.IsNotExist(err) {
+		t.Fatalf("journal-free recovery created project state: %v", err)
 	}
 }
 

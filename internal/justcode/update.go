@@ -11,9 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 )
 
 const projectUpdateJournalName = "update-journal.json"
@@ -324,14 +322,18 @@ func (p ProjectUpdatePlan) applyLocked(fs FS) error {
 		}
 	}
 	if err := fs.Remove(journalPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("project update applied but its recovery journal remains at %s: %w", journalPath, err)
+		return recoverAfterUpdateFailure(fs, p.root, fmt.Errorf("remove project update journal %s: %w", journalPath, err))
 	}
 	return nil
 }
 
 func recoverAfterUpdateFailure(fs FS, root string, cause error) error {
-	if err := recoverProjectUpdateLocked(fs, root); err != nil {
+	rolledForward, err := recoverProjectUpdateLockedResult(fs, root)
+	if err != nil {
 		return fmt.Errorf("project update failed (%v) and recovery is pending: %w", cause, err)
+	}
+	if rolledForward {
+		return nil
 	}
 	return cause
 }
@@ -349,44 +351,64 @@ func RecoverProjectUpdate(fs FS, root string) error {
 }
 
 func recoverProjectUpdateLocked(fs FS, root string) error {
+	_, err := recoverProjectUpdateLockedResult(fs, root)
+	return err
+}
+
+func recoverProjectUpdateLockedResult(fs FS, root string) (bool, error) {
 	journalPath := ProjectUpdateJournalPath(root)
-	if err := ensureRegularManagedFile(journalPath); err != nil {
-		return err
-	}
 	data, err := fs.ReadFile(journalPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
+	}
+	if err := ensureProjectStateDirectory(root); err != nil {
+		return false, err
+	}
+	if err := ensureRegularManagedFile(journalPath); err != nil {
+		return false, err
 	}
 	var journal projectUpdateJournal
 	if err := json.Unmarshal(data, &journal); err != nil || journal.SchemaVersion != 1 || len(journal.OldManifest) == 0 || len(journal.OldLock) == 0 || len(journal.NewManifest) == 0 || len(journal.NewLock) == 0 {
-		return fmt.Errorf("project update journal %s is invalid; refusing to launch", journalPath)
+		return false, fmt.Errorf("project update journal %s is invalid; refusing to launch", journalPath)
 	}
 	if _, _, err := validateUpdateJournalPair(journal.OldManifest, journal.OldLock); err != nil {
-		return fmt.Errorf("project update journal %s has an invalid previous pair: %w", journalPath, err)
+		return false, fmt.Errorf("project update journal %s has an invalid previous pair: %w", journalPath, err)
 	}
 	if _, _, err := validateUpdateJournalPair(journal.NewManifest, journal.NewLock); err != nil {
-		return fmt.Errorf("project update journal %s has an invalid proposed pair: %w", journalPath, err)
+		return false, fmt.Errorf("project update journal %s has an invalid proposed pair: %w", journalPath, err)
 	}
 	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := ensureRegularManagedFile(manifestPath); err != nil {
+		return false, err
+	}
+	if err := ensureRegularManagedFile(lockPath); err != nil {
+		return false, err
+	}
 	currentManifest, mErr := fs.ReadFile(manifestPath)
 	currentLock, lErr := fs.ReadFile(lockPath)
+	if mErr != nil || (!equalBytes(currentManifest, journal.OldManifest) && !equalBytes(currentManifest, journal.NewManifest)) {
+		return false, fmt.Errorf("project manifest changed outside the pending update journal; refusing recovery")
+	}
+	if lErr != nil || (!equalBytes(currentLock, journal.OldLock) && !equalBytes(currentLock, journal.NewLock)) {
+		return false, fmt.Errorf("project lockfile changed outside the pending update journal; refusing recovery")
+	}
 	rollForward := mErr == nil && lErr == nil && equalBytes(currentManifest, journal.NewManifest) && equalBytes(currentLock, journal.NewLock)
 	chosenManifest, chosenLock := journal.OldManifest, journal.OldLock
 	if rollForward {
 		chosenManifest, chosenLock = journal.NewManifest, journal.NewLock
 	}
 	if err := atomicWrite(fs, manifestPath, chosenManifest, 0o644); err != nil {
-		return fmt.Errorf("recover project manifest: %w", err)
+		return false, fmt.Errorf("recover project manifest: %w", err)
 	}
 	if err := atomicWrite(fs, lockPath, chosenLock, 0o644); err != nil {
-		return fmt.Errorf("recover project lockfile: %w", err)
+		return false, fmt.Errorf("recover project lockfile: %w", err)
 	}
 	manifest, lock, err := validateUpdateJournalPair(chosenManifest, chosenLock)
 	if err != nil {
-		return fmt.Errorf("recover project dependency pair: %w", err)
+		return false, fmt.Errorf("recover project dependency pair: %w", err)
 	}
 	if len(manifest.Skills) > 0 || journal.InstructionsExisted {
 		instructionsPath := filepath.Join(root, "AGENTS.md")
@@ -395,41 +417,41 @@ func recoverProjectUpdateLocked(fs FS, root string) error {
 			if os.IsNotExist(readErr) {
 				// The update had not created the file.
 			} else if readErr != nil {
-				return fmt.Errorf("read managed instructions during recovery: %w", readErr)
+				return false, fmt.Errorf("read managed instructions during recovery: %w", readErr)
 			} else if fmt.Sprintf("%x", sha256.Sum256(current)) == journal.NewInstructionsHash {
 				if err := fs.Remove(instructionsPath); err != nil && !os.IsNotExist(err) {
-					return fmt.Errorf("restore managed instructions: %w", err)
+					return false, fmt.Errorf("restore managed instructions: %w", err)
 				}
 			} else if len(manifest.Skills) > 0 {
 				updated, mergeErr := MergeManagedInstructions(string(current), manifest.Skills, lock.Skills)
 				if mergeErr != nil {
-					return fmt.Errorf("recover managed instructions: %w", mergeErr)
+					return false, fmt.Errorf("recover managed instructions: %w", mergeErr)
 				}
 				if err := atomicWrite(fs, instructionsPath, []byte(updated), 0o644); err != nil {
-					return fmt.Errorf("recover managed instructions: %w", err)
+					return false, fmt.Errorf("recover managed instructions: %w", err)
 				}
 			}
 		} else if len(manifest.Skills) > 0 {
 			current, readErr := fs.ReadFile(instructionsPath)
 			if readErr != nil && !os.IsNotExist(readErr) {
-				return fmt.Errorf("read managed instructions during recovery: %w", readErr)
+				return false, fmt.Errorf("read managed instructions during recovery: %w", readErr)
 			}
 			if os.IsNotExist(readErr) && journal.InstructionsExisted {
-				return errors.New("AGENTS.md disappeared during project update recovery; refusing to replace it")
+				return false, errors.New("AGENTS.md disappeared during project update recovery; refusing to replace it")
 			}
 			updated, mergeErr := MergeManagedInstructions(string(current), manifest.Skills, lock.Skills)
 			if mergeErr != nil {
-				return fmt.Errorf("recover managed instructions: %w", mergeErr)
+				return false, fmt.Errorf("recover managed instructions: %w", mergeErr)
 			}
 			if err := atomicWrite(fs, instructionsPath, []byte(updated), 0o644); err != nil {
-				return fmt.Errorf("recover managed instructions: %w", err)
+				return false, fmt.Errorf("recover managed instructions: %w", err)
 			}
 		}
 	}
 	if err := fs.Remove(journalPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove recovered project update journal: %w", err)
+		return false, fmt.Errorf("remove recovered project update journal: %w", err)
 	}
-	return nil
+	return rollForward, nil
 }
 
 func validateUpdateJournalPair(manifestData, lockData []byte) (ProjectManifest, Lockfile, error) {
@@ -468,55 +490,18 @@ func validateUpdateJournalPair(manifestData, lockData []byte) (ProjectManifest, 
 }
 
 func withProjectUpdateLock(fs FS, root string, action func() error) error {
-	dir := ProjectStateDir(root)
-	if info, err := os.Lstat(dir); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("%s is not a regular project state directory", dir)
-		}
-	} else if !os.IsNotExist(err) {
-		return err
+	lock := &ProjectLock{Path: projectUpdateLockPath(root), FS: fs}
+	release, err := lock.Acquire()
+	if err != nil {
+		return fmt.Errorf("acquire project update lock: %w", err)
 	}
-	if err := fs.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create project state directory: %w", err)
-	}
-	lockPath := filepath.Join(dir, "update.lock")
-	for attempts := 0; attempts < 4; attempts++ {
-		err := fs.CreateExclusive(lockPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
-		if err == nil {
-			actionErr := action()
-			removeErr := fs.Remove(lockPath)
-			if removeErr != nil && !os.IsNotExist(removeErr) {
-				if actionErr != nil {
-					return fmt.Errorf("%v; release project update lock: %w", actionErr, removeErr)
-				}
-				return fmt.Errorf("release project update lock: %w", removeErr)
-			}
-			return actionErr
-		}
-		if !os.IsExist(err) {
-			return fmt.Errorf("acquire project update lock: %w", err)
-		}
-		data, readErr := fs.ReadFile(lockPath)
-		if readErr != nil {
-			continue
-		}
-		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
-		if parseErr == nil && pid > 0 && processAlive(pid) {
-			return errors.New("another project update or recovery is in progress")
-		}
-		// Allow a concurrent creator to finish writing its PID before treating
-		// an empty/partial lock as stale.
-		time.Sleep(20 * time.Millisecond)
-		data, readErr = fs.ReadFile(lockPath)
-		pid, parseErr = strconv.Atoi(strings.TrimSpace(string(data)))
-		if readErr == nil && parseErr == nil && pid > 0 && processAlive(pid) {
-			return errors.New("another project update or recovery is in progress")
-		}
-		if removeErr := fs.Remove(lockPath); removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("remove stale project update lock: %w", removeErr)
-		}
-	}
-	return errors.New("could not acquire project update lock")
+	defer release()
+	return action()
+}
+
+func projectUpdateLockPath(root string) string {
+	instance := InstanceName(root, filepath.Base(root))
+	return filepath.Join(InstanceStateDir(DefaultStateDir(), instance), "project-update.lock")
 }
 
 func ensureRegularManagedFile(path string) error {
@@ -529,6 +514,21 @@ func ensureRegularManagedFile(path string) error {
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file; refusing project update", path)
+	}
+	return nil
+}
+
+func ensureProjectStateDirectory(root string) error {
+	dir := ProjectStateDir(root)
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%s is not a regular project state directory", dir)
 	}
 	return nil
 }
