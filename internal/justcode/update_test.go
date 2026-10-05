@@ -573,12 +573,16 @@ func TestProjectUpdateLockUsesHostStateAndSerializesActions(t *testing.T) {
 	}
 	release()
 	released = true
+	// The property under test is that the second update proceeds once the
+	// lock is free, not that it does so within any particular latency: a
+	// tight deadline here encoded one runner's speed and flaked on loaded
+	// Windows CI (observed at the 1s mark). Generous ceiling, fast path.
 	select {
 	case err := <-finished:
 		if err != nil {
 			t.Fatalf("second update failed after the lock was released: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("second update did not proceed after the host-state lock was released")
 	}
 	select {
