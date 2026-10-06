@@ -9,7 +9,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -472,7 +474,11 @@ func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
 	root := initTestProject(t)
 	originalCatalogue := projectSkillCatalogueFn
 	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
-		return []justcode.ProjectSkill{{ID: "experimental/example", Name: "example", Description: "fixture", Experimental: true}}, nil
+		return []justcode.ProjectSkill{
+			{ID: "experimental/example", Name: "example", Description: "fixture", Experimental: true},
+			{ID: "experimental/un-identifiant-vraiment-tres-long", Name: "long", Experimental: true,
+				Description: "Rechercher sémantiquement dans une base de connaissances indexée — description volontairement très longue et accentuée pour dépasser quatre-vingts colonnes."},
+		}, nil
 	}
 	t.Cleanup(func() { projectSkillCatalogueFn = originalCatalogue })
 	answers := justcode.InitAnswers{Root: root}
@@ -493,8 +499,31 @@ func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
 	if !got.SkillsSet || len(got.Skills) != 1 || got.Skills[0] != "experimental/example" {
 		t.Fatalf("searched selection = %+v", got)
 	}
-	if strings.Count(out, "EXPERIMENTAL; review before adopting") < 2 {
+	if strings.Count(out, "[experimental]") < 2 {
 		t.Fatalf("experimental entries must stay marked in catalogue and search results: %q", out)
+	}
+}
+
+func TestPrintProjectSkillsFitsEightyColumns(t *testing.T) {
+	entries := []justcode.ProjectSkill{
+		{ID: "official/short", Description: "courte"},
+		{ID: "experimental/un-identifiant-vraiment-tres-long", Experimental: true,
+			Description: "Rechercher sémantiquement dans une base de connaissances indexée\net même sur plusieurs lignes — description volontairement très longue et accentuée pour dépasser quatre-vingts colonnes."},
+		{ID: "wide/cjk", Description: strings.Repeat("é", 60)},
+		{ID: "wide/cjk", Description: strings.Repeat("宽", 60)},
+	}
+	out := captureStdout(t, func() { printProjectSkills(entries) })
+	if !utf8.ValidString(out) {
+		t.Fatalf("truncated catalogue output must stay valid UTF-8: %q", out)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != len(entries) {
+		t.Fatalf("one line per entry, got %d for %d entries: %q", len(lines), len(entries), out)
+	}
+	for _, line := range lines {
+		if ansi.StringWidth(line) > 78 {
+			t.Fatalf("catalogue line exceeds the 80-column terminal: %q", line)
+		}
 	}
 }
 
