@@ -91,6 +91,9 @@ func run(args []string) (int, error) {
 	if parsed.action == "config" {
 		return configCmd(parsed)
 	}
+	if parsed.action == "import" {
+		return albertCodeImportCmd(parsed.importArgs)
+	}
 	// auth runs before any config load: credential operations must not
 	// depend on a workspace, a .env or a resolved runtime.
 	if parsed.action == "auth" {
@@ -449,6 +452,8 @@ type parsedArgs struct {
 	modelsArgs []string
 	// workspaceArgs holds the words after the workspace command.
 	workspaceArgs []string
+	// importArgs holds the words after the import command.
+	importArgs []string
 	// mcpArgs holds the words belonging to the mcp command; global flags are
 	// still parsed around it by the shared argument pass.
 	mcpArgs []string
@@ -547,6 +552,11 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the workspace command belongs to it.
 			p.workspaceArgs = args[i+1:]
+			return p, nil
+		case a == "import" && !actionSet:
+			p.action = "import"
+			actionSet = true
+			p.importArgs = args[i+1:]
 			return p, nil
 		case a == "init" && !actionSet:
 			p.action = "init"
@@ -1001,6 +1011,7 @@ Commands:
   clean      Remove the selected sandbox and its local state
   doctor     Check the selected runtime installation
   config     Show or preview managed configuration (explain, import-env)
+  import     Preview or import an existing Albert Code project
   auth       Manage global credentials (add, status, remove)
   bindings   Approve or revoke optional credential bindings for this
              project (list, approve, revoke)

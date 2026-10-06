@@ -73,9 +73,15 @@ func stripJSONCComments(src string) string {
 			}
 		case c == '/' && i+1 < len(src) && src[i+1] == '*':
 			// Block comment: skip to the closing marker.
+			start := i
 			i += 2
 			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
 				i++
+			}
+			if i+1 >= len(src) {
+				b.WriteString(src[start:])
+				i = len(src)
+				break
 			}
 			i += 2
 		default:
@@ -136,10 +142,21 @@ func ParseProjectOpenCodeConfig(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read project OpenCode config %s: %w", path, err)
 	}
+	parsed, err := parseProjectOpenCodeConfig(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse project OpenCode config %s: %w", path, err)
+	}
+	return parsed, nil
+}
+
+func parseProjectOpenCodeConfig(raw []byte) (map[string]any, error) {
 	cleaned := stripTrailingCommas(stripJSONCComments(string(raw)))
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
-		return nil, fmt.Errorf("parse project OpenCode config %s: %w", path, err)
+		return nil, fmt.Errorf("decode JSONC: %w", err)
+	}
+	if parsed == nil {
+		return nil, fmt.Errorf("decode JSONC: expected a JSON object")
 	}
 	return parsed, nil
 }
