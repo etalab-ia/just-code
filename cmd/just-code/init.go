@@ -365,10 +365,10 @@ func withBrowserResourceGuidance(answers justcode.InitAnswers) justcode.InitAnsw
 		answers.BrowserResourceGuidance = ""
 		return answers
 	}
-	if answers.BrowserResourceGuidance == "" {
-		host, err := detectHostResourcesFn()
-		answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, answers.CPUs, answers.MemoryMB, err)
-	}
+	// Recompute on every review pass: the user may have changed CPU or
+	// memory settings in the edit form since the previous guidance was made.
+	host, err := detectHostResourcesFn()
+	answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, answers.CPUs, answers.MemoryMB, err)
 	return answers
 }
 

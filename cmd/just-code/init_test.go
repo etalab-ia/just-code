@@ -479,6 +479,35 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	}
 }
 
+func TestBrowserResourceGuidanceRefreshesAfterResourceChanges(t *testing.T) {
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+
+	answers := justcode.InitAnswers{
+		MCPConnectors:           []string{"playwright"},
+		CPUs:                    2,
+		MemoryMB:                4096,
+		BrowserResourceGuidance: "stale guidance for 2 vCPU and 4096 MiB RAM",
+	}
+	updated := withBrowserResourceGuidance(answers)
+	if strings.Contains(updated.BrowserResourceGuidance, "stale guidance") {
+		t.Fatalf("stale guidance retained: %q", updated.BrowserResourceGuidance)
+	}
+	if !strings.Contains(updated.BrowserResourceGuidance, "2 vCPU") || !strings.Contains(updated.BrowserResourceGuidance, "4096 MiB RAM") {
+		t.Fatalf("guidance does not match current resources: %q", updated.BrowserResourceGuidance)
+	}
+
+	answers.CPUs = 4
+	answers.MemoryMB = 8192
+	updated = withBrowserResourceGuidance(answers)
+	if !strings.Contains(updated.BrowserResourceGuidance, "4 vCPU") || !strings.Contains(updated.BrowserResourceGuidance, "8192 MiB RAM") {
+		t.Fatalf("guidance was not refreshed for edited resources: %q", updated.BrowserResourceGuidance)
+	}
+}
+
 func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
 	root := initTestProject(t)
 	originalCatalogue := projectSkillCatalogueFn
