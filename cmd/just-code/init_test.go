@@ -319,6 +319,25 @@ func TestInitNonTTYNamesWhatIsMissing(t *testing.T) {
 	}
 }
 
+func TestSeedInitAnswersFromMissingManifestResetsPreviousProjectValues(t *testing.T) {
+	root := initTestProject(t)
+	previous := justcode.InitAnswers{
+		Root: root, Runtime: justcode.RuntimeTart, Isolation: justcode.IsolationBackend,
+		Model: "previous/model", CPUs: 4, MemoryMB: 8192, CredentialRef: "previous",
+		GitHubWorkflow: true, GitHubRemote: justcode.GitHubRemote{Repo: "previous/repo"},
+		MCPConnectors: []string{"context7"}, MCPsSet: true,
+		Skills: []string{"official/rgaa"}, SkillsSet: true,
+		SkillsLocalOnly: true, SkillsLocalOnlySet: true,
+		BrowserResourceGuidance: "previous host sizing",
+	}
+	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, previous)
+	if got.Runtime != "" || got.Isolation != "" || got.Model != "" || got.CPUs != 0 || got.MemoryMB != 0 || got.CredentialRef != "" ||
+		got.GitHubWorkflow || got.GitHubRemote.Repo != "" || len(got.MCPConnectors) != 0 || got.MCPsSet ||
+		len(got.Skills) != 0 || got.SkillsSet || got.SkillsLocalOnly || got.SkillsLocalOnlySet || got.BrowserResourceGuidance != "" {
+		t.Fatalf("answers from previous project leaked into unconfigured root: %+v", got)
+	}
+}
+
 // TestInitNonTTYWithAllInputsWritesTheManifest pins the scriptable path: every
 // answer on the command line, no terminal, no prompt.
 func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {

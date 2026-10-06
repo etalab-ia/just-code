@@ -448,6 +448,45 @@ func withBrowserResourceGuidance(answers justcode.InitAnswers) justcode.InitAnsw
 }
 
 func seedInitAnswersFromManifest(opts initOptions, answers justcode.InitAnswers) justcode.InitAnswers {
+	// Clear previous-project values first. If the new root has no manifest,
+	// this leaves each non-flag answer at the built-in default instead of
+	// carrying settings across projects. Flags remain the caller's explicit
+	// choices.
+	if !opts.Set["runtime"] {
+		answers.Runtime = ""
+	}
+	if !opts.Set["isolation"] {
+		answers.Isolation = ""
+	}
+	if !opts.Set["model"] {
+		answers.Model = ""
+	}
+	if !opts.Set["cpus"] {
+		answers.CPUs = 0
+	}
+	if !opts.Set["memory-mb"] {
+		answers.MemoryMB = 0
+	}
+	if !opts.Set["credential-ref"] {
+		answers.CredentialRef = ""
+	}
+	if !opts.Set["github"] {
+		answers.GitHubWorkflow = false
+	}
+	answers.GitHubRemote = justcode.GitHubRemote{}
+	answers.BrowserResourceGuidance = ""
+	if !opts.Set["mcps"] {
+		answers.MCPConnectors = nil
+		answers.MCPsSet = false
+	}
+	if !opts.Set["skills"] {
+		answers.Skills = nil
+		answers.SkillsSet = false
+	}
+	if !opts.Set["skills-storage"] {
+		answers.SkillsLocalOnly = false
+		answers.SkillsLocalOnlySet = false
+	}
 	project, err := justcode.DiscoverProject(answers.Root)
 	if err != nil {
 		return answers
