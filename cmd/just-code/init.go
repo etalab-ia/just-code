@@ -280,8 +280,9 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	var plan justcode.InitPlan
 	var err error
 	for {
+		useHuhReview := tty && !opts.Yes && wizardHuhFn()
 		if tty && !opts.Yes {
-			if wizardHuhFn() {
+			if useHuhReview {
 				answers, err = askInitQuestionsHuh(opts, answers)
 				if err != nil {
 					return 1, err
@@ -293,24 +294,16 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 				}
 			}
 		}
-		if !opts.Set["cpus"] && opts.maxCPUs == 1 {
-			answers.CPUs = 1
-		} else if !opts.Set["cpus"] && answers.CPUs == 0 {
-			recommended := justcode.RecommendedDefaultGuestCPUs(hostResources.CPUs)
-			if recommended != justcode.DefaultSandboxCPUs {
-				answers.CPUs = recommended
-			}
-		}
-		if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
-			recommended := justcode.RecommendedDefaultGuestMemoryMB(hostResources.MemoryMB)
-			if recommended != justcode.DefaultSandboxMemoryMB {
-				answers.MemoryMB = recommended
-			}
-		}
 		answers = withBrowserResourceGuidance(answers)
-		if err := justcode.ValidateGuestResources(hostResources,
-			resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs),
-			resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB)); err != nil {
+		guestCPUs := answers.CPUs
+		if guestCPUs <= 0 {
+			guestCPUs = justcode.RecommendedDefaultGuestCPUs(hostResources.CPUs)
+		}
+		guestMemoryMB := answers.MemoryMB
+		if guestMemoryMB <= 0 {
+			guestMemoryMB = justcode.RecommendedDefaultGuestMemoryMB(hostResources.MemoryMB)
+		}
+		if err := justcode.ValidateGuestResources(hostResources, guestCPUs, guestMemoryMB); err != nil {
 			return 1, err
 		}
 		if answers.GitHubWorkflow {
@@ -324,14 +317,16 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		fmt.Print(justcode.FormatInitReview(plan))
+		review := justcode.FormatInitReview(plan)
 		if plan.ExistingManifest != nil && !opts.Replace {
+			fmt.Print(review)
 			return 1, fmt.Errorf("%s already exists; re-run with --replace to overwrite it, or edit it directly", plan.ManifestPath)
 		}
+		if !useHuhReview {
+			fmt.Print(review)
+		}
 		if !tty && !opts.Yes {
-			resourceWarnings := justcode.GuestResourceWarnings(hostResources,
-				resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs),
-				resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
+			resourceWarnings := justcode.GuestResourceWarnings(hostResources, plan.GuestCPUs, plan.GuestMemoryMB)
 			if len(resourceWarnings) > 0 {
 				return 1, fmt.Errorf("non-interactive setup with high resource allocation requires explicit confirmation; rerun with --yes")
 			}
@@ -339,8 +334,8 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		if !tty || opts.Yes {
 			break
 		}
-		if wizardHuhFn() {
-			choice, err := huhApplyChoice()
+		if useHuhReview {
+			choice, err := huhApplyChoice(plan)
 			if err != nil {
 				return 1, fmt.Errorf("no answer; nothing was written")
 			}
@@ -349,7 +344,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			case "cancel":
 				return 1, fmt.Errorf("cancelled; nothing was written")
 			case "edit":
-				fmt.Println("Reopening setup choices; blank answers keep the current selection.")
+				fmt.Println("Reopening setup choices; blank CPU or memory fields reset to the implicit default, while other blank fields keep their current values.")
 				continue
 			}
 			break
@@ -364,7 +359,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		case "n", "no":
 			return 1, fmt.Errorf("cancelled; nothing was written")
 		case "e", "edit", "back":
-			fmt.Println("Reopening setup choices; blank answers keep the current selection.")
+			fmt.Println("Reopening setup choices; blank answers keep current values; enter `default` to reset resource sizing.")
 			continue
 		default:
 			return 1, fmt.Errorf("enter yes, no, or edit")
@@ -441,7 +436,16 @@ func withBrowserResourceGuidance(answers justcode.InitAnswers) justcode.InitAnsw
 	// Recompute on every review pass: the user may have changed CPU or
 	// memory settings in the edit form since the previous guidance was made.
 	host, err := detectHostResourcesFn()
-	answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, answers.CPUs, answers.MemoryMB, err)
+	guestCPUs, guestMemoryMB := answers.CPUs, answers.MemoryMB
+	if err == nil {
+		if guestCPUs <= 0 {
+			guestCPUs = justcode.RecommendedDefaultGuestCPUs(host.CPUs)
+		}
+		if guestMemoryMB <= 0 {
+			guestMemoryMB = justcode.RecommendedDefaultGuestMemoryMB(host.MemoryMB)
+		}
+	}
+	answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, guestCPUs, guestMemoryMB, err)
 	return answers
 }
 

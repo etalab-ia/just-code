@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"charm.land/huh/v2"
@@ -34,6 +35,67 @@ func TestShouldSkipSkillsField(t *testing.T) {
 				t.Fatalf("shouldSkipSkillsField = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestHuhResourceInputsCanRestoreImplicitDefaults(t *testing.T) {
+	for _, input := range []string{"", "  ", "default", "DEFAULT"} {
+		cpus, useDefault, err := parseGuestCPUsInput(input, 8)
+		if err != nil || !useDefault || cpus != 0 {
+			t.Errorf("CPU input %q = %d, %v, %v; want implicit default", input, cpus, useDefault, err)
+		}
+		memory, useDefault, err := parseGuestMemoryInput(input, 8192)
+		if err != nil || !useDefault || memory != 0 {
+			t.Errorf("memory input %q = %d, %v, %v; want implicit default", input, memory, useDefault, err)
+		}
+	}
+	if cpus, reset, err := parseGuestCPUsInput("4", 8); err != nil || reset || cpus != 4 {
+		t.Fatalf("explicit CPU input = %d, %v, %v; want 4", cpus, reset, err)
+	}
+	if memory, reset, err := parseGuestMemoryInput("2.5G", 8192); err != nil || reset || memory != 2560 {
+		t.Fatalf("explicit memory input = %d, %v, %v; want 2560 MiB", memory, reset, err)
+	}
+}
+
+func TestHuhReviewDescriptionUsesTableAndKeepsWarningsSeparate(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	plan := justcode.InitPlan{
+		Answers: justcode.InitAnswers{
+			Root: "/tmp/example_project", Runtime: justcode.RuntimeMicrosandbox,
+			Isolation: justcode.IsolationFull, CredentialRef: "work",
+			MCPConnectors: []string{"context7"}, Skills: []string{"official/rgaa"},
+		},
+		GuestCPUs: 2, GuestMemoryMB: 2560,
+		ManifestPath: "/tmp/example-project/.just-code/project.json",
+		LockPath:     "/tmp/example-project/.just-code/lock.json",
+		Warnings:     []string{"the guest will use all 2 logical host CPUs"},
+	}
+	got := huhReviewDescription(plan)
+	for _, want := range []string{"Setting", "Selection", `example\_project`, "2.5G", "context7", "official/rgaa", "Warnings", "all 2 logical host CPUs"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Huh recap table lacks %q: %s", want, got)
+		}
+	}
+	t.Setenv("TERM", "dumb")
+	if accessible := huhReviewDescription(plan); !strings.Contains(accessible, "example_project") || strings.Contains(accessible, `example\_project`) {
+		t.Fatalf("accessible recap must retain the literal project path: %s", accessible)
+	}
+}
+
+func TestHuhReviewDescriptionEscapesMarkupOnlyForStyledRenderer(t *testing.T) {
+	plan := justcode.InitPlan{
+		Answers:   justcode.InitAnswers{Root: "/tmp/project_with_under"},
+		GuestCPUs: 2, GuestMemoryMB: 4096,
+	}
+	t.Setenv("TERM", "xterm-256color")
+	styled := huhReviewDescription(plan)
+	if !strings.Contains(styled, `project\_with\_under`) {
+		t.Fatalf("styled Huh note must escape underscore markup: %s", styled)
+	}
+	t.Setenv("TERM", "dumb")
+	accessible := huhReviewDescription(plan)
+	if !strings.Contains(accessible, "project_with_under") || strings.Contains(accessible, `project\_with\_under`) {
+		t.Fatalf("accessible Huh note must preserve the raw path: %s", accessible)
 	}
 }
 

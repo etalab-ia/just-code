@@ -116,6 +116,10 @@ func (w InitWizard) print(msg string) {
 // user should know before confirming.
 type InitPlan struct {
 	Answers InitAnswers
+	// GuestCPUs and GuestMemoryMB are the effective values shown in review.
+	// Zero-valued answer fields remain implicit in the manifest.
+	GuestCPUs     int
+	GuestMemoryMB int
 	// ManifestPath and LockPath are the files Apply will write, in the
 	// checkout. They are the same paths the launch path reads.
 	ManifestPath string
@@ -288,10 +292,20 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	if w.HostResources != nil {
 		cpus := resolvedCPUs(answers.CPUs)
 		memoryMB := resolvedMemoryMB(answers.MemoryMB)
+		if answers.CPUs == 0 {
+			cpus = RecommendedDefaultGuestCPUs(w.HostResources.CPUs)
+		}
+		if answers.MemoryMB == 0 {
+			memoryMB = RecommendedDefaultGuestMemoryMB(w.HostResources.MemoryMB)
+		}
 		if err := ValidateGuestResources(*w.HostResources, cpus, memoryMB); err != nil {
 			return plan, err
 		}
 		plan.Warnings = append(plan.Warnings, GuestResourceWarnings(*w.HostResources, cpus, memoryMB)...)
+		plan.GuestCPUs, plan.GuestMemoryMB = cpus, memoryMB
+	} else {
+		plan.GuestCPUs = resolvedCPUs(answers.CPUs)
+		plan.GuestMemoryMB = resolvedMemoryMB(answers.MemoryMB)
 	}
 
 	plan.ManifestPath = ProjectManifestPath(pc.Root)
@@ -441,7 +455,7 @@ func FormatInitReview(plan InitPlan) string {
 	} else {
 		b.WriteString("  model        the built-in default\n")
 	}
-	fmt.Fprintf(&b, "  resources    %d CPUs, %s (fixed when the guest is created)\n", resolvedCPUs(a.CPUs), FormatMemorySize(resolvedMemoryMB(a.MemoryMB)))
+	fmt.Fprintf(&b, "  resources    %d CPUs, %s (fixed when the guest is created)\n", plan.GuestCPUs, FormatMemorySize(plan.GuestMemoryMB))
 	if a.BrowserResourceGuidance != "" {
 		fmt.Fprintf(&b, "  host fit     %s\n", a.BrowserResourceGuidance)
 	}

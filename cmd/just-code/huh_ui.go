@@ -10,7 +10,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	lipgloss "charm.land/lipgloss/v2"
+	lipglosstable "charm.land/lipgloss/v2/table"
 	"github.com/etalab-ia/just-code/internal/justcode"
+	"golang.org/x/term"
 )
 
 // huh_ui.go renders the interactive surfaces with charmbracelet/huh forms
@@ -82,13 +85,15 @@ func huhConfirm(title, description string, defaultYes bool) (bool, error) {
 	return value, nil
 }
 
-// huhApplyChoice asks the three-way review question as a huh Select:
-// apply, edit (reopen the form with the current answers as defaults), or
-// cancel. It returns ErrUserAborted when the user cancels.
-func huhApplyChoice() (string, error) {
+// huhApplyChoice presents the configuration table and the three-way review
+// question in one huh form: apply, edit or cancel.
+func huhApplyChoice(plan justcode.InitPlan) (string, error) {
 	choice := "apply"
 	err := huhRun(huh.NewForm(
 		huh.NewGroup(
+			huh.NewNote().
+				Title("Configuration recap").
+				Description(huhReviewDescription(plan)),
 			huh.NewSelect[string]().
 				Title("Apply this configuration?").
 				Options(
@@ -103,6 +108,155 @@ func huhApplyChoice() (string, error) {
 		return "", err
 	}
 	return choice, nil
+}
+
+func parseGuestCPUsInput(value string, maximum int) (guestCPUs int, useDefault bool, err error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "default") {
+		return 0, true, nil
+	}
+	guestCPUs, err = strconv.Atoi(value)
+	if err != nil || guestCPUs < 1 || guestCPUs > maximum {
+		return 0, false, fmt.Errorf("cpus must be 1 to %d, a blank value or 'default' resets", maximum)
+	}
+	return guestCPUs, false, nil
+}
+
+func parseGuestMemoryInput(value string, maximum int) (memoryMB int, useDefault bool, err error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "default") {
+		return 0, true, nil
+	}
+	memoryMB, err = justcode.ParseMemorySize(value)
+	if err != nil {
+		return 0, false, err
+	}
+	if memoryMB < 1 || memoryMB > maximum {
+		return 0, false, fmt.Errorf("memory must be 1 to %s; a blank value or 'default' resets", justcode.FormatMemorySize(maximum))
+	}
+	return memoryMB, false, nil
+}
+
+func huhReviewDescription(plan justcode.InitPlan) string {
+	a := plan.Answers
+	t := lipglosstable.New().
+		Headers("Setting", "Selection").
+		Width(huhReviewTableWidth()).
+		StyleFunc(func(row, column int) lipgloss.Style {
+			if row == lipglosstable.HeaderRow || column == 0 {
+				return lipgloss.NewStyle().Bold(true)
+			}
+			return lipgloss.NewStyle()
+		})
+	t.Row("Project", a.Root)
+	t.Row("Runtime", string(a.Runtime))
+	t.Row("Isolation", string(a.Isolation))
+	model := a.Model
+	if model == "" {
+		model = "Built-in default"
+	}
+	t.Row("Model", model)
+	t.Row("Resources", fmt.Sprintf("%d CPUs · %s", plan.GuestCPUs, justcode.FormatMemorySize(plan.GuestMemoryMB)))
+	credential := "Global Albert credential (reference only; no secret value is written)"
+	if a.CredentialRef != "" {
+		credential = fmt.Sprintf("Reference: %s (value is not written)", a.CredentialRef)
+	}
+	t.Row("Credential", credential)
+	github := "No new approval; existing host-local approvals remain unchanged"
+	if a.GitHubWorkflow {
+		github = fmt.Sprintf("Guest workflow for %s (approval stays host-local)", a.GitHubRemote.Repo)
+	}
+	t.Row("GitHub", github)
+	if len(a.MCPConnectors) == 0 {
+		t.Row("MCPs", "None selected")
+	} else {
+		for _, choice := range justcode.MCPSelections() {
+			if !slices.Contains(a.MCPConnectors, choice.ID) {
+				continue
+			}
+			detail := choice.Description
+			if !choice.Local {
+				for _, connector := range justcode.MCPConnectors() {
+					if connector.ID == choice.ID {
+						detail = fmt.Sprintf("%s · %s · auth: %s", connector.Endpoint, connector.Transport, connector.Credential)
+						break
+					}
+				}
+			}
+			t.Row("MCP · "+choice.ID, detail)
+		}
+	}
+	if len(a.Skills) == 0 {
+		t.Row("Skills", "None selected")
+	} else {
+		for _, id := range a.Skills {
+			detail := id
+			if lock, ok := plan.SkillLocks[id]; ok {
+				digest := lock.SHA256
+				if len(digest) > 12 {
+					digest = digest[:12]
+				}
+				detail = fmt.Sprintf("%s · revision %s · sha256:%s", id, lock.Revision, digest)
+			}
+			t.Row("Skill", detail)
+		}
+	}
+	storage := "Versioned in .just-code/"
+	if a.SkillsLocalOnly {
+		storage = "Host-local; not shared with repository clones"
+	}
+	t.Row("Skill storage", storage)
+	t.Row("Manifest", plan.ManifestPath)
+	t.Row("Lockfile", plan.LockPath)
+	if plan.LocalSkillsPath != "" {
+		t.Row("Local skills", plan.LocalSkillsPath)
+	}
+	workspace := "Filtered project copy; .env, ignored files and symlinks are excluded by default"
+	if a.Runtime != justcode.RuntimeMicrosandbox {
+		workspace = "Project mounted into the guest; its files are readable there (.env blocks launch)"
+	}
+	t.Row("Workspace", workspace)
+	t.Row("Apply", "Does not boot or restart a VM; managed MCP changes apply on next launch")
+	if plan.ExistingManifest != nil {
+		t.Row("Existing manifest", "Will be replaced by this configuration")
+	}
+	if plan.InstructionsChanged {
+		t.Row("AGENTS.md", "Managed skills section changes; unrelated text is preserved")
+	}
+	if a.BrowserResourceGuidance != "" {
+		t.Row("Browser profile", a.BrowserResourceGuidance)
+	}
+	description := t.Render()
+	if len(plan.Warnings) > 0 {
+		description += "\n\nWarnings\n"
+		for _, warning := range plan.Warnings {
+			description += "• " + warning + "\n"
+		}
+	}
+	return escapeHuhNoteMarkup(description)
+}
+
+func huhReviewTableWidth() int {
+	width := 80
+	if detected, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && detected > 0 {
+		width = detected - 8
+	}
+	if width < 48 {
+		return 48
+	}
+	if width > 112 {
+		return 112
+	}
+	return width
+}
+
+// Note descriptions support inline markdown; escape those markers in table
+// data without changing the plain accessible output used by TERM=dumb.
+func escapeHuhNoteMarkup(value string) string {
+	if os.Getenv("TERM") == "dumb" {
+		return value
+	}
+	return strings.NewReplacer("\\", "\\\\", "_", "\\_", "*", "\\*", "`", "\\`").Replace(value)
 }
 
 // askInitQuestionsHuh renders the init wizard as one huh form. Groups the
@@ -159,8 +313,8 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			isolation = string(justcode.IsolationFull)
 		}
 		model := answers.Model
-		cpusInput := strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs))
-		memoryInput := justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
+		cpusInput := strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)))
+		memoryInput := justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)))
 		credentialRef := answers.CredentialRef
 		githubWorkflow := answers.GitHubWorkflow
 		skills := append([]string(nil), answers.Skills...)
@@ -236,35 +390,20 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		if shouldAskGuestCPUs(opts) {
 			resourceFields = append(resourceFields, huh.NewInput().
 				Title("Guest CPUs").
-				Description(fmt.Sprintf("1 to %d CPUs; the host has %d logical CPUs. Review warns if all are assigned.", opts.maxCPUs, opts.hostCPUs)).
+				Description(fmt.Sprintf("1 to %d CPUs; blank or 'default' restores the implicit default. The host has %d logical CPUs.", opts.maxCPUs, opts.hostCPUs)).
 				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("enter a whole guest CPU count")
-					}
-					n, err := strconv.Atoi(strings.TrimSpace(s))
-					if err != nil || n < 1 || n > opts.maxCPUs {
-						return fmt.Errorf("cpus must be 1 to %d (detected host capacity)", opts.maxCPUs)
-					}
-					return nil
+					_, _, err := parseGuestCPUsInput(s, opts.maxCPUs)
+					return err
 				}).
 				Value(&cpusInput))
 		}
 		if !opts.Set["memory-mb"] {
 			resourceFields = append(resourceFields, huh.NewInput().
 				Title("Guest memory").
-				Description(fmt.Sprintf("Enter MiB or GiB (e.g. 4G or 2.5G); max %s. Review warns at %d%% of host memory.", justcode.FormatMemorySize(opts.maxMemoryMB), justcode.GuestMemoryWarningPercent)).
+				Description(fmt.Sprintf("Enter MiB or GiB (e.g. 4G or 2.5G); max %s. Blank or 'default' restores the implicit default.", justcode.FormatMemorySize(opts.maxMemoryMB))).
 				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("enter a memory size in MiB or GiB")
-					}
-					n, err := justcode.ParseMemorySize(s)
-					if err != nil {
-						return err
-					}
-					if n < 1 || n > opts.maxMemoryMB {
-						return fmt.Errorf("memory must be 1 to %s (detected host capacity)", justcode.FormatMemorySize(opts.maxMemoryMB))
-					}
-					return nil
+					_, _, err := parseGuestMemoryInput(s, opts.maxMemoryMB)
+					return err
 				}).
 				Value(&memoryInput))
 		}
@@ -388,14 +527,24 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		// An accepted default keeps the implicit (zero) value so the
 		// project keeps inheriting built-in default changes; only an
 		// edited input becomes an explicit number.
-		if cpusInput != strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs)) {
-			answers.CPUs = parsePositiveInt(cpusInput)
+		if shouldAskGuestCPUs(opts) {
+			cpus, useDefault, err := parseGuestCPUsInput(cpusInput, opts.maxCPUs)
+			if err != nil {
+				return answers, err
+			}
+			if useDefault {
+				answers.CPUs = 0
+			} else if cpus != resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)) {
+				answers.CPUs = cpus
+			}
 		}
-		memoryMB, err := justcode.ParseMemorySize(memoryInput)
+		memoryMB, useDefault, err := parseGuestMemoryInput(memoryInput, opts.maxMemoryMB)
 		if err != nil {
 			return answers, fmt.Errorf("memory: %w", err)
 		}
-		if memoryMB != resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB) {
+		if useDefault {
+			answers.MemoryMB = 0
+		} else if memoryMB != resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)) {
 			answers.MemoryMB = memoryMB
 		}
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
