@@ -91,6 +91,13 @@ func readSecret(stdin bool) (string, error) {
 	// Interactive: no-echo when the terminal supports it. The no-echo
 	// helper is best-effort; a terminal that cannot be configured still
 	// reads a line, and the user is warned on the line above.
+	if wizardHuhFn() {
+		value, err := huhSecret("Secret", "Input hidden. The secret is stored in the OS-native credential store.")
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(value), nil
+	}
 	fmt.Print("Enter the secret (input hidden where the terminal supports it): ")
 	value, err := readPassword()
 	fmt.Println()
@@ -104,6 +111,9 @@ func authAddCmd(args []string) (int, error) {
 	kind, useStdin, fallback, err := parseAuthArgs(args)
 	if err != nil {
 		return 2, err
+	}
+	if !useStdin && isTTY() && !stdoutIsTTY() {
+		return 1, fmt.Errorf("interactive auth add requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
 	}
 	store, err := authStore(fallback)
 	if err != nil {

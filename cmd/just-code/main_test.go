@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -368,6 +369,95 @@ func TestProjectManifestSizesTheGuest(t *testing.T) {
 	empty, err := applyProjectSandboxResources(base, t.TempDir())
 	if err != nil || empty.CPUs != base.CPUs {
 		t.Fatalf("a project without a manifest must keep the defaults: %d cpus, err %v", empty.CPUs, err)
+	}
+}
+
+func TestEnforceHostResourceLimits(t *testing.T) {
+	for _, key := range []string{"JUST_CODE_CPUS", "JUST_CODE_MEMORY_MB"} {
+		value, present := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if present {
+				_ = os.Setenv(key, value)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+	originalHostResources := detectHostResourcesFn
+	hostResources := justcode.HostResources{CPUs: 1, MemoryMB: 6000}
+	detectHostResourcesFn = func() (justcode.HostResources, error) { return hostResources, nil }
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+
+	defaults := justcode.Config{CPUs: justcode.DefaultSandboxCPUs, MemoryMB: justcode.DefaultSandboxMemoryMB}
+	got, err := enforceHostResourceLimits(defaults, t.TempDir())
+	if err != nil {
+		t.Fatalf("default sizing should fit after selecting the only CPU: %v", err)
+	}
+	if got.CPUs != 1 || got.MemoryMB != 4096 {
+		t.Fatalf("single-choice/default sizing = %d CPUs / %d MiB, want 1 / 4096", got.CPUs, got.MemoryMB)
+	}
+	hostResources.MemoryMB = 4096
+	got, err = enforceHostResourceLimits(defaults, t.TempDir())
+	if err != nil || got.CPUs != 1 || got.MemoryMB != 3072 {
+		t.Fatalf("low-memory defaults = %d CPUs / %d MiB, err=%v; want 1 / 3072", got.CPUs, got.MemoryMB, err)
+	}
+	hostResources.MemoryMB = 6000
+	implicitRoot := t.TempDir()
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(implicitRoot), justcode.ProjectManifest{SchemaVersion: 1, Project: "implicit-defaults"}); err != nil {
+		t.Fatal(err)
+	}
+	hostResources = justcode.HostResources{CPUs: 2, MemoryMB: 4096}
+	got, err = enforceHostResourceLimits(defaults, implicitRoot)
+	if err != nil || got.CPUs != 1 || got.MemoryMB != 3072 {
+		t.Fatalf("small-host implicit defaults = %d CPUs / %d MiB, err=%v; want 1 / 3072", got.CPUs, got.MemoryMB, err)
+	}
+	hostResources = justcode.HostResources{CPUs: 8, MemoryMB: 16384}
+	got, err = enforceHostResourceLimits(defaults, implicitRoot)
+	if err != nil || got.CPUs != 2 || got.MemoryMB != 4096 {
+		t.Fatalf("larger-host implicit defaults = %d CPUs / %d MiB, err=%v; want 2 / 4096", got.CPUs, got.MemoryMB, err)
+	}
+	implicitManifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(implicitRoot))
+	if err != nil || implicitManifest.CPUs != 0 || implicitManifest.MemoryMB != 0 {
+		t.Fatalf("host-adapted defaults were persisted: %+v, err=%v", implicitManifest, err)
+	}
+	hostResources = justcode.HostResources{CPUs: 1, MemoryMB: 6000}
+
+	root := t.TempDir()
+	manifest := justcode.ProjectManifest{SchemaVersion: 1, Project: "p", CPUs: 2, MemoryMB: 4096}
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enforceHostResourceLimits(defaults, root); err == nil || !strings.Contains(err.Error(), "exceeds detected host capacity") {
+		t.Fatalf("over-cap manifest should be rejected, got %v", err)
+	}
+	t.Run("over-cap CPU environment value", func(t *testing.T) {
+		t.Setenv("JUST_CODE_CPUS", "5")
+		if _, err := enforceHostResourceLimits(justcode.Config{CPUs: 5, MemoryMB: 4096}, t.TempDir()); err == nil || !strings.Contains(err.Error(), "exceeds detected host capacity") {
+			t.Fatalf("over-cap CPU environment value should be rejected, got %v", err)
+		}
+	})
+	t.Run("over-cap memory environment value", func(t *testing.T) {
+		t.Setenv("JUST_CODE_MEMORY_MB", "10G")
+		if _, err := enforceHostResourceLimits(justcode.Config{CPUs: 1, MemoryMB: 10240}, t.TempDir()); err == nil || !strings.Contains(err.Error(), "exceeds detected host capacity") {
+			t.Fatalf("over-cap memory environment value should be rejected, got %v", err)
+		}
+	})
+}
+
+func TestRuntimeUsesMicrosandbox(t *testing.T) {
+	t.Setenv("RUNTIME", "tart")
+	if runtimeUsesMicrosandbox("", justcode.RuntimeMicrosandbox) {
+		t.Fatal("environment runtime should override the manifest")
+	}
+	if !runtimeUsesMicrosandbox("microsandbox", justcode.RuntimeTart) {
+		t.Fatal("explicit runtime flag should override the environment")
+	}
+	t.Setenv("RUNTIME", "")
+	if !runtimeUsesMicrosandbox("", justcode.RuntimeMicrosandbox) {
+		t.Fatal("manifest runtime should be used when the environment is unset")
 	}
 }
 

@@ -40,7 +40,11 @@ func initCmd(args []string) (int, error) {
 		return 2, err
 	}
 	in := bufio.NewReader(os.Stdin)
-	return initRun(opts, in, isTTY())
+	tty := isTTY()
+	if tty && !opts.Yes && !stdoutIsTTY() {
+		return 1, fmt.Errorf("interactive init requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
+	}
+	return initRun(opts, in, tty)
 }
 
 // initOptions is the flag surface, and doubles as the answers already supplied
@@ -61,7 +65,11 @@ type initOptions struct {
 	Yes             bool
 	// FromLaunch records that the launch flow is driving the setup, which only
 	// changes the closing message.
-	FromLaunch bool
+	FromLaunch   bool
+	hostCPUs     int
+	hostMemoryMB int
+	maxCPUs      int
+	maxMemoryMB  int
 	// Set records which fields came from the command line, so the interactive
 	// flow only asks for what is missing and the non-TTY flow knows what to
 	// report.
@@ -173,9 +181,9 @@ func parseInitArgs(args []string) (initOptions, error) {
 			if err != nil {
 				return opts, err
 			}
-			n, err := strconv.Atoi(v)
+			n, err := justcode.ParseMemorySize(v)
 			if err != nil {
-				return opts, fmt.Errorf("--memory-mb must be a whole number, got %q", v)
+				return opts, fmt.Errorf("--memory-mb: %w", err)
 			}
 			opts.MemoryMB, opts.Set["memory-mb"] = n, true
 		default:
@@ -221,7 +229,8 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// configured, not of whatever directory the caller happens to run from,
 	// and it resolves the root the same way the engine will (a path inside a
 	// worktree refers to the worktree's manifest).
-	wizard := justcode.InitWizard{ValidateModel: func(model string) (string, error) {
+	wizardHostResources := justcode.HostResources{}
+	wizard := justcode.InitWizard{HostResources: &wizardHostResources, ValidateModel: func(model string) (string, error) {
 		root := answers.Root
 		if pc, err := justcode.DiscoverProject(root); err == nil {
 			root = pc.Root
@@ -233,16 +242,72 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	if err := validateInitOptions(opts); err != nil {
 		return 2, err
 	}
+	hostResources, hostErr := detectHostResourcesFn()
+	if hostErr != nil {
+		return 1, fmt.Errorf("cannot determine host CPU and memory capacity; cannot enforce the guest resource limit: %v", hostErr)
+	}
+	if hostResources.CPUs <= 0 || hostResources.MemoryMB <= 0 {
+		return 1, fmt.Errorf("host resource detection returned incomplete CPU or memory capacity; cannot enforce the guest resource limit")
+	}
+	wizardHostResources = hostResources
+	opts.hostCPUs = hostResources.CPUs
+	opts.hostMemoryMB = hostResources.MemoryMB
+	opts.maxCPUs = justcode.MaxGuestCPUs(hostResources.CPUs)
+	opts.maxMemoryMB = justcode.MaxGuestMemoryMB(hostResources.MemoryMB)
+	if opts.maxCPUs < 1 {
+		return 1, fmt.Errorf("host resource detection reported no logical CPUs available for the guest")
+	}
+	if opts.maxMemoryMB < 1 {
+		return 1, fmt.Errorf("host memory is too small to allocate guest memory")
+	}
+	if opts.Set["cpus"] && opts.CPUs > opts.maxCPUs {
+		return 2, fmt.Errorf("--cpus %d exceeds detected host capacity of %d logical CPUs", opts.CPUs, opts.maxCPUs)
+	}
+	if opts.Set["memory-mb"] && opts.MemoryMB > opts.maxMemoryMB {
+		return 2, fmt.Errorf("--memory-mb %s exceeds detected host capacity of %s", justcode.FormatMemorySize(opts.MemoryMB), justcode.FormatMemorySize(opts.maxMemoryMB))
+	}
+	if !opts.Set["cpus"] && opts.maxCPUs == 1 {
+		if answers.CPUs > opts.maxCPUs {
+			answers.CPUs = 0
+		}
+		if tty && !opts.Yes {
+			fmt.Println("Only one whole guest CPU is available; selected 1 CPU automatically.")
+		}
+	}
 	var plan justcode.InitPlan
 	var err error
 	for {
+		useHuhReview := tty && !opts.Yes && wizardHuhFn()
 		if tty && !opts.Yes {
-			answers, err = askInitQuestions(in, opts, answers)
-			if err != nil {
-				return 1, err
+			if useHuhReview {
+				answers, err = askInitQuestionsHuh(opts, answers)
+				if err != nil {
+					return 1, err
+				}
+			} else {
+				answers, err = askInitQuestions(in, opts, answers)
+				if err != nil {
+					return 1, err
+				}
 			}
 		}
+		if !opts.Set["cpus"] && opts.maxCPUs == 1 && answers.CPUs > opts.maxCPUs {
+			// The only valid whole-core choice is automatic; discard an
+			// oversized legacy manifest value so init --replace can repair it.
+			answers.CPUs = 0
+		}
 		answers = withBrowserResourceGuidance(answers)
+		guestCPUs := answers.CPUs
+		if guestCPUs <= 0 {
+			guestCPUs = justcode.RecommendedDefaultGuestCPUs(hostResources.CPUs)
+		}
+		guestMemoryMB := answers.MemoryMB
+		if guestMemoryMB <= 0 {
+			guestMemoryMB = justcode.RecommendedDefaultGuestMemoryMB(hostResources.MemoryMB)
+		}
+		if err := justcode.ValidateGuestResources(hostResources, guestCPUs, guestMemoryMB); err != nil {
+			return 1, err
+		}
 		if answers.GitHubWorkflow {
 			remote, err := githubInitPreflightFn(answers.Root)
 			if err != nil {
@@ -254,11 +319,36 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		fmt.Print(justcode.FormatInitReview(plan))
+		review := justcode.FormatInitReview(plan)
 		if plan.ExistingManifest != nil && !opts.Replace {
+			fmt.Print(review)
 			return 1, fmt.Errorf("%s already exists; re-run with --replace to overwrite it, or edit it directly", plan.ManifestPath)
 		}
+		if !useHuhReview {
+			fmt.Print(review)
+		}
+		if !tty && !opts.Yes {
+			resourceWarnings := justcode.GuestResourceWarnings(hostResources, plan.GuestCPUs, plan.GuestMemoryMB)
+			if len(resourceWarnings) > 0 {
+				return 1, fmt.Errorf("non-interactive setup with high resource allocation requires explicit confirmation; rerun with --yes")
+			}
+		}
 		if !tty || opts.Yes {
+			break
+		}
+		if useHuhReview {
+			choice, err := huhApplyChoice(plan)
+			if err != nil {
+				return 1, fmt.Errorf("no answer; nothing was written")
+			}
+			switch choice {
+			case "apply":
+			case "cancel":
+				return 1, fmt.Errorf("cancelled; nothing was written")
+			case "edit":
+				fmt.Println("Reopening setup choices; blank CPU or memory fields reset to the implicit default, while other blank fields keep their current values.")
+				continue
+			}
 			break
 		}
 		answer, ok := promptLine(in, "\nApply? [Y/n/edit]: ")
@@ -271,7 +361,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		case "n", "no":
 			return 1, fmt.Errorf("cancelled; nothing was written")
 		case "e", "edit", "back":
-			fmt.Println("Reopening setup choices; blank answers keep the current selection.")
+			fmt.Println("Reopening setup choices; blank answers keep current values; enter `default` to reset resource sizing.")
 			continue
 		default:
 			return 1, fmt.Errorf("enter yes, no, or edit")
@@ -345,14 +435,62 @@ func withBrowserResourceGuidance(answers justcode.InitAnswers) justcode.InitAnsw
 		answers.BrowserResourceGuidance = ""
 		return answers
 	}
-	if answers.BrowserResourceGuidance == "" {
-		host, err := detectHostResourcesFn()
-		answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, answers.CPUs, answers.MemoryMB, err)
+	// Recompute on every review pass: the user may have changed CPU or
+	// memory settings in the edit form since the previous guidance was made.
+	host, err := detectHostResourcesFn()
+	guestCPUs, guestMemoryMB := answers.CPUs, answers.MemoryMB
+	if err == nil {
+		if guestCPUs <= 0 {
+			guestCPUs = justcode.RecommendedDefaultGuestCPUs(host.CPUs)
+		}
+		if guestMemoryMB <= 0 {
+			guestMemoryMB = justcode.RecommendedDefaultGuestMemoryMB(host.MemoryMB)
+		}
 	}
+	answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, guestCPUs, guestMemoryMB, err)
 	return answers
 }
 
 func seedInitAnswersFromManifest(opts initOptions, answers justcode.InitAnswers) justcode.InitAnswers {
+	// Clear previous-project values first. If the new root has no manifest,
+	// this leaves each non-flag answer at the built-in default instead of
+	// carrying settings across projects. Flags remain the caller's explicit
+	// choices.
+	if !opts.Set["runtime"] {
+		answers.Runtime = ""
+	}
+	if !opts.Set["isolation"] {
+		answers.Isolation = ""
+	}
+	if !opts.Set["model"] {
+		answers.Model = ""
+	}
+	if !opts.Set["cpus"] {
+		answers.CPUs = 0
+	}
+	if !opts.Set["memory-mb"] {
+		answers.MemoryMB = 0
+	}
+	if !opts.Set["credential-ref"] {
+		answers.CredentialRef = ""
+	}
+	if !opts.Set["github"] {
+		answers.GitHubWorkflow = false
+	}
+	answers.GitHubRemote = justcode.GitHubRemote{}
+	answers.BrowserResourceGuidance = ""
+	if !opts.Set["mcps"] {
+		answers.MCPConnectors = nil
+		answers.MCPsSet = false
+	}
+	if !opts.Set["skills"] {
+		answers.Skills = nil
+		answers.SkillsSet = false
+	}
+	if !opts.Set["skills-storage"] {
+		answers.SkillsLocalOnly = false
+		answers.SkillsLocalOnlySet = false
+	}
 	project, err := justcode.DiscoverProject(answers.Root)
 	if err != nil {
 		return answers
@@ -381,6 +519,9 @@ func seedInitAnswersFromManifest(opts initOptions, answers justcode.InitAnswers)
 	}
 	if !opts.Set["mcps"] {
 		answers.MCPConnectors = append([]string(nil), manifest.MCPConnectors...)
+	}
+	if !opts.Set["skills-storage"] {
+		answers.SkillsLocalOnly = manifest.SkillsLocalOnly
 	}
 	return answers
 }
@@ -529,10 +670,13 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 
-	if !opts.Set["cpus"] || !opts.Set["memory-mb"] {
+	if shouldAskGuestCPUs(opts) || !opts.Set["memory-mb"] {
 		fmt.Println()
-		fmt.Printf("Guest resources [%d CPUs, %d MiB]:\n", resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs), resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
-		if !opts.Set["cpus"] {
+		fmt.Printf("Guest resources [%d CPUs, %s] (maximum: %d CPUs, %s):\n",
+			resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)),
+			justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB))),
+			opts.maxCPUs, justcode.FormatMemorySize(opts.maxMemoryMB))
+		if shouldAskGuestCPUs(opts) {
 			if answer, ok := promptLine(in, "  cpus (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
 				if strings.EqualFold(strings.TrimSpace(answer), "default") {
 					answers.CPUs = 0
@@ -541,24 +685,24 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 					if err != nil {
 						return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
 					}
-					if n < 1 || n > justcode.MaxSandboxCPUs {
-						return answers, fmt.Errorf("cpus must be 1 to %d, got %d", justcode.MaxSandboxCPUs, n)
+					if n < 1 || n > opts.maxCPUs {
+						return answers, fmt.Errorf("cpus must be 1 to %d (detected host capacity), got %d", opts.maxCPUs, n)
 					}
 					answers.CPUs = n
 				}
 			}
 		}
 		if !opts.Set["memory-mb"] {
-			if answer, ok := promptLine(in, "  memory MiB (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
+			if answer, ok := promptLine(in, "  memory MiB or G, e.g. 4G or 2.5G (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
 				if strings.EqualFold(strings.TrimSpace(answer), "default") {
 					answers.MemoryMB = 0
 				} else {
-					n, err := strconv.Atoi(strings.TrimSpace(answer))
+					n, err := justcode.ParseMemorySize(answer)
 					if err != nil {
-						return answers, fmt.Errorf("memory must be a whole number of MiB, got %q", answer)
+						return answers, fmt.Errorf("memory: %w", err)
 					}
-					if n < 1 || n > justcode.MaxSandboxMemoryMB {
-						return answers, fmt.Errorf("memory must be 1 to %d MiB, got %d", justcode.MaxSandboxMemoryMB, n)
+					if n < 1 || n > opts.maxMemoryMB {
+						return answers, fmt.Errorf("memory must be 1 to %s (detected host capacity), got %s", justcode.FormatMemorySize(opts.maxMemoryMB), justcode.FormatMemorySize(n))
 					}
 					answers.MemoryMB = n
 				}
@@ -796,6 +940,10 @@ func resolvedOrDefault(value, fallback int) int {
 	return value
 }
 
+func shouldAskGuestCPUs(opts initOptions) bool {
+	return !opts.Set["cpus"] && opts.maxCPUs > 1
+}
+
 // catalogueModelWarning validates a model against the P10 catalogue through the
 // same cache the other commands use. An unreachable catalogue is a warning, not
 // a refusal: the model is still recorded and 'just-code models' re-checks it.
@@ -845,8 +993,8 @@ Options:
   --runtime <name>        microsandbox (default), tart or agent-vm
   --isolation <level>     full (default) or backend
   --model <id>            OpenCode model; empty keeps the built-in default
-  --cpus <n>              guest CPUs (1-255; default 2)
-  --memory-mb <n>         guest memory in MiB (default 4096)
+  --cpus <n>              guest CPUs (max detected host capacity)
+  --memory-mb <size>      guest memory in MiB or GiB (e.g. 4096, 4G, 2.5G; max detected host RAM)
   --credential-ref <ref>  project credential reference (default: the global one)
   --github                enable the protected GitHub guest workflow
   --skill <id>            select an exact catalogue skill (repeatable; e.g. official/rgaa)
@@ -921,6 +1069,9 @@ func offerProjectInitWithReader(projectRoot string, parsed parsedArgs, given *bu
 			"Run 'just-code init --root %q --yes' to accept the defaults, or 'just-code init' in a terminal to choose",
 			justcode.ProjectManifestPath(projectRoot), projectRoot)
 	}
+	if given == nil && !stdoutIsTTY() {
+		return false, 1, fmt.Errorf("interactive project setup requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
+	}
 
 	fmt.Printf("This project has no just-code configuration yet (%s).\n", justcode.ProjectManifestPath(projectRoot))
 	// One reader for both steps: a line the user typed ahead (or a piped
@@ -928,6 +1079,20 @@ func offerProjectInitWithReader(projectRoot string, parsed parsedArgs, given *bu
 	in := given
 	if in == nil {
 		in = bufio.NewReader(os.Stdin)
+	}
+	if tty && wizardHuhFn() {
+		proceed, err := huhConfirm("Configure this project now?", "This project has no just-code configuration yet. The wizard writes the project manifest.", true)
+		if err != nil {
+			return false, 1, fmt.Errorf("no project configuration: nothing was written. Run 'just-code init' when you want to configure it")
+		}
+		if !proceed {
+			return false, 1, fmt.Errorf("no project configuration: nothing was written. Run 'just-code init' when you want to configure it")
+		}
+		code, err = initRun(initOptions{Root: projectRoot, FromLaunch: true, Set: map[string]bool{"root": true}}, nil, true)
+		if err != nil || code != 0 {
+			return false, code, err
+		}
+		return true, 0, nil
 	}
 	answer, ok := promptLine(in, "Configure it now? [Y/n]: ")
 	if ok && strings.EqualFold(strings.TrimSpace(answer), "n") {

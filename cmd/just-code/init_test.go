@@ -35,8 +35,24 @@ func stubProjectSkills(t *testing.T) {
 	t.Cleanup(func() { projectSkillCatalogueFn = original })
 }
 
+// stubWizardHuh forces the line-based wizard path. The scripted tests drive
+// initRun with tty=true and a string reader; the seam's production probe
+// would be false there (stdout is a pipe), but pinning it keeps the tests
+// independent of what the test binary's streams happen to be.
+func stubWizardHuh(t *testing.T) {
+	orig := wizardHuhFn
+	wizardHuhFn = func() bool { return false }
+	t.Cleanup(func() { wizardHuhFn = orig })
+}
+
 func initTestProject(t *testing.T) string {
 	t.Helper()
+	stubWizardHuh(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 32, MemoryMB: 262144}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -74,6 +90,10 @@ func TestParseInitArgs(t *testing.T) {
 		!opts.Set["skills"] || !opts.Set["skills-storage"] {
 		t.Fatalf("every supplied field must be recorded as set: %v", opts.Set)
 	}
+	readableMemory, err := parseInitArgs([]string{"--memory-mb", "2.5G"})
+	if err != nil || readableMemory.MemoryMB != 2560 {
+		t.Fatalf("--memory-mb 2.5G parsed as %d MiB, err=%v; want 2560", readableMemory.MemoryMB, err)
+	}
 	duplicate, err := parseInitArgs([]string{"--skill", "official/rgaa", "--skill", "official/rgaa"})
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +105,114 @@ func TestParseInitArgs(t *testing.T) {
 		if _, err := parseInitArgs(args); err == nil {
 			t.Fatalf("%v must be rejected", args)
 		}
+	}
+}
+
+func TestShouldAskGuestCPUs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts initOptions
+		want bool
+	}{
+		{"multiple choices", initOptions{maxCPUs: 8}, true},
+		{"only one choice", initOptions{maxCPUs: 1}, false},
+		{"flag supplied", initOptions{maxCPUs: 8, Set: map[string]bool{"cpus": true}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldAskGuestCPUs(tc.opts); got != tc.want {
+				t.Fatalf("shouldAskGuestCPUs() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInitFlagsCannotExceedHostResourceCap(t *testing.T) {
+	root := initTestProject(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	for _, tc := range []struct {
+		name string
+		opts initOptions
+	}{
+		{"CPU", initOptions{Root: root, CPUs: 9, Set: map[string]bool{"root": true, "cpus": true}}},
+		{"memory", initOptions{Root: root, MemoryMB: 16385, Set: map[string]bool{"root": true, "memory-mb": true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if code, err := initRun(tc.opts, bufio.NewReader(strings.NewReader("")), false); code == 0 || err == nil || !strings.Contains(err.Error(), "exceeds detected host capacity") {
+				t.Fatalf("initRun = %d, %v; want host capacity rejection", code, err)
+			}
+		})
+	}
+}
+
+func TestNonInteractiveHighResourceAllocationRequiresYes(t *testing.T) {
+	root := initTestProject(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	options := initOptions{
+		Root: root, CPUs: 8, MemoryMB: 4096,
+		Set: map[string]bool{"root": true, "cpus": true, "memory-mb": true},
+	}
+	code, err := initRun(options, bufio.NewReader(strings.NewReader("")), false)
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "requires explicit confirmation") || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("non-interactive full-CPU setup = %d, %v; want explicit confirmation error", code, err)
+	}
+	if _, statErr := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(statErr) {
+		t.Fatalf("configuration was written without confirmation (stat error: %v)", statErr)
+	}
+}
+
+func TestInitKeepsImplicitDefaultsOnSingleCPUHost(t *testing.T) {
+	root := initTestProject(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 1, MemoryMB: 6000}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	opts := initOptions{Root: root, Yes: true, Set: map[string]bool{"root": true}}
+	if code, err := initRun(opts, bufio.NewReader(strings.NewReader("")), false); code != 0 || err != nil {
+		t.Fatalf("initRun = %d, %v", code, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CPUs != 0 || manifest.MemoryMB != 0 {
+		t.Fatalf("single-choice defaults = %d CPUs / %d MiB, want both implicit", manifest.CPUs, manifest.MemoryMB)
+	}
+}
+
+func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	writeManifest(t, root, justcode.ProjectManifest{Runtime: string(justcode.RuntimeMicrosandbox), Isolation: string(justcode.IsolationFull), CPUs: 2, MemoryMB: 4096})
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 1, MemoryMB: 6000}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	input := strings.Join([]string{"", "", "", "", "", "n", "", "", "", "y"}, "\n")
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "selected 1 CPU automatically") || strings.Contains(out, "cpus (`default` resets)") {
+		t.Fatalf("the sole CPU value must be stated without prompting: %q", out)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CPUs != 0 || manifest.MemoryMB != 4096 {
+		t.Fatalf("single CPU repair should reset only the CPU to its implicit default, got %d CPUs / %d MiB", manifest.CPUs, manifest.MemoryMB)
 	}
 }
 
@@ -188,6 +316,25 @@ func TestInitNonTTYNamesWhatIsMissing(t *testing.T) {
 	// And nothing was written.
 	if _, err := os.Stat(filepath.Join(root, ".just-code")); !os.IsNotExist(err) {
 		t.Fatalf("a failed run must not write anything (stat err = %v)", err)
+	}
+}
+
+func TestSeedInitAnswersFromMissingManifestResetsPreviousProjectValues(t *testing.T) {
+	root := initTestProject(t)
+	previous := justcode.InitAnswers{
+		Root: root, Runtime: justcode.RuntimeTart, Isolation: justcode.IsolationBackend,
+		Model: "previous/model", CPUs: 4, MemoryMB: 8192, CredentialRef: "previous",
+		GitHubWorkflow: true, GitHubRemote: justcode.GitHubRemote{Repo: "previous/repo"},
+		MCPConnectors: []string{"context7"}, MCPsSet: true,
+		Skills: []string{"official/rgaa"}, SkillsSet: true,
+		SkillsLocalOnly: true, SkillsLocalOnlySet: true,
+		BrowserResourceGuidance: "previous host sizing",
+	}
+	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, previous)
+	if got.Runtime != "" || got.Isolation != "" || got.Model != "" || got.CPUs != 0 || got.MemoryMB != 0 || got.CredentialRef != "" ||
+		got.GitHubWorkflow || got.GitHubRemote.Repo != "" || len(got.MCPConnectors) != 0 || got.MCPsSet ||
+		len(got.Skills) != 0 || got.SkillsSet || got.SkillsLocalOnly || got.SkillsLocalOnlySet || got.BrowserResourceGuidance != "" {
+		t.Fatalf("answers from previous project leaked into unconfigured root: %+v", got)
 	}
 }
 
@@ -470,6 +617,35 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	}
 }
 
+func TestBrowserResourceGuidanceRefreshesAfterResourceChanges(t *testing.T) {
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+
+	answers := justcode.InitAnswers{
+		MCPConnectors:           []string{"playwright"},
+		CPUs:                    2,
+		MemoryMB:                4096,
+		BrowserResourceGuidance: "stale guidance for 2 vCPU and 4096 MiB RAM",
+	}
+	updated := withBrowserResourceGuidance(answers)
+	if strings.Contains(updated.BrowserResourceGuidance, "stale guidance") {
+		t.Fatalf("stale guidance retained: %q", updated.BrowserResourceGuidance)
+	}
+	if !strings.Contains(updated.BrowserResourceGuidance, "2 vCPU") || !strings.Contains(updated.BrowserResourceGuidance, "4096 MiB RAM") {
+		t.Fatalf("guidance does not match current resources: %q", updated.BrowserResourceGuidance)
+	}
+
+	answers.CPUs = 4
+	answers.MemoryMB = 8192
+	updated = withBrowserResourceGuidance(answers)
+	if !strings.Contains(updated.BrowserResourceGuidance, "4 vCPU") || !strings.Contains(updated.BrowserResourceGuidance, "8192 MiB RAM") {
+		t.Fatalf("guidance was not refreshed for edited resources: %q", updated.BrowserResourceGuidance)
+	}
+}
+
 func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
 	root := initTestProject(t)
 	originalCatalogue := projectSkillCatalogueFn
@@ -628,7 +804,7 @@ func TestInitSkipsQuestionsAnsweredByFlags(t *testing.T) {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
 		}
 	})
-	for _, asked := range []string{"root:", "runtime [", "isolation [", "model:", "cpus:", "memory MiB:", "reference:"} {
+	for _, asked := range []string{"root:", "runtime [", "isolation [", "model:", "cpus:", "memory MiB or G:", "reference:"} {
 		if strings.Contains(out, asked) {
 			t.Fatalf("a question already answered by a flag must not be asked (%q): %q", asked, out)
 		}

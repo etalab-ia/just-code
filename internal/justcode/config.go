@@ -301,7 +301,13 @@ func LoadConfig(lookup EnvLookup) Config {
 		if !ok || v == "" {
 			continue
 		}
-		n, err := parsePositiveInt(v)
+		var n int
+		var err error
+		if f.key == "JUST_CODE_MEMORY_MB" {
+			n, err = ParseMemorySize(v)
+		} else {
+			n, err = parsePositiveInt(v)
+		}
 		if err == nil && f.max > 0 && n > f.max {
 			err = fmt.Errorf("must be at most %d, got %d", f.max, n)
 		}
