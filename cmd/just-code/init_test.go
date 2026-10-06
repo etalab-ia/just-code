@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -508,6 +509,8 @@ func TestPrintProjectSkillsFitsEightyColumns(t *testing.T) {
 		{ID: "official/short", Description: "courte"},
 		{ID: "experimental/un-identifiant-vraiment-tres-long", Experimental: true,
 			Description: "Rechercher sémantiquement dans une base de connaissances indexée\net même sur plusieurs lignes — description volontairement très longue et accentuée pour dépasser quatre-vingts colonnes."},
+		{ID: "wide/cjk", Description: strings.Repeat("é", 60)},
+		{ID: "wide/cjk", Description: strings.Repeat("宽", 60)},
 	}
 	out := captureStdout(t, func() { printProjectSkills(entries) })
 	if !utf8.ValidString(out) {
@@ -518,7 +521,7 @@ func TestPrintProjectSkillsFitsEightyColumns(t *testing.T) {
 		t.Fatalf("one line per entry, got %d for %d entries: %q", len(lines), len(entries), out)
 	}
 	for _, line := range lines {
-		if utf8.RuneCountInString(line) > 78 {
+		if ansi.StringWidth(line) > 78 {
 			t.Fatalf("catalogue line exceeds the 80-column terminal: %q", line)
 		}
 	}

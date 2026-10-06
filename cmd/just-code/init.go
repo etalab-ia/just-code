@@ -10,7 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/etalab-ia/just-code/internal/justcode"
+	"github.com/mattn/go-runewidth"
 )
 
 // initCmd implements `just-code init` (P12b): the minimal project setup. The
@@ -736,15 +738,26 @@ func printProjectSkills(skills []justcode.ProjectSkill) {
 	}
 }
 
-// truncateLine caps the composed line at n runes, so one catalogue entry
-// never wraps on an 80-column terminal. Truncation is rune-safe: French
-// accents are never split mid-sequence.
+// truncateLine caps the composed line at n terminal cells, so one catalogue
+// entry never wraps on an 80-column terminal. Width is measured in display
+// cells (a CJK or emoji rune occupies two), and truncation stays on rune
+// boundaries, so wide characters are never split mid-sequence.
 func truncateLine(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
+	if ansi.StringWidth(s) <= n {
 		return s
 	}
-	return string(r[:n-1]) + "…"
+	var b strings.Builder
+	width := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if width+w > n-1 {
+			break
+		}
+		b.WriteRune(r)
+		width += w
+	}
+	b.WriteString("…")
+	return b.String()
 }
 
 // githubInitPreflightFn resolves the stored token and the host origin before
