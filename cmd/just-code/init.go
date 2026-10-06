@@ -731,18 +731,20 @@ func printProjectSkills(skills []justcode.ProjectSkill) {
 		if skill.Experimental {
 			label += " [experimental]"
 		}
-		fmt.Printf("  %-36s %s\n", label, truncateLine(skill.Description, 60))
+		desc := strings.Join(strings.Fields(skill.Description), " ")
+		fmt.Println(truncateLine(fmt.Sprintf("  %-36s %s", label, desc), 78))
 	}
 }
 
-// truncateLine collapses whitespace and caps the string at n bytes so one
-// catalogue entry never wraps on an 80-column terminal.
+// truncateLine caps the composed line at n runes, so one catalogue entry
+// never wraps on an 80-column terminal. Truncation is rune-safe: French
+// accents are never split mid-sequence.
 func truncateLine(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }
 
 // githubInitPreflightFn resolves the stored token and the host origin before
