@@ -157,11 +157,16 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				return answers, fmt.Errorf("read current project skills: %w", err)
 			}
 			skills = current
+			// The comparison baseline below must match what the form
+			// actually shows: an unchanged submission must not look
+			// like a new selection and re-resolve existing pins.
+			answers.Skills = append([]string(nil), current...)
 		}
 		if !answers.MCPsSet {
 			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
 				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
 					mcps = append([]string(nil), manifest.MCPConnectors...)
+					answers.MCPConnectors = append([]string(nil), manifest.MCPConnectors...)
 				}
 			}
 		}
@@ -341,8 +346,15 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		answers.Runtime = justcode.Runtime(runtime)
 		answers.Isolation = justcode.Isolation(isolation)
 		answers.Model = strings.TrimSpace(model)
-		answers.CPUs = parsePositiveInt(cpusInput)
-		answers.MemoryMB = parsePositiveInt(memoryInput)
+		// An accepted default keeps the implicit (zero) value so the
+		// project keeps inheriting built-in default changes; only an
+		// edited input becomes an explicit number.
+		if cpusInput != strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs)) {
+			answers.CPUs = parsePositiveInt(cpusInput)
+		}
+		if memoryInput != strconv.Itoa(resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB)) {
+			answers.MemoryMB = parsePositiveInt(memoryInput)
+		}
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
 		answers.GitHubWorkflow = githubWorkflow
 		// Match the line wizard's "Enter keeps" semantics: a form
@@ -350,15 +362,15 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		// the seeded value, so accepting the defaults preserves the
 		// project's existing skill pins and storage mode.
 		if !skipSkills {
-			answers.SkillsSet = !equalStringSlices(answers.Skills, skills)
+			answers.SkillsSet = answers.SkillsSet || !equalStringSlices(answers.Skills, skills)
 			answers.Skills = skills
 		}
 		if !opts.Set["mcps"] {
-			answers.MCPsSet = !equalStringSlices(answers.MCPConnectors, mcps)
+			answers.MCPsSet = answers.MCPsSet || !equalStringSlices(answers.MCPConnectors, mcps)
 			answers.MCPConnectors = mcps
 		}
 		if !opts.Set["skills-storage"] {
-			answers.SkillsLocalOnlySet = answers.SkillsLocalOnly != skillsLocalOnly
+			answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet || answers.SkillsLocalOnly != skillsLocalOnly
 			answers.SkillsLocalOnly = skillsLocalOnly
 		}
 		return answers, nil

@@ -232,6 +232,10 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			addGitHub := false
 			if wizardHuhFn() {
 				proceed, err := huhConfirm("Add a GitHub token now?", "Optional — used by the guest GitHub workflow; can be added later with 'just-code auth add github'.", false)
+				if errors.Is(err, huh.ErrUserAborted) {
+					fmt.Println("Setup cancelled.")
+					return 1, nil
+				}
 				if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 					return 1, err
 				}
