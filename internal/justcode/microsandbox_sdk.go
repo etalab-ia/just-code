@@ -172,6 +172,9 @@ func (sdkMSBClient) EnsureInstalled(ctx context.Context) error {
 }
 
 func (sdkMSBClient) Doctor(ctx context.Context) (string, error) {
+	if err := validateInstalledMSBRuntime(ctx); err != nil {
+		return "", err
+	}
 	path, err := msbRuntimeBinary()
 	if err != nil {
 		return "", err

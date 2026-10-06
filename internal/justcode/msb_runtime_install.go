@@ -177,6 +177,29 @@ func validateExternalMSBRuntime(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// validateInstalledMSBRuntime checks the selected runtime without repairing,
+// downloading, or changing its provenance marker.
+func validateInstalledMSBRuntime(ctx context.Context) error {
+	if msb.SDKVersion() != msbRuntimeVersion {
+		return fmt.Errorf("Microsandbox SDK/runtime version mismatch: SDK %s, hosted runtime %s", msb.SDKVersion(), msbRuntimeVersion)
+	}
+	if external, err := validateExternalMSBRuntime(ctx); external || err != nil {
+		return err
+	}
+	artifact, err := msbRuntimeArtifactFor(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	home, err := msbRuntimeHome()
+	if err != nil {
+		return err
+	}
+	if !managedMSBRuntimeTrusted(home, artifact) {
+		return fmt.Errorf("managed Microsandbox runtime is missing or failed integrity checks; run 'just-code start --microsandbox' to install or repair it")
+	}
+	return nil
+}
+
 func installedMSBVersion(ctx context.Context, binary string) (string, error) {
 	out, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
 	if err != nil {

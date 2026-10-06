@@ -228,6 +228,72 @@ func TestExternalMSBRuntimeValidatesVersion(t *testing.T) {
 	}
 }
 
+func TestSDKDoctorRejectsIncompleteExternalRuntime(t *testing.T) {
+	t.Setenv("MSB_PATH", filepath.Join(t.TempDir(), "msb"))
+	t.Setenv("MSB_LIBKRUNFW_PATH", "")
+	_, err := (sdkMSBClient{}).Doctor(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "set both MSB_PATH and MSB_LIBKRUNFW_PATH") {
+		t.Fatalf("Doctor error = %v, want external runtime pair diagnostic", err)
+	}
+}
+
+func TestSDKDoctorRejectsUntrustedManagedRuntime(t *testing.T) {
+	artifact, err := msbRuntimeArtifactFor(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported test platform: %v", err)
+	}
+	home := t.TempDir()
+	for _, dir := range []string{"bin", "lib"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, "bin", artifact.msbName), []byte("untrusted executable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "lib", artifact.libName), []byte("runtime library"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range artifact.libSymlink {
+		if err := os.Symlink(link[1], filepath.Join(home, "lib", link[0])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("MSB_HOME", home)
+	t.Setenv("MSB_PATH", "")
+	t.Setenv("MSB_LIBKRUNFW_PATH", "")
+
+	_, err = (sdkMSBClient{}).Doctor(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "failed integrity checks") {
+		t.Fatalf("Doctor error = %v, want untrusted managed runtime diagnostic", err)
+	}
+	if _, err := os.Stat(msbRuntimeMarker(home)); !os.IsNotExist(err) {
+		t.Fatalf("Doctor wrote a trust marker: stat error = %v", err)
+	}
+}
+
+func TestSDKDoctorRejectsExternalRuntimeVersionMismatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	msbPath := filepath.Join(dir, "msb")
+	libPath := filepath.Join(dir, "libkrunfw")
+	if err := os.WriteFile(msbPath, []byte("#!/bin/sh\necho 'msb 0.7.2'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(libPath, []byte("library"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MSB_PATH", msbPath)
+	t.Setenv("MSB_LIBKRUNFW_PATH", libPath)
+
+	_, err := (sdkMSBClient{}).Doctor(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "requires msb "+msbRuntimeVersion) {
+		t.Fatalf("Doctor error = %v, want external runtime version diagnostic", err)
+	}
+}
+
 func TestMSBRuntimeBinaryHonorsOverride(t *testing.T) {
 	want := filepath.Join(t.TempDir(), "custom-msb")
 	t.Setenv("MSB_PATH", want)

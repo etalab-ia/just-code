@@ -1122,7 +1122,7 @@ func TestSDKMicrosandboxDoctorDoesNotInstallMissingRuntime(t *testing.T) {
 	t.Setenv("MSB_PATH", "")
 
 	_, err := (sdkMSBClient{}).Doctor(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "runtime is not installed") {
+	if err == nil || !strings.Contains(err.Error(), "managed Microsandbox runtime is missing") {
 		t.Fatalf("Doctor error = %v, want missing-runtime diagnostic", err)
 	}
 	if _, statErr := os.Stat(runtimePath); !os.IsNotExist(statErr) {
