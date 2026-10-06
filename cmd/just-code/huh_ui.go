@@ -95,40 +95,8 @@ func huhApplyChoice() (string, error) {
 // partial `just-code init --runtime tart` form shows only the unanswered
 // questions, matching the line path's skip semantics.
 func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justcode.InitAnswers, error) {
-	// Local copies the form binds to; written back to answers on success.
-	root := answers.Root
-	runtime := string(answers.Runtime)
-	if runtime == "" {
-		runtime = string(justcode.RuntimeMicrosandbox)
-	}
-	isolation := string(answers.Isolation)
-	if isolation == "" {
-		isolation = string(justcode.IsolationFull)
-	}
-	model := answers.Model
-	cpusInput := strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs))
-	memoryInput := strconv.Itoa(resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
-	credentialRef := answers.CredentialRef
-	githubWorkflow := answers.GitHubWorkflow
-	skills := append([]string(nil), answers.Skills...)
-	mcps := append([]string(nil), answers.MCPConnectors...)
-	skillsLocalOnly := answers.SkillsLocalOnly
-
-	if !answers.SkillsSet {
-		current, err := currentProjectSkillSelection(answers.Root)
-		if err != nil {
-			return answers, fmt.Errorf("read current project skills: %w", err)
-		}
-		skills = current
-	}
-	if !answers.MCPsSet {
-		if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
-			if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
-				mcps = append([]string(nil), manifest.MCPConnectors...)
-			}
-		}
-	}
-
+	// The catalogue and curated MCP list do not depend on the project
+	// root, so they are fetched once outside the reseed loop below.
 	var catalogue []justcode.ProjectSkill
 	var catalogueErr error
 	if !opts.Set["skills"] {
@@ -137,6 +105,12 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", catalogueErr)
 		}
 	}
+
+	// A failed catalogue must not clear an existing selection: huh rebuilds
+	// a MultiSelect's value from its options on submit, so an empty option
+	// list would wipe skills the project already pins. Skip the field
+	// instead and leave the answers untouched.
+	skipSkills := shouldSkipSkillsField(opts, catalogueErr)
 
 	skillOptions := make([]huh.Option[string], 0, len(catalogue))
 	for _, skill := range catalogue {
@@ -152,139 +126,242 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		mcpOptions = append(mcpOptions, huh.NewOption(choice.ID+" — "+choice.Description, choice.ID))
 	}
 
-	rootGroup := huh.NewGroup(
-		huh.NewInput().
-			Title("Project root").
-			Description("Directory the manifest and sandbox config live in.").
-			Value(&root),
-	).Title("Project").
-		WithHideFunc(func() bool { return opts.Set["root"] })
+	// The form runs in a loop: when the user changes the project root, the
+	// answers are reseeded from the target project's manifest (matching
+	// the line wizard) and the form reopens with the reseeded defaults.
+	for {
+		// Local copies the form binds to; written back to answers on success.
+		// The root field starts empty each pass: an empty submission keeps the
+		// current root, matching the line wizard's default-in-prompt behavior.
+		root := ""
+		runtime := string(answers.Runtime)
+		if runtime == "" {
+			runtime = string(justcode.RuntimeMicrosandbox)
+		}
+		isolation := string(answers.Isolation)
+		if isolation == "" {
+			isolation = string(justcode.IsolationFull)
+		}
+		model := answers.Model
+		cpusInput := strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs))
+		memoryInput := strconv.Itoa(resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
+		credentialRef := answers.CredentialRef
+		githubWorkflow := answers.GitHubWorkflow
+		skills := append([]string(nil), answers.Skills...)
+		mcps := append([]string(nil), answers.MCPConnectors...)
+		skillsLocalOnly := answers.SkillsLocalOnly
 
-	runtimeGroup := huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Runtime").
-			Description("Where the guest comes from ('just-code doctor' checks the selected one).").
-			Options(
-				huh.NewOption("microsandbox — the sealed microVM (default)", string(justcode.RuntimeMicrosandbox)),
-				huh.NewOption("tart — a full VM that mounts the project", string(justcode.RuntimeTart)),
-				huh.NewOption("agent-vm — the managed tart VM", string(justcode.RuntimeAgentVM)),
-			).
-			Value(&runtime),
-		huh.NewSelect[string]().
-			Title("Sharing mode").
-			Description("Where the agent and its credentials run.").
-			Options(
-				huh.NewOption("full — inside the guest; your machine is only a terminal", string(justcode.IsolationFull)),
-				huh.NewOption("backend — the TUI runs here and attaches to the guest", string(justcode.IsolationBackend)),
-			).
-			Value(&isolation),
-	).Title("Runtime").
-		WithHideFunc(func() bool { return opts.Set["runtime"] && opts.Set["isolation"] })
+		if !answers.SkillsSet {
+			current, err := currentProjectSkillSelection(answers.Root)
+			if err != nil {
+				return answers, fmt.Errorf("read current project skills: %w", err)
+			}
+			skills = current
+		}
+		if !answers.MCPsSet {
+			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
+				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
+					mcps = append([]string(nil), manifest.MCPConnectors...)
+				}
+			}
+		}
 
-	modelGroup := huh.NewGroup(
-		huh.NewInput().
-			Title("Model").
-			Description("Leave empty for the built-in default ('just-code models' lists the catalogue).").
-			Value(&model),
-		huh.NewInput().
-			Title("Guest CPUs").
-			Description(fmt.Sprintf("1 to %d; the default is %d.", justcode.MaxSandboxCPUs, justcode.DefaultSandboxCPUs)).
-			Validate(func(s string) error {
-				if strings.TrimSpace(s) == "" {
+		rootGroup := huh.NewGroup(
+			huh.NewInput().
+				Title("Project root").
+				Description(fmt.Sprintf("Directory the manifest and sandbox config live in. Leave empty to keep %s.", answers.Root)).
+				Placeholder(answers.Root).
+				Value(&root),
+		).Title("Project").
+			WithHideFunc(func() bool { return opts.Set["root"] })
+
+		runtimeFields := make([]huh.Field, 0, 2)
+		if !opts.Set["runtime"] {
+			runtimeFields = append(runtimeFields, huh.NewSelect[string]().
+				Title("Runtime").
+				Description("Where the guest comes from ('just-code doctor' checks the selected one).").
+				Options(
+					huh.NewOption("microsandbox — the sealed microVM (default)", string(justcode.RuntimeMicrosandbox)),
+					huh.NewOption("tart — a full VM that mounts the project", string(justcode.RuntimeTart)),
+					huh.NewOption("agent-vm — the managed tart VM", string(justcode.RuntimeAgentVM)),
+				).
+				Value(&runtime))
+		}
+		if !opts.Set["isolation"] {
+			runtimeFields = append(runtimeFields, huh.NewSelect[string]().
+				Title("Sharing mode").
+				Description("Where the agent and its credentials run.").
+				Options(
+					huh.NewOption("full — inside the guest; your machine is only a terminal", string(justcode.IsolationFull)),
+					huh.NewOption("backend — the TUI runs here and attaches to the guest", string(justcode.IsolationBackend)),
+				).
+				Value(&isolation))
+		}
+		var runtimeGroup *huh.Group
+		if len(runtimeFields) > 0 {
+			runtimeGroup = huh.NewGroup(runtimeFields...).Title("Runtime")
+		}
+
+		resourceFields := make([]huh.Field, 0, 3)
+		if !opts.Set["model"] {
+			resourceFields = append(resourceFields, huh.NewInput().
+				Title("Model").
+				Description("Leave empty for the built-in default ('just-code models' lists the catalogue).").
+				Value(&model))
+		}
+		if !opts.Set["cpus"] {
+			resourceFields = append(resourceFields, huh.NewInput().
+				Title("Guest CPUs").
+				Description(fmt.Sprintf("1 to %d; the default is %d.", justcode.MaxSandboxCPUs, justcode.DefaultSandboxCPUs)).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return nil
+					}
+					n, err := strconv.Atoi(strings.TrimSpace(s))
+					if err != nil || n < 1 || n > justcode.MaxSandboxCPUs {
+						return fmt.Errorf("cpus must be 1 to %d", justcode.MaxSandboxCPUs)
+					}
 					return nil
-				}
-				n, err := strconv.Atoi(strings.TrimSpace(s))
-				if err != nil || n < 1 || n > justcode.MaxSandboxCPUs {
-					return fmt.Errorf("cpus must be 1 to %d", justcode.MaxSandboxCPUs)
-				}
-				return nil
-			}).
-			Value(&cpusInput),
-		huh.NewInput().
-			Title("Guest memory (MiB)").
-			Description(fmt.Sprintf("1 to %d; the default is %d.", justcode.MaxSandboxMemoryMB, justcode.DefaultSandboxMemoryMB)).
-			Validate(func(s string) error {
-				if strings.TrimSpace(s) == "" {
+				}).
+				Value(&cpusInput))
+		}
+		if !opts.Set["memory-mb"] {
+			resourceFields = append(resourceFields, huh.NewInput().
+				Title("Guest memory (MiB)").
+				Description(fmt.Sprintf("1 to %d; the default is %d.", justcode.MaxSandboxMemoryMB, justcode.DefaultSandboxMemoryMB)).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return nil
+					}
+					n, err := strconv.Atoi(strings.TrimSpace(s))
+					if err != nil || n < 1 || n > justcode.MaxSandboxMemoryMB {
+						return fmt.Errorf("memory must be 1 to %d MiB", justcode.MaxSandboxMemoryMB)
+					}
 					return nil
-				}
-				n, err := strconv.Atoi(strings.TrimSpace(s))
-				if err != nil || n < 1 || n > justcode.MaxSandboxMemoryMB {
-					return fmt.Errorf("memory must be 1 to %d MiB", justcode.MaxSandboxMemoryMB)
-				}
-				return nil
-			}).
-			Value(&memoryInput),
-	).Title("Model and resources").
-		WithHideFunc(func() bool { return opts.Set["model"] && opts.Set["cpus"] && opts.Set["memory-mb"] })
+				}).
+				Value(&memoryInput))
+		}
+		var resourceGroup *huh.Group
+		if len(resourceFields) > 0 {
+			resourceGroup = huh.NewGroup(resourceFields...).Title("Model and resources")
+		}
 
-	credentialGroup := huh.NewGroup(
-		huh.NewInput().
-			Title("Credential reference").
-			Description("The global Albert credential is used unless you name another (P08 reference).").
-			Validate(func(s string) error {
-				if strings.HasPrefix(strings.TrimSpace(s), "sk-") {
-					return fmt.Errorf("a reference names a stored credential, not a raw key")
-				}
-				return nil
-			}).
-			Value(&credentialRef),
-		huh.NewConfirm().
-			Title("Approve the GitHub workflow for this project?").
-			Description("The Microsandbox guest can push branches and open draft PRs to this origin. It uses the stored GitHub credential through the secret proxy; approval is local to this host. 'just-code bindings revoke github' disables the grant.").
-			Value(&githubWorkflow),
-	).Title("Credentials").
-		WithHideFunc(func() bool { return opts.Set["credential-ref"] && opts.Set["github"] })
+		credentialFields := make([]huh.Field, 0, 2)
+		if !opts.Set["credential-ref"] {
+			credentialFields = append(credentialFields, huh.NewInput().
+				Title("Credential reference").
+				Description("The global Albert credential is used unless you name another (P08 reference).").
+				Validate(func(s string) error {
+					if strings.HasPrefix(strings.TrimSpace(s), "sk-") {
+						return fmt.Errorf("a reference names a stored credential, not a raw key")
+					}
+					return nil
+				}).
+				Value(&credentialRef))
+		}
+		if !opts.Set["github"] {
+			credentialFields = append(credentialFields, huh.NewConfirm().
+				Title("Approve the GitHub workflow for this project?").
+				Description("The Microsandbox guest can push branches and open draft PRs to this origin. It uses the stored GitHub credential through the secret proxy; approval is local to this host. 'just-code bindings revoke github' disables the grant.").
+				Value(&githubWorkflow))
+		}
+		var credentialGroup *huh.Group
+		if len(credentialFields) > 0 {
+			credentialGroup = huh.NewGroup(credentialFields...).Title("Credentials")
+		}
 
-	skillsGroup := huh.NewGroup(
-		huh.NewMultiSelect[string]().
-			Title("Project skills").
-			Description("Selected artifacts are pinned and installed inside the Microsandbox guest. Type / to filter.").
-			Filterable(true).
-			Options(skillOptions...).
-			Value(&skills),
-	).Title("Skills").
-		WithHideFunc(func() bool { return opts.Set["skills"] })
+		skillsGroup := huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Project skills").
+				Description("Selected artifacts are pinned and installed inside the Microsandbox guest. Type / to filter.").
+				Filterable(true).
+				Options(skillOptions...).
+				Value(&skills),
+		).Title("Skills").
+			WithHideFunc(func() bool { return opts.Set["skills"] || skipSkills })
 
-	mcpGroup := huh.NewGroup(
-		huh.NewMultiSelect[string]().
-			Title("MCPs").
-			Description("Curated remote services and optional guest-local browser tools.").
-			Filterable(true).
-			Options(mcpOptions...).
-			Value(&mcps),
-		huh.NewSelect[bool]().
-			Title("Skill storage").
-			Description("Versioned skills are committed with the project; local-only skills stay on this host.").
-			Options(
-				huh.NewOption("versioned", false),
-				huh.NewOption("local-only", true),
-			).
-			Value(&skillsLocalOnly),
-	).Title("MCPs and storage").
-		WithHideFunc(func() bool { return opts.Set["mcps"] && opts.Set["skills-storage"] })
+		mcpFields := make([]huh.Field, 0, 2)
+		if !opts.Set["mcps"] {
+			mcpFields = append(mcpFields, huh.NewMultiSelect[string]().
+				Title("MCPs").
+				Description("Curated remote services and optional guest-local browser tools.").
+				Filterable(true).
+				Options(mcpOptions...).
+				Value(&mcps))
+		}
+		if !opts.Set["skills-storage"] {
+			mcpFields = append(mcpFields, huh.NewSelect[bool]().
+				Title("Skill storage").
+				Description("Versioned skills are committed with the project; local-only skills stay on this host.").
+				Options(
+					huh.NewOption("versioned", false),
+					huh.NewOption("local-only", true),
+				).
+				Value(&skillsLocalOnly))
+		}
+		var mcpGroup *huh.Group
+		if len(mcpFields) > 0 {
+			mcpGroup = huh.NewGroup(mcpFields...).Title("MCPs and storage")
+		}
 
-	form := huh.NewForm(rootGroup, runtimeGroup, modelGroup, credentialGroup, skillsGroup, mcpGroup)
-	if err := form.Run(); err != nil {
-		return answers, err
+		groups := []*huh.Group{rootGroup}
+		for _, g := range []*huh.Group{runtimeGroup, resourceGroup, credentialGroup, skillsGroup, mcpGroup} {
+			if g != nil {
+				groups = append(groups, g)
+			}
+		}
+		form := huh.NewForm(groups...)
+		if err := form.Run(); err != nil {
+			return answers, err
+		}
+
+		// Write the form's answers back; a root change re-seeds every other
+		// answer from the target project's manifest (matching the line
+		// wizard) and reopens the form with the reseeded defaults.
+		newRoot := strings.TrimSpace(root)
+		if newRoot == "" {
+			newRoot = answers.Root
+		}
+		rootChanged := newRoot != answers.Root
+		if rootChanged {
+			answers.Root = newRoot
+			answers = seedInitAnswersFromManifest(opts, answers)
+			answers.SkillsSet = false
+			answers.MCPsSet = false
+			continue
+		}
+		answers.Root = newRoot
+		answers.Runtime = justcode.Runtime(runtime)
+		answers.Isolation = justcode.Isolation(isolation)
+		answers.Model = strings.TrimSpace(model)
+		answers.CPUs = parsePositiveInt(cpusInput)
+		answers.MemoryMB = parsePositiveInt(memoryInput)
+		answers.CredentialRef = strings.TrimSpace(credentialRef)
+		answers.GitHubWorkflow = githubWorkflow
+		if !skipSkills {
+			answers.Skills = skills
+		}
+		answers.MCPConnectors = mcps
+		answers.SkillsLocalOnly = skillsLocalOnly
+		answers.SkillsSet = true
+		answers.MCPsSet = true
+		answers.SkillsLocalOnlySet = true
+		return answers, nil
 	}
+}
 
-	answers.Root = strings.TrimSpace(root)
-	answers.Runtime = justcode.Runtime(runtime)
-	answers.Isolation = justcode.Isolation(isolation)
-	answers.Model = strings.TrimSpace(model)
-	if n, err := strconv.Atoi(strings.TrimSpace(cpusInput)); err == nil {
-		answers.CPUs = n
+func parsePositiveInt(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 1 {
+		return 0
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(memoryInput)); err == nil {
-		answers.MemoryMB = n
-	}
-	answers.CredentialRef = strings.TrimSpace(credentialRef)
-	answers.GitHubWorkflow = githubWorkflow
-	answers.Skills = skills
-	answers.SkillsSet = true
-	answers.MCPConnectors = mcps
-	answers.MCPsSet = true
-	answers.SkillsLocalOnly = skillsLocalOnly
-	answers.SkillsLocalOnlySet = true
-	return answers, nil
+	return n
+}
+
+// shouldSkipSkillsField reports whether the skills MultiSelect must be
+// omitted from the form: either the flag supplied the selection, or the
+// catalogue fetch failed and an empty option list would clobber the
+// project's existing skills on submit.
+func shouldSkipSkillsField(opts initOptions, catalogueErr error) bool {
+	return opts.Set["skills"] || catalogueErr != nil
 }

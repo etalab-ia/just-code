@@ -286,12 +286,21 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 					huh.NewInput().Title("Email").Description("Used for guest commits; empty uses albert-code@noreply.etalab.gouv.fr.").Value(&email),
 				),
 			).Run()
+			if errors.Is(err, huh.ErrUserAborted) {
+				// Identity is persisted here, not at final apply: an
+				// abort must cancel setup, not save partial values.
+				fmt.Println("\nSetup cancelled.")
+				return 1, nil
+			}
 			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 				return 1, err
 			}
 		} else {
 			name, _ = promptLine(in, "Name [Albert Code Agent]: ")
 			email, _ = promptLine(in, "Email [albert-code@noreply.etalab.gouv.fr]: ")
+		}
+		if strings.TrimSpace(name) == "" {
+			name = "Albert Code Agent"
 		}
 		if strings.TrimSpace(email) == "" {
 			email = "albert-code@noreply.etalab.gouv.fr"

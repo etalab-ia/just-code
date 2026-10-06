@@ -145,6 +145,34 @@ func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	}
 }
 
+// TestSetupWizardEmptyNameFallsBackToDefault pins the documented default:
+// an empty name input must persist "Albert Code Agent", not an empty
+// gitName that would print as a blank author in the review.
+func TestSetupWizardEmptyNameFallsBackToDefault(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key, no GitHub, empty name, empty email (defaults), empty model, apply.
+	input := "test-key\nn\n\n\n\ny\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error { return nil },
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
+	if code != 0 || err != nil {
+		t.Fatalf("wizard run: code=%d err=%v", code, err)
+	}
+	m := readUserSettingsFile(t)
+	if m == nil {
+		t.Fatal("settings file must exist after a completed setup")
+	}
+	if got, _ := m["gitName"].(string); got != "Albert Code Agent" {
+		t.Fatalf("empty name must fall back to the documented default, got %q", got)
+	}
+	if got, _ := m["gitEmail"].(string); got != "albert-code@noreply.etalab.gouv.fr" {
+		t.Fatalf("empty email must fall back to the documented default, got %q", got)
+	}
+}
+
 func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
