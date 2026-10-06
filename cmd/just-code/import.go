@@ -28,6 +28,9 @@ var importCredentialStoreFn = justcode.DefaultCredentialStore
 var applyImportedProjectFn = func(wizard justcode.InitWizard, plan justcode.InitPlan) error {
 	return wizard.Apply(plan, false)
 }
+var repairImportedProjectFn = func(wizard justcode.InitWizard, plan justcode.InitPlan) error {
+	return wizard.Apply(plan, true)
+}
 
 func parseAlbertCodeImportArgs(args []string) (albertCodeImportOptions, error) {
 	opts := albertCodeImportOptions{root: "."}
@@ -118,12 +121,11 @@ func albertCodeImportCmd(args []string) (int, error) {
 		Isolation:     justcode.IsolationFull,
 		Model:         plan.Model,
 		CredentialRef: credentialRef,
+		MCPConnectors: plan.MCPConnectors,
+		MCPsSet:       true,
 	}
 	if plan.HasSkillsFile {
 		answers.Skills, answers.SkillsSet = plan.Skills, true
-	}
-	if plan.HasOpenCodeConfig {
-		answers.MCPConnectors, answers.MCPsSet = plan.MCPConnectors, true
 	}
 	wizard := justcode.InitWizard{
 		FS:            justcode.DefaultFS,
@@ -210,7 +212,17 @@ func applyAlbertCodeImport(plan justcode.AlbertCodeImport, wizard justcode.InitW
 		}
 	}
 	if existingMatches {
-		fmt.Println("This Albert Code project has already been imported; no project files changed.")
+		if !setupPlan.InstructionsChanged {
+			fmt.Println("This Albert Code project has already been imported; no project files changed.")
+			return nil
+		}
+		if err := repairImportedProjectFn(wizard, setupPlan); err != nil {
+			if removeErr := rollbackImportedCredential(context.Background(), store, credentialCreated, importedCredential); removeErr != nil {
+				return fmt.Errorf("repair managed skill instructions: %v; newly imported credential could not be removed: %w", err, removeErr)
+			}
+			return fmt.Errorf("repair managed skill instructions: %w", err)
+		}
+		fmt.Printf("Reconciled the existing import and managed skill instructions in %s.\n", setupPlan.ManifestPath)
 		return nil
 	}
 	if err := applyImportedProjectFn(wizard, setupPlan); err != nil {

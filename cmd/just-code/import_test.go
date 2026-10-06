@@ -240,6 +240,37 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestAlbertCodeImportRefusesMCPsAbsentFromLegacySources(t *testing.T) {
+	root := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".albert-code"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".albert-code", "skills.txt"), []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "opencode.json")
+	config := `{"mcp":{"data-gouv":{"type":"remote","url":"https://mcp.data.gouv.fr/mcp","enabled":true}}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := albertCodeImportCmd([]string{"albert-code", "--root", root, "--apply"}); code != 0 || err != nil {
+		t.Fatalf("seed import: code=%d err=%v", code, err)
+	}
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := albertCodeImportCmd([]string{"albert-code", "--root", root, "--apply"}); code != 1 || err == nil || !strings.Contains(err.Error(), "differs from the import") {
+		t.Fatalf("re-import accepted an MCP absent from legacy sources: code=%d err=%v", code, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil || !sameStrings(manifest.MCPConnectors, []string{"data-gouv"}) {
+		t.Fatalf("refusal changed the existing MCPs: %+v, %v", manifest.MCPConnectors, err)
+	}
+}
+
 func TestAlbertCodeImportSuccessDoesNotPrintImportedCredential(t *testing.T) {
 	stubCredentialGenerationBump(t)
 	root := t.TempDir()
@@ -334,6 +365,44 @@ func TestAlbertCodeImportAppliesSkillsAndPreservesAlbertManagedInstructions(t *t
 	})
 	if !strings.Contains(second, "already been imported") {
 		t.Fatalf("skill import was not idempotent: %s", second)
+	}
+}
+
+func TestAlbertCodeImportRepairsMissingManagedSkillInstructionsOnReimport(t *testing.T) {
+	root := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".albert-code"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".albert-code", "skills.txt"), []byte("example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const userInstructions = "custom user instructions\n"
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(userInstructions), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubProjectSkills(t)
+	stubImportSkillResolver(t)
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
+	if code, err := albertCodeImportCmd([]string{"albert-code", "--root", root, "--apply"}); code != 0 || err != nil {
+		t.Fatalf("initial import: code=%d err=%v", code, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(userInstructions), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	var commandErr error
+	output := captureStdout(t, func() {
+		code, commandErr = albertCodeImportCmd([]string{"albert-code", "--root", root, "--apply"})
+	})
+	if commandErr != nil || code != 0 || !strings.Contains(output, "Reconciled the existing import") {
+		t.Fatalf("re-import did not repair managed instructions: code=%d err=%v output=%s", code, commandErr, output)
+	}
+	updated, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil || !strings.Contains(string(updated), userInstructions) || !strings.Contains(string(updated), "BEGIN JUST-CODE MANAGED SKILLS") {
+		t.Fatalf("re-import failed to restore managed instructions or preserve user text: %q, %v", updated, err)
 	}
 }
 
