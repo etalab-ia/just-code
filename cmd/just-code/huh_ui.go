@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
@@ -28,6 +29,15 @@ var wizardHuhFn = func() bool { return !wizardNoColor && isTTY() && stdoutIsTTY(
 // output, so the flag keeps the plain line renderer even on a terminal.
 var wizardNoColor bool
 
+// huhRun runs a form with its renderer bound to stdout. The routing check
+// (wizardHuhFn) requires stdout to be a terminal, but huh's default
+// renderer writes to stderr; binding the renderer to stdout keeps the
+// check and the output on the same stream, so `2>file` cannot hide the
+// form while it waits for input.
+func huhRun(form *huh.Form) error {
+	return form.WithProgramOptions(tea.WithOutput(os.Stdout)).Run()
+}
+
 // stdoutIsTTY reports whether standard output is a terminal, using the same
 // character-device test as isTTY.
 func stdoutIsTTY() bool {
@@ -39,7 +49,7 @@ func stdoutIsTTY() bool {
 // ErrUserAborted when the user cancels.
 func huhSecret(title, description string) (string, error) {
 	var value string
-	err := huh.NewForm(
+	err := huhRun(huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
 				Title(title).
@@ -47,7 +57,7 @@ func huhSecret(title, description string) (string, error) {
 				EchoMode(huh.EchoModePassword).
 				Value(&value),
 		),
-	).Run()
+	))
 	if err != nil {
 		return "", err
 	}
@@ -58,14 +68,14 @@ func huhSecret(title, description string) (string, error) {
 // user cancels.
 func huhConfirm(title, description string, defaultYes bool) (bool, error) {
 	var value bool = defaultYes
-	err := huh.NewForm(
+	err := huhRun(huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title(title).
 				Description(description).
 				Value(&value),
 		),
-	).Run()
+	))
 	if err != nil {
 		return false, err
 	}
@@ -77,7 +87,7 @@ func huhConfirm(title, description string, defaultYes bool) (bool, error) {
 // cancel. It returns ErrUserAborted when the user cancels.
 func huhApplyChoice() (string, error) {
 	choice := "apply"
-	err := huh.NewForm(
+	err := huhRun(huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Apply this configuration?").
@@ -88,7 +98,7 @@ func huhApplyChoice() (string, error) {
 				).
 				Value(&choice),
 		),
-	).Run()
+	))
 	if err != nil {
 		return "", err
 	}
@@ -320,8 +330,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				groups = append(groups, g)
 			}
 		}
-		form := huh.NewForm(groups...)
-		if err := form.Run(); err != nil {
+		if err := huhRun(huh.NewForm(groups...)); err != nil {
 			return answers, err
 		}
 

@@ -294,12 +294,12 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		fmt.Println("Git identity for guest commits:")
 		var name, email string
 		if wizardHuhFn() {
-			err := huh.NewForm(
+			err := huhRun(huh.NewForm(
 				huh.NewGroup(
 					huh.NewInput().Title("Name").Description("Used for guest commits; empty uses Albert Code Agent.").Value(&name),
 					huh.NewInput().Title("Email").Description("Used for guest commits; empty uses albert-code@noreply.etalab.gouv.fr.").Value(&email),
 				),
-			).Run()
+			))
 			if errors.Is(err, huh.ErrUserAborted) {
 				// Identity is persisted here, not at final apply: an
 				// abort must cancel setup, not save partial values.
@@ -332,11 +332,11 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		fmt.Println("Default model (leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue):")
 		if wizardHuhFn() {
 			var chosen string
-			err := huh.NewForm(
+			err := huhRun(huh.NewForm(
 				huh.NewGroup(
 					huh.NewInput().Title("Default model").Description("Leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue.").Value(&chosen),
 				),
-			).Run()
+			))
 			if errors.Is(err, huh.ErrUserAborted) {
 				fmt.Println("Setup cancelled.")
 				return 1, nil
