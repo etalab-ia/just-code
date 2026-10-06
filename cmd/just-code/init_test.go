@@ -166,7 +166,7 @@ func TestNonInteractiveHighResourceAllocationRequiresYes(t *testing.T) {
 	}
 }
 
-func TestInitAdjustsDefaultsToHostResourceCap(t *testing.T) {
+func TestInitKeepsImplicitDefaultsOnSingleCPUHost(t *testing.T) {
 	root := initTestProject(t)
 	originalHostResources := detectHostResourcesFn
 	detectHostResourcesFn = func() (justcode.HostResources, error) {
@@ -189,6 +189,7 @@ func TestInitAdjustsDefaultsToHostResourceCap(t *testing.T) {
 func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
+	writeManifest(t, root, justcode.ProjectManifest{Runtime: string(justcode.RuntimeMicrosandbox), Isolation: string(justcode.IsolationFull), CPUs: 2, MemoryMB: 4096})
 	originalHostResources := detectHostResourcesFn
 	detectHostResourcesFn = func() (justcode.HostResources, error) {
 		return justcode.HostResources{CPUs: 1, MemoryMB: 6000}, nil
@@ -196,7 +197,7 @@ func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 	input := strings.Join([]string{"", "", "", "", "", "n", "", "", "", "y"}, "\n")
 	out := captureStdout(t, func() {
-		code, err := initRun(initOptions{Root: root, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
 		}
@@ -208,8 +209,8 @@ func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.CPUs != 0 {
-		t.Fatalf("single CPU choice should remain implicit in the manifest, got %d", manifest.CPUs)
+	if manifest.CPUs != 0 || manifest.MemoryMB != 4096 {
+		t.Fatalf("single CPU repair should reset only the CPU to its implicit default, got %d CPUs / %d MiB", manifest.CPUs, manifest.MemoryMB)
 	}
 }
 

@@ -261,6 +261,9 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		return 2, fmt.Errorf("--memory-mb %s exceeds detected host capacity of %s", justcode.FormatMemorySize(opts.MemoryMB), justcode.FormatMemorySize(opts.maxMemoryMB))
 	}
 	if !opts.Set["cpus"] && opts.maxCPUs == 1 {
+		if answers.CPUs > opts.maxCPUs {
+			answers.CPUs = 0
+		}
 		if tty && !opts.Yes {
 			fmt.Println("Only one whole guest CPU is available; selected 1 CPU automatically.")
 		}
@@ -281,6 +284,11 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 					return 1, err
 				}
 			}
+		}
+		if !opts.Set["cpus"] && opts.maxCPUs == 1 && answers.CPUs > opts.maxCPUs {
+			// The only valid whole-core choice is automatic; discard an
+			// oversized legacy manifest value so init --replace can repair it.
+			answers.CPUs = 0
 		}
 		answers = withBrowserResourceGuidance(answers)
 		guestCPUs := answers.CPUs
