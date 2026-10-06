@@ -437,6 +437,16 @@ func TestImportLegacyDotenvMapsRecognizedKeys(t *testing.T) {
 	}
 }
 
+func TestImportLegacyDotenvListsVariableNamesWithoutValues(t *testing.T) {
+	imp := ImportLegacyDotenv("RUNTIME=tart\nCONTEXT7_API_KEY=context-secret\nUNKNOWN=value\nRUNTIME=other\n")
+	if got, want := strings.Join(imp.Keys, ","), "CONTEXT7_API_KEY,RUNTIME,UNKNOWN"; got != want {
+		t.Fatalf("Keys = %q, want %q", got, want)
+	}
+	if strings.Contains(strings.Join(imp.Keys, " "), "secret") || strings.Contains(strings.Join(imp.Keys, " "), "value") {
+		t.Fatal("legacy key summary contains dotenv values")
+	}
+}
+
 func TestImportLegacyDotenvCredentialIsAdviceNotValue(t *testing.T) {
 	imp := ImportLegacyDotenv("ALBERT_API_KEY=sk-super-secret\nSOME_TOKEN=abc\n")
 	if len(imp.Mapped) != 0 {
