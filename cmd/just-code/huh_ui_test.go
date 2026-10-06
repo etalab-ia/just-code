@@ -61,6 +61,34 @@ func TestRetainedSkillOptions(t *testing.T) {
 	}
 }
 
+func TestEqualStringSets(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b []string
+		want bool
+	}{
+		{"identical", []string{"a", "b"}, []string{"a", "b"}, true},
+		{"reordered", []string{"b", "a"}, []string{"a", "b"}, true},
+		{"different members", []string{"a", "c"}, []string{"a", "b"}, false},
+		{"different lengths", []string{"a"}, []string{"a", "b"}, false},
+		{"both empty", nil, nil, true},
+		{"duplicates differ", []string{"a", "a"}, []string{"a", "b"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := equalStringSets(tc.a, tc.b); got != tc.want {
+				t.Fatalf("equalStringSets(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+	// Inputs must not be mutated by the comparison.
+	a := []string{"b", "a"}
+	equalStringSets(a, []string{"a", "b"})
+	if a[0] != "b" || a[1] != "a" {
+		t.Fatalf("input mutated: %v", a)
+	}
+}
+
 func TestEqualStringSlices(t *testing.T) {
 	cases := []struct {
 		name string

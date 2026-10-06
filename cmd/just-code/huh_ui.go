@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -50,7 +51,7 @@ func huhSecret(title, description string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return value, nil
+	return strings.TrimSpace(value), nil
 }
 
 // huhConfirm asks one yes/no question. It returns ErrUserAborted when the
@@ -364,13 +365,15 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		// Match the line wizard's "Enter keeps" semantics: a form
 		// submission only marks the value explicit when it differs from
 		// the seeded value, so accepting the defaults preserves the
-		// project's existing skill pins and storage mode.
+		// project's existing skill pins and storage mode. huh rebuilds a
+		// MultiSelect's value in its own option order, so compare as
+		// sets: a reordered-but-identical selection is not a change.
 		if !skipSkills {
-			answers.SkillsSet = answers.SkillsSet || !equalStringSlices(answers.Skills, skills)
+			answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, skills)
 			answers.Skills = skills
 		}
 		if !opts.Set["mcps"] {
-			answers.MCPsSet = answers.MCPsSet || !equalStringSlices(answers.MCPConnectors, mcps)
+			answers.MCPsSet = answers.MCPsSet || !equalStringSets(answers.MCPConnectors, mcps)
 			answers.MCPConnectors = mcps
 		}
 		if !opts.Set["skills-storage"] {
@@ -399,6 +402,19 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// equalStringSets reports whether two slices hold the same strings
+// regardless of order, without mutating its inputs.
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sortedA := append([]string(nil), a...)
+	sortedB := append([]string(nil), b...)
+	slices.Sort(sortedA)
+	slices.Sort(sortedB)
+	return slices.Equal(sortedA, sortedB)
 }
 
 // shouldSkipSkillsField reports whether the skills MultiSelect must be
