@@ -160,7 +160,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		}
 		model := answers.Model
 		cpusInput := strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs))
-		memoryInput := strconv.Itoa(resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
+		memoryInput := justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
 		credentialRef := answers.CredentialRef
 		githubWorkflow := answers.GitHubWorkflow
 		skills := append([]string(nil), answers.Skills...)
@@ -233,17 +233,17 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				Description("Leave empty for the built-in default ('just-code models' lists the catalogue).").
 				Value(&model))
 		}
-		if !opts.Set["cpus"] {
+		if shouldAskGuestCPUs(opts) {
 			resourceFields = append(resourceFields, huh.NewInput().
 				Title("Guest CPUs").
-				Description(fmt.Sprintf("1 to %d; the default is %d.", justcode.MaxSandboxCPUs, justcode.DefaultSandboxCPUs)).
+				Description(fmt.Sprintf("1 to %d CPUs; the host has %d logical CPUs. Review warns if all are assigned.", opts.maxCPUs, opts.hostCPUs)).
 				Validate(func(s string) error {
 					if strings.TrimSpace(s) == "" {
-						return nil
+						return fmt.Errorf("enter a whole guest CPU count")
 					}
 					n, err := strconv.Atoi(strings.TrimSpace(s))
-					if err != nil || n < 1 || n > justcode.MaxSandboxCPUs {
-						return fmt.Errorf("cpus must be 1 to %d", justcode.MaxSandboxCPUs)
+					if err != nil || n < 1 || n > opts.maxCPUs {
+						return fmt.Errorf("cpus must be 1 to %d (detected host capacity)", opts.maxCPUs)
 					}
 					return nil
 				}).
@@ -251,15 +251,18 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		}
 		if !opts.Set["memory-mb"] {
 			resourceFields = append(resourceFields, huh.NewInput().
-				Title("Guest memory (MiB)").
-				Description(fmt.Sprintf("1 to %d; the default is %d.", justcode.MaxSandboxMemoryMB, justcode.DefaultSandboxMemoryMB)).
+				Title("Guest memory").
+				Description(fmt.Sprintf("Enter MiB or GiB (e.g. 4G or 2.5G); max %s. Review warns at %d%% of host memory.", justcode.FormatMemorySize(opts.maxMemoryMB), justcode.GuestMemoryWarningPercent)).
 				Validate(func(s string) error {
 					if strings.TrimSpace(s) == "" {
-						return nil
+						return fmt.Errorf("enter a memory size in MiB or GiB")
 					}
-					n, err := strconv.Atoi(strings.TrimSpace(s))
-					if err != nil || n < 1 || n > justcode.MaxSandboxMemoryMB {
-						return fmt.Errorf("memory must be 1 to %d MiB", justcode.MaxSandboxMemoryMB)
+					n, err := justcode.ParseMemorySize(s)
+					if err != nil {
+						return err
+					}
+					if n < 1 || n > opts.maxMemoryMB {
+						return fmt.Errorf("memory must be 1 to %s (detected host capacity)", justcode.FormatMemorySize(opts.maxMemoryMB))
 					}
 					return nil
 				}).
@@ -355,6 +358,18 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		if rootChanged {
 			answers.Root = newRoot
 			answers = seedInitAnswersFromManifest(opts, answers)
+			if !opts.Set["cpus"] && answers.CPUs == 0 {
+				recommended := justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)
+				if recommended != justcode.DefaultSandboxCPUs {
+					answers.CPUs = recommended
+				}
+			}
+			if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
+				recommended := justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)
+				if recommended != justcode.DefaultSandboxMemoryMB {
+					answers.MemoryMB = recommended
+				}
+			}
 			// Flags keep their explicit selection across a root change;
 			// only interactively seeded values are reseeded from the new
 			// project's manifest.
@@ -376,8 +391,12 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		if cpusInput != strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs)) {
 			answers.CPUs = parsePositiveInt(cpusInput)
 		}
-		if memoryInput != strconv.Itoa(resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB)) {
-			answers.MemoryMB = parsePositiveInt(memoryInput)
+		memoryMB, err := justcode.ParseMemorySize(memoryInput)
+		if err != nil {
+			return answers, fmt.Errorf("memory: %w", err)
+		}
+		if memoryMB != resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB) {
+			answers.MemoryMB = memoryMB
 		}
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
 		answers.GitHubWorkflow = githubWorkflow

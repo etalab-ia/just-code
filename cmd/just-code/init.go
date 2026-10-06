@@ -59,7 +59,11 @@ type initOptions struct {
 	Yes             bool
 	// FromLaunch records that the launch flow is driving the setup, which only
 	// changes the closing message.
-	FromLaunch bool
+	FromLaunch   bool
+	hostCPUs     int
+	hostMemoryMB int
+	maxCPUs      int
+	maxMemoryMB  int
 	// Set records which fields came from the command line, so the interactive
 	// flow only asks for what is missing and the non-TTY flow knows what to
 	// report.
@@ -171,9 +175,9 @@ func parseInitArgs(args []string) (initOptions, error) {
 			if err != nil {
 				return opts, err
 			}
-			n, err := strconv.Atoi(v)
+			n, err := justcode.ParseMemorySize(v)
 			if err != nil {
-				return opts, fmt.Errorf("--memory-mb must be a whole number, got %q", v)
+				return opts, fmt.Errorf("--memory-mb: %w", err)
 			}
 			opts.MemoryMB, opts.Set["memory-mb"] = n, true
 		default:
@@ -219,7 +223,8 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// configured, not of whatever directory the caller happens to run from,
 	// and it resolves the root the same way the engine will (a path inside a
 	// worktree refers to the worktree's manifest).
-	wizard := justcode.InitWizard{ValidateModel: func(model string) (string, error) {
+	wizardHostResources := justcode.HostResources{}
+	wizard := justcode.InitWizard{HostResources: &wizardHostResources, ValidateModel: func(model string) (string, error) {
 		root := answers.Root
 		if pc, err := justcode.DiscoverProject(root); err == nil {
 			root = pc.Root
@@ -230,6 +235,47 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// not send the user through six prompts to learn about it.
 	if err := validateInitOptions(opts); err != nil {
 		return 2, err
+	}
+	hostResources, hostErr := detectHostResourcesFn()
+	if hostErr != nil {
+		return 1, fmt.Errorf("cannot determine host CPU and memory capacity; cannot enforce the guest resource limit: %v", hostErr)
+	}
+	if hostResources.CPUs <= 0 || hostResources.MemoryMB <= 0 {
+		return 1, fmt.Errorf("host resource detection returned incomplete CPU or memory capacity; cannot enforce the guest resource limit")
+	}
+	wizardHostResources = hostResources
+	opts.hostCPUs = hostResources.CPUs
+	opts.hostMemoryMB = hostResources.MemoryMB
+	opts.maxCPUs = justcode.MaxGuestCPUs(hostResources.CPUs)
+	opts.maxMemoryMB = justcode.MaxGuestMemoryMB(hostResources.MemoryMB)
+	if opts.maxCPUs < 1 {
+		return 1, fmt.Errorf("host resource detection reported no logical CPUs available for the guest")
+	}
+	if opts.maxMemoryMB < 1 {
+		return 1, fmt.Errorf("host memory is too small to allocate guest memory")
+	}
+	if opts.Set["cpus"] && opts.CPUs > opts.maxCPUs {
+		return 2, fmt.Errorf("--cpus %d exceeds detected host capacity of %d logical CPUs", opts.CPUs, opts.maxCPUs)
+	}
+	if opts.Set["memory-mb"] && opts.MemoryMB > opts.maxMemoryMB {
+		return 2, fmt.Errorf("--memory-mb %s exceeds detected host capacity of %s", justcode.FormatMemorySize(opts.MemoryMB), justcode.FormatMemorySize(opts.maxMemoryMB))
+	}
+	if !opts.Set["cpus"] && opts.maxCPUs == 1 {
+		answers.CPUs = 1
+		if tty && !opts.Yes {
+			fmt.Println("Only one whole guest CPU is available; selected 1 CPU automatically.")
+		}
+	} else if !opts.Set["cpus"] && answers.CPUs == 0 {
+		recommended := justcode.RecommendedDefaultGuestCPUs(hostResources.CPUs)
+		if recommended != justcode.DefaultSandboxCPUs {
+			answers.CPUs = recommended
+		}
+	}
+	if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
+		recommended := justcode.RecommendedDefaultGuestMemoryMB(hostResources.MemoryMB)
+		if recommended != justcode.DefaultSandboxMemoryMB {
+			answers.MemoryMB = recommended
+		}
 	}
 	var plan justcode.InitPlan
 	var err error
@@ -247,7 +293,26 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 				}
 			}
 		}
+		if !opts.Set["cpus"] && opts.maxCPUs == 1 {
+			answers.CPUs = 1
+		} else if !opts.Set["cpus"] && answers.CPUs == 0 {
+			recommended := justcode.RecommendedDefaultGuestCPUs(hostResources.CPUs)
+			if recommended != justcode.DefaultSandboxCPUs {
+				answers.CPUs = recommended
+			}
+		}
+		if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
+			recommended := justcode.RecommendedDefaultGuestMemoryMB(hostResources.MemoryMB)
+			if recommended != justcode.DefaultSandboxMemoryMB {
+				answers.MemoryMB = recommended
+			}
+		}
 		answers = withBrowserResourceGuidance(answers)
+		if err := justcode.ValidateGuestResources(hostResources,
+			resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs),
+			resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB)); err != nil {
+			return 1, err
+		}
 		if answers.GitHubWorkflow {
 			remote, err := githubInitPreflightFn(answers.Root)
 			if err != nil {
@@ -262,6 +327,14 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		fmt.Print(justcode.FormatInitReview(plan))
 		if plan.ExistingManifest != nil && !opts.Replace {
 			return 1, fmt.Errorf("%s already exists; re-run with --replace to overwrite it, or edit it directly", plan.ManifestPath)
+		}
+		if !tty && !opts.Yes {
+			resourceWarnings := justcode.GuestResourceWarnings(hostResources,
+				resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs),
+				resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
+			if len(resourceWarnings) > 0 {
+				return 1, fmt.Errorf("non-interactive setup with high resource allocation requires explicit confirmation; rerun with --yes")
+			}
 		}
 		if !tty || opts.Yes {
 			break
@@ -494,6 +567,18 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			answers.Root = strings.TrimSpace(answer)
 			if answers.Root != currentRoot {
 				answers = seedInitAnswersFromManifest(opts, answers)
+				if !opts.Set["cpus"] && answers.CPUs == 0 {
+					recommended := justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)
+					if recommended != justcode.DefaultSandboxCPUs {
+						answers.CPUs = recommended
+					}
+				}
+				if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
+					recommended := justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)
+					if recommended != justcode.DefaultSandboxMemoryMB {
+						answers.MemoryMB = recommended
+					}
+				}
 			}
 		}
 	}
@@ -552,10 +637,13 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 
-	if !opts.Set["cpus"] || !opts.Set["memory-mb"] {
+	if shouldAskGuestCPUs(opts) || !opts.Set["memory-mb"] {
 		fmt.Println()
-		fmt.Printf("Guest resources [%d CPUs, %d MiB]:\n", resolvedOrDefault(answers.CPUs, justcode.DefaultSandboxCPUs), resolvedOrDefault(answers.MemoryMB, justcode.DefaultSandboxMemoryMB))
-		if !opts.Set["cpus"] {
+		fmt.Printf("Guest resources [%d CPUs, %s] (maximum: %d CPUs, %s):\n",
+			resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)),
+			justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB))),
+			opts.maxCPUs, justcode.FormatMemorySize(opts.maxMemoryMB))
+		if shouldAskGuestCPUs(opts) {
 			if answer, ok := promptLine(in, "  cpus (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
 				if strings.EqualFold(strings.TrimSpace(answer), "default") {
 					answers.CPUs = 0
@@ -564,24 +652,24 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 					if err != nil {
 						return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
 					}
-					if n < 1 || n > justcode.MaxSandboxCPUs {
-						return answers, fmt.Errorf("cpus must be 1 to %d, got %d", justcode.MaxSandboxCPUs, n)
+					if n < 1 || n > opts.maxCPUs {
+						return answers, fmt.Errorf("cpus must be 1 to %d (detected host capacity), got %d", opts.maxCPUs, n)
 					}
 					answers.CPUs = n
 				}
 			}
 		}
 		if !opts.Set["memory-mb"] {
-			if answer, ok := promptLine(in, "  memory MiB (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
+			if answer, ok := promptLine(in, "  memory MiB or G, e.g. 4G or 2.5G (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
 				if strings.EqualFold(strings.TrimSpace(answer), "default") {
 					answers.MemoryMB = 0
 				} else {
-					n, err := strconv.Atoi(strings.TrimSpace(answer))
+					n, err := justcode.ParseMemorySize(answer)
 					if err != nil {
-						return answers, fmt.Errorf("memory must be a whole number of MiB, got %q", answer)
+						return answers, fmt.Errorf("memory: %w", err)
 					}
-					if n < 1 || n > justcode.MaxSandboxMemoryMB {
-						return answers, fmt.Errorf("memory must be 1 to %d MiB, got %d", justcode.MaxSandboxMemoryMB, n)
+					if n < 1 || n > opts.maxMemoryMB {
+						return answers, fmt.Errorf("memory must be 1 to %s (detected host capacity), got %s", justcode.FormatMemorySize(opts.maxMemoryMB), justcode.FormatMemorySize(n))
 					}
 					answers.MemoryMB = n
 				}
@@ -779,6 +867,10 @@ func resolvedOrDefault(value, fallback int) int {
 	return value
 }
 
+func shouldAskGuestCPUs(opts initOptions) bool {
+	return !opts.Set["cpus"] && opts.maxCPUs > 1
+}
+
 // catalogueModelWarning validates a model against the P10 catalogue through the
 // same cache the other commands use. An unreachable catalogue is a warning, not
 // a refusal: the model is still recorded and 'just-code models' re-checks it.
@@ -828,8 +920,8 @@ Options:
   --runtime <name>        microsandbox (default), tart or agent-vm
   --isolation <level>     full (default) or backend
   --model <id>            OpenCode model; empty keeps the built-in default
-  --cpus <n>              guest CPUs (1-255; default 2)
-  --memory-mb <n>         guest memory in MiB (default 4096)
+  --cpus <n>              guest CPUs (max detected host capacity)
+  --memory-mb <size>      guest memory in MiB or GiB (e.g. 4096, 4G, 2.5G; max detected host RAM)
   --credential-ref <ref>  project credential reference (default: the global one)
   --github                enable the protected GitHub guest workflow
   --skill <id>            select an exact catalogue skill (repeatable; e.g. official/rgaa)

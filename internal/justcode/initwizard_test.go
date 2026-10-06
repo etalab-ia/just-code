@@ -46,7 +46,7 @@ func TestInitPlanResolvesDefaults(t *testing.T) {
 		t.Fatalf("sizing = %d / %d, want the unset representation", plan.Answers.CPUs, plan.Answers.MemoryMB)
 	}
 	review := FormatInitReview(plan)
-	if !strings.Contains(review, "2 CPUs, 4096 MiB") {
+	if !strings.Contains(review, "2 CPUs, 4G") {
 		t.Fatalf("the review must show the effective sizing: %q", review)
 	}
 }
@@ -78,6 +78,42 @@ func TestInitPlanRejectsBadAnswers(t *testing.T) {
 				t.Fatalf("error = %v, want it to mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestInitPlanEnforcesHostResourceCeiling(t *testing.T) {
+	root := initTestRoot(t)
+	host := HostResources{CPUs: 8, MemoryMB: 16384}
+	for _, tc := range []struct {
+		name   string
+		cpus   int
+		memory int
+	}{
+		{name: "CPU above host capacity", cpus: 9, memory: 4096},
+		{name: "memory above host capacity", cpus: 4, memory: 16385},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wizard := InitWizard{HostResources: &host}
+			_, err := wizard.Plan(InitAnswers{Root: root, CPUs: tc.cpus, MemoryMB: tc.memory})
+			if err == nil || !strings.Contains(err.Error(), "exceeds detected host capacity") {
+				t.Fatalf("Plan error = %v, want host capacity rejection", err)
+			}
+		})
+	}
+}
+
+func TestInitPlanAddsResourceWarningsToReview(t *testing.T) {
+	root := initTestRoot(t)
+	host := HostResources{CPUs: 8, MemoryMB: 16384}
+	plan, err := (InitWizard{HostResources: &host}).Plan(InitAnswers{Root: root, CPUs: 8, MemoryMB: 13108})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	review := FormatInitReview(plan)
+	for _, warning := range []string{"all 8 logical host CPUs", "80.0% of detected host memory"} {
+		if !strings.Contains(review, warning) {
+			t.Errorf("review lacks warning %q: %s", warning, review)
+		}
 	}
 }
 

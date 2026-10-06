@@ -67,6 +67,10 @@ type InitAnswers struct {
 // catalogue, the file system, and the review screen.
 type InitWizard struct {
 	FS FS
+	// HostResources enforces the detected host capacity ceiling and adds
+	// interactive review warnings for allocations that leave little headroom.
+	// Nil leaves the pure planner usable without host-dependent policy.
+	HostResources *HostResources
 	// StateDir contains host-local per-project settings used only when the
 	// user explicitly selects local-only skill storage.
 	StateDir string
@@ -281,6 +285,14 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			return plan, fmt.Errorf("memory must be 1 to %d MiB, got %d", MaxSandboxMemoryMB, answers.MemoryMB)
 		}
 	}
+	if w.HostResources != nil {
+		cpus := resolvedCPUs(answers.CPUs)
+		memoryMB := resolvedMemoryMB(answers.MemoryMB)
+		if err := ValidateGuestResources(*w.HostResources, cpus, memoryMB); err != nil {
+			return plan, err
+		}
+		plan.Warnings = append(plan.Warnings, GuestResourceWarnings(*w.HostResources, cpus, memoryMB)...)
+	}
 
 	plan.ManifestPath = ProjectManifestPath(pc.Root)
 	plan.LockPath = ProjectLockPath(pc.Root)
@@ -429,7 +441,7 @@ func FormatInitReview(plan InitPlan) string {
 	} else {
 		b.WriteString("  model        the built-in default\n")
 	}
-	fmt.Fprintf(&b, "  resources    %d CPUs, %d MiB (fixed when the guest is created)\n", resolvedCPUs(a.CPUs), resolvedMemoryMB(a.MemoryMB))
+	fmt.Fprintf(&b, "  resources    %d CPUs, %s (fixed when the guest is created)\n", resolvedCPUs(a.CPUs), FormatMemorySize(resolvedMemoryMB(a.MemoryMB)))
 	if a.BrowserResourceGuidance != "" {
 		fmt.Fprintf(&b, "  host fit     %s\n", a.BrowserResourceGuidance)
 	}

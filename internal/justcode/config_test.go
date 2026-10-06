@@ -342,6 +342,10 @@ func TestSandboxResourceDefaultsAndParsing(t *testing.T) {
 	if cfg.CPUs != 8 || cfg.MemoryMB != 8192 || cfg.SandboxResourcesErr != nil {
 		t.Fatalf("explicit sizing = %d cpus / %d MB (err %v)", cfg.CPUs, cfg.MemoryMB, cfg.SandboxResourcesErr)
 	}
+	cfg = LoadConfig(lookupFrom(map[string]string{"JUST_CODE_MEMORY_MB": "2.5G"}))
+	if cfg.MemoryMB != 2560 || cfg.SandboxResourcesErr != nil {
+		t.Fatalf("readable memory sizing = %d MiB (err %v), want 2560", cfg.MemoryMB, cfg.SandboxResourcesErr)
+	}
 	cfg = LoadConfig(lookupFrom(map[string]string{"JUST_CODE_CPUS": "256"}))
 	if cfg.SandboxResourcesErr == nil {
 		t.Fatal("a CPU count above the SDK's uint8 range must be reported, not wrapped")

@@ -192,6 +192,12 @@ func run(args []string) (int, error) {
 		}
 		fmt.Fprintf(os.Stderr, "Warning: %v; using the default guest sizing\n", resErr)
 	}
+	if isLaunchAction(parsed.action) && runtimeUsesMicrosandbox(parsed.runtime, manifestRuntime) {
+		cfg, resErr = enforceHostResourceLimits(cfg, projectRoot)
+		if resErr != nil {
+			return 1, resErr
+		}
+	}
 	cfg.CredentialRef = resolveCredentialRef(projectRoot)
 
 	// Managed OpenCode configuration (P10): the model selection from the
@@ -338,6 +344,15 @@ func run(args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
 	}
+}
+
+func runtimeUsesMicrosandbox(runtimeFlag string, manifestRuntime justcode.Runtime) bool {
+	preference := os.Getenv("RUNTIME")
+	if preference == "" {
+		preference = string(manifestRuntime)
+	}
+	runtime, err := justcode.ResolveRuntime(runtimeFlag, preference)
+	return err == nil && runtime == justcode.RuntimeMicrosandbox
 }
 
 func resolveMCPSelection(projectRoot string) ([]string, error) {
@@ -1062,7 +1077,7 @@ func applyProjectSandboxResources(cfg justcode.Config, projectRoot string) (just
 	// other out-of-range value — negative, or above what the runtime can
 	// carry — is reported rather than ignored: a hand-edited manifest should
 	// fail loudly on both sides of the range, not just above it.
-	if _, set := os.LookupEnv("JUST_CODE_CPUS"); !set {
+	if value, set := os.LookupEnv("JUST_CODE_CPUS"); !set || value == "" {
 		switch {
 		case pm.CPUs == 0:
 		case pm.CPUs < 0 || pm.CPUs > justcode.MaxSandboxCPUs:
@@ -1071,7 +1086,7 @@ func applyProjectSandboxResources(cfg justcode.Config, projectRoot string) (just
 			cfg.CPUs = pm.CPUs
 		}
 	}
-	if _, set := os.LookupEnv("JUST_CODE_MEMORY_MB"); !set {
+	if value, set := os.LookupEnv("JUST_CODE_MEMORY_MB"); !set || value == "" {
 		switch {
 		case pm.MemoryMB == 0:
 		case pm.MemoryMB < 0 || pm.MemoryMB > justcode.MaxSandboxMemoryMB:
@@ -1079,6 +1094,58 @@ func applyProjectSandboxResources(cfg justcode.Config, projectRoot string) (just
 		default:
 			cfg.MemoryMB = pm.MemoryMB
 		}
+	}
+	return cfg, nil
+}
+
+// enforceHostResourceLimits ensures the effective guest request, after env
+// and manifest precedence have been applied, stays within detected host
+// capacity. Only implicit built-in defaults are reduced automatically;
+// explicit project or environment choices fail above the hard ceiling.
+func enforceHostResourceLimits(cfg justcode.Config, projectRoot string) (justcode.Config, error) {
+	host, err := detectHostResourcesFn()
+	if err != nil {
+		return cfg, fmt.Errorf("cannot determine host CPU and memory capacity; cannot enforce the guest resource limit: %v", err)
+	}
+	if host.CPUs <= 0 || host.MemoryMB <= 0 {
+		return cfg, fmt.Errorf("host resource detection returned incomplete CPU or memory capacity; cannot enforce the guest resource limit")
+	}
+	pm, manifestErr := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot))
+	manifestPresent := manifestErr == nil
+	if manifestErr != nil && !os.IsNotExist(manifestErr) {
+		return cfg, fmt.Errorf("cannot inspect project resource settings: %w", manifestErr)
+	}
+	cpuExplicit := false
+	if value, ok := os.LookupEnv("JUST_CODE_CPUS"); ok && value != "" {
+		cpuExplicit = true
+	} else if manifestPresent && pm.CPUs != 0 {
+		cpuExplicit = true
+	}
+	memoryExplicit := false
+	if value, ok := os.LookupEnv("JUST_CODE_MEMORY_MB"); ok && value != "" {
+		memoryExplicit = true
+	} else if manifestPresent && pm.MemoryMB != 0 {
+		memoryExplicit = true
+	}
+	maxCPUs := justcode.MaxGuestCPUs(host.CPUs)
+	maxMemoryMB := justcode.MaxGuestMemoryMB(host.MemoryMB)
+	if maxCPUs < 1 {
+		return cfg, fmt.Errorf("host resource detection reported no logical CPUs available for the guest")
+	}
+	if maxMemoryMB < 1 {
+		return cfg, fmt.Errorf("host memory is too small to allocate guest memory")
+	}
+	if !cpuExplicit && cfg.CPUs > justcode.RecommendedDefaultGuestCPUs(host.CPUs) {
+		cfg.CPUs = justcode.RecommendedDefaultGuestCPUs(host.CPUs)
+	}
+	if !memoryExplicit && cfg.MemoryMB > justcode.RecommendedDefaultGuestMemoryMB(host.MemoryMB) {
+		cfg.MemoryMB = justcode.RecommendedDefaultGuestMemoryMB(host.MemoryMB)
+	}
+	if err := justcode.ValidateGuestResources(host, cfg.CPUs, cfg.MemoryMB); err != nil {
+		return cfg, err
+	}
+	for _, warning := range justcode.GuestResourceWarnings(host, cfg.CPUs, cfg.MemoryMB) {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 	}
 	return cfg, nil
 }
