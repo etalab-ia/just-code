@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -33,6 +34,30 @@ func TestShouldSkipSkillsField(t *testing.T) {
 				t.Fatalf("shouldSkipSkillsField = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRetainedSkillOptions(t *testing.T) {
+	catalogue := []justcode.ProjectSkill{{ID: "official/rgaa"}, {ID: "official/react-dsfr"}}
+	options := []huh.Option[string]{
+		huh.NewOption("official/rgaa", "official/rgaa"),
+		huh.NewOption("official/react-dsfr", "official/react-dsfr"),
+	}
+	// A pinned ID missing from today's catalogue is appended as a
+	// retained option; catalogue IDs are not duplicated.
+	got := retainedSkillOptions(options, catalogue, []string{"official/rgaa", "official/ghost-skill"})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 options, got %d", len(got))
+	}
+	if got[2].Value != "official/ghost-skill" {
+		t.Fatalf("expected retained option value official/ghost-skill, got %q", got[2].Value)
+	}
+	if got[2].Key != "official/ghost-skill (pinned at an older revision)" {
+		t.Fatalf("unexpected retained option label %q", got[2].Key)
+	}
+	// The input options slice must not be mutated.
+	if len(options) != 2 {
+		t.Fatalf("input options mutated: %d", len(options))
 	}
 }
 

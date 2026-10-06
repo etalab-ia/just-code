@@ -49,6 +49,12 @@ func setupCmd(args []string) (int, error) {
 	if sub == "doctor" {
 		return setupDoctorCmd()
 	}
+	if noColor {
+		// --no-color promises plain terminal output; the line renderer
+		// emits no styling, so keep it even on a TTY.
+		defer func() { wizardNoColor = false }()
+		wizardNoColor = true
+	}
 	return setupRunCmd(fallback)
 }
 
@@ -248,6 +254,10 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 				var token string
 				if wizardHuhFn() {
 					value, err := huhSecret("GitHub token", "Input hidden; leave empty to skip.")
+					if errors.Is(err, huh.ErrUserAborted) {
+						fmt.Println("Setup cancelled.")
+						return 1, nil
+					}
 					if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 						return 1, err
 					}
@@ -327,6 +337,10 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 					huh.NewInput().Title("Default model").Description("Leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue.").Value(&chosen),
 				),
 			).Run()
+			if errors.Is(err, huh.ErrUserAborted) {
+				fmt.Println("Setup cancelled.")
+				return 1, nil
+			}
 			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 				return 1, err
 			}

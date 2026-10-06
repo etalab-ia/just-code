@@ -21,7 +21,11 @@ import (
 // wizardHuhFn decides which wizard surface runs. Production answers whether
 // both stdin and stdout are terminals; a piped stdin (CI, scripts, tests)
 // must keep the line path. Tests stub it to false.
-var wizardHuhFn = func() bool { return isTTY() && stdoutIsTTY() }
+var wizardHuhFn = func() bool { return !wizardNoColor && isTTY() && stdoutIsTTY() }
+
+// wizardNoColor is set by setup --no-color: the huh renderer styles its
+// output, so the flag keeps the plain line renderer even on a terminal.
+var wizardNoColor bool
 
 // stdoutIsTTY reports whether standard output is a terminal, using the same
 // character-device test as isTTY.
@@ -120,7 +124,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		}
 		skillOptions = append(skillOptions, huh.NewOption(label, skill.ID))
 	}
-
 	mcpOptions := make([]huh.Option[string], 0)
 	for _, choice := range justcode.MCPSelections() {
 		mcpOptions = append(mcpOptions, huh.NewOption(choice.ID+" — "+choice.Description, choice.ID))
@@ -162,6 +165,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			// like a new selection and re-resolve existing pins.
 			answers.Skills = append([]string(nil), current...)
 		}
+		skillOptionsPass := retainedSkillOptions(skillOptions, catalogue, skills)
 		if !answers.MCPsSet {
 			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
 				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
@@ -280,7 +284,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				Title("Project skills").
 				Description("Selected artifacts are pinned and installed inside the Microsandbox guest. Type / to filter.").
 				Filterable(true).
-				Options(skillOptions...).
+				Options(skillOptionsPass...).
 				Value(&skills),
 		).Title("Skills").
 			WithHideFunc(func() bool { return opts.Set["skills"] || skipSkills })
@@ -403,4 +407,26 @@ func equalStringSlices(a, b []string) bool {
 // project's existing skills on submit.
 func shouldSkipSkillsField(opts initOptions, catalogueErr error) bool {
 	return opts.Set["skills"] || catalogueErr != nil
+}
+
+// retainedSkillOptions appends the project's pinned skill IDs that are
+// absent from today's catalogue as retained options. A MultiSelect
+// rebuilds its value from its options on submit, so an ID missing from
+// the current options would be silently dropped; a retained option keeps
+// the pin unless the user explicitly deselects it.
+func retainedSkillOptions(options []huh.Option[string], catalogue []justcode.ProjectSkill, selected []string) []huh.Option[string] {
+	retained := append([]huh.Option[string](nil), options...)
+	for _, id := range selected {
+		known := false
+		for _, skill := range catalogue {
+			if skill.ID == id {
+				known = true
+				break
+			}
+		}
+		if !known {
+			retained = append(retained, huh.NewOption(id+" (pinned at an older revision)", id))
+		}
+	}
+	return retained
 }
