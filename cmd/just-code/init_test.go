@@ -493,7 +493,7 @@ func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
 	if !got.SkillsSet || len(got.Skills) != 1 || got.Skills[0] != "experimental/example" {
 		t.Fatalf("searched selection = %+v", got)
 	}
-	if strings.Count(out, "EXPERIMENTAL; review before adopting") < 2 {
+	if strings.Count(out, "[experimental]") < 2 {
 		t.Fatalf("experimental entries must stay marked in catalogue and search results: %q", out)
 	}
 }

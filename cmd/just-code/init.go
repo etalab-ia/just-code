@@ -613,7 +613,7 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			if len(answers.Skills) > 0 {
 				current = strings.Join(answers.Skills, ",")
 			}
-			answer, ok := promptLine(in, "  skills ["+current+"] (IDs, `search <term>`, `list`, `none`; Enter keeps): ")
+			answer, ok := promptLine(in, "  skills ["+current+"] (IDs, `search <term>`, `list`, `describe <id>`, `none`; Enter keeps): ")
 			if !ok || strings.TrimSpace(answer) == "" {
 				break
 			}
@@ -633,6 +633,23 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 					continue
 				}
 				printProjectSkills(matches)
+			case strings.HasPrefix(lower, "describe "):
+				want := strings.TrimSpace(value[len("describe "):])
+				found := false
+				for _, skill := range catalogue {
+					if skill.ID == want {
+						label := skill.ID
+						if skill.Experimental {
+							label += " [experimental]"
+						}
+						fmt.Printf("  %s\n    %s\n", label, skill.Description)
+						found = true
+						break
+					}
+				}
+				if !found {
+					fmt.Printf("  Unknown skill ID %q.\n", want)
+				}
 			default:
 				answers.Skills = nil
 				for _, id := range strings.Split(value, ",") {
@@ -712,10 +729,20 @@ func printProjectSkills(skills []justcode.ProjectSkill) {
 	for _, skill := range skills {
 		label := skill.ID
 		if skill.Experimental {
-			label += " (EXPERIMENTAL; review before adopting)"
+			label += " [experimental]"
 		}
-		fmt.Printf("  %-42s %s\n", label, skill.Description)
+		fmt.Printf("  %-36s %s\n", label, truncateLine(skill.Description, 60))
 	}
+}
+
+// truncateLine collapses whitespace and caps the string at n bytes so one
+// catalogue entry never wraps on an 80-column terminal.
+func truncateLine(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 // githubInitPreflightFn resolves the stored token and the host origin before
