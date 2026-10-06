@@ -39,9 +39,10 @@ de démarrage d'une microVM sur l'hyperviseur natif.
    `.env` factice contenant `ALBERT_API_KEY=host-canary-not-a-secret`. Après
    synchronisation ou actualisation, vérifier depuis l'invité que le canari
    filtré n'est pas lisible. Ne pas utiliser une vraie valeur de secret.
-6. Modifier un fichier dans l'invité, exporter/revoir les changements avec
-   `just-code workspace`, puis confirmer qu'aucune écriture directe n'a touché
-   le checkout avant l'action explicite de livraison.
+6. Modifier un fichier dans l'invité, lancer `just-code workspace export` pour
+   produire un diff, revoir ce diff, puis appliquer uniquement les changements
+   retenus. Confirmer qu'aucune écriture directe n'a touché le checkout avant
+   l'application explicite.
 7. Tester `just-code stop`, le redémarrage non destructif et la reconnexion.
    Confirmer que l'état annoncé comme persistant l'est, sans recréation
    implicite.

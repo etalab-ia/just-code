@@ -1120,6 +1120,7 @@ func TestSDKMicrosandboxDoctorDoesNotInstallMissingRuntime(t *testing.T) {
 	runtimePath := filepath.Join(home, "bin", "msb")
 	t.Setenv("MSB_HOME", home)
 	t.Setenv("MSB_PATH", "")
+	t.Setenv("MSB_LIBKRUNFW_PATH", "")
 
 	_, err := (sdkMSBClient{}).Doctor(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "managed Microsandbox runtime is missing") {
