@@ -149,10 +149,17 @@ défaut → revue → application (réglages globaux + runtime managé).
 
 ```bash
 just-code setup            # assistant interactif
-just-code setup doctor     # diagnostic lecture seule, aucune écriture
+just-code setup doctor     # rapport lecture seule, aucune écriture
 just-code setup --fallback # utiliser le magasin fichier consentit
 just-code setup --no-color # sortie terminal simple
 ```
+
+`just-code setup doctor` rend un rapport séparé par sections : capacité de
+l'hôte, runtime et état de l'instance du projet, toolchain hôte, vérification
+Albert, skills et MCP du projet, et stockage des identifiants. Sur un terminal
+compatible, il utilise le rendu TUI ; avec `--no-color` ou une sortie non TTY,
+la même information apparaît en texte stable. Les valeurs d'identifiants ne
+sont jamais affichées.
 
 Règles du flux :
 

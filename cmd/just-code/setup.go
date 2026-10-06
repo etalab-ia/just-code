@@ -45,7 +45,6 @@ func setupCmd(args []string) (int, error) {
 			return 2, fmt.Errorf("Unknown setup argument: %s (expected doctor, --fallback or --no-color)", a)
 		}
 	}
-	_ = noColor // the plain renderer emits no color; the flag is accepted for forward compatibility
 	if sub == "doctor" {
 		return setupDoctorCmd()
 	}
@@ -61,31 +60,51 @@ func setupCmd(args []string) (int, error) {
 	return setupRunCmd(fallback)
 }
 
-// setupDoctorCmd prints the read-only diagnosis.
+// setupDoctorCmd prints the read-only diagnosis. Its probes are injectable so
+// tests do not depend on the host's KVM state, PATH, network, or settings.
+var setupDoctorCollectFn = func() justcode.DiagnosticsReport {
+	return (justcode.Diagnostics{}).Collect(context.Background())
+}
+
 func setupDoctorCmd() (int, error) {
-	ctx := context.Background()
-	p := justcode.SetupPreflighter{}
-	res := p.RunPreflight(ctx)
-	fmt.Printf("Platform: %s\n", res.Platform)
-	fmt.Printf("Virtualization: %s\n", yn(res.VirtualizationOK))
-	if res.VirtualizationDetail != "" {
-		for _, line := range strings.Split(strings.TrimSpace(res.VirtualizationDetail), "\n") {
-			fmt.Printf("  %s\n", line)
-		}
+	report := setupDoctorCollectFn()
+	if doctorRendererFn() {
+		fmt.Println(huhDiagnosticsDescription(report))
+	} else {
+		printDiagnosticsPlain(report)
 	}
-	if res.DiskFreeBytes >= 0 {
-		fmt.Printf("Disk free: %s (%s)\n", humanBytes(res.DiskFreeBytes), yn(res.DiskOK))
-	}
-	if res.DiskDetail != "" {
-		fmt.Printf("Disk free: probe failed (%s)\n", res.DiskDetail)
-	}
-	fmt.Printf("Managed runtime: %s\n", yn(res.RuntimeInstalled))
-	if res.Fatal {
-		fmt.Println("Result: this host cannot run just-code's managed runtime. Fix the failures above and re-run.")
+	if report.Fatal || hasFailedDiagnostics(report) {
+		fmt.Println("Result: one or more checks failed. Fix the failures above and re-run.")
 		return 1, nil
 	}
-	fmt.Println("Result: ready. Run 'just-code setup' to configure credentials and install the runtime.")
+	fmt.Println("Result: no blocking issue found. Run 'just-code setup' to change configuration or install the runtime.")
 	return 0, nil
+}
+
+// printDiagnosticsPlain is the stable non-TTY representation: no styling, no
+// terminal control, and the same section/item/status facts as the TUI view.
+func printDiagnosticsPlain(report justcode.DiagnosticsReport) {
+	fmt.Printf("Platform: %s\n", report.Platform)
+	for _, section := range report.Sections {
+		fmt.Println(section.Title + ":")
+		for _, item := range section.Items {
+			fmt.Printf("  %s: %s (%s)\n", item.Name, item.Value, item.Status)
+			if item.Detail != "" {
+				fmt.Printf("    %s\n", item.Detail)
+			}
+		}
+	}
+}
+
+func hasFailedDiagnostics(report justcode.DiagnosticsReport) bool {
+	for _, section := range report.Sections {
+		for _, item := range section.Items {
+			if item.Status == justcode.DiagnosticFailed {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func yn(b bool) string {

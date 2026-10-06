@@ -28,6 +28,12 @@ import (
 // must keep the line path. Tests stub it to false.
 var wizardHuhFn = func() bool { return !wizardNoColor && isTTY() && stdoutIsTTY() }
 
+// doctorRendererFn decides whether the assembled diagnostics use the styled
+// TUI table. It deliberately does not depend on stdin: a diagnostic must be
+// readable when the command is run non-interactively while stdout is a real
+// terminal. Tests stub it to force the plain path.
+var doctorRendererFn = func() bool { return !wizardNoColor && stdoutIsTTY() }
+
 // wizardNoColor is set by setup --no-color: the huh renderer styles its
 // output, so the flag keeps the plain line renderer even on a terminal.
 var wizardNoColor bool
@@ -247,6 +253,33 @@ func huhReviewTableWidth() int {
 		return 112
 	}
 	return width
+}
+
+// huhDiagnosticsDescription renders the assembled support report as styled
+// sections. Status is a label, not color alone: the same text survives in the
+// accessible/no-color renderer and when a user pastes the output.
+func huhDiagnosticsDescription(report justcode.DiagnosticsReport) string {
+	var b strings.Builder
+	for _, section := range report.Sections {
+		t := lipglosstable.New().
+			Headers("Check", "Status", "Value").
+			Width(huhReviewTableWidth()).
+			StyleFunc(func(row, column int) lipgloss.Style {
+				if row == lipglosstable.HeaderRow || column == 0 {
+					return lipgloss.NewStyle().Bold(true)
+				}
+				return lipgloss.NewStyle()
+			})
+		for _, item := range section.Items {
+			value := item.Value
+			if item.Detail != "" {
+				value += " — " + item.Detail
+			}
+			t.Row(item.Name, string(item.Status), value)
+		}
+		b.WriteString(section.Title + "\n" + t.String() + "\n")
+	}
+	return escapeHuhNoteMarkup(strings.TrimRight(b.String(), "\n"))
 }
 
 // Note descriptions support inline markdown; escape those markers in table

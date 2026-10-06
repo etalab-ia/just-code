@@ -64,6 +64,66 @@ func journalPastPreflight(t *testing.T, stateDir string) {
 	}
 }
 
+func TestSetupDoctorPlainOutputSeparatesSections(t *testing.T) {
+	setupTestEnv(t)
+	origCollect := setupDoctorCollectFn
+	setupDoctorCollectFn = func() justcode.DiagnosticsReport {
+		return justcode.DiagnosticsReport{
+			Platform: "test/arch",
+			Sections: []justcode.DiagnosticSection{
+				{Title: "Host capability", Items: []justcode.DiagnosticItem{
+					{Name: "Virtualization", Value: "ok", Status: justcode.DiagnosticOK},
+				}},
+				{Title: "Runtime and VM state", Items: []justcode.DiagnosticItem{
+					{Name: "Managed Microsandbox runtime", Value: "ok", Status: justcode.DiagnosticOK},
+				}},
+				{Title: "Provider verification", Items: []justcode.DiagnosticItem{
+					{Name: "Albert endpoint", Value: "verified", Status: justcode.DiagnosticOK},
+				}},
+			},
+		}
+	}
+	origRender := doctorRendererFn
+	doctorRendererFn = func() bool { return false }
+	t.Cleanup(func() { setupDoctorCollectFn = origCollect; doctorRendererFn = origRender })
+
+	out := captureStdout(t, func() {
+		code, err := setupDoctorCmd()
+		if err != nil || code != 0 {
+			t.Fatalf("setup doctor: code=%d err=%v", code, err)
+		}
+	})
+	for _, want := range []string{"Host capability:", "Runtime and VM state:", "Provider verification:", "no blocking issue"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestSetupDoctorFailedItemReturnsNonZero(t *testing.T) {
+	setupTestEnv(t)
+	origCollect := setupDoctorCollectFn
+	setupDoctorCollectFn = func() justcode.DiagnosticsReport {
+		return justcode.DiagnosticsReport{Platform: "test/arch", Sections: []justcode.DiagnosticSection{{
+			Title: "Provider verification",
+			Items: []justcode.DiagnosticItem{{Name: "Albert endpoint", Value: "rejected", Status: justcode.DiagnosticFailed}},
+		}}}
+	}
+	origRender := doctorRendererFn
+	doctorRendererFn = func() bool { return false }
+	t.Cleanup(func() { setupDoctorCollectFn = origCollect; doctorRendererFn = origRender })
+
+	out := captureStdout(t, func() {
+		code, err := setupDoctorCmd()
+		if err != nil || code != 1 {
+			t.Fatalf("failed diagnostics must return code 1: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "one or more checks failed") {
+		t.Fatalf("doctor output must state the failure: %q", out)
+	}
+}
+
 func readUserSettingsFile(t *testing.T) map[string]any {
 	t.Helper()
 	path, err := justcode.UserSettingsPath()

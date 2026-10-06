@@ -65,21 +65,94 @@ de démarrage d'une microVM sur l'hyperviseur natif.
     puis son parcours dédié sur macOS/Linux avec Lima. Ne pas extrapoler ces
     résultats à Microsandbox.
 
+## Protocoles par plateforme
+
+Chaque protocole commence par les étapes communes 1 à 8. Exécuter ensuite
+seulement les lignes applicables à l'hôte testé. Une cible sans runtime
+disponible ou avec un prérequis d'hyperviseur absent est « non qualifiée »,
+pas un échec de just-code : noter l'écart dans la matrice.
+
+### macOS arm64
+
+Prérequis : Apple Silicon, Hypervisor.framework, OpenCode, just-code.
+
+1. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+2. Tart : installer Tart explicitement, vérifier `just-code doctor --tart`,
+   lancer `just-code start --tart --isolation backend`, vérifier la connexion
+   du TUI hôte et l'accès au endpoint local, puis `just-code stop --tart`.
+3. agent-vm : installer Lima, vérifier `just-code doctor --agent-vm`, lancer
+   `just-code start --agent-vm --isolation backend`, vérifier que le template
+   est construit une seule fois et que le redémarrage conserve l'état, puis
+   `just-code stop --agent-vm`.
+4. Noter si l'hôte est une machine de l'utilisateur, une machine CI dédiée,
+   ou un Mac distant géré, car la confiance n'est pas équivalente.
+
+### Linux amd64
+
+Prérequis : `/dev/kvm` ouvert par l'utilisateur, OpenCode, just-code.
+
+1. Vérifier `test -r /dev/kvm -a -w /dev/kvm` ; le résultat et la commande
+   doivent apparaître dans le rapport.
+2. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+3. agent-vm : installer Lima explicitement, vérifier `just-code doctor
+   --agent-vm`, lancer `just-code start --agent-vm --isolation backend`, puis
+   `just-code stop --agent-vm`. Ne pas déduire le succès Microsandbox du
+   succès Lima.
+4. Si l'hôte est une VM cloud, ne qualifier Microsandbox que lorsque KVM est
+   réellement disponible dans l'invité ; sinon la preuve est invalide.
+
+### Linux arm64
+
+Prérequis et parcours identiques à Linux amd64, mais l'architecture native
+doit être confirmée (`uname -m` = `aarch64`). Ne pas accepter un test amd64
+émulation comme preuve arm64.
+
+### Windows amd64
+
+Prérequis : Windows 10 ou 11 x64, Windows Hypervisor Platform activée,
+OpenCode, just-code.
+
+1. Vérifier la fonctionnalité WHP dans les fonctionnalités Windows, puis
+   redémarrer si elle vient d'être activée.
+2. Exécuter le protocole commun dans PowerShell, y compris le parcours
+   d'installation avec `install.ps1`.
+3. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+4. Ne pas remplacer WHP par WSL2 ou Hyper-V embarqué sans preuve : le backend
+   annoncé est WHP.
+
+### Windows arm64
+
+Prérequis : Windows 10 ou 11 arm64, WHP, OpenCode, just-code.
+
+1. Confirmer l'architecture native (`$env:PROCESSOR_ARCHITECTURE` = `ARM64`).
+2. Exécuter le protocole commun dans PowerShell, y compris `install.ps1`.
+3. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+4. Les runtimes Tart et agent-vm ne sont pas qualifiés sur Windows arm64 ;
+   ne pas marquer cette combinaison comme supportée.
+
 ## Matrice de preuve
 
 Compléter une ligne par combinaison réellement testée. « Non testé » et
 « bloqué par l'hôte » ne valent pas « réussi ».
 
-| OS / architecture | Runtime / backend natif | Version CLI / runtime | Doctor lecture seule | Parcours P21 | Résultat / lien vers preuve |
-|---|---|---|---|---|---|
-| macOS arm64 | Microsandbox / Apple Virtualization | | | | |
-| macOS arm64 | Tart / Apple Virtualization | | | | |
-| macOS arm64 | agent-vm / Lima | | | | |
-| Linux amd64 | Microsandbox / KVM | | | | |
-| Linux arm64 | Microsandbox / KVM | | | | |
-| Linux amd64 ou arm64 | agent-vm / Lima | | | | |
-| Windows amd64 | Microsandbox / WHP | | | | |
-| Windows arm64 | Microsandbox / WHP | | | | |
+| OS / architecture | Hôte / contexte | Runtime / backend natif | Version CLI / runtime | `setup doctor` | Doctor runtime | Parcours P21 | Résultat / lien vers preuve |
+|---|---|---|---|---|---|---|---|
+| macOS arm64 | | Microsandbox / Apple Virtualization | | | | | |
+| macOS arm64 | | Tart / Apple Virtualization | | | | | |
+| macOS arm64 | | agent-vm / Lima | | | | | |
+| Linux amd64 | | Microsandbox / KVM | | | | | |
+| Linux arm64 | | Microsandbox / KVM | | | | | |
+| Linux amd64 ou arm64 | | agent-vm / Lima | | | | | |
+| Windows amd64 | | Microsandbox / WHP | | | | | |
+| Windows arm64 | | Microsandbox / WHP | | | | | |
 
 Pour chaque résultat, conserver les commandes, le code de sortie et les
 assertions pertinentes. Masquer les clés, mots de passe, jetons, identifiants
