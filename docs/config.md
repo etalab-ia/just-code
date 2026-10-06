@@ -128,6 +128,53 @@ flottante peut demander une recréation explicite. Celle-ci détruit ses session
 outils installés et fichiers invités : synchroniser ou exporter le travail
 avant de confirmer.
 
+## Importer un projet Albert Code (P19)
+
+`just-code import albert-code` détecte les artefacts de setup Albert Code et
+affiche un aperçu en lecture seule. `--root <chemin>` choisit le projet ;
+`--apply` approuve l'écriture du manifeste et du lock just-code. L'import
+refuse de remplacer un manifeste just-code différent et une répétition sur un
+projet déjà importé est un no-op. La racine doit être un worktree Git.
+
+L'import ne retient que les skills officiels présents dans le catalogue épinglé,
+un modèle associé au provider Albert standard et les MCP intégrés dont la
+définition correspond exactement aux endpoints/commandes attendus. Les
+réglages personnalisés et inconnus sont nommés sans afficher leurs valeurs,
+puis restent dans les fichiers source. Les markers Albert Code d'`AGENTS.md`
+sont reconnus ; une paire invalide est signalée. Si des skills sont importés,
+Init ajoute uniquement sa propre zone gérée, sans remplacer le texte existant
+ni la zone Albert Code.
+
+Les fichiers OpenCode, `.albert-code/skills.txt`, `.env`, le script
+`.agent-vm.runtime.sh` et les profils shell ne sont pas exécutés ou réécrits.
+Le script runtime et les profils ne sont même pas lus. Aucun changement n'est
+apporté à `.git/info/exclude`. Le VM, les sessions, fichiers invités non
+suivis et outils installés restent sur l'ancien hôte. Le nouveau guest reçoit
+un clone filtré par le transfert default-deny ; `.env` est exclu.
+
+Les fichiers source symlinkés ou non réguliers sont ignorés avec un avertissement ;
+les dossiers `.opencode` et `.albert-code` symlinkés sont refusés. Le parseur
+JSONC partagé avec la détection des conflits OpenCode rejette les commentaires
+incomplets et les documents qui ne sont pas des objets JSON, au lieu d'en
+accepter silencieusement un préfixe.
+
+L'import de clé est une approbation distincte :
+`just-code import albert-code --apply --import-albert-key` accepte uniquement
+une affectation littérale simple `ALBERT_API_KEY` de `.env`, sans expansion
+shell. La valeur n'entre jamais dans l'aperçu ni le manifeste ; elle va dans
+le magasin natif, et une entrée Albert existante différente n'est pas
+remplacée. Une clé calculée ou stockée dans un profil/script doit être ajoutée
+manuellement avec `just-code auth add albert`. Le fichier `.env` source reste
+intact : vérifier la clé native avant toute suppression ou rotation séparée
+d'une copie locale.
+Le choix d'utiliser `--import-albert-key` doit être fait au premier `--apply` ;
+une réimportation ne modifie pas la valeur `credentialRef` du manifeste.
+L'aperçu liste les noms des variables de `.env` sans leurs valeurs, mais
+n'importe aucune autre variable. Le connecteur Context7 intégré est anonyme ;
+`CONTEXT7_API_KEY` reste sur l'hôte et n'est pas utilisé par ce connecteur.
+Si des skills sont présents, le catalogue officiel doit être accessible pour
+résoudre les révisions, y compris lors d'une réimportation.
+
 ## Résolution de l'identifiant Albert (P09)
 
 Au démarrage d'un runtime, la clé Albert est résolue dans l'ordre :

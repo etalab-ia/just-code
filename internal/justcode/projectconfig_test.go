@@ -52,6 +52,12 @@ func TestStripJSONCCommentsPreservesStringContents(t *testing.T) {
 	}
 }
 
+func TestParseProjectOpenCodeConfigRejectsUnterminatedBlockComment(t *testing.T) {
+	if _, err := parseProjectOpenCodeConfig([]byte(`{"model":"albert/model"} /* missing terminator`)); err == nil {
+		t.Fatal("unterminated JSONC block comment was silently stripped")
+	}
+}
+
 func TestParseProjectOpenCodeConfigRejectsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "opencode.json")
@@ -60,6 +66,8 @@ func TestParseProjectOpenCodeConfigRejectsMalformed(t *testing.T) {
 	}
 	if _, err := ParseProjectOpenCodeConfig(path); err == nil {
 		t.Fatal("a malformed project config must be an error, never 'no conflicts'")
+	} else if !strings.Contains(err.Error(), path) {
+		t.Fatalf("parse error omitted source path %q: %v", path, err)
 	}
 	// Empty path is a normal state.
 	if m, err := ParseProjectOpenCodeConfig(""); err != nil || m == nil {

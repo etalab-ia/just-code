@@ -10,7 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/etalab-ia/just-code/internal/justcode"
+	"github.com/mattn/go-runewidth"
 )
 
 // initCmd implements `just-code init` (P12b): the minimal project setup. The
@@ -714,7 +716,7 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			if len(answers.Skills) > 0 {
 				current = strings.Join(answers.Skills, ",")
 			}
-			answer, ok := promptLine(in, "  skills ["+current+"] (IDs, `search <term>`, `list`, `none`; Enter keeps): ")
+			answer, ok := promptLine(in, "  skills ["+current+"] (IDs, `search <term>`, `list`, `describe <id>`, `none`; Enter keeps): ")
 			if !ok || strings.TrimSpace(answer) == "" {
 				break
 			}
@@ -734,6 +736,23 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 					continue
 				}
 				printProjectSkills(matches)
+			case strings.HasPrefix(lower, "describe "):
+				want := strings.TrimSpace(value[len("describe "):])
+				found := false
+				for _, skill := range catalogue {
+					if skill.ID == want {
+						label := skill.ID
+						if skill.Experimental {
+							label += " [experimental]"
+						}
+						fmt.Printf("  %s\n    %s\n", label, skill.Description)
+						found = true
+						break
+					}
+				}
+				if !found {
+					fmt.Printf("  Unknown skill ID %q.\n", want)
+				}
 			default:
 				answers.Skills = nil
 				for _, id := range strings.Split(value, ",") {
@@ -813,10 +832,33 @@ func printProjectSkills(skills []justcode.ProjectSkill) {
 	for _, skill := range skills {
 		label := skill.ID
 		if skill.Experimental {
-			label += " (EXPERIMENTAL; review before adopting)"
+			label += " [experimental]"
 		}
-		fmt.Printf("  %-42s %s\n", label, skill.Description)
+		desc := strings.Join(strings.Fields(skill.Description), " ")
+		fmt.Println(truncateLine(fmt.Sprintf("  %-36s %s", label, desc), 78))
 	}
+}
+
+// truncateLine caps the composed line at n terminal cells, so one catalogue
+// entry never wraps on an 80-column terminal. Width is measured in display
+// cells (a CJK or emoji rune occupies two), and truncation stays on rune
+// boundaries, so wide characters are never split mid-sequence.
+func truncateLine(s string, n int) string {
+	if ansi.StringWidth(s) <= n {
+		return s
+	}
+	var b strings.Builder
+	width := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if width+w > n-1 {
+			break
+		}
+		b.WriteRune(r)
+		width += w
+	}
+	b.WriteString("…")
+	return b.String()
 }
 
 // githubInitPreflightFn resolves the stored token and the host origin before

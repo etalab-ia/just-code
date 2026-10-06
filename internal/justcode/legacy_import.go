@@ -36,6 +36,8 @@ var legacyEnvKeyMap = map[string]string{
 
 // LegacyImport is the result of a bounded legacy .env import.
 type LegacyImport struct {
+	// Keys lists unique source variable names; values are never included.
+	Keys []string
 	// Mapped holds resolver field -> value for recognized non-secret keys.
 	Mapped map[string]string
 	// Unrecognized lists the .env keys the managed schema does not carry.
@@ -53,6 +55,7 @@ type LegacyImport struct {
 // "already-exported variables win" behavior.
 func ImportLegacyDotenv(content string) LegacyImport {
 	imp := LegacyImport{Mapped: map[string]string{}}
+	seenKeys := map[string]bool{}
 	sc := bufio.NewScanner(strings.NewReader(content))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -65,6 +68,10 @@ func ImportLegacyDotenv(content string) LegacyImport {
 			continue
 		}
 		k := strings.TrimSpace(line[:eq])
+		if !seenKeys[k] {
+			seenKeys[k] = true
+			imp.Keys = append(imp.Keys, k)
+		}
 		v := strings.TrimSpace(line[eq+1:])
 		if len(v) >= 2 {
 			if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
@@ -95,8 +102,67 @@ func ImportLegacyDotenv(content string) LegacyImport {
 			imp.Unrecognized = append(imp.Unrecognized, k)
 		}
 	}
+	sort.Strings(imp.Keys)
 	sort.Strings(imp.Unrecognized)
 	return imp
+}
+
+// ReadLegacyAlbertCredential extracts only a literal ALBERT_API_KEY
+// assignment from a project .env file. It performs no shell expansion,
+// command substitution, profile loading, or file writes. The returned value
+// must be passed directly to the credential store and never displayed.
+func ReadLegacyAlbertCredential(content string) (string, bool) {
+	value, available, _ := inspectLegacyAlbertCredential(content)
+	return value, available
+}
+
+// LegacyAlbertCredentialNeedsManualReview reports an unsupported or repeated
+// assignment without revealing its value.
+func LegacyAlbertCredentialNeedsManualReview(content string) bool {
+	_, _, review := inspectLegacyAlbertCredential(content)
+	return review
+}
+
+func inspectLegacyAlbertCredential(content string) (string, bool, bool) {
+	sc := bufio.NewScanner(strings.NewReader(content))
+	sc.Buffer(make([]byte, 64*1024), maxImportFileSize)
+	found, review := false, false
+	var value string
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 || strings.TrimSpace(line[:eq]) != "ALBERT_API_KEY" {
+			continue
+		}
+		if found {
+			review = true
+			continue
+		}
+		found = true
+		candidate := strings.TrimSpace(line[eq+1:])
+		if len(candidate) >= 2 && ((candidate[0] == '"' && candidate[len(candidate)-1] == '"') || (candidate[0] == '\'' && candidate[len(candidate)-1] == '\'')) {
+			candidate = candidate[1 : len(candidate)-1]
+		}
+		if candidate == "" || strings.ContainsAny(candidate, " \t\r\n$`\\;|&()#'\"") {
+			review = true
+			continue
+		}
+		value = candidate
+	}
+	if sc.Err() != nil {
+		review = true
+	}
+	if !found {
+		return "", false, review
+	}
+	if review || value == "" {
+		return "", false, true
+	}
+	return value, true, false
 }
 
 // isCredentialKey reports whether a legacy key looks like a credential. The

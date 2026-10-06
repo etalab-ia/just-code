@@ -466,6 +466,48 @@ CLI et de ses images/outils invités restent séparées des mises à jour de ski
 Voir [docs/config.md](docs/config.md) pour le journal de récupération et la
 compatibilité des invités issus de just-code 0.7.0.
 
+### Importer un projet Albert Code (P19)
+
+La racine doit être un worktree Git. L'import commence par un aperçu en lecture seule :
+
+```bash
+just-code import albert-code
+just-code import albert-code --root ../mon-projet
+```
+
+Après revue, `--apply` crée le manifeste et le lock just-code. L'import est
+idempotent ; il refuse de remplacer un manifeste just-code différent. Les
+skills sont résolus contre le catalogue officiel épinglé et les MCP reconnus
+sont remplacés par leurs versions intégrées et épinglées. Seules les valeurs
+connues sont reprises ; les clés de configuration personnalisées sont
+signalées sans afficher leurs valeurs.
+Si des skills sont présents, le catalogue officiel doit rester accessible pour
+résoudre les révisions, y compris lors d'une réimportation.
+
+Les fichiers de configuration legacy ne sont ni exécutés, ni supprimés, ni
+réécrits. En particulier, `.agent-vm.runtime.sh`, les profils shell et les
+commandes MCP personnalisées ne sont jamais sourcés ou lancés. Si des skills
+sont importés, seul le bloc de skills géré par just-code est ajouté à
+`AGENTS.md` ; le texte existant, dont la zone Albert Code, est conservé.
+Les fichiers source non réguliers sont signalés et ignorés ; les dossiers
+`.opencode` et `.albert-code` symlinkés sont refusés. L'importeur ne modifie pas
+`.git/info/exclude`.
+
+L'ancien invité, ses sessions, ses fichiers non suivis et ses outils installés
+ne sont pas transférés. Le nouvel invité Microsandbox reçoit un clone filtré
+par les règles de transfert par défaut ; `.env` reste sur l'hôte et n'est pas
+copié. L'aperçu liste les noms des variables de `.env` sans leurs valeurs ;
+aucune n'est importée implicitement. Le connecteur Context7 intégré est
+anonyme : `CONTEXT7_API_KEY` reste sur l'hôte et n'est pas utilisé par ce
+connecteur. Si `.env` contient une affectation littérale simple `ALBERT_API_KEY`,
+`--import-albert-key` est une approbation distincte pour la placer dans le
+magasin natif pendant `--apply` : la valeur n'est jamais affichée et une clé
+déjà stockée n'est pas remplacée. Les expressions shell et autres formes
+calculées sont refusées. Le fichier `.env` source reste intact ; vérifier la
+clé native avant toute suppression ou rotation séparée d'une copie locale.
+Choisir ou non `--import-albert-key` fait partie de la première application ;
+une réimportation ne change pas la valeur `credentialRef` du manifeste.
+
 ### Configuration OpenCode composée et confiance locale (P10)
 
 La configuration OpenCode effective est composée au lancement : l'asset embarqué (provider Albert, permissions) fusionné avec la **couche gérée** (`OPENCODE_CONFIG_CONTENT`), qui ne porte que les champs managés — aujourd'hui `model` et `small_model`. OpenCode fusionne le contenu inline **en dernier** (contrat D-001), donc la couche gérée gagne champ par champ contre la config projet et la config utilisateur, sans jamais réécrire un fichier JSONC utilisateur.

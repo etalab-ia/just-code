@@ -83,6 +83,9 @@ type InitWizard struct {
 	// ResolveSkills pins and caches selected catalogue entries. Nil selects
 	// the production pinned catalogue; tests inject fixture content.
 	ResolveSkills func(context.Context, []string) ([]ProjectSkill, map[string]SkillLock, error)
+	// VerifySkills checks that each selected skill has a valid cached artifact.
+	// Nil selects the normal verified-cache loader.
+	VerifySkills func([]string, map[string]SkillLock) error
 }
 
 // Note on the FS seam: it carries the manifest and lockfile. Path validation
@@ -310,6 +313,9 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 
 	plan.ManifestPath = ProjectManifestPath(pc.Root)
 	plan.LockPath = ProjectLockPath(pc.Root)
+	if err := ensureProjectStateDirectory(pc.Root); err != nil {
+		return plan, err
+	}
 
 	if existing, err := ReadProjectManifest(fs, plan.ManifestPath); err == nil {
 		plan.ExistingManifest = &existing
@@ -391,7 +397,14 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		return plan, fmt.Errorf("the selected skills have no pinned lock data")
 	}
 	if len(selected) > 0 {
-		if _, err := LoadLockedSkillPackages(selected, plan.SkillLocks); err != nil {
+		verifySkills := w.VerifySkills
+		if verifySkills == nil {
+			verifySkills = func(ids []string, locks map[string]SkillLock) error {
+				_, err := LoadLockedSkillPackages(ids, locks)
+				return err
+			}
+		}
+		if err := verifySkills(selected, plan.SkillLocks); err != nil {
 			return plan, err
 		}
 	}
@@ -633,6 +646,9 @@ func formatManifestSummary(pm ProjectManifest) string {
 func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 	fs := w.fs()
 	return withProjectUpdateLock(fs, plan.Answers.Root, func() error {
+		if err := ensureProjectStateDirectory(plan.Answers.Root); err != nil {
+			return err
+		}
 		if err := recoverProjectUpdateLocked(fs, plan.Answers.Root); err != nil {
 			return fmt.Errorf("recover prior project update: %w", err)
 		}
@@ -642,6 +658,9 @@ func (w InitWizard) Apply(plan InitPlan, replace bool) error {
 
 func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	fs := w.fs()
+	if err := ensureProjectStateDirectory(plan.Answers.Root); err != nil {
+		return err
+	}
 	// Re-read rather than trusting the plan's snapshot: a manifest created
 	// between Plan and Apply must not be overwritten without consent, and the
 	// guarantee would be only as strong as the snapshot.
