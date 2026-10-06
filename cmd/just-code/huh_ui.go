@@ -106,9 +106,11 @@ func huhApplyChoice() (string, error) {
 }
 
 // askInitQuestionsHuh renders the init wizard as one huh form. Groups the
-// command line did not supply are hidden (WithHideFunc on opts.Set), so a
-// partial `just-code init --runtime tart` form shows only the unanswered
-// questions, matching the line path's skip semantics.
+// command line did not supply are omitted structurally (never added to the
+// form), so a partial `just-code init --runtime tart` form shows only the
+// unanswered questions, matching the line path's skip semantics — and the
+// omission also holds in huh's accessible runner, which ignores hide
+// predicates.
 func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justcode.InitAnswers, error) {
 	// The catalogue and curated MCP list do not depend on the project
 	// root, so they are fetched once outside the reseed loop below.
@@ -186,14 +188,16 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			}
 		}
 
-		rootGroup := huh.NewGroup(
-			huh.NewInput().
-				Title("Project root").
-				Description(fmt.Sprintf("Directory the manifest and sandbox config live in. Leave empty to keep %s.", answers.Root)).
-				Placeholder(answers.Root).
-				Value(&root),
-		).Title("Project").
-			WithHideFunc(func() bool { return opts.Set["root"] })
+		var rootGroup *huh.Group
+		if !opts.Set["root"] {
+			rootGroup = huh.NewGroup(
+				huh.NewInput().
+					Title("Project root").
+					Description(fmt.Sprintf("Directory the manifest and sandbox config live in. Leave empty to keep %s.", answers.Root)).
+					Placeholder(answers.Root).
+					Value(&root),
+			).Title("Project")
+		}
 
 		runtimeFields := make([]huh.Field, 0, 2)
 		if !opts.Set["runtime"] {
@@ -290,15 +294,17 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			credentialGroup = huh.NewGroup(credentialFields...).Title("Credentials")
 		}
 
-		skillsGroup := huh.NewGroup(
-			huh.NewMultiSelect[string]().
-				Title("Project skills").
-				Description("Selected artifacts are pinned and installed inside the Microsandbox guest. Type / to filter.").
-				Filterable(true).
-				Options(skillOptionsPass...).
-				Value(&skills),
-		).Title("Skills").
-			WithHideFunc(func() bool { return opts.Set["skills"] || skipSkills })
+		var skillsGroup *huh.Group
+		if !opts.Set["skills"] && !skipSkills {
+			skillsGroup = huh.NewGroup(
+				huh.NewMultiSelect[string]().
+					Title("Project skills").
+					Description("Selected artifacts are pinned and installed inside the Microsandbox guest. Type / to filter.").
+					Filterable(true).
+					Options(skillOptionsPass...).
+					Value(&skills),
+			).Title("Skills")
+		}
 
 		mcpFields := make([]huh.Field, 0, 2)
 		if !opts.Set["mcps"] {
@@ -324,8 +330,12 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			mcpGroup = huh.NewGroup(mcpFields...).Title("MCPs and storage")
 		}
 
-		groups := []*huh.Group{rootGroup}
-		for _, g := range []*huh.Group{runtimeGroup, resourceGroup, credentialGroup, skillsGroup, mcpGroup} {
+		// Groups are omitted structurally rather than via WithHideFunc:
+		// huh's accessible runner (TERM=dumb) iterates every group and
+		// never evaluates hide predicates, so a hidden group would still
+		// prompt there and its submitted value would override the flag.
+		var groups []*huh.Group
+		for _, g := range []*huh.Group{rootGroup, runtimeGroup, resourceGroup, credentialGroup, skillsGroup, mcpGroup} {
 			if g != nil {
 				groups = append(groups, g)
 			}
