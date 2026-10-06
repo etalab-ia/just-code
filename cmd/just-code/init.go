@@ -235,9 +235,16 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	var err error
 	for {
 		if tty && !opts.Yes {
-			answers, err = askInitQuestions(in, opts, answers)
-			if err != nil {
-				return 1, err
+			if wizardHuhFn() {
+				answers, err = askInitQuestionsHuh(opts, answers)
+				if err != nil {
+					return 1, err
+				}
+			} else {
+				answers, err = askInitQuestions(in, opts, answers)
+				if err != nil {
+					return 1, err
+				}
 			}
 		}
 		answers = withBrowserResourceGuidance(answers)
@@ -257,6 +264,21 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			return 1, fmt.Errorf("%s already exists; re-run with --replace to overwrite it, or edit it directly", plan.ManifestPath)
 		}
 		if !tty || opts.Yes {
+			break
+		}
+		if wizardHuhFn() {
+			choice, err := huhApplyChoice()
+			if err != nil {
+				return 1, fmt.Errorf("no answer; nothing was written")
+			}
+			switch choice {
+			case "apply":
+			case "cancel":
+				return 1, fmt.Errorf("cancelled; nothing was written")
+			case "edit":
+				fmt.Println("Reopening setup choices; blank answers keep the current selection.")
+				continue
+			}
 			break
 		}
 		answer, ok := promptLine(in, "\nApply? [Y/n/edit]: ")
@@ -886,6 +908,20 @@ func offerProjectInitWithReader(projectRoot string, parsed parsedArgs, given *bu
 	in := given
 	if in == nil {
 		in = bufio.NewReader(os.Stdin)
+	}
+	if tty && wizardHuhFn() {
+		proceed, err := huhConfirm("Configure this project now?", "This project has no just-code configuration yet. The wizard writes the project manifest.", true)
+		if err != nil {
+			return false, 1, fmt.Errorf("no project configuration: nothing was written. Run 'just-code init' when you want to configure it")
+		}
+		if !proceed {
+			return false, 1, fmt.Errorf("no project configuration: nothing was written. Run 'just-code init' when you want to configure it")
+		}
+		code, err = initRun(initOptions{Root: projectRoot, FromLaunch: true, Set: map[string]bool{"root": true}}, nil, true)
+		if err != nil || code != 0 {
+			return false, code, err
+		}
+		return true, 0, nil
 	}
 	answer, ok := promptLine(in, "Configure it now? [Y/n]: ")
 	if ok && strings.EqualFold(strings.TrimSpace(answer), "n") {

@@ -91,6 +91,13 @@ func readSecret(stdin bool) (string, error) {
 	// Interactive: no-echo when the terminal supports it. The no-echo
 	// helper is best-effort; a terminal that cannot be configured still
 	// reads a line, and the user is warned on the line above.
+	if wizardHuhFn() {
+		value, err := huhSecret("Secret", "Input hidden. The secret is stored in the OS-native credential store.")
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(value), nil
+	}
 	fmt.Print("Enter the secret (input hidden where the terminal supports it): ")
 	value, err := readPassword()
 	fmt.Println()

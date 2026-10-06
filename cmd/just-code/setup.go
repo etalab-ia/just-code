@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
+	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -175,8 +177,21 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		if _, err := w.ResolveStore(ctx); err != nil {
 			return 1, err
 		}
-		key, ok := promptSecret(in, "Enter your Albert API key (input hidden where the terminal supports it; empty to cancel): ")
-		if !ok || key == "" {
+		var key string
+		if wizardHuhFn() {
+			value, err := huhSecret("Albert API key", "Input hidden. Leave empty to cancel.")
+			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+				return 1, err
+			}
+			key = value
+		} else {
+			value, ok := promptSecret(in, "Enter your Albert API key (input hidden where the terminal supports it; empty to cancel): ")
+			if !ok || value == "" {
+				return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+			}
+			key = value
+		}
+		if key == "" {
 			return 1, fmt.Errorf("%s", cancelMsg(stateDir))
 		}
 		probe, err := w.StoreCredential(ctx, justcode.CredentialAlbert, key)
@@ -214,10 +229,32 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		} else {
 			fmt.Println()
 			fmt.Println("GitHub credential (optional — used by the guest GitHub workflow; can be added later with 'just-code auth add github').")
-			answer, _ := promptLine(in, "Add a GitHub token now? [y/N]: ")
-			if strings.EqualFold(strings.TrimSpace(answer), "y") {
-				token, ok := promptSecret(in, "Enter the GitHub token (input hidden; empty to skip): ")
-				if ok && token != "" {
+			addGitHub := false
+			if wizardHuhFn() {
+				proceed, err := huhConfirm("Add a GitHub token now?", "Optional — used by the guest GitHub workflow; can be added later with 'just-code auth add github'.", false)
+				if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+					return 1, err
+				}
+				addGitHub = err == nil && proceed
+			} else {
+				answer, _ := promptLine(in, "Add a GitHub token now? [y/N]: ")
+				addGitHub = strings.EqualFold(strings.TrimSpace(answer), "y")
+			}
+			if addGitHub {
+				var token string
+				if wizardHuhFn() {
+					value, err := huhSecret("GitHub token", "Input hidden; leave empty to skip.")
+					if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+						return 1, err
+					}
+					token = value
+				} else {
+					value, ok := promptSecret(in, "Enter the GitHub token (input hidden; empty to skip): ")
+					if ok {
+						token = value
+					}
+				}
+				if token != "" {
 					if _, err := w.StoreCredential(ctx, justcode.CredentialGithub, token); err != nil {
 						return 1, err
 					}
@@ -241,11 +278,21 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	if j.GitName == "" || j.GitEmail == "" {
 		fmt.Println()
 		fmt.Println("Git identity for guest commits:")
-		name, _ := promptLine(in, "Name [Albert Code Agent]: ")
-		if strings.TrimSpace(name) == "" {
-			name = "Albert Code Agent"
+		var name, email string
+		if wizardHuhFn() {
+			err := huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().Title("Name").Description("Used for guest commits; empty uses Albert Code Agent.").Value(&name),
+					huh.NewInput().Title("Email").Description("Used for guest commits; empty uses albert-code@noreply.etalab.gouv.fr.").Value(&email),
+				),
+			).Run()
+			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+				return 1, err
+			}
+		} else {
+			name, _ = promptLine(in, "Name [Albert Code Agent]: ")
+			email, _ = promptLine(in, "Email [albert-code@noreply.etalab.gouv.fr]: ")
 		}
-		email, _ := promptLine(in, "Email [albert-code@noreply.etalab.gouv.fr]: ")
 		if strings.TrimSpace(email) == "" {
 			email = "albert-code@noreply.etalab.gouv.fr"
 		}
@@ -260,10 +307,26 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	{
 		fmt.Println()
 		fmt.Println("Default model (leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue):")
-		chosen, _ := promptLine(in, "Model: ")
-		chosen = strings.TrimSpace(chosen)
-		if chosen != "" && chosen != model {
-			model = chosen
+		if wizardHuhFn() {
+			var chosen string
+			err := huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().Title("Default model").Description("Leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue.").Value(&chosen),
+				),
+			).Run()
+			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+				return 1, err
+			}
+			chosen = strings.TrimSpace(chosen)
+			if chosen != "" && chosen != model {
+				model = chosen
+			}
+		} else {
+			chosen, _ := promptLine(in, "Model: ")
+			chosen = strings.TrimSpace(chosen)
+			if chosen != "" && chosen != model {
+				model = chosen
+			}
 		}
 	}
 	// Validate against the P10 catalogue when it is reachable; an
@@ -295,8 +358,18 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		fmt.Println("  Default model: albert/deepseek-v4-flash (built-in)")
 	}
 	fmt.Println("  Managed runtime: will be downloaded and verified (or reused if trusted)")
-	answer, _ := promptLine(in, "Apply? [Y/n]: ")
-	if strings.EqualFold(strings.TrimSpace(answer), "n") {
+	apply := true
+	if wizardHuhFn() {
+		proceed, err := huhConfirm("Apply this configuration?", "Writes the settings, then installs the managed Microsandbox runtime.", true)
+		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+			return 1, err
+		}
+		apply = err == nil && proceed
+	} else {
+		answer, _ := promptLine(in, "Apply? [Y/n]: ")
+		apply = !strings.EqualFold(strings.TrimSpace(answer), "n")
+	}
+	if !apply {
 		return 1, fmt.Errorf("%s", cancelMsg(stateDir))
 	}
 

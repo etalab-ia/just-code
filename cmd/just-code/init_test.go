@@ -33,8 +33,19 @@ func stubProjectSkills(t *testing.T) {
 	t.Cleanup(func() { projectSkillCatalogueFn = original })
 }
 
+// stubWizardHuh forces the line-based wizard path. The scripted tests drive
+// initRun with tty=true and a string reader; the seam's production probe
+// would be false there (stdout is a pipe), but pinning it keeps the tests
+// independent of what the test binary's streams happen to be.
+func stubWizardHuh(t *testing.T) {
+	orig := wizardHuhFn
+	wizardHuhFn = func() bool { return false }
+	t.Cleanup(func() { wizardHuhFn = orig })
+}
+
 func initTestProject(t *testing.T) string {
 	t.Helper()
+	stubWizardHuh(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
