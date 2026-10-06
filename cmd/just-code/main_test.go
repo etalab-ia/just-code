@@ -405,6 +405,25 @@ func TestEnforceHostResourceLimits(t *testing.T) {
 		t.Fatalf("low-memory defaults = %d CPUs / %d MiB, err=%v; want 1 / 3072", got.CPUs, got.MemoryMB, err)
 	}
 	hostResources.MemoryMB = 6000
+	implicitRoot := t.TempDir()
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(implicitRoot), justcode.ProjectManifest{SchemaVersion: 1, Project: "implicit-defaults"}); err != nil {
+		t.Fatal(err)
+	}
+	hostResources = justcode.HostResources{CPUs: 2, MemoryMB: 4096}
+	got, err = enforceHostResourceLimits(defaults, implicitRoot)
+	if err != nil || got.CPUs != 1 || got.MemoryMB != 3072 {
+		t.Fatalf("small-host implicit defaults = %d CPUs / %d MiB, err=%v; want 1 / 3072", got.CPUs, got.MemoryMB, err)
+	}
+	hostResources = justcode.HostResources{CPUs: 8, MemoryMB: 16384}
+	got, err = enforceHostResourceLimits(defaults, implicitRoot)
+	if err != nil || got.CPUs != 2 || got.MemoryMB != 4096 {
+		t.Fatalf("larger-host implicit defaults = %d CPUs / %d MiB, err=%v; want 2 / 4096", got.CPUs, got.MemoryMB, err)
+	}
+	implicitManifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(implicitRoot))
+	if err != nil || implicitManifest.CPUs != 0 || implicitManifest.MemoryMB != 0 {
+		t.Fatalf("host-adapted defaults were persisted: %+v, err=%v", implicitManifest, err)
+	}
+	hostResources = justcode.HostResources{CPUs: 1, MemoryMB: 6000}
 
 	root := t.TempDir()
 	manifest := justcode.ProjectManifest{SchemaVersion: 1, Project: "p", CPUs: 2, MemoryMB: 4096}

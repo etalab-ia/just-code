@@ -497,18 +497,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		if rootChanged {
 			answers.Root = newRoot
 			answers = seedInitAnswersFromManifest(opts, answers)
-			if !opts.Set["cpus"] && answers.CPUs == 0 {
-				recommended := justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)
-				if recommended != justcode.DefaultSandboxCPUs {
-					answers.CPUs = recommended
-				}
-			}
-			if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
-				recommended := justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)
-				if recommended != justcode.DefaultSandboxMemoryMB {
-					answers.MemoryMB = recommended
-				}
-			}
 			// Flags keep their explicit selection across a root change;
 			// only interactively seeded values are reseeded from the new
 			// project's manifest.

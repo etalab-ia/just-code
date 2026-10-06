@@ -181,8 +181,8 @@ func TestInitAdjustsDefaultsToHostResourceCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.CPUs != 1 || manifest.MemoryMB != 0 {
-		t.Fatalf("single-choice CPU selection = %d CPUs / %d MiB, want 1 / implicit default", manifest.CPUs, manifest.MemoryMB)
+	if manifest.CPUs != 0 || manifest.MemoryMB != 0 {
+		t.Fatalf("single-choice defaults = %d CPUs / %d MiB, want both implicit", manifest.CPUs, manifest.MemoryMB)
 	}
 }
 
@@ -208,8 +208,8 @@ func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.CPUs != 1 {
-		t.Fatalf("selected CPU count = %d, want 1", manifest.CPUs)
+	if manifest.CPUs != 0 {
+		t.Fatalf("single CPU choice should remain implicit in the manifest, got %d", manifest.CPUs)
 	}
 }
 

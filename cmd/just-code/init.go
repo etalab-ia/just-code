@@ -261,20 +261,8 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		return 2, fmt.Errorf("--memory-mb %s exceeds detected host capacity of %s", justcode.FormatMemorySize(opts.MemoryMB), justcode.FormatMemorySize(opts.maxMemoryMB))
 	}
 	if !opts.Set["cpus"] && opts.maxCPUs == 1 {
-		answers.CPUs = 1
 		if tty && !opts.Yes {
 			fmt.Println("Only one whole guest CPU is available; selected 1 CPU automatically.")
-		}
-	} else if !opts.Set["cpus"] && answers.CPUs == 0 {
-		recommended := justcode.RecommendedDefaultGuestCPUs(hostResources.CPUs)
-		if recommended != justcode.DefaultSandboxCPUs {
-			answers.CPUs = recommended
-		}
-	}
-	if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
-		recommended := justcode.RecommendedDefaultGuestMemoryMB(hostResources.MemoryMB)
-		if recommended != justcode.DefaultSandboxMemoryMB {
-			answers.MemoryMB = recommended
 		}
 	}
 	var plan justcode.InitPlan
@@ -571,18 +559,6 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			answers.Root = strings.TrimSpace(answer)
 			if answers.Root != currentRoot {
 				answers = seedInitAnswersFromManifest(opts, answers)
-				if !opts.Set["cpus"] && answers.CPUs == 0 {
-					recommended := justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)
-					if recommended != justcode.DefaultSandboxCPUs {
-						answers.CPUs = recommended
-					}
-				}
-				if !opts.Set["memory-mb"] && answers.MemoryMB == 0 {
-					recommended := justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)
-					if recommended != justcode.DefaultSandboxMemoryMB {
-						answers.MemoryMB = recommended
-					}
-				}
 			}
 		}
 	}

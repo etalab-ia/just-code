@@ -117,6 +117,24 @@ func TestInitPlanAddsResourceWarningsToReview(t *testing.T) {
 	}
 }
 
+func TestInitPlanDisplaysHostAdjustedDefaultsWithoutPersistingThem(t *testing.T) {
+	root := initTestRoot(t)
+	host := HostResources{CPUs: 2, MemoryMB: 4096}
+	plan, err := (InitWizard{HostResources: &host}).Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Answers.CPUs != 0 || plan.Answers.MemoryMB != 0 {
+		t.Fatalf("host-adjusted defaults were made explicit: %d / %d", plan.Answers.CPUs, plan.Answers.MemoryMB)
+	}
+	if plan.GuestCPUs != 1 || plan.GuestMemoryMB != 3072 {
+		t.Fatalf("effective guest defaults = %d CPUs / %d MiB, want 1 / 3072", plan.GuestCPUs, plan.GuestMemoryMB)
+	}
+	if !strings.Contains(FormatInitReview(plan), "resources    1 CPUs, 3G") {
+		t.Fatalf("review does not show effective host-adjusted defaults: %s", FormatInitReview(plan))
+	}
+}
+
 func TestInitPlanGitHubWorkflowRequiresCanonicalRemote(t *testing.T) {
 	root := initTestRoot(t)
 	answers := InitAnswers{
