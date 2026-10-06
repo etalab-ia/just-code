@@ -112,6 +112,9 @@ func authAddCmd(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	if !useStdin && isTTY() && !stdoutIsTTY() {
+		return 1, fmt.Errorf("interactive auth add requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
+	}
 	store, err := authStore(fallback)
 	if err != nil {
 		return 1, err

@@ -99,6 +99,17 @@ func TestHuhReviewDescriptionEscapesMarkupOnlyForStyledRenderer(t *testing.T) {
 	}
 }
 
+func TestIsTTYFileRejectsDevNull(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	if isTTYFile(devNull) {
+		t.Fatalf("%s must not be accepted as an interactive output terminal", os.DevNull)
+	}
+}
+
 func TestRetainedSkillOptions(t *testing.T) {
 	catalogue := []justcode.ProjectSkill{{ID: "official/rgaa"}, {ID: "official/react-dsfr"}}
 	options := []huh.Option[string]{

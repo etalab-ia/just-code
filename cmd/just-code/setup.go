@@ -49,6 +49,9 @@ func setupCmd(args []string) (int, error) {
 	if sub == "doctor" {
 		return setupDoctorCmd()
 	}
+	if isTTY() && !stdoutIsTTY() {
+		return 1, fmt.Errorf("interactive setup requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
+	}
 	if noColor {
 		// --no-color promises plain terminal output; the line renderer
 		// emits no styling, so keep it even on a TTY.

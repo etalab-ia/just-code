@@ -44,8 +44,7 @@ func huhRun(form *huh.Form) error {
 // stdoutIsTTY reports whether standard output is a terminal, using the same
 // character-device test as isTTY.
 func stdoutIsTTY() bool {
-	info, err := os.Stdout.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return isTTYFile(os.Stdout)
 }
 
 // huhSecret reads one hidden secret through a huh form. It returns

@@ -40,7 +40,11 @@ func initCmd(args []string) (int, error) {
 		return 2, err
 	}
 	in := bufio.NewReader(os.Stdin)
-	return initRun(opts, in, isTTY())
+	tty := isTTY()
+	if tty && !opts.Yes && !stdoutIsTTY() {
+		return 1, fmt.Errorf("interactive init requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
+	}
+	return initRun(opts, in, tty)
 }
 
 // initOptions is the flag surface, and doubles as the answers already supplied
@@ -1064,6 +1068,9 @@ func offerProjectInitWithReader(projectRoot string, parsed parsedArgs, given *bu
 		return false, 1, fmt.Errorf("this project has no configuration (%s) and no terminal is available to ask for one.\n"+
 			"Run 'just-code init --root %q --yes' to accept the defaults, or 'just-code init' in a terminal to choose",
 			justcode.ProjectManifestPath(projectRoot), projectRoot)
+	}
+	if given == nil && !stdoutIsTTY() {
+		return false, 1, fmt.Errorf("interactive project setup requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
 	}
 
 	fmt.Printf("This project has no just-code configuration yet (%s).\n", justcode.ProjectManifestPath(projectRoot))

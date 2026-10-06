@@ -980,7 +980,11 @@ func askToStop(ctx context.Context, d *justcode.Dispatcher, rt justcode.Runtime)
 // interactive branch, which ranges from a confusing failure to silently
 // accepting a default the caller meant to be asked about.
 func isTTY() bool {
-	info, err := os.Stdin.Stat()
+	return isTTYFile(os.Stdin)
+}
+
+func isTTYFile(file *os.File) bool {
+	info, err := file.Stat()
 	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
 		return false
 	}
