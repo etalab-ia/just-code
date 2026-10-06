@@ -402,6 +402,9 @@ func seedInitAnswersFromManifest(opts initOptions, answers justcode.InitAnswers)
 	if !opts.Set["mcps"] {
 		answers.MCPConnectors = append([]string(nil), manifest.MCPConnectors...)
 	}
+	if !opts.Set["skills-storage"] {
+		answers.SkillsLocalOnly = manifest.SkillsLocalOnly
+	}
 	return answers
 }
 

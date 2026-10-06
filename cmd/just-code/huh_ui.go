@@ -326,8 +326,15 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		if rootChanged {
 			answers.Root = newRoot
 			answers = seedInitAnswersFromManifest(opts, answers)
-			answers.SkillsSet = false
-			answers.MCPsSet = false
+			// Flags keep their explicit selection across a root change;
+			// only interactively seeded values are reseeded from the new
+			// project's manifest.
+			if !opts.Set["skills"] {
+				answers.SkillsSet = false
+			}
+			if !opts.Set["mcps"] {
+				answers.MCPsSet = false
+			}
 			continue
 		}
 		answers.Root = newRoot
@@ -338,14 +345,22 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		answers.MemoryMB = parsePositiveInt(memoryInput)
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
 		answers.GitHubWorkflow = githubWorkflow
+		// Match the line wizard's "Enter keeps" semantics: a form
+		// submission only marks the value explicit when it differs from
+		// the seeded value, so accepting the defaults preserves the
+		// project's existing skill pins and storage mode.
 		if !skipSkills {
+			answers.SkillsSet = !equalStringSlices(answers.Skills, skills)
 			answers.Skills = skills
 		}
-		answers.MCPConnectors = mcps
-		answers.SkillsLocalOnly = skillsLocalOnly
-		answers.SkillsSet = true
-		answers.MCPsSet = true
-		answers.SkillsLocalOnlySet = true
+		if !opts.Set["mcps"] {
+			answers.MCPsSet = !equalStringSlices(answers.MCPConnectors, mcps)
+			answers.MCPConnectors = mcps
+		}
+		if !opts.Set["skills-storage"] {
+			answers.SkillsLocalOnlySet = answers.SkillsLocalOnly != skillsLocalOnly
+			answers.SkillsLocalOnly = skillsLocalOnly
+		}
 		return answers, nil
 	}
 }
@@ -356,6 +371,18 @@ func parsePositiveInt(s string) int {
 		return 0
 	}
 	return n
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // shouldSkipSkillsField reports whether the skills MultiSelect must be
