@@ -1071,19 +1071,12 @@ func (m *MicrosandboxRuntime) Clean(ctx context.Context) error {
 	return nil
 }
 
-// Doctor verifies the embedded runtime. Unlike lifecycle commands, its output
-// must reach the user even on success — a doctor that prints nothing is
-// indistinguishable from one that did not run. A context bounds the check so a
-// hung runtime download cannot stall the command.
+// Doctor verifies the installed runtime without installing or mutating it.
+// Unlike lifecycle commands, its output must reach the user even on success —
+// a doctor that prints nothing is indistinguishable from one that did not run.
 func (m *MicrosandboxRuntime) Doctor(ctx context.Context) error {
 	dctx, cancel := context.WithTimeout(ctx, msbDoctorTimeout)
 	defer cancel()
-	if err := m.Client.EnsureInstalled(dctx); err != nil {
-		if dctx.Err() != nil {
-			return fmt.Errorf("runtime installation timed out after %s", msbDoctorTimeout)
-		}
-		return err
-	}
 	output, err := m.Client.Doctor(dctx)
 	if err != nil {
 		return err
