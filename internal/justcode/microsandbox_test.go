@@ -1098,6 +1098,12 @@ func TestMicrosandboxDoctorReportsDiagnostics(t *testing.T) {
 	if !strings.Contains(out, "KVM: available") || !strings.Contains(out, "is ready") {
 		t.Fatalf("doctor output = %q", out)
 	}
+	if hasCall(client, "ensure") {
+		t.Fatalf("Doctor installed the runtime: %v", client.calls)
+	}
+	if !hasCall(client, "doctor") {
+		t.Fatalf("Doctor did not inspect the installed runtime: %v", client.calls)
+	}
 }
 
 func TestMicrosandboxDoctorSurfacesFailure(t *testing.T) {
@@ -1106,6 +1112,25 @@ func TestMicrosandboxDoctorSurfacesFailure(t *testing.T) {
 	err := m.Doctor(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "KVM device missing") {
 		t.Fatalf("Doctor error = %v", err)
+	}
+}
+
+func TestSDKMicrosandboxDoctorDoesNotInstallMissingRuntime(t *testing.T) {
+	home := t.TempDir()
+	runtimePath := filepath.Join(home, "bin", "msb")
+	t.Setenv("MSB_HOME", home)
+	t.Setenv("MSB_PATH", "")
+
+	_, err := (sdkMSBClient{}).Doctor(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "runtime is not installed") {
+		t.Fatalf("Doctor error = %v, want missing-runtime diagnostic", err)
+	}
+	if _, statErr := os.Stat(runtimePath); !os.IsNotExist(statErr) {
+		t.Fatalf("Doctor created runtime path: stat error = %v", statErr)
+	}
+	entries, readErr := os.ReadDir(home)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("Doctor modified runtime home: entries = %v, error = %v", entries, readErr)
 	}
 }
 

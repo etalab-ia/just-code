@@ -176,6 +176,12 @@ func (sdkMSBClient) Doctor(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("Microsandbox runtime is not installed; run 'just-code start --microsandbox' to install it")
+		}
+		return "", fmt.Errorf("inspect Microsandbox runtime: %w", err)
+	}
 	output, err := exec.CommandContext(ctx, path, "doctor").CombinedOutput()
 	if err == nil {
 		return string(output), nil

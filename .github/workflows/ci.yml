@@ -24,6 +24,21 @@ jobs:
       - name: Test POSIX installer
         run: sh tests/installers/test-posix.sh
 
+  integration-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Test pinned OpenCode host integration
+        run: tests/integration/opencode/run.sh
+      - name: Test credential lab server lifecycle
+        run: python -m unittest discover -s tests/integration/credentials/lab -p 'test_*.py' -v
+
   # Linux builds inside Ubuntu 20.04 so the binary remains compatible with the
   # SDK's glibc baseline instead of inheriting the runner host's newer glibc.
   platform-linux:

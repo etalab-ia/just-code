@@ -59,9 +59,9 @@ Le hook [gitleaks](https://github.com/gitleaks) scanne les changements stagés �
 
 ## Intégration continue et publication
 
-Trois workflows GitHub Actions accompagnent le CLI :
+Quatre workflows GitHub Actions accompagnent le CLI :
 
-- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race`, puis tests et compilation CGO sur chaque plateforme native prise en charge.
+- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race`, tests et compilation CGO sur chaque plateforme native prise en charge, contrat OpenCode hôte épinglé et tests de cycle de vie du serveur de laboratoire TLS. Les jobs d'intégration n'utilisent aucun identifiant et ne démarrent pas de microVM ; voir le [protocole de bêta P21](qualification-beta.md) pour cette preuve native.
 - **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les cinq binaires (`darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`) sur leurs runners natifs, génère `SHA256SUMS` et les attache à la release une fois toutes les plateformes réussies.
 - **`msb-runtime-watch.yml`** (cron hebdomadaire, lundi 09:00 UTC) : surveille les releases amont du runtime Microsandbox et ouvre une issue de suivi lorsqu'une version plus récente que le SDK embarqué est publiée ; voir « Mise à jour du runtime Microsandbox » ci-dessous.
 
@@ -80,4 +80,4 @@ Le runtime évolue indépendamment du CLI. `just-code` télécharge les archives
 1. Mettre à jour la dépendance dans `go.mod` et confirmer la valeur renvoyée par `msb.SDKVersion()`.
 2. Vérifier la release amont correspondante avant de graver quoi que ce soit : `gh release verify v<X.Y.Z> --repo superradcompany/microsandbox --format json`, puis extraire les empreintes des cinq archives depuis les sujets vérifiés. Ne jamais graver une empreinte issue du seul `checksums.sha256` amont.
 3. Mettre à jour ensemble `msbRuntimeVersion`, `msbRuntimeReleaseURL` et les cinq empreintes dans `internal/justcode/msb_runtime_install.go`. L'URL suit la forme `https://github.com/superradcompany/microsandbox/releases/download/v<X.Y.Z>`. Le test `TestMSBRuntimeVersionMatchesSDK` bloque un décalage entre le SDK et le runtime.
-4. Tester au minimum `go test -race ./...`, puis exécuter `just-code doctor --microsandbox` avec un `$MSB_HOME` vide sur une plateforme réelle pour valider le téléchargement, l'empreinte, l'extraction et `msb --version` de bout en bout.
+4. Tester au minimum `go test -race ./...`, puis exécuter `just-code start --microsandbox` avec un `$MSB_HOME` vide sur une plateforme réelle pour valider le téléchargement, l'empreinte, l'extraction et `msb --version` de bout en bout. `just-code doctor --microsandbox` ne télécharge rien : il ne vérifie que le runtime déjà installé.
