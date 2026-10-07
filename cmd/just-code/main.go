@@ -481,9 +481,9 @@ type parsedArgs struct {
 }
 
 // actionNames lists the commands that can be typed. It deliberately excludes
-// "code": a bare invocation starts the backend and attaches the TUI, so there
-// is no such command to type. "version" is accepted as a convenience beyond the
-// TypeScript CLI, which exposes only -V/--version.
+// "code": a bare invocation launches the selected runtime (Microsandbox/full
+// by default), so there is no such command to type. "version" is accepted as a
+// convenience beyond the TypeScript CLI, which exposes only -V/--version.
 var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
 	"restart": true, "recreate": true, "clean": true, "doctor": true,
@@ -612,7 +612,7 @@ func parseArgs(args []string) (parsedArgs, error) {
 			p.action = a
 			actionSet = true
 		case a == "code":
-			return p, fmt.Errorf("The 'code' command was removed: run 'just-code' with no command to start the backend and attach the TUI.")
+			return p, fmt.Errorf("The 'code' command was removed: run 'just-code' with no command to launch the selected runtime (Microsandbox/full by default).")
 		default:
 			return p, fmt.Errorf("Unknown argument: %s", a)
 		}
@@ -1014,8 +1014,10 @@ func usage() {
 Usage:
   just-code [command] [--microsandbox | --tart | --agent-vm] [--isolation backend | full]
 
-Run just-code with no command to start the selected backend and attach the
-native OpenCode TUI.
+Run just-code with no command to launch the selected runtime. On an
+unconfigured host, the default is Microsandbox/full: the agent and native
+OpenCode TUI run inside the guest. Backend isolation is an explicit option
+that runs the guest backend and attaches the host TUI.
 
 Commands:
   start      Start a backend without attaching the TUI

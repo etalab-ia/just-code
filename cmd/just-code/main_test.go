@@ -184,6 +184,9 @@ func TestParseArgsRejectsCode(t *testing.T) {
 	if !strings.Contains(err.Error(), "'code' command was removed") {
 		t.Fatalf("error = %q, want the migration message", err)
 	}
+	if !strings.Contains(err.Error(), "Microsandbox/full by default") {
+		t.Fatalf("error = %q, want the default guest TUI behavior", err)
+	}
 }
 
 func TestParseArgsRejectsUnknown(t *testing.T) {
