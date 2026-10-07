@@ -91,7 +91,7 @@ Quatre autres prompts (toolchain polyglotte, édition et revue de diff, continui
 |---|---|
 | [Installation](docs/installation.md) | Binaires, installateurs, vérification, dépendances de l'hôte, compilation depuis les sources |
 | [Démarrage rapide](docs/quickstart.md) | Premier lancement et prompts d'exemple complets |
-| [Configuration](docs/config.md) | Assistant `setup`, variables d'environnement, précédence, fichiers gérés, skills, MCP, modèle OpenCode |
+| [Configuration](docs/config.md) | Assistant `setup`, variables d'environnement, fichiers gérés, redirections de ports par projet, skills, MCP, modèle OpenCode |
 | [Identifiants et secrets](docs/credentials.md) | Magasin d'identifiants, résolution de la clé Albert, protection par runtime, GitHub dans l'invité |
 | [Sécurité du workspace](docs/workspace-security.md) | Workspace scellé, filtre de transfert, export des changements |
 | [Utilisation](docs/usage.md) | Commandes, instances par projet, niveaux d'isolation, répertoire de travail |

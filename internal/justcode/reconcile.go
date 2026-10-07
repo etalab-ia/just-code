@@ -139,8 +139,10 @@ type InstanceState struct {
 	// CPUs and MemoryMB are creation-fixed too: the sandbox SDK sets them at
 	// creation and cannot resize a running guest, so a change must ask for a
 	// recreation instead of silently keeping the old sizing.
-	CPUs     int `json:"cpus,omitempty"`
-	MemoryMB int `json:"memoryMB,omitempty"`
+	CPUs            int           `json:"cpus,omitempty"`
+	MemoryMB        int           `json:"memoryMB,omitempty"`
+	PortsConfigured bool          `json:"portsConfigured,omitempty"`
+	Ports           []PortMapping `json:"ports,omitempty"`
 	// ConfigRevision is the hash of the non-secret desired config that was
 	// applied. Identical revision + healthy guest = no-op.
 	ConfigRevision string `json:"configRevision"`
@@ -182,8 +184,10 @@ type DesiredState struct {
 	GuestProfile string
 	// CPUs and MemoryMB are the guest sizing the instance should have. They
 	// are creation-fixed, so a change is reported as a recreation.
-	CPUs     int
-	MemoryMB int
+	CPUs            int
+	MemoryMB        int
+	PortsConfigured bool
+	Ports           []PortMapping
 	// CredentialRev is the hash of the desired binding-set descriptor (P09).
 	CredentialRev string
 	// CredentialGeneration is the non-secret rotation marker of the stored
@@ -287,7 +291,7 @@ func PlanReconcile(applied *InstanceState, desired DesiredState, facts Reconcile
 			// became a provenance check in P22) or omit one it does (guest
 			// sizing), because it is the only thing the user sees before
 			// deciding whether to lose the guest's state.
-			Reason: "the isolation level, the image, the guest profile, the workspace provenance or the guest sizing changed; these are fixed at creation",
+			Reason: "the isolation level, image, guest profile, workspace provenance, guest sizing or Microsandbox published ports changed; these are fixed at creation",
 		}
 	}
 	if applied == nil {
@@ -542,13 +546,15 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 // the revision cannot leave a stale refresh unperformed.
 func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBinding, applied *InstanceState) DesiredState {
 	d := DesiredState{
-		Instance:      m.InstanceName(),
-		Isolation:     m.cfg.Isolation,
-		Image:         msbImageForMCPs(m.OpenCodeOverlay.MCPConnectors),
-		Username:      m.cfg.Username,
-		CPUs:          m.cfg.CPUs,
-		MemoryMB:      m.cfg.MemoryMB,
-		MCPConnectors: append([]string(nil), m.OpenCodeOverlay.MCPConnectors...),
+		Instance:        m.InstanceName(),
+		Isolation:       m.cfg.Isolation,
+		Image:           msbImageForMCPs(m.OpenCodeOverlay.MCPConnectors),
+		Username:        m.cfg.Username,
+		CPUs:            m.cfg.CPUs,
+		MemoryMB:        m.cfg.MemoryMB,
+		Ports:           append([]PortMapping(nil), m.cfg.Ports...),
+		PortsConfigured: m.cfg.PortsConfigured,
+		MCPConnectors:   append([]string(nil), m.OpenCodeOverlay.MCPConnectors...),
 	}
 	if len(browserMCPIDs(m.OpenCodeOverlay.MCPConnectors)) > 0 {
 		d.GuestProfile = browserGuestProfileRevision()
@@ -590,6 +596,8 @@ func (d DesiredState) toState() InstanceState {
 		GuestProfile:     d.GuestProfile,
 		CPUs:             d.CPUs,
 		MemoryMB:         d.MemoryMB,
+		PortsConfigured:  d.PortsConfigured,
+		Ports:            append([]PortMapping(nil), d.Ports...),
 		ConfigRevision:   d.ConfigRevision(),
 		GitHubOrigin:     d.GitHubOrigin,
 		CredentialRev:    d.CredentialRev,
@@ -616,6 +624,13 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 	}
 	facts.Running = sandbox.Status == "running"
 	facts.Healthy = facts.Running && m.backendHealthy(ctx)
+	if applied == nil && desired.PortsConfigured {
+		// Without a state record there is no authoritative mapping to compare
+		// against. Do not claim that a newly configured port set was applied
+		// through an ordinary restart of an existing sandbox.
+		facts.CreationFixedChanged = true
+		return facts, nil
+	}
 
 	// Creation-fixed comparison. The applied state is the authority when it
 	// exists; without it, the live checks (isolation script, mount) stand in.
@@ -629,7 +644,8 @@ func (m *MicrosandboxRuntime) reconcileFacts(ctx context.Context, applied *Insta
 		creationFixed := applied.Isolation != string(desired.Isolation) ||
 			applied.Image != desired.Image ||
 			applied.GuestProfile != desired.GuestProfile ||
-			resourcesChanged
+			resourcesChanged ||
+			portMappingsChanged(applied.PortsConfigured, applied.Ports, desired.Ports, desired.PortsConfigured)
 		if creationFixed {
 			facts.CreationFixedChanged = true
 			return facts, nil
@@ -768,7 +784,8 @@ func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
 	}
 	// Resolve credentials before the destructive Clean: a resolution failure
 	// must not destroy a sandbox that Start would then refuse to recreate.
-	if _, err := m.resolveBindings(ctx); err != nil {
+	bindings, err := m.resolveBindings(ctx)
+	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
@@ -781,8 +798,13 @@ func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
 	if err := m.Start(ctx); err != nil {
 		return err
 	}
-	// The recreated instance is a new creation: drop any stale journal.
-	_ = DefaultFS.Remove(instanceStatePath(DefaultStateDir(), m.InstanceName()))
+	// The recreated instance has the requested creation-fixed settings. Store
+	// them as applied state so the next reconcile compares against this build,
+	// rather than treating the running guest as an untracked legacy instance.
+	state := m.desiredState(true, bindings, nil).toState()
+	if err := WriteInstanceState(DefaultFS, instanceStatePath(DefaultStateDir(), m.InstanceName()), state); err != nil {
+		return fmt.Errorf("persisting recreated state for %s: %w", m.InstanceName(), err)
+	}
 	fmt.Printf("%s recreated.\n", m.InstanceName())
 	return nil
 }

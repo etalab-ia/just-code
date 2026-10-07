@@ -158,6 +158,23 @@ func msbPortMappings(isolation Isolation) map[uint16]uint16 {
 	return ports
 }
 
+func msbProjectPortBindings(configured []PortMapping, portsConfigured bool, isolation Isolation) []msb.PortBinding {
+	bindings := make([]msb.PortBinding, 0, len(configured)+1)
+	if isolation == IsolationBackend {
+		bindings = append(bindings, msb.PortBinding{Bind: "127.0.0.1", HostPort: uint16(DefaultPort), GuestPort: uint16(DefaultPort)})
+	}
+	if !portsConfigured {
+		for p := uint16(3000); p <= 3010; p++ {
+			bindings = append(bindings, msb.PortBinding{Bind: "127.0.0.1", HostPort: p, GuestPort: p})
+		}
+	} else {
+		for _, port := range configured {
+			bindings = append(bindings, msb.PortBinding{Bind: "127.0.0.1", HostPort: port.Host, GuestPort: port.Guest})
+		}
+	}
+	return bindings
+}
+
 // msbManagedLabel is the ownership label attached to every sandbox just-code
 // creates (P06). The lifecycle sweeps enumerate managed sandboxes by this
 // label; the legacy singleton (created before labels) is recognized by name.
@@ -295,7 +312,7 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 		msb.WithEnv(spec.Env),
 		msb.WithMounts(msbWorkspaceMounts(spec)),
 		msb.WithNetwork(msb.NetworkPolicy.FromProfiles(msb.NetworkProfilePublic)),
-		msb.WithPorts(msbPortMappings(spec.Isolation)),
+		msb.WithPortBindings(msbProjectPortBindings(spec.Ports, spec.PortsConfigured, spec.Isolation)...),
 		msb.WithSecrets(secrets...),
 		msb.WithScripts(map[string]string{"start": spec.StartScript}),
 		// Ownership label (P06): the lifecycle sweeps list managed sandboxes
