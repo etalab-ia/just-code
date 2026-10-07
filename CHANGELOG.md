@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.8.0...just-code-v0.8.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **install:** reattach setup wizard to the terminal under curl | sh ([faa8ecd](https://github.com/etalab-ia/just-code/commit/faa8ecd1c47f857c7602823e69a0da8331fe0d61))
+* **setup:** aligner le message de fin sur le runtime par défaut ([0e8a4ca](https://github.com/etalab-ia/just-code/commit/0e8a4ca949aec179df8f92e9a1c8e7664c17f00a))
+* **setup:** clarify default guest launch message ([37658ca](https://github.com/etalab-ia/just-code/commit/37658cae04222725f2bb1bfdf0170a1b20b9c594))
+
 ## [0.8.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.4...just-code-v0.8.0) (2026-10-07)
 
 
