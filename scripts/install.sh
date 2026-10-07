@@ -107,15 +107,20 @@ if [ -e "$target" ]; then
 fi
 mv -f "$tmp_dir/$asset" "$target" || die "could not replace $target; the previous binary remains available"
 
-if "$target" setup; then
-	:
+setup_status=0
+if [ ! -t 0 ] && ( : < /dev/tty ) 2>/dev/null; then
+	# Running from a pipe (curl | sh): stdin is the exhausted pipe, so
+	# reattach the controlling terminal to keep the setup wizard interactive.
+	"$target" setup < /dev/tty || setup_status=$?
 else
-	status=$?
-	printf 'just-code was installed, but setup exited with status %s.\n' "$status" >&2
+	"$target" setup || setup_status=$?
+fi
+if [ "$setup_status" -ne 0 ]; then
+	printf 'just-code was installed, but setup exited with status %s.\n' "$setup_status" >&2
 	if [ -f "$backup" ]; then
 		printf "To roll back: mv \"\$HOME/.local/bin/just-code.previous\" \"\$HOME/.local/bin/just-code\"\n" >&2
 	fi
-	exit "$status"
+	exit "$setup_status"
 fi
 
 printf 'Installed %s from release %s at %s\n' "$asset" "$tag" "$target"
