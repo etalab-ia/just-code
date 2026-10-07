@@ -150,6 +150,7 @@ défaut → revue → application (réglages globaux + runtime managé).
 ```bash
 just-code setup            # assistant interactif
 just-code setup doctor     # rapport lecture seule, aucune écriture
+just-code setup doctor --json # même rapport, JSON pour automatisation
 just-code setup --fallback # utiliser le magasin fichier consentit
 just-code setup --no-color # sortie terminal simple
 ```

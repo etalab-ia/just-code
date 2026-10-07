@@ -88,7 +88,7 @@ func TestSetupDoctorPlainOutputSeparatesSections(t *testing.T) {
 	t.Cleanup(func() { setupDoctorCollectFn = origCollect; doctorRendererFn = origRender })
 
 	out := captureStdout(t, func() {
-		code, err := setupDoctorCmd()
+		code, err := setupDoctorCmd(false)
 		if err != nil || code != 0 {
 			t.Fatalf("setup doctor: code=%d err=%v", code, err)
 		}
@@ -114,13 +114,65 @@ func TestSetupDoctorFailedItemReturnsNonZero(t *testing.T) {
 	t.Cleanup(func() { setupDoctorCollectFn = origCollect; doctorRendererFn = origRender })
 
 	out := captureStdout(t, func() {
-		code, err := setupDoctorCmd()
+		code, err := setupDoctorCmd(false)
 		if err != nil || code != 1 {
 			t.Fatalf("failed diagnostics must return code 1: code=%d err=%v", code, err)
 		}
 	})
 	if !strings.Contains(out, "one or more checks failed") {
 		t.Fatalf("doctor output must state the failure: %q", out)
+	}
+}
+
+func TestSetupDoctorJSONOutputIsMachineReadable(t *testing.T) {
+	setupTestEnv(t)
+	origCollect := setupDoctorCollectFn
+	setupDoctorCollectFn = func() justcode.DiagnosticsReport {
+		return justcode.DiagnosticsReport{Platform: "test/arch", Sections: []justcode.DiagnosticSection{{
+			Title: "Host capability",
+			Items: []justcode.DiagnosticItem{{Name: "Virtualization", Value: "ok", Status: justcode.DiagnosticOK}},
+		}}}
+	}
+	t.Cleanup(func() { setupDoctorCollectFn = origCollect })
+
+	out := captureStdout(t, func() {
+		code, err := setupCmd([]string{"doctor", "--json"})
+		if err != nil || code != 0 {
+			t.Fatalf("setup doctor --json: code=%d err=%v", code, err)
+		}
+	})
+	var report justcode.DiagnosticsReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("doctor JSON output is invalid: %v: %q", err, out)
+	}
+	if report.Platform != "test/arch" || len(report.Sections) != 1 || report.Sections[0].Title != "Host capability" {
+		t.Fatalf("doctor JSON report = %+v", report)
+	}
+}
+
+func TestSetupDoctorNoColorUsesPlainOutput(t *testing.T) {
+	setupTestEnv(t)
+	origCollect, origRender, origNoColor := setupDoctorCollectFn, doctorRendererFn, wizardNoColor
+	setupDoctorCollectFn = func() justcode.DiagnosticsReport {
+		return justcode.DiagnosticsReport{Platform: "test/arch", Sections: []justcode.DiagnosticSection{{
+			Title: "Host capability",
+			Items: []justcode.DiagnosticItem{{Name: "Virtualization", Value: "ok", Status: justcode.DiagnosticOK}},
+		}}}
+	}
+	doctorRendererFn = func() bool { return !wizardNoColor }
+	wizardNoColor = false
+	t.Cleanup(func() {
+		setupDoctorCollectFn, doctorRendererFn, wizardNoColor = origCollect, origRender, origNoColor
+	})
+
+	out := captureStdout(t, func() {
+		code, err := setupCmd([]string{"doctor", "--no-color"})
+		if err != nil || code != 0 {
+			t.Fatalf("setup doctor --no-color: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "Host capability:") || strings.Contains(out, "│") {
+		t.Fatalf("--no-color did not use the plain doctor renderer: %q", out)
 	}
 }
 

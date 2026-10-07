@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -23,16 +24,16 @@ import (
 //
 //	setup              # interactive wizard
 //	setup doctor       # read-only diagnosis, no prompts, no writes
+//	setup doctor --json # machine-readable read-only diagnosis
 //	setup --fallback   # use the consented file credential store
 //	setup --no-color   # plain terminal output
 //
-// The plain line-based flow is the retained rendering: it works on every
-// terminal, survives pasting, degrades to non-TTY, and needs no external
-// renderer dependency. A maintained TUI renderer can replace the rendering
-// layer later without touching the engine (internal/justcode/setupwizard.go).
+// The setup wizard retains its line-based rendering for pasted and non-TTY
+// input. The read-only doctor report uses the installed TUI table library
+// only when stdout is a styled terminal; both renderers consume engine data.
 func setupCmd(args []string) (int, error) {
 	sub := ""
-	fallback, noColor := false, false
+	fallback, noColor, jsonOutput := false, false, false
 	for _, a := range args {
 		switch a {
 		case "doctor":
@@ -41,21 +42,27 @@ func setupCmd(args []string) (int, error) {
 			fallback = true
 		case "--no-color":
 			noColor = true
+		case "--json":
+			jsonOutput = true
 		default:
-			return 2, fmt.Errorf("Unknown setup argument: %s (expected doctor, --fallback or --no-color)", a)
+			return 2, fmt.Errorf("Unknown setup argument: %s (expected doctor, --fallback, --no-color or --json)", a)
 		}
 	}
-	if sub == "doctor" {
-		return setupDoctorCmd()
-	}
-	if isTTY() && !stdoutIsTTY() {
-		return 1, fmt.Errorf("interactive setup requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
+	if jsonOutput && sub != "doctor" {
+		return 2, fmt.Errorf("--json is only valid with 'just-code setup doctor'")
 	}
 	if noColor {
 		// --no-color promises plain terminal output; the line renderer
 		// emits no styling, so keep it even on a TTY.
-		defer func() { wizardNoColor = false }()
+		previous := wizardNoColor
+		defer func() { wizardNoColor = previous }()
 		wizardNoColor = true
+	}
+	if sub == "doctor" {
+		return setupDoctorCmd(jsonOutput)
+	}
+	if isTTY() && !stdoutIsTTY() {
+		return 1, fmt.Errorf("interactive setup requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
 	}
 	return setupRunCmd(fallback)
 }
@@ -66,8 +73,17 @@ var setupDoctorCollectFn = func() justcode.DiagnosticsReport {
 	return (justcode.Diagnostics{}).Collect(context.Background())
 }
 
-func setupDoctorCmd() (int, error) {
+func setupDoctorCmd(jsonOutput bool) (int, error) {
 	report := setupDoctorCollectFn()
+	if jsonOutput {
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			return 1, err
+		}
+		if report.Fatal || hasFailedDiagnostics(report) {
+			return 1, nil
+		}
+		return 0, nil
+	}
 	if doctorRendererFn() {
 		fmt.Println(huhDiagnosticsDescription(report))
 	} else {

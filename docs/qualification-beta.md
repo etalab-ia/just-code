@@ -23,13 +23,19 @@ de démarrage d'une microVM sur l'hyperviseur natif.
 1. Noter OS, architecture, matériel ou hyperviseur natif, version du CLI,
    version du runtime et date. Lancer `just-code version`.
 2. Vérifier le diagnostic sans effet de bord : définir `$MSB_HOME` vers un
-   répertoire temporaire vide et retirer `MSB_PATH`, puis lancer
+   répertoire temporaire vide et retirer `MSB_PATH` et
+   `MSB_LIBKRUNFW_PATH`, puis lancer
    `just-code doctor --microsandbox`. La commande doit échouer en indiquant
    que le runtime manque, sans créer de fichier. Répéter après installation
-   et confirmer que le runtime est diagnostiqué.
-3. Exécuter `go test ./...` et les tests natifs de l'installateur indiqués dans
-   `docs/development.md`, puis noter le résultat. Les workflows CI restent la
-   source principale de ces preuves.
+   et confirmer que le runtime est diagnostiqué. Lancer aussi
+   `just-code setup doctor` et `just-code setup doctor --json`; les deux
+   rapports doivent être cohérents et ne contenir aucune valeur secrète.
+   Conserver localement le JSON comme pièce d'évidence; le relire et le
+   redacter avant de le joindre à un ticket ou à un compte rendu.
+3. Les workflows GitHub Actions fournissent les preuves de build et des tests
+   unitaires par architecture. Ne lancer `go test ./...` que depuis un
+   checkout contributeur avec Go et les outils C requis; son absence sur un
+   poste d'atelier ne bloque pas le test du binaire installé.
 4. Avec un projet Git jetable, tester le parcours utilisateur vide :
    `just-code init`, puis lancer `just-code --microsandbox --isolation full`.
    Après démarrage, exécuter `just-code check --isolation full`. Vérifier que
@@ -56,21 +62,23 @@ de démarrage d'une microVM sur l'hyperviseur natif.
    sans changement attendu, puis le démarrage et l'export de changements dans
    une branche de test. Ne pas utiliser un dépôt contenant des secrets ou du
    contenu de production.
-10. Exécuter les parcours réseau de `tests/integration/credentials/README.md`
-   uniquement sur le laboratoire dédié et avec une clé de test révocable.
-   Distinguer un échec de préparation du laboratoire d'un échec d'assertion.
+10. Sur macOS arm64 uniquement, exécuter les parcours réseau de
+    `tests/integration/credentials/README.md` dans le laboratoire dédié et avec
+    une clé de test révocable. Distinguer un échec de préparation du laboratoire
+    d'un échec d'assertion. Le laboratoire documenté dépend des interfaces et
+    commandes macOS : ne pas présenter ce résultat comme preuve de transport
+    sur Linux ou Windows.
 11. Pour les runtimes explicitement revendiqués, exécuter leurs diagnostics et
-    un cycle start/stop/reprise séparément : `just-code doctor --tart` puis
-    `just-code start --tart` sur macOS arm64 ; `just-code doctor --agent-vm`
-    puis son parcours dédié sur macOS/Linux avec Lima. Ne pas extrapoler ces
-    résultats à Microsandbox.
+    un cycle start/stop/reprise séparément : Tart sur macOS arm64 ; agent-vm sur
+    macOS/Linux avec Lima. Aucun résultat de ces runtimes ne qualifie
+    Microsandbox.
 
 ## Protocoles par plateforme
 
-Chaque protocole commence par les étapes communes 1 à 8. Exécuter ensuite
-seulement les lignes applicables à l'hôte testé. Une cible sans runtime
-disponible ou avec un prérequis d'hyperviseur absent est « non qualifiée »,
-pas un échec de just-code : noter l'écart dans la matrice.
+Exécuter les étapes communes 1 à 11 sur chaque hôte, puis les contrôles
+spécifiques ci-dessous. Une cible sans runtime disponible ou avec un
+prérequis d'hyperviseur absent est « non qualifiée », pas un échec de
+just-code : noter l'écart dans la matrice.
 
 ### macOS arm64
 
