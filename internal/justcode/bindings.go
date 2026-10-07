@@ -30,6 +30,10 @@ type msbSecretBinding struct {
 	// secret *placeholder* under this name; the real value is swapped in at
 	// the network boundary for AllowHosts only.
 	GuestEnv string
+	// Placeholder is the value exposed to guest processes and matched by the
+	// proxy. Empty uses the runtime default ($MSB_<GuestEnv>); project-scoped
+	// application secrets can set a stable, collision-resistant placeholder.
+	Placeholder string
 	// HostEnv is the host-side transport variable the env reference resolves
 	// from. It is namespaced under JUST_CODE_ and exists only for the
 	// duration of an SDK call (see withHostSecrets), so a dedicated name —
@@ -326,11 +330,11 @@ func bindingsMetadata(bindings []resolvedBinding) []msbSecretBinding {
 }
 
 // bindingsRevision hashes the non-secret descriptor of a binding set: kind,
-// source, guest variable, allowed hosts, and — for store-sourced bindings —
-// the store entry and the store it was read from. Values are excluded by
-// construction, so the revision is safe to persist; a value rotation within
-// an unchanged set does not move it (rotation applies at the next boot,
-// which re-resolves the reference).
+// source, guest variable, placeholder, allowed hosts, and — for store-sourced
+// bindings — the store entry and the store it was read from. Values are
+// excluded by construction, so the revision is safe to persist; a value
+// rotation within an unchanged set does not move it (rotation applies at the
+// next boot, which re-resolves the reference).
 //
 // Including the store matters: when both stores hold the same entry, losing
 // the native one changes nothing but which store answers, so a revision that
@@ -346,7 +350,7 @@ func bindingsRevision(bindings []resolvedBinding) string {
 	for _, b := range sorted {
 		hosts := append([]string(nil), b.AllowHosts...)
 		sort.Strings(hosts)
-		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv, b.store, b.storeEntry()}, hosts...) {
+		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv, b.Placeholder, b.store, b.storeEntry()}, hosts...) {
 			_, _ = h.Write([]byte(part))
 			_, _ = h.Write([]byte{0})
 		}

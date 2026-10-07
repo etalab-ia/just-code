@@ -60,6 +60,13 @@ func TestBindingsRevisionIgnoresValues(t *testing.T) {
 	if bindingsRevision(a) == bindingsRevision(c) {
 		t.Fatal("the credential source must participate in the revision")
 	}
+	// Changing the guest-visible placeholder must refresh the proxy binding,
+	// even when the stored value and all other binding metadata are unchanged.
+	e := testBindings("first-value")
+	e[0].Placeholder = "$MSB_PROJECT_API_KEY_rotated"
+	if bindingsRevision(a) == bindingsRevision(e) {
+		t.Fatal("the guest placeholder must participate in the revision")
+	}
 	// Adding an optional binding moves the revision.
 	d := append(testBindings("first-value"), resolvedBinding{
 		msbSecretBinding: msbSecretBindings()[1], source: bindingSourceStore, value: "tok",
