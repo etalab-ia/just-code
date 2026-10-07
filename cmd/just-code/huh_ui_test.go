@@ -38,6 +38,39 @@ func TestShouldSkipSkillsField(t *testing.T) {
 	}
 }
 
+func TestHuhDiagnosticsPreservesLiteralPaths(t *testing.T) {
+	path := `C:\Users\Luis\project_with_under`
+	got := huhDiagnosticsDescription(justcode.DiagnosticsReport{
+		Sections: []justcode.DiagnosticSection{{
+			Title: "Host capability",
+			Items: []justcode.DiagnosticItem{{Name: "Project path", Value: path, Status: justcode.DiagnosticInfo}},
+		}},
+	})
+	if !strings.Contains(got, path) {
+		t.Fatalf("TUI report changed a literal path: %q", got)
+	}
+	if strings.Contains(got, `\\_`) || strings.Contains(got, `\\\\`) {
+		t.Fatalf("TUI report Markdown-escaped copied support data: %q", got)
+	}
+}
+
+func TestHuhDiagnosticsPreservesWindowsSeparatorsAndUnderscores(t *testing.T) {
+	backslash := string(rune(92))
+	path := strings.Join([]string{"C:", "Users", "Luis", "project_with_under"}, backslash)
+	got := huhDiagnosticsDescription(justcode.DiagnosticsReport{
+		Sections: []justcode.DiagnosticSection{{
+			Title: "Host capability",
+			Items: []justcode.DiagnosticItem{{Name: "Project path", Value: path, Status: justcode.DiagnosticInfo}},
+		}},
+	})
+	if !strings.Contains(got, path) {
+		t.Fatalf("TUI report changed a Windows path: %q", got)
+	}
+	if strings.Contains(got, backslash+backslash) || strings.Contains(got, backslash+"_") {
+		t.Fatalf("TUI report escaped literal support data: %q", got)
+	}
+}
+
 func TestHuhResourceInputsCanRestoreImplicitDefaults(t *testing.T) {
 	for _, input := range []string{"", "  ", "default", "DEFAULT"} {
 		cpus, useDefault, err := parseGuestCPUsInput(input, 8)

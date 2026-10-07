@@ -23,13 +23,19 @@ de démarrage d'une microVM sur l'hyperviseur natif.
 1. Noter OS, architecture, matériel ou hyperviseur natif, version du CLI,
    version du runtime et date. Lancer `just-code version`.
 2. Vérifier le diagnostic sans effet de bord : définir `$MSB_HOME` vers un
-   répertoire temporaire vide et retirer `MSB_PATH`, puis lancer
+   répertoire temporaire vide et retirer `MSB_PATH` et
+   `MSB_LIBKRUNFW_PATH`, puis lancer
    `just-code doctor --microsandbox`. La commande doit échouer en indiquant
    que le runtime manque, sans créer de fichier. Répéter après installation
-   et confirmer que le runtime est diagnostiqué.
-3. Exécuter `go test ./...` et les tests natifs de l'installateur indiqués dans
-   `docs/development.md`, puis noter le résultat. Les workflows CI restent la
-   source principale de ces preuves.
+   et confirmer que le runtime est diagnostiqué. Lancer aussi
+   `just-code setup doctor` et `just-code setup doctor --json`; les deux
+   rapports doivent être cohérents et ne contenir aucune valeur secrète.
+   Conserver localement le JSON comme pièce d'évidence; le relire et le
+   redacter avant de le joindre à un ticket ou à un compte rendu.
+3. Les workflows GitHub Actions fournissent les preuves de build et des tests
+   unitaires par architecture. Ne lancer `go test ./...` que depuis un
+   checkout contributeur avec Go et les outils C requis; son absence sur un
+   poste d'atelier ne bloque pas le test du binaire installé.
 4. Avec un projet Git jetable, tester le parcours utilisateur vide :
    `just-code init`, puis lancer `just-code --microsandbox --isolation full`.
    Après démarrage, exécuter `just-code check --isolation full`. Vérifier que
@@ -56,30 +62,105 @@ de démarrage d'une microVM sur l'hyperviseur natif.
    sans changement attendu, puis le démarrage et l'export de changements dans
    une branche de test. Ne pas utiliser un dépôt contenant des secrets ou du
    contenu de production.
-10. Exécuter les parcours réseau de `tests/integration/credentials/README.md`
-   uniquement sur le laboratoire dédié et avec une clé de test révocable.
-   Distinguer un échec de préparation du laboratoire d'un échec d'assertion.
+10. Sur macOS arm64 uniquement, exécuter les parcours réseau de
+    `tests/integration/credentials/README.md` dans le laboratoire dédié et avec
+    une clé de test révocable. Distinguer un échec de préparation du laboratoire
+    d'un échec d'assertion. Le laboratoire documenté dépend des interfaces et
+    commandes macOS : ne pas présenter ce résultat comme preuve de transport
+    sur Linux ou Windows.
 11. Pour les runtimes explicitement revendiqués, exécuter leurs diagnostics et
-    un cycle start/stop/reprise séparément : `just-code doctor --tart` puis
-    `just-code start --tart` sur macOS arm64 ; `just-code doctor --agent-vm`
-    puis son parcours dédié sur macOS/Linux avec Lima. Ne pas extrapoler ces
-    résultats à Microsandbox.
+    un cycle start/stop/reprise séparément : Tart sur macOS arm64 ; agent-vm sur
+    macOS/Linux avec Lima. Aucun résultat de ces runtimes ne qualifie
+    Microsandbox.
+
+## Protocoles par plateforme
+
+Exécuter les étapes communes 1 à 11 sur chaque hôte, puis les contrôles
+spécifiques ci-dessous. Une cible sans runtime disponible ou avec un
+prérequis d'hyperviseur absent est « non qualifiée », pas un échec de
+just-code : noter l'écart dans la matrice.
+
+### macOS arm64
+
+Prérequis : Apple Silicon, Hypervisor.framework, OpenCode, just-code.
+
+1. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+2. Tart : installer Tart explicitement, vérifier `just-code doctor --tart`,
+   lancer `just-code start --tart --isolation backend`, vérifier la connexion
+   du TUI hôte et l'accès au endpoint local, puis `just-code stop --tart`.
+3. agent-vm : installer Lima, vérifier `just-code doctor --agent-vm`, lancer
+   `just-code start --agent-vm --isolation backend`, vérifier que le template
+   est construit une seule fois et que le redémarrage conserve l'état, puis
+   `just-code stop --agent-vm`.
+4. Noter si l'hôte est une machine de l'utilisateur, une machine CI dédiée,
+   ou un Mac distant géré, car la confiance n'est pas équivalente.
+
+### Linux amd64
+
+Prérequis : `/dev/kvm` ouvert par l'utilisateur, OpenCode, just-code.
+
+1. Vérifier `test -r /dev/kvm -a -w /dev/kvm` ; le résultat et la commande
+   doivent apparaître dans le rapport.
+2. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+3. agent-vm : installer Lima explicitement, vérifier `just-code doctor
+   --agent-vm`, lancer `just-code start --agent-vm --isolation backend`, puis
+   `just-code stop --agent-vm`. Ne pas déduire le succès Microsandbox du
+   succès Lima.
+4. Si l'hôte est une VM cloud, ne qualifier Microsandbox que lorsque KVM est
+   réellement disponible dans l'invité ; sinon la preuve est invalide.
+
+### Linux arm64
+
+Prérequis et parcours identiques à Linux amd64, mais l'architecture native
+doit être confirmée (`uname -m` = `aarch64`). Ne pas accepter un test amd64
+émulation comme preuve arm64.
+
+### Windows amd64
+
+Prérequis : Windows 10 ou 11 x64, Windows Hypervisor Platform activée,
+OpenCode, just-code.
+
+1. Vérifier la fonctionnalité WHP dans les fonctionnalités Windows, puis
+   redémarrer si elle vient d'être activée.
+2. Exécuter le protocole commun dans PowerShell, y compris le parcours
+   d'installation avec `install.ps1`.
+3. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+4. Ne pas remplacer WHP par WSL2 ou Hyper-V embarqué sans preuve : le backend
+   annoncé est WHP.
+
+### Windows arm64
+
+Prérequis : Windows 10 ou 11 arm64, WHP, OpenCode, just-code.
+
+1. Confirmer l'architecture native (`$env:PROCESSOR_ARCHITECTURE` = `ARM64`).
+2. Exécuter le protocole commun dans PowerShell, y compris `install.ps1`.
+3. Microsandbox : installer par `just-code start --microsandbox`, vérifier
+   `just-code doctor --microsandbox`, lancer le parcours en isolation `full`,
+   puis `just-code stop`.
+4. Les runtimes Tart et agent-vm ne sont pas qualifiés sur Windows arm64 ;
+   ne pas marquer cette combinaison comme supportée.
 
 ## Matrice de preuve
 
 Compléter une ligne par combinaison réellement testée. « Non testé » et
 « bloqué par l'hôte » ne valent pas « réussi ».
 
-| OS / architecture | Runtime / backend natif | Version CLI / runtime | Doctor lecture seule | Parcours P21 | Résultat / lien vers preuve |
-|---|---|---|---|---|---|
-| macOS arm64 | Microsandbox / Apple Virtualization | | | | |
-| macOS arm64 | Tart / Apple Virtualization | | | | |
-| macOS arm64 | agent-vm / Lima | | | | |
-| Linux amd64 | Microsandbox / KVM | | | | |
-| Linux arm64 | Microsandbox / KVM | | | | |
-| Linux amd64 ou arm64 | agent-vm / Lima | | | | |
-| Windows amd64 | Microsandbox / WHP | | | | |
-| Windows arm64 | Microsandbox / WHP | | | | |
+| OS / architecture | Hôte / contexte | Runtime / backend natif | Version CLI / runtime | `setup doctor` | Doctor runtime | Parcours P21 | Résultat / lien vers preuve |
+|---|---|---|---|---|---|---|---|
+| macOS arm64 | | Microsandbox / Apple Virtualization | | | | | |
+| macOS arm64 | | Tart / Apple Virtualization | | | | | |
+| macOS arm64 | | agent-vm / Lima | | | | | |
+| Linux amd64 | | Microsandbox / KVM | | | | | |
+| Linux arm64 | | Microsandbox / KVM | | | | | |
+| Linux amd64 ou arm64 | | agent-vm / Lima | | | | | |
+| Windows amd64 | | Microsandbox / WHP | | | | | |
+| Windows arm64 | | Microsandbox / WHP | | | | | |
 
 Pour chaque résultat, conserver les commandes, le code de sortie et les
 assertions pertinentes. Masquer les clés, mots de passe, jetons, identifiants
