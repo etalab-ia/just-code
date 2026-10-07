@@ -330,11 +330,11 @@ func bindingsMetadata(bindings []resolvedBinding) []msbSecretBinding {
 }
 
 // bindingsRevision hashes the non-secret descriptor of a binding set: kind,
-// source, guest variable, allowed hosts, and — for store-sourced bindings —
-// the store entry and the store it was read from. Values are excluded by
-// construction, so the revision is safe to persist; a value rotation within
-// an unchanged set does not move it (rotation applies at the next boot,
-// which re-resolves the reference).
+// source, guest variable, placeholder, allowed hosts, and — for store-sourced
+// bindings — the store entry and the store it was read from. Values are
+// excluded by construction, so the revision is safe to persist; a value
+// rotation within an unchanged set does not move it (rotation applies at the
+// next boot, which re-resolves the reference).
 //
 // Including the store matters: when both stores hold the same entry, losing
 // the native one changes nothing but which store answers, so a revision that
@@ -350,7 +350,7 @@ func bindingsRevision(bindings []resolvedBinding) string {
 	for _, b := range sorted {
 		hosts := append([]string(nil), b.AllowHosts...)
 		sort.Strings(hosts)
-		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv, b.store, b.storeEntry()}, hosts...) {
+		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv, b.Placeholder, b.store, b.storeEntry()}, hosts...) {
 			_, _ = h.Write([]byte(part))
 			_, _ = h.Write([]byte{0})
 		}
