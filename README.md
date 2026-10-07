@@ -35,18 +35,16 @@ Ce n'est **pas un produit** : c'est un terrain de jeu pour mesurer l'UX (latence
 
 ## Installation
 
-Sur macOS ou Linux, télécharge et lance l'installateur POSIX :
+Sur macOS ou Linux :
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/etalab-ia/just-code/main/scripts/install.sh -o install-just-code.sh
-sh install-just-code.sh
+curl -fsSL https://raw.githubusercontent.com/etalab-ia/just-code/main/scripts/install.sh | sh
 ```
 
 Dans PowerShell sous Windows :
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/etalab-ia/just-code/main/scripts/install.ps1 -OutFile install-just-code.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-just-code.ps1
+irm https://raw.githubusercontent.com/etalab-ia/just-code/main/scripts/install.ps1 | iex
 ```
 
 L'installateur choisit une seule release stable, télécharge le binaire et `SHA256SUMS` depuis cette même release, puis compare l'empreinte avant de remplacer l'installation. L'assistant `just-code setup` est lancé après l'installation.

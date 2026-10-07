@@ -10,9 +10,10 @@ de démarrage d'une microVM sur l'hyperviseur natif.
 - Utiliser un checkout de la révision candidate, avec son tag/version noté.
 - Utiliser une machine physique ou un hôte de virtualisation dédié, pas une
   VM imbriquée non qualifiée.
-- Installer OpenCode et Microsandbox conformément au README. Pour Microsandbox,
-  `just-code start --microsandbox` installe le runtime géré si nécessaire ;
-  `just-code doctor --microsandbox` est en lecture seule et ne l'installe pas.
+- Installer OpenCode conformément au README. Microsandbox n'a pas besoin d'être
+  installé : `just-code start --microsandbox` télécharge et vérifie le runtime
+  géré si nécessaire ; `just-code doctor --microsandbox` est en lecture seule
+  et ne l'installe pas.
 - Pour un test réel de transport Albert, utiliser une clé de test révocable.
   Ne jamais mettre une clé dans le rapport ou les artefacts de CI.
 - Prévoir un checkout jetable contenant un dépôt Git synthétique pour les
