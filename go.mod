@@ -8,7 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.1
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/mattn/go-runewidth v0.0.30
-	github.com/superradcompany/microsandbox/sdk/go v0.7.3
+	github.com/superradcompany/microsandbox/sdk/go v0.7.6
 	golang.org/x/sys v0.44.0
 	golang.org/x/term v0.27.0
 	gopkg.in/yaml.v3 v3.0.1
