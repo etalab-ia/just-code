@@ -10,7 +10,7 @@ Depuis un checkout des sources, pars du modèle commenté puis renseigne au mini
 cp .env.example .env
 ```
 
-La référence complète des variables et de leurs règles de priorité se trouve dans [configuration.md](configuration.md).
+La référence complète des variables et de leurs règles de priorité se trouve dans [config.md](config.md).
 
 ## Portage Go
 

@@ -20,7 +20,7 @@ just-code
 
 La commande prépare l'espace de travail de l'invité, démarre l'agent et attache la TUI OpenCode native.
 
-Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la page [Configuration](configuration.md).
+Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la page [Configuration](config.md).
 
 Le premier démarrage d'un sandbox Microsandbox installe ~384 Mio de paquets dans la microVM et peut dépasser largement une minute ; les démarrages suivants sont rapides.
 
@@ -39,5 +39,5 @@ Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 ## Aller plus loin
 
 - [Utilisation](usage.md) : commandes, instances par projet, niveaux d'isolation.
-- [Configuration](configuration.md) : assistant `setup`, variables d'environnement, skills, MCP.
+- [Configuration](config.md) : assistant `setup`, variables d'environnement, skills, MCP.
 - [Identifiants et secrets](credentials.md) : magasin d'identifiants et protection par runtime.

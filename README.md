@@ -75,7 +75,7 @@ just-code
 
 La commande prépare l'espace de travail de l'invité, démarre l'agent et attache la TUI OpenCode native. Le premier démarrage d'un sandbox Microsandbox installe ~384 Mio de paquets dans la microVM et peut dépasser largement une minute ; les démarrages suivants sont rapides.
 
-Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la page [Configuration](docs/configuration.md).
+Pour rendre la clé persistante et enregistrer le runtime, le workspace ou d'autres réglages, consulte la page [Configuration](docs/config.md).
 
 Une fois attaché, ces prompts exercent les dimensions clés de l'expérience :
 
@@ -91,7 +91,7 @@ Quatre autres prompts (toolchain polyglotte, édition et revue de diff, continui
 |---|---|
 | [Installation](docs/installation.md) | Binaires, installateurs, vérification, dépendances de l'hôte, compilation depuis les sources |
 | [Démarrage rapide](docs/quickstart.md) | Premier lancement et prompts d'exemple complets |
-| [Configuration](docs/configuration.md) | Assistant `setup`, variables d'environnement, précédence, fichiers gérés, skills, MCP, modèle OpenCode |
+| [Configuration](docs/config.md) | Assistant `setup`, variables d'environnement, précédence, fichiers gérés, skills, MCP, modèle OpenCode |
 | [Identifiants et secrets](docs/credentials.md) | Magasin d'identifiants, résolution de la clé Albert, protection par runtime, GitHub dans l'invité |
 | [Sécurité du workspace](docs/workspace-security.md) | Workspace scellé, filtre de transfert, export des changements |
 | [Utilisation](docs/usage.md) | Commandes, instances par projet, niveaux d'isolation, répertoire de travail |
@@ -105,7 +105,7 @@ Quatre autres prompts (toolchain polyglotte, édition et revue de diff, continui
 
 ## Contribuer
 
-L'architecture du portage Go, les hooks pre-commit (gitleaks) et le pipeline d'intégration continue et de publication (release-please) sont documentés dans [docs/development.md](docs/development.md). La résolution typée de la configuration (sources, précédence, schémas des fichiers gérés, transition depuis `.env`) est documentée dans [docs/configuration.md](docs/configuration.md).
+L'architecture du portage Go, les hooks pre-commit (gitleaks) et le pipeline d'intégration continue et de publication (release-please) sont documentés dans [docs/development.md](docs/development.md). La résolution typée de la configuration (sources, précédence, schémas des fichiers gérés, transition depuis `.env`) est documentée dans [docs/config.md](docs/config.md).
 
 ---
 
