@@ -54,6 +54,16 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestParsePortsArgs(t *testing.T) {
+	parsed, err := parseArgs([]string{"ports", "add", "8080:80"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.action != "ports" || strings.Join(parsed.portsArgs, " ") != "add 8080:80" {
+		t.Fatalf("parsed ports command = action %q args %v", parsed.action, parsed.portsArgs)
+	}
+}
+
 func TestParseMCPArgsAroundGlobalRuntimeFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"mcp", "status"},

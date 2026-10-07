@@ -291,8 +291,10 @@ type msbSandboxSpec struct {
 	// CPUs and MemoryMB size the guest. Zero means "unset": the create
 	// options then fall back to the built-in defaults, so a spec built by a
 	// path that does not resolve resources still boots.
-	CPUs     int
-	MemoryMB int
+	CPUs            int
+	MemoryMB        int
+	Ports           []PortMapping
+	PortsConfigured bool
 	// SealedWorkspace selects the P22 sealed model: /workspace is an owned
 	// volume inside the sandbox and the host checkout is NOT mounted. The
 	// zero value is refused rather than falling back to a bind mount.
@@ -650,6 +652,8 @@ func (m *MicrosandboxRuntime) sandboxSpec(bindings []resolvedBinding) msbSandbox
 		SealedWorkspace: true,
 		CPUs:            m.cfg.CPUs,
 		MemoryMB:        m.cfg.MemoryMB,
+		Ports:           append([]PortMapping(nil), m.cfg.Ports...),
+		PortsConfigured: m.cfg.PortsConfigured,
 		Bindings:        bindingsMetadata(bindings),
 		StartScript:     msbStartScriptFor(m.cfg.Isolation, mcpIDs),
 	}

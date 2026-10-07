@@ -1245,12 +1245,12 @@ func TestMSBCreateOptions(t *testing.T) {
 		t.Fatalf("workspace mount kind = %v, want Owned", ws.Kind())
 	}
 	for port := uint16(3000); port <= 3010; port++ {
-		if cfg.Ports[port] != port {
-			t.Fatalf("preview port %d missing: %v", port, cfg.Ports)
+		if !hasMSBPortBinding(cfg.PortBindings, port, port) {
+			t.Fatalf("preview port %d missing: %v", port, cfg.PortBindings)
 		}
 	}
-	if cfg.Ports[DefaultPort] != DefaultPort || cfg.Network == nil {
-		t.Fatalf("network config = ports %v, network %+v", cfg.Ports, cfg.Network)
+	if !hasMSBPortBinding(cfg.PortBindings, uint16(DefaultPort), uint16(DefaultPort)) || cfg.Network == nil {
+		t.Fatalf("network config = port bindings %v, network %+v", cfg.PortBindings, cfg.Network)
 	}
 	if len(cfg.Secrets) != 1 || cfg.Secrets[0].EnvVar != msbAPISecretEnv {
 		t.Fatalf("secret config = %+v", cfg.Secrets)
@@ -1284,12 +1284,47 @@ func TestMSBFullModeDoesNotPublishOpenCodeServerPort(t *testing.T) {
 	for _, option := range msbCreateOptions(spec) {
 		option(&cfg)
 	}
-	if _, forwarded := cfg.Ports[DefaultPort]; forwarded {
-		t.Fatalf("full mode must not forward the OpenCode server port %d: %v", DefaultPort, cfg.Ports)
+	if hasMSBPortBinding(cfg.PortBindings, uint16(DefaultPort), uint16(DefaultPort)) {
+		t.Fatalf("full mode must not forward the OpenCode server port %d: %v", DefaultPort, cfg.PortBindings)
 	}
 	for port := uint16(3000); port <= 3010; port++ {
-		if cfg.Ports[port] != port {
-			t.Fatalf("preview port %d missing from full-mode config: %v", port, cfg.Ports)
+		if !hasMSBPortBinding(cfg.PortBindings, port, port) {
+			t.Fatalf("preview port %d missing from full-mode config: %v", port, cfg.PortBindings)
+		}
+	}
+}
+
+func hasMSBPortBinding(bindings []msb.PortBinding, host, guest uint16) bool {
+	for _, binding := range bindings {
+		if binding.Bind == "127.0.0.1" && binding.HostPort == host && binding.GuestPort == guest {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMSBConfiguredPortsReplacePreviewDefaultsAndStayLoopback(t *testing.T) {
+	spec := msbSandboxSpec{
+		Image:           msbImage,
+		Isolation:       IsolationFull,
+		SealedWorkspace: true,
+		PortsConfigured: true,
+		Ports:           []PortMapping{{Host: 8080, Guest: 80}},
+		StartScript:     msbStartScript(IsolationFull),
+	}
+	var cfg msb.SandboxConfig
+	for _, option := range msbCreateOptions(spec) {
+		option(&cfg)
+	}
+	if !hasMSBPortBinding(cfg.PortBindings, 8080, 80) {
+		t.Fatalf("configured port binding missing: %+v", cfg.PortBindings)
+	}
+	if hasMSBPortBinding(cfg.PortBindings, 3000, 3000) {
+		t.Fatalf("explicit mapping set must replace default previews: %+v", cfg.PortBindings)
+	}
+	for _, binding := range cfg.PortBindings {
+		if binding.Bind != "127.0.0.1" {
+			t.Fatalf("port mapping must be loopback-only: %+v", binding)
 		}
 	}
 }

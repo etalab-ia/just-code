@@ -91,6 +91,9 @@ func run(args []string) (int, error) {
 	if parsed.action == "config" {
 		return configCmd(parsed)
 	}
+	if parsed.action == "ports" {
+		return portsCommand(parsed.portsArgs)
+	}
 	if parsed.action == "import" {
 		return albertCodeImportCmd(parsed.importArgs)
 	}
@@ -457,6 +460,7 @@ type parsedArgs struct {
 	version       bool
 	// configArgs holds the words after the config command.
 	configArgs []string
+	portsArgs  []string
 	// authArgs holds the words after the auth command.
 	authArgs []string
 	// bindingsArgs holds the words after the bindings command.
@@ -488,7 +492,8 @@ var actionNames = map[string]bool{
 	"start": true, "stop": true, "check": true, "logs": true, "shell": true,
 	"restart": true, "recreate": true, "clean": true, "doctor": true,
 	"help": true, "version": true, "config": true,
-	"auth": true, "bindings": true,
+	"ports": true,
+	"auth":  true, "bindings": true,
 	"workspace": true,
 	"init":      true,
 	"update":    true,
@@ -549,6 +554,11 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the config command belongs to it.
 			p.configArgs = args[i+1:]
+			return p, nil
+		case a == "ports" && !actionSet:
+			p.action = "ports"
+			actionSet = true
+			p.portsArgs = args[i+1:]
 			return p, nil
 		case a == "auth" && !actionSet:
 			p.action = "auth"
@@ -1032,6 +1042,7 @@ Commands:
   clean      Remove the selected sandbox and its local state
   doctor     Check the selected runtime installation
   config     Show or preview managed configuration (explain, import-env)
+  ports      Configure Microsandbox TCP preview ports (list, add, remove)
   import     Preview or import an existing Albert Code project
   auth       Manage global credentials (add, status, remove)
   bindings   Approve or revoke optional credential bindings for this
@@ -1089,6 +1100,13 @@ func applyProjectSandboxResources(cfg justcode.Config, projectRoot string) (just
 		// A missing manifest is the normal zero-flag state. A present but
 		// unreadable one is reported by the paths that own that decision.
 		return cfg, nil
+	}
+	cfg.Ports = append([]justcode.PortMapping(nil), pm.Ports...)
+	cfg.PortsConfigured = pm.PortsConfigured || pm.Ports != nil
+	if cfg.PortsConfigured {
+		if err := justcode.ValidatePortMappings(cfg.Ports); err != nil {
+			return cfg, fmt.Errorf("invalid project port mapping: %w", err)
+		}
 	}
 	// Zero means "not set in the manifest", which is the common case. Any
 	// other out-of-range value — negative, or above what the runtime can

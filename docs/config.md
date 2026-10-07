@@ -35,8 +35,28 @@ dépréciation, mais n'entrent pas dans la nouvelle résolution.
 | Fichier | Rôle | Version de schéma |
 |---|---|---|
 | `~/.config/just-code/settings.json` | Réglages globaux utilisateur (sans secrets) | 1 |
-| `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 4 |
+| `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 5 |
 | `.just-code/lock.json` | Verrou : révisions et digests des éléments épinglés | 3 |
+
+## Ports publiés Microsandbox
+
+`just-code ports list` affiche les redirections TCP configurées. Les commandes
+`just-code ports add 8080` et `just-code ports add 8080:80` ajoutent une
+redirection de `127.0.0.1:8080` vers le port invité 8080 ou 80 ;
+`just-code ports remove 8080` la supprime. Les ports sont inscrits dans
+`.just-code/project.json`, sans chemin hôte ni secret. Le port 4096 est réservé
+au backend OpenCode.
+
+Les manifestes sans liste explicite conservent les redirections historiques
+3000-3010. Une liste explicite remplace cette plage, y compris `[]` pour ne
+publier aucun port de preview. Les redirections sont TCP et liées à
+`127.0.0.1`, jamais à toutes les interfaces.
+
+Microsandbox fixe ses ports publiés à la création du sandbox. Une modification
+du manifeste n'est donc pas appliquée par `restart`; `just-code ports add` et
+`remove` affichent la commande explicite `just-code recreate --microsandbox`.
+Cette recréation détruit les sessions, outils installés et fichiers propres à
+l'invité ; confirmer la perte avant de l'exécuter.
 
 ## Skills de projet (P14)
 

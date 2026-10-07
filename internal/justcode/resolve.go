@@ -154,6 +154,10 @@ type ProjectManifest struct {
 	Model     string `json:"model,omitempty"`
 	CPUs      int    `json:"cpus,omitempty"`
 	MemoryMB  int    `json:"memoryMB,omitempty"`
+	// Ports are explicit host-to-guest TCP forwards for Microsandbox. Nil
+	// preserves the historical default preview range for older manifests.
+	Ports           []PortMapping `json:"ports,omitempty"`
+	PortsConfigured bool          `json:"portsConfigured,omitempty"`
 
 	// CredentialRef names the project's credential (a P08 reference).
 	CredentialRef string `json:"credentialRef,omitempty"`
@@ -176,15 +180,21 @@ type ProjectManifest struct {
 	DependencySetID string `json:"dependencySetId,omitempty"`
 }
 
+// PortMapping publishes a guest TCP port on a host loopback port.
+type PortMapping struct {
+	Host  uint16 `json:"host"`
+	Guest uint16 `json:"guest"`
+}
+
 // projectManifestSchemaVersion is the current project.json format version.
 // P18 adds a dependency-set generation so a launch can reject a partially
 // written manifest/lock pair after an interrupted update.
-const projectManifestSchemaVersion = 4
+const projectManifestSchemaVersion = 5
 
 // maxSupportedManifestSchema is the highest manifest schemaVersion this build
 // reads. A newer version is a hard error: the file was written by a binary
 // this one cannot interpret.
-const maxSupportedManifestSchema = 4
+const maxSupportedManifestSchema = 5
 
 // Lockfile is the project lock (.just-code/lock.json): resolved revisions of
 // everything the manifest pins (skills, images, connector packages), so a

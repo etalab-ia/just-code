@@ -13,6 +13,10 @@ import (
 // Config holds the settings resolved from the environment for a run. Field
 // semantics match the .env.example contract.
 type Config struct {
+	// Ports are the project's configured Microsandbox TCP forwards. A nil
+	// slice retains the legacy preview-port defaults.
+	Ports           []PortMapping
+	PortsConfigured bool
 	// ProjectSkills are immutable, hash-verified skill archives resolved from
 	// this project's manifest/lock or host-local selection before runtime start.
 	ProjectSkills []SkillPackage

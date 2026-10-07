@@ -212,6 +212,40 @@ func WriteProjectManifest(fs FS, path string, pm ProjectManifest) error {
 	return atomicWrite(fs, path, append(data, '\n'), 0o644)
 }
 
+// WriteProjectPorts updates only the port list, preserving manifest fields
+// this version does not yet understand.
+func WriteProjectPorts(fs FS, path string, ports []PortMapping) error {
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("project manifest %s: invalid JSON: %w", path, err)
+	}
+	if err := checkNoSecretFields("project manifest", raw); err != nil {
+		return err
+	}
+	var pm ProjectManifest
+	if err := json.Unmarshal(data, &pm); err != nil {
+		return fmt.Errorf("project manifest %s: %w", path, err)
+	}
+	if err := checkSchemaVersion("project manifest", pm.SchemaVersion, maxSupportedManifestSchema); err != nil {
+		return err
+	}
+	if ports == nil {
+		ports = []PortMapping{}
+	}
+	raw["schemaVersion"] = projectManifestSchemaVersion
+	raw["ports"] = ports
+	raw["portsConfigured"] = true
+	updated, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(fs, path, append(updated, '\n'), 0o644)
+}
+
 // WriteLockfile atomically writes the project lockfile.
 func WriteLockfile(fs FS, path string, lf Lockfile) error {
 	lf.SchemaVersion = lockfileSchemaVersion
