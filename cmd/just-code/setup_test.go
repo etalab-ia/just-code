@@ -230,6 +230,16 @@ func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
 	}
 }
 
+func TestSetupCompletionMessageDescribesFullDefault(t *testing.T) {
+	message := setupCompletionMessage()
+	if !strings.Contains(message, "Microsandbox/full") || !strings.Contains(message, "TUI running inside the guest") {
+		t.Fatalf("setup completion message = %q, want full-mode default guidance", message)
+	}
+	if strings.Contains(message, "start the backend and attach the TUI") {
+		t.Fatalf("setup completion message still describes the legacy backend flow: %q", message)
+	}
+}
+
 func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)

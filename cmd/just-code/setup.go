@@ -450,8 +450,12 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		return 1, fmt.Errorf("runtime installation failed: %v (re-run 'just-code setup' to resume; the credential prompts will be skipped)", err)
 	}
 	fmt.Println()
-	fmt.Println("Setup complete. Run 'just-code' from a project directory to start the backend and attach the TUI.")
+	fmt.Println(setupCompletionMessage())
 	return 0, nil
+}
+
+func setupCompletionMessage() string {
+	return "Setup complete. Run 'just-code' from a project directory to launch the configured runtime. On an unconfigured host, the default is Microsandbox/full, with the agent and TUI running inside the guest."
 }
 
 func storeLabel(fallback bool) string {

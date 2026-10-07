@@ -336,7 +336,7 @@ just-code --microsandbox --isolation full    # tout l'agent tourne dans la micro
 just-code --tart --isolation backend         # comportement historique
 ```
 
-En mode `backend` (défaut), `opencode serve` tourne dans le sandbox et le TUI s'y attache depuis l'hôte : seul le processus serveur est confiné, le TUI et les identifiants de connexion restent côté hôte. En mode `full`, le TUI lui-même tourne dans l'invité et l'hôte n'est qu'un passe-plat terminal ; `just-code check` rapporte alors l'état de la VM au lieu de sonder un endpoint de santé, qui n'existe pas dans ce mode.
+En mode `full` (défaut sur un hôte/projet non configuré), le TUI lui-même tourne dans l'invité et l'hôte n'est qu'un passe-plat terminal ; `just-code check` rapporte alors l'état de la VM au lieu de sonder un endpoint de santé, qui n'existe pas dans ce mode. Le mode `backend` est un choix explicite : `opencode serve` tourne dans le sandbox et le TUI s'y attache depuis l'hôte ; seul le processus serveur est confiné, le TUI et les identifiants de connexion restent côté hôte.
 
 ```bash
 just-code check --isolation full             # état de la VM, pas de health check
