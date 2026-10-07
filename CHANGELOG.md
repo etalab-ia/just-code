@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.4...just-code-v0.8.0) (2026-10-07)
+
+
+### Features
+
+* **import:** importer les projets Albert Code (P19) ([1e4dbe0](https://github.com/etalab-ia/just-code/commit/1e4dbe0adf3d6615e5eb230b572c2452e45cf53e))
+* préparer les diagnostics P21 avant release ([41129dc](https://github.com/etalab-ia/just-code/commit/41129dcb07af632cfb2ea5b87e4d9abb05dce36f))
+* **setup:** add read-only P21 diagnostics report ([f0d963b](https://github.com/etalab-ia/just-code/commit/f0d963b0522b32f4205663a5044cc2bf117ca57a))
+
+
+### Bug Fixes
+
+* **doctor:** address P21 diagnostics review findings ([e7b9e47](https://github.com/etalab-ia/just-code/commit/e7b9e4715cba815d916f6752dc387b837a20859e))
+* **doctor:** validate the selected Microsandbox runtime ([44312f9](https://github.com/etalab-ia/just-code/commit/44312f9c55543f6b3c7d7e1c62b87f0c075616b8))
+* **import:** reconcile existing Albert Code imports ([2e5a787](https://github.com/etalab-ia/just-code/commit/2e5a7874967091c68052fe31b8069b08857e80ad))
+* **init:** keep skill catalogue lines under 80 columns ([55803d0](https://github.com/etalab-ia/just-code/commit/55803d045d746653d5cbe2a0eb38bdae85e1b96e))
+* **init:** rendre la liste des compétences compacte et lisible ([1e95748](https://github.com/etalab-ia/just-code/commit/1e957484d309050f425cd4e44663ea312a62de84))
+* **qualification:** address remaining doctor review comments ([5ca6f62](https://github.com/etalab-ia/just-code/commit/5ca6f62fcb734688f2c78bb670bda50fbc24d825))
+
 ## [0.7.4](https://github.com/etalab-ia/just-code/compare/just-code-v0.7.3...just-code-v0.7.4) (2026-10-05)
 
 
