@@ -1,4 +1,4 @@
-# Qualification bêta P21
+# Qualification bêta
 
 Ce protocole complète les workflows GitHub Actions. Les runners hébergés
 qualifient les compilations natives, les tests unitaires, les installateurs,
@@ -151,7 +151,7 @@ Prérequis : Windows 10 ou 11 arm64, WHP, OpenCode, just-code.
 Compléter une ligne par combinaison réellement testée. « Non testé » et
 « bloqué par l'hôte » ne valent pas « réussi ».
 
-| OS / architecture | Hôte / contexte | Runtime / backend natif | Version CLI / runtime | `setup doctor` | Doctor runtime | Parcours P21 | Résultat / lien vers preuve |
+| OS / architecture | Hôte / contexte | Runtime / backend natif | Version CLI / runtime | `setup doctor` | Doctor runtime | Parcours | Résultat / lien vers preuve |
 |---|---|---|---|---|---|---|---|
 | macOS arm64 | | Microsandbox / Apple Virtualization | | | | | |
 | macOS arm64 | | Tart / Apple Virtualization | | | | | |
