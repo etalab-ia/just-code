@@ -1,4 +1,4 @@
-# Qualification bêta P21
+# Qualification bêta
 
 Ce protocole complète les workflows GitHub Actions. Les runners hébergés
 qualifient les compilations natives, les tests unitaires, les installateurs,
@@ -10,9 +10,10 @@ de démarrage d'une microVM sur l'hyperviseur natif.
 - Utiliser un checkout de la révision candidate, avec son tag/version noté.
 - Utiliser une machine physique ou un hôte de virtualisation dédié, pas une
   VM imbriquée non qualifiée.
-- Installer OpenCode et Microsandbox conformément au README. Pour Microsandbox,
-  `just-code start --microsandbox` installe le runtime géré si nécessaire ;
-  `just-code doctor --microsandbox` est en lecture seule et ne l'installe pas.
+- Installer OpenCode conformément au README. Microsandbox n'a pas besoin d'être
+  installé : `just-code start --microsandbox` télécharge et vérifie le runtime
+  géré si nécessaire ; `just-code doctor --microsandbox` est en lecture seule
+  et ne l'installe pas.
 - Pour un test réel de transport Albert, utiliser une clé de test révocable.
   Ne jamais mettre une clé dans le rapport ou les artefacts de CI.
 - Prévoir un checkout jetable contenant un dépôt Git synthétique pour les
@@ -151,7 +152,7 @@ Prérequis : Windows 10 ou 11 arm64, WHP, OpenCode, just-code.
 Compléter une ligne par combinaison réellement testée. « Non testé » et
 « bloqué par l'hôte » ne valent pas « réussi ».
 
-| OS / architecture | Hôte / contexte | Runtime / backend natif | Version CLI / runtime | `setup doctor` | Doctor runtime | Parcours P21 | Résultat / lien vers preuve |
+| OS / architecture | Hôte / contexte | Runtime / backend natif | Version CLI / runtime | `setup doctor` | Doctor runtime | Parcours | Résultat / lien vers preuve |
 |---|---|---|---|---|---|---|---|
 | macOS arm64 | | Microsandbox / Apple Virtualization | | | | | |
 | macOS arm64 | | Tart / Apple Virtualization | | | | | |

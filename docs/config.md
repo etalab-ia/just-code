@@ -1,7 +1,11 @@
-# Configuration (P04)
+# Configuration
 
-Ce document décrit la résolution typée introduite par P04 : sources, précédence,
-schémas des fichiers gérés et transition depuis la configuration legacy `.env`.
+Ce document décrit la configuration de just-code : assistant `setup`, sources
+et précédence, variables d'environnement, fichiers gérés, skills et MCP,
+modèle OpenCode, et transition depuis la configuration legacy `.env`. La
+[sécurité du workspace](workspace-security.md) et la
+[protection des identifiants](credentials.md) sont traitées dans des pages
+dédiées.
 
 ## Principe
 
@@ -9,7 +13,7 @@ La configuration est résolue champ par champ, sans mutation de l'environnement 
 processus et sans lecture implicite de fichier. Chaque champ porte sa
 provenance. Les secrets n'entrent jamais dans les fichiers gérés : les
 identifiants sont référencés par nom (`credentialRef`) et stockés séparément
-(P08).
+(voir [Identifiants et secrets](credentials.md)).
 
 ## Précédence (champs non secrets)
 
@@ -30,6 +34,10 @@ Les variables legacy non préfixées (`RUNTIME`, `ISOLATION`, `WORKSPACE_DIR`,
 `ALBERT_API_KEY`, …) conservent leur sens documenté pendant l'intervalle de
 dépréciation, mais n'entrent pas dans la nouvelle résolution.
 
+La résolution de la clé Albert au démarrage (`credentialRef`, variable
+d'environnement, magasin d'identifiants) est détaillée dans
+[Identifiants et secrets](credentials.md).
+
 ## Fichiers gérés
 
 | Fichier | Rôle | Version de schéma |
@@ -38,7 +46,107 @@ dépréciation, mais n'entrent pas dans la nouvelle résolution.
 | `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 4 |
 | `.just-code/lock.json` | Verrou : révisions et digests des éléments épinglés | 3 |
 
-## Skills de projet (P14)
+## Configurer la machine (`setup`)
+
+`just-code setup` prépare la machine en une passe guidée : diagnostic
+(plateforme, virtualisation, disque — lecture seule) → identifiant Albert
+(masqué, validé contre le catalogue ; rejet et indisponibilité réseau
+distincts) → identifiant GitHub optionnel → identité git → modèle par
+défaut → revue → application (réglages globaux + runtime managé).
+
+```bash
+just-code setup            # assistant interactif
+just-code setup doctor     # rapport lecture seule, aucune écriture
+just-code setup doctor --json # même rapport, JSON pour automatisation
+just-code setup --fallback # utiliser le magasin fichier consentit
+just-code setup --no-color # sortie terminal simple
+```
+
+`just-code setup doctor` rend un rapport séparé par sections : capacité de
+l'hôte, runtime et état de l'instance du projet, toolchain hôte, vérification
+Albert, skills et MCP du projet, et stockage des identifiants. Sur un terminal
+compatible, il utilise le rendu TUI ; avec `--no-color` ou une sortie non TTY,
+la même information apparaît en texte stable. Les valeurs d'identifiants ne
+sont jamais affichées.
+
+Règles du flux :
+
+- **Aucune saisie avant un bloqueur fatal.** La virtualisation et le disque
+  sont vérifiés avant toute invite : la clé n'est jamais demandée sur une
+  machine qui ne peut pas exécuter le runtime.
+- **Reprise.** Un setup interrompu reprend là où il s'est arrêté (journal
+  d'état hôte) — les identifiants déjà stockés ne sont pas redemandés.
+- **Rejet ≠ réseau.** Une clé refusée (401/403) propose de la ressaisir ;
+  un endpoint injoignable stocke la clé avec un avertissement (la
+  validation se rattrapera avec `just-code models`). Aucun appel
+  d'inférence n'est effectué pour valider.
+- **GitHub sans pénalité.** Ignorer l'identifiant GitHub ne bloque rien ;
+  un identifiant stocké reste inactif jusqu'à l'activation explicite du
+  workflow GitHub pour un projet Microsandbox.
+- **Magasin indisponible = choix explicite.** Un Secret Service absent
+  propose le repli fichier consentit (`--fallback`), jamais une création
+  silencieuse.
+
+**Un fichier `.env` n'est pas lu.** just-code lit l'environnement du processus : exporte les variables dans ton shell (ou dans le gestionnaire de secrets de ton choix), et passe les réglages ponctuels par des flags.
+
+```bash
+export ALBERT_API_KEY=ta-clé          # ou : just-code auth add albert
+just-code                             # Microsandbox, isolation full, racine du projet
+```
+
+C'est volontaire : un `.env` non versionné dans le répertoire courant rendait le lancement dépendant d'un fichier invisible (et de son contenu en secrets), et deux invocations du même binaire pouvaient se comporter différemment. Si tu as un `.env` d'une installation précédente, just-code te le signale au lancement ; pour voir ce qu'il contient et où chaque valeur va :
+
+```bash
+just-code config import-env .env      # prévisualisation seule : rien n'est écrit
+just-code auth add albert             # la clé va dans le magasin d'identifiants
+```
+
+L'application automatique d'un import n'existe pas encore : la prévisualisation liste les valeurs reconnues et le fichier d'origine n'est jamais modifié.
+
+Un `.env.example` reste dans le dépôt comme **gabarit documentaire** : il liste les variables et leurs défauts, il n'est jamais lu.
+
+## Variables d'environnement
+
+| Variable | Requise | Valeur par défaut | Rôle |
+| --- | --- | --- | --- |
+| `ALBERT_API_KEY` | oui | aucune | Clé utilisée par le provider Albert API. Ne la commite jamais. |
+| `RUNTIME` | non | `microsandbox` | Runtime préféré : `microsandbox`, `tart` ou `agent-vm`. Un flag explicite reste prioritaire. Microsandbox est le défaut sur toutes les plateformes, parce que c'est le runtime à espace de travail scellé. |
+| `ISOLATION` | non | `full` | Frontière d'exécution de l'agent : `full` (tout l'agent, TUI et identifiants compris, tourne dans l'invité) ou `backend` (le serveur tourne dans le sandbox et le TUI s'y attache depuis l'hôte). Le défaut est `full` : le parcours à zéro option est celui où l'agent reste dans le sandbox. Un flag explicite reste prioritaire. |
+| `WORKSPACE_DIR` | non | racine du projet | Répertoire de travail du projet. En Microsandbox c'est la **source** du contenu transféré, filtré, vers l'invité (voir [Sécurité du workspace](workspace-security.md)) ; pour Tart et agent-vm c'est le répertoire **monté** sur `/workspace`. Un chemin relatif est résolu depuis le répertoire de lancement. Un `WORKSPACE_DIR` explicite est toujours honoré tel quel. |
+| `PROJECT_DIR` | non | — | Ancien nom de `WORKSPACE_DIR`, encore accepté avec un avertissement. Ne pas utiliser dans une nouvelle configuration. |
+| `OPENCODE_SERVER_USERNAME` | non | `opencode` | Nom d'utilisateur de l'authentification HTTP du backend. |
+| `OPENCODE_SERVER_PASSWORD` | non | `albert-dev-pass` | Mot de passe HTTP du backend. Une valeur explicitement vide (`OPENCODE_SERVER_PASSWORD=`) désactive l'authentification. |
+| `JUST_CODE_START_TIMEOUT` | non | `300` | Délai maximal, en secondes entières positives, pour attendre que le backend soit prêt avant d'attacher le TUI. |
+| `JUST_CODE_CPUS` | non | `2` (réduit à `1` sur un hôte de deux CPU ou moins) | Nombre de processeurs alloués à l'invité Microsandbox, jusqu'au nombre de processeurs logiques détectés sur l'hôte. L'utilisation de tous les CPU déclenche un avertissement ; une valeur supérieure est refusée. Si un seul CPU est disponible, il est sélectionné automatiquement. Prioritaire sur le manifeste du projet. |
+| `JUST_CODE_MEMORY_MB` | non | `4096` Mio (abaissé pour laisser 25 % de mémoire à l'hôte si nécessaire) | Mémoire allouée à l'invité Microsandbox. Accepte un nombre entier en Mio ou un nombre en Gio, par exemple `4096`, `4G` ou `2.5G` (`G` = 1024 Mio). Le plafond est la mémoire hôte détectée ; une valeur supérieure est refusée. Un avertissement est affiché à partir de 80 % de la mémoire hôte. Prioritaire sur le manifeste du projet. |
+| `MSB_HOME` | non | `~/.microsandbox` | Racine du runtime et de l'état Microsandbox gérés. |
+| `MSB_PATH` | non | runtime géré | Chemin direct vers un binaire `msb` fourni manuellement. À définir avec `MSB_LIBKRUNFW_PATH`. |
+| `MSB_LIBKRUNFW_PATH` | non | runtime géré | Chemin direct vers la bibliothèque `libkrunfw` fournie manuellement. À définir avec `MSB_PATH`. |
+| `TART_IMAGE` | non | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Image utilisée pour créer la VM Tart. Sans effet sur Microsandbox. |
+| `TART_MTU` | non | `1280` | MTU de l'invité Tart : entier de `1280` à `1500`, ou `auto` pour ne pas la modifier. Sans effet sur Microsandbox. |
+| `AGENT_VM_TEMPLATE` | non | `agent-vm-base` | Template Lima servant de base à la VM agent-vm. Sous ce nom par défaut, just-code le construit s'il est absent ; tout autre nom désigne un template que vous maintenez, qui n'est jamais construit ni remplacé. Sans effet sur les autres runtimes. |
+| `AGENT_VM_VM` | non | `opencode-agent-vm` | Nom de la VM Lima gérée par just-code. Sans effet sur les autres runtimes. |
+| `AGENT_VM_IMAGE` | non | `template:debian-13` | Image Lima utilisée pour créer le template de base. Sans effet sur les autres runtimes. |
+| `AGENT_VM_DISK_GB` | non | `20` | Taille du disque du template de base, en Go. Lima ne sait agrandir un disque que dans ce sens : prévoir large. Sans effet sur les autres runtimes. |
+| `AGENT_VM_MEMORY_GB` | non | `4` | Mémoire du template de base, en Go. Sans effet sur les autres runtimes. |
+| `AGENT_VM_CPUS` | non | `2` | Nombre de processeurs du template de base. Sans effet sur les autres runtimes. |
+
+## Priorité et prise d'effet
+
+- **Le `.env` n'est plus lu.** Le lancement dépendait d'un fichier non versionné du répertoire courant — exactement le genre de fichier qui porte des secrets et que l'espace scellé existe pour tenir hors de l'invité — et deux invocations du même binaire pouvaient se comporter différemment. Les variables **exportées** sont lues ; un `.env` présent est signalé avec la commande qui l'adopte (`just-code config import-env <chemin>`).
+- `--microsandbox`, `--tart` ou `--agent-vm` prime sur `RUNTIME`.
+- `--isolation backend|full` prime sur `ISOLATION` ; un flag explicite reste utilisable même si `ISOLATION` contient une valeur invalide.
+- Sans `WORKSPACE_DIR`, le **répertoire de travail est la racine du projet**. Pour Tart et agent-vm, cela change ce qui est monté : le montage devient le projet lui-même au lieu de `./workspace`, et donc la porte de sécurité de ces runtimes (qui refusent un workspace contenant un `.env`, puisqu'ils le montent) porte désormais sur le projet. En Microsandbox il n'y a pas de montage : changer la source prend effet au `workspace sync` suivant, sans recréation.
+- Le **dimensionnement de l'invité** (`JUST_CODE_CPUS`, `JUST_CODE_MEMORY_MB`) est figé à la création du sandbox : le runtime ne redimensionne pas un invité en cours. Une valeur enregistrée dans le manifeste du projet qui change est donc signalée comme nécessitant une recréation, jamais ignorée en silence.
+- Le dimensionnement CPU et mémoire est plafonné à **100 % de la capacité hôte détectée** pendant l'initialisation et avant chaque lancement, y compris pour les valeurs provenant d'un manifeste ou de variables d'environnement. La revue avertit si l'invité utilise tous les processeurs logiques ou au moins 80 % de la mémoire hôte ; Apply confirme ces choix. Un parcours non interactif à risque exige `--yes`. Si un seul CPU entier est disponible, il est choisi automatiquement et le TUI l'indique.
+- Le niveau d'isolation est figé à la création du sandbox Microsandbox : ses scripts de démarrage sont persistés et ne peuvent pas être réécrits. Basculer `ISOLATION` sur un sandbox existant est refusé avec un message ; `just-code recreate --microsandbox` le recrée dans le mode demandé.
+- Une modification des identifiants HTTP nécessite `just-code stop`, puis un nouveau lancement pour redémarrer le backend avec les nouvelles valeurs.
+- Une modification de `TART_MTU` nécessite `just-code stop`, puis `just-code --tart`. Elle ne nécessite pas de recréer la VM.
+- Changer `TART_IMAGE` cible une autre VM Tart ; les VM créées depuis des images différentes peuvent coexister.
+
+Les réglages propres à Tart sont détaillés dans [Runtime Tart](runtime-tart.md). Les montages de workspace et leur recréation sont expliqués dans [Utilisation](usage.md).
+
+## Skills de projet
 
 Les skills sélectionnés pendant `just-code init` sont épinglés à une révision
 du dépôt `etalab-ia/skills`. En mode versionné, les IDs sont dans
@@ -58,7 +166,15 @@ préparation.
 
 La commande interactive `init` présente le catalogue officiel et les entrées
 expérimentales explicitement marquées. En script, répéter `--skill` pour chaque
-sélection, par exemple `--skill official/rgaa`. La désélection se fait avec
+sélection :
+
+```bash
+just-code init --root . --skill official/rgaa --skill official/anssi-guides --yes
+just-code init --root . --skill experimental/rag-parse --yes
+just-code init --root . --clear-skills --replace --yes
+```
+
+La désélection se fait avec
 `--clear-skills`. Le mode versionné ajoute uniquement une zone bornée gérée
 dans `AGENTS.md`; tout le texte hors de cette zone est préservé. Avec
 `--local-only-skills`, IDs et pins sont stockés dans l'état hôte de l'instance,
@@ -80,14 +196,23 @@ une lecture approximative. Les champs à allure de secret (`apiKey`, `token`,
 
 La valeur référencée par `credentialRef` vit dans le magasin natif de l'OS
 (Keychain, Gestionnaire d'identifiants, Secret Service), géré par
-`just-code auth` (P08). Sur les hôtes sans magasin natif, un repli fichier
+`just-code auth` (voir [Identifiants et secrets](credentials.md)). Sur les hôtes sans magasin natif, un repli fichier
 `0600` existe mais n'est jamais créé sans consentement explicite
 (`just-code auth add --fallback`).
 
-## Mises à jour projet (P18)
+## Mises à jour projet
 
 `just-code update` compare les skills versionnés du projet avec la révision
-HEAD du catalogue officiel. La commande affiche les révisions et digests
+HEAD du catalogue officiel. Les mises à jour sont explicites et révisables ;
+elles ne s'appliquent jamais au lancement :
+
+```bash
+just-code update
+just-code update --skill official/rgaa
+just-code update --yes  # approbation explicite non interactive
+```
+
+La commande affiche les révisions et digests
 proposés, puis demande confirmation ; `--skill <id>` répété limite la sélection.
 Sans TTY, elle reste en aperçu sauf si `--yes` approuve explicitement toutes
 les mises à jour affichées. Une panne réseau ou une archive invalide ne modifie
@@ -96,7 +221,7 @@ alimenter le cache utilisateur avant confirmation ; aucun fichier projet n'est
 écrit avant l'approbation.
 
 Les archives sont adressées par révision et SHA-256 dans le cache utilisateur.
-P18 ne les purge pas automatiquement : d'anciens locks doivent rester
+Le cache ne les purge pas automatiquement : d'anciens locks doivent rester
 utilisables hors ligne. Les entrées devenues inutiles ne peuvent être supprimées
 qu'après vérification qu'aucun projet ne référence encore leur révision.
 
@@ -128,10 +253,17 @@ flottante peut demander une recréation explicite. Celle-ci détruit ses session
 outils installés et fichiers invités : synchroniser ou exporter le travail
 avant de confirmer.
 
-## Importer un projet Albert Code (P19)
+## Importer un projet Albert Code
 
 `just-code import albert-code` détecte les artefacts de setup Albert Code et
-affiche un aperçu en lecture seule. `--root <chemin>` choisit le projet ;
+affiche un aperçu en lecture seule :
+
+```bash
+just-code import albert-code
+just-code import albert-code --root ../mon-projet
+```
+
+`--root <chemin>` choisit le projet ;
 `--apply` approuve l'écriture du manifeste et du lock just-code. L'import
 refuse de remplacer un manifeste just-code différent et une répétition sur un
 projet déjà importé est un no-op. La racine doit être un worktree Git.
@@ -175,49 +307,36 @@ n'importe aucune autre variable. Le connecteur Context7 intégré est anonyme ;
 Si des skills sont présents, le catalogue officiel doit être accessible pour
 résoudre les révisions, y compris lors d'une réimportation.
 
-## Résolution de l'identifiant Albert (P09)
+## Modèle et configuration OpenCode
 
-Au démarrage d'un runtime, la clé Albert est résolue dans l'ordre :
-
-1. `credentialRef` : `JUST_CODE_CREDENTIAL_REF` > `credentialRef` du
-   manifeste projet > celui des réglages utilisateur. Une référence qui ne
-   nomme rien dans le magasin est une erreur explicite, jamais un repli
-   silencieux.
-2. La variable legacy `ALBERT_API_KEY` (ou `.env`).
-3. L'identifiant `albert` du magasin.
-
-Sur Microsandbox, la valeur n'est jamais persistée : la liaison est une
-référence à une variable d'environnement hôte re-résolue à chaque démarrage
-(voir `docs/decisions/2026-09-24-microsandbox-credential-transport.md`,
-addendum P09). Les liaisons optionnelles (`github`, `context7`) exigent une
-approbation par projet (`just-code bindings approve`), enregistrée dans
-l'état local de l'hôte — jamais dans le dépôt.
-
-## Modèle et configuration OpenCode (P10)
-
-La couche gérée de la configuration OpenCode (`OPENCODE_CONFIG_CONTENT`)
-porte uniquement les champs managés : `model` et `small_model`. Précédence de
-la sélection : `JUST_CODE_MODEL` > `model` du manifeste projet >
-`defaultModel` des réglages utilisateur > valeur intégrée
-(`albert/deepseek-v4-flash`). Le contenu composé fusionne l'asset embarqué
-(provider, permissions) avec la sélection ; OpenCode applique ensuite sa
-propre fusion finale, la config projet et la config utilisateur survivant
-champ par champ en dessous. Un conflit entre un champ managé et la config
-projet est affiché en diff avant lancement (la valeur gérée gagne).
+La configuration OpenCode effective est composée au lancement : l'asset
+embarqué (provider Albert, permissions) fusionné avec la couche gérée
+(`OPENCODE_CONFIG_CONTENT`), qui ne porte que les champs managés : `model` et
+`small_model`. OpenCode fusionne le contenu inline en dernier
+([contrat D-001](decisions/2026-09-23-opencode-configuration-contract.md)) ;
+la config projet et la config utilisateur survivent champ par champ en
+dessous. Précédence de la sélection : `JUST_CODE_MODEL` > `model` du
+manifeste projet > `defaultModel` des réglages utilisateur > valeur intégrée
+(`albert/deepseek-v4-flash`). Un conflit entre un champ managé et la config
+projet est affiché en diff avant lancement (la valeur gérée gagne) : si la
+config projet définit `model` différemment, les deux valeurs sont affichées
+(l'inverse serait un écrasement invisible).
 
 `just-code models` valide la sélection contre le catalogue Albert
 (`text-generation` uniquement) ; le catalogue en échec réseau retombe sur le
 dernier-known-good persisté dans l'état hôte. Une sélection absente du
 catalogue est signalée, jamais effacée.
 
-Les entrées de projet exécutant du code au chargement d'OpenCode (plugins
-déclarés et auto-découverts, commandes MCP locales, destinations MCP distantes)
-sont approuvées par
-contenu via `just-code trust approve` (enregistrement hôte, hors dépôt) ;
-`start` refuse tant qu'une entrée est non approuvée ou modifiée depuis
-l'approbation.
+**Confiance locale :** les entrées de projet qui exécutent du code au chargement d'OpenCode — plugins déclarés, plugins auto-découverts (`.opencode/plugin/*.js|ts` — ils s'exécutent **sans déclaration**), commandes MCP locales, destinations MCP distantes — exigent une approbation locale avant le premier `start` du projet :
 
-## MCP distants (P15)
+```bash
+just-code trust status   # ce que le projet déclare, ce qui est approuvé, ce qui a changé
+just-code trust approve  # approuve le contenu actuel de chaque entrée
+```
+
+L'approbation est liée au **contenu** (hachage par fichier) : un fichier modifié est de nouveau non approuvé, un nouveau plugin apparaissant nécessite sa propre approbation. L'enregistrement vit dans l'état hôte (`~/.local/state/just-code/projects/<projet>/opencode-trust.json`), jamais dans le dépôt — un clone n'apporte pas sa confiance avec lui. Les liens symboliques sont refusés à l'approbation (un chemin repointable n'est pas un contenu épinglé).
+
+## MCP distants
 
 `just-code init --mcp data-gouv --mcp context7` sélectionne les connecteurs
 distants gérés ; `--clear-mcps` les désélectionne tous. Le manifeste ne contient
@@ -237,7 +356,7 @@ est anonyme et ne qualifie donc jamais une réponse 403 d'identifiants invalides
 Il ne prouve pas la connectivité du guest ni l'exécution d'un appel d'outil
 depuis OpenCode.
 
-## MCP navigateur (P16)
+## MCP navigateur
 
 `playwright` et `chrome-devtools` sont des processus locaux au guest, distincts
 des destinations distantes :
@@ -279,7 +398,7 @@ macOS arm64 et x86_64 ; le passage sur le runtime hôte Linux/KVM reste égaleme
 
 ## Transition legacy
 
-**P12 est arrivé.** Le fichier `.env` n'est plus lu du tout : `LoadConfigEnv`
+Le fichier `.env` n'est plus lu du tout : `LoadConfigEnv`
 résout la configuration depuis l'environnement du processus, et un `.env`
 présent est signalé avec la commande qui l'adopte
 (`just-code config import-env <chemin>`, qui prévisualise et ne modifie jamais
@@ -290,7 +409,7 @@ suit l'achèvement du réglage par défaut entièrement typé.
 ## Compatibilité
 
 `LoadConfig` garde le comportement « déjà exporté gagne », mais **ses défauts
-ont changé en P12** : `RUNTIME` vaut `microsandbox` (au lieu d'aucun défaut), et
+ont changé** : `RUNTIME` vaut `microsandbox` (au lieu d'aucun défaut), et
 `ISOLATION` vaut `full` (au lieu de `backend`). `WORKSPACE_DIR` n'a plus de
 valeur par défaut dans le fichier : le lancement utilise la racine du projet
 découverte quand rien n'est configuré, et un `WORKSPACE_DIR` explicite est
