@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.8.1...just-code-v0.9.0) (2026-10-07)
+
+
+### Features
+
+* configure Microsandbox ports per project ([e35a002](https://github.com/etalab-ia/just-code/commit/e35a002f419db1053f1c8e83b6a81bed55e93932))
+
 ## [0.8.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.8.0...just-code-v0.8.1) (2026-10-07)
 
 
