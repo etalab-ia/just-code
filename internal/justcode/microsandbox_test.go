@@ -1450,15 +1450,23 @@ func TestMicrosandboxRestartIsNonDestructive(t *testing.T) {
 
 func TestMicrosandboxRecreateRebuildsAndDropsJournal(t *testing.T) {
 	// Recreate is the explicit destructive path: it removes and re-creates,
-	// and clears the reconcile journal so the new instance is a fresh
-	// creation rather than a resumed apply.
+	// then records the new creation-fixed configuration with an empty journal.
 	client := &fakeMSBClient{exists: true}
 	m := newTestMicrosandbox(t, client)
+	m.cfg.PortsConfigured = true
+	m.cfg.Ports = []PortMapping{{Host: 8080, Guest: 80}}
 	if err := m.Recreate(context.Background()); err != nil {
 		t.Fatalf("Recreate: %v", err)
 	}
 	if !hasCall(client, "remove") {
 		t.Fatalf("Recreate must remove the instance: %v", client.calls)
+	}
+	state, err := ReadInstanceState(DefaultFS, instanceStatePath(DefaultStateDir(), m.InstanceName()))
+	if err != nil {
+		t.Fatalf("read recreated state: %v", err)
+	}
+	if state == nil || !state.PortsConfigured || !equalPortMappings(state.Ports, m.cfg.Ports) || len(state.Pending) != 0 {
+		t.Fatalf("recreated instance state = %+v, want configured ports and empty journal", state)
 	}
 }
 

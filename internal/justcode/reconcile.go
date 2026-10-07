@@ -784,7 +784,8 @@ func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
 	}
 	// Resolve credentials before the destructive Clean: a resolution failure
 	// must not destroy a sandbox that Start would then refuse to recreate.
-	if _, err := m.resolveBindings(ctx); err != nil {
+	bindings, err := m.resolveBindings(ctx)
+	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
@@ -797,8 +798,13 @@ func (m *MicrosandboxRuntime) Recreate(ctx context.Context) error {
 	if err := m.Start(ctx); err != nil {
 		return err
 	}
-	// The recreated instance is a new creation: drop any stale journal.
-	_ = DefaultFS.Remove(instanceStatePath(DefaultStateDir(), m.InstanceName()))
+	// The recreated instance has the requested creation-fixed settings. Store
+	// them as applied state so the next reconcile compares against this build,
+	// rather than treating the running guest as an untracked legacy instance.
+	state := m.desiredState(true, bindings, nil).toState()
+	if err := WriteInstanceState(DefaultFS, instanceStatePath(DefaultStateDir(), m.InstanceName()), state); err != nil {
+		return fmt.Errorf("persisting recreated state for %s: %w", m.InstanceName(), err)
+	}
 	fmt.Printf("%s recreated.\n", m.InstanceName())
 	return nil
 }
