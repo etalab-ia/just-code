@@ -10,7 +10,7 @@ Depuis un checkout des sources, pars du modèle commenté puis renseigne au mini
 cp .env.example .env
 ```
 
-La référence complète des variables et de leurs règles de priorité se trouve dans la section [Configuration du README](../README.md#configuration).
+La référence complète des variables et de leurs règles de priorité se trouve dans [config.md](config.md).
 
 ## Portage Go
 
@@ -37,7 +37,7 @@ Défauts découverts ensuite et corrigés dans le même esprit :
 
 Contrats comportementaux reproduits : secrets absents des arguments de processus ; isolation par préfixe `opencode-` ; endpoints de santé ; clampage de MTU (1280-1500 ou `auto`) validé sur l'hôte avant le boot de la VM ; relance du backend (SIGTERM puis SIGKILL après 10 sondes) ; détection des runtimes actifs et résolution de conflits.
 
-Le SDK embarque une bibliothèque FFI propre à chaque plateforme et nécessite CGO. Les binaires de publication sont donc construits sur des runners natifs pour macOS arm64, Linux amd64/arm64 et Windows amd64/arm64. macOS Intel n'est pas publié : le SDK Microsandbox 0.7.3 ne fournit pas de bibliothèque FFI pour `darwin/amd64`.
+Le SDK embarque une bibliothèque FFI propre à chaque plateforme et nécessite CGO. Les binaires de publication sont donc construits sur des runners natifs pour macOS arm64, Linux amd64/arm64 et Windows amd64/arm64. macOS Intel n'est pas publié : le SDK Microsandbox 0.7.6 ne fournit pas de bibliothèque FFI pour `darwin/amd64`.
 
 ```bash
 go test -race ./...   # vert
@@ -61,7 +61,7 @@ Le hook [gitleaks](https://github.com/gitleaks) scanne les changements stagés �
 
 Quatre workflows GitHub Actions accompagnent le CLI :
 
-- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race`, tests et compilation CGO sur chaque plateforme native prise en charge, contrat OpenCode hôte épinglé et tests de cycle de vie du serveur de laboratoire TLS. Les jobs d'intégration n'utilisent aucun identifiant et ne démarrent pas de microVM ; voir le [protocole de bêta P21](qualification-beta.md) pour cette preuve native.
+- **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race`, tests et compilation CGO sur chaque plateforme native prise en charge, contrat OpenCode hôte épinglé et tests de cycle de vie du serveur de laboratoire TLS. Les jobs d'intégration n'utilisent aucun identifiant et ne démarrent pas de microVM ; voir le [protocole de qualification bêta](qualification-beta.md) pour cette preuve native.
 - **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les cinq binaires (`darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`) sur leurs runners natifs, génère `SHA256SUMS` et les attache à la release une fois toutes les plateformes réussies.
 - **`msb-runtime-watch.yml`** (cron hebdomadaire, lundi 09:00 UTC) : surveille les releases amont du runtime Microsandbox et ouvre une issue de suivi lorsqu'une version plus récente que le SDK embarqué est publiée ; voir « Mise à jour du runtime Microsandbox » ci-dessous.
 
