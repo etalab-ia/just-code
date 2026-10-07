@@ -30,6 +30,10 @@ type msbSecretBinding struct {
 	// secret *placeholder* under this name; the real value is swapped in at
 	// the network boundary for AllowHosts only.
 	GuestEnv string
+	// Placeholder is the value exposed to guest processes and matched by the
+	// proxy. Empty uses the runtime default ($MSB_<GuestEnv>); project-scoped
+	// application secrets can set a stable, collision-resistant placeholder.
+	Placeholder string
 	// HostEnv is the host-side transport variable the env reference resolves
 	// from. It is namespaced under JUST_CODE_ and exists only for the
 	// duration of an SDK call (see withHostSecrets), so a dedicated name —

@@ -295,7 +295,8 @@ func msbCreateOptions(spec msbSandboxSpec) []msb.SandboxOption {
 	secrets := make([]msb.SecretEntry, 0, len(spec.Bindings))
 	for _, b := range spec.Bindings {
 		secrets = append(secrets, msb.Secret.Env(b.GuestEnv, msbSecretBootstrapValue, msb.SecretEnvOptions{
-			Allow: b.AllowHosts,
+			Allow:       b.AllowHosts,
+			Placeholder: b.Placeholder,
 		}))
 	}
 	cpus, memoryMB := msbGuestResources(spec)
@@ -402,7 +403,7 @@ func msbNextStartOptions(env map[string]string, bindings []msbSecretBinding) msb
 		Policy:        msb.ModificationPolicyNextStart,
 	}
 	for _, b := range bindings {
-		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, AllowedHosts: b.AllowHosts}
+		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, Placeholder: b.Placeholder, AllowedHosts: b.AllowHosts}
 	}
 	return opts
 }
@@ -426,7 +427,7 @@ func msbRotateLiveOptions(bindings []msbSecretBinding) msb.ModifyOptions {
 		Policy:  msb.ModificationPolicyNoRestart,
 	}
 	for _, b := range bindings {
-		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, AllowedHosts: b.AllowHosts}
+		opts.Secrets[b.GuestEnv] = msb.SecretModifySpec{Env: b.HostEnv, Placeholder: b.Placeholder, AllowedHosts: b.AllowHosts}
 	}
 	return opts
 }

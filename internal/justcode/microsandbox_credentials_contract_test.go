@@ -100,6 +100,39 @@ func TestP09NextStartOptionsUseEnvReference(t *testing.T) {
 	}
 }
 
+func TestCustomPlaceholderSurvivesCreateAndModifyOptions(t *testing.T) {
+	binding := mustBinding(t, CredentialAlbert)
+	binding.GuestEnv = "PAYMENTS_API_KEY"
+	binding.HostEnv = "JUST_CODE_HOST_PAYMENTS_API_KEY"
+	binding.Placeholder = "$MSB_PROJECT_API_KEY_8b88b278"
+	binding.AllowHosts = []string{"payments.example.com"}
+
+	var cfg msb.SandboxConfig
+	for _, option := range msbCreateOptions(msbSandboxSpec{
+		Image:           msbImage,
+		SealedWorkspace: true,
+		Bindings:        []msbSecretBinding{binding},
+	}) {
+		option(&cfg)
+	}
+	if len(cfg.Secrets) != 1 || cfg.Secrets[0].Placeholder != binding.Placeholder {
+		t.Fatalf("create secret placeholder = %+v, want %q", cfg.Secrets, binding.Placeholder)
+	}
+	if cfg.Secrets[0].Value != msbSecretBootstrapValue {
+		t.Fatalf("create secret value = %q, want inert bootstrap sentinel", cfg.Secrets[0].Value)
+	}
+
+	for name, opts := range map[string]msb.ModifyOptions{
+		"next-start": msbNextStartOptions(nil, []msbSecretBinding{binding}),
+		"live":       msbRotateLiveOptions([]msbSecretBinding{binding}),
+	} {
+		got, ok := opts.Secrets[binding.GuestEnv]
+		if !ok || got.Placeholder != binding.Placeholder || got.Env != binding.HostEnv {
+			t.Errorf("%s secret spec = %+v, want placeholder %q and env reference %q", name, got, binding.Placeholder, binding.HostEnv)
+		}
+	}
+}
+
 func mustBinding(t *testing.T, kind CredentialKind) msbSecretBinding {
 	t.Helper()
 	b, ok := bindingForKind(kind)
