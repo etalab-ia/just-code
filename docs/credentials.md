@@ -112,6 +112,41 @@ peut aussi exiger son approbation. Le rôle du compte est vérifié à l'initial
 mais GitHub applique aussi les permissions propres au jeton lors du push et de
 la création de PR. Le GitHub CLI de l'hôte n'est pas utilisé.
 
+## Importer les secrets applicatifs
+
+L'import commence par une prévisualisation :
+
+```bash
+just-code secrets import --profile development --file .env --file apps/api/.env.local
+just-code secrets import --profile development --file .env --apply
+```
+
+Dans un terminal, l'assistant peut proposer les fichiers dotenv du projet et
+des sous-projets ; aucun fichier n'est importé automatiquement. Les chemins
+doivent rester dans la racine canonique du projet. Les liens symboliques et
+les répertoires usuels de dépendances/build sont exclus de la découverte. En
+mode non interactif, indique chaque `--file`. L'aperçu masque les valeurs et
+signale les clés répétées ; la dernière définition prévaut. `--apply` demande
+confirmation dans un terminal ; un script doit utiliser `--yes` explicitement.
+
+Le périmètre est **checkout projet → profil → fichier/composant → variable**.
+Deux projets, profils ou fichiers ayant le même nom de variable restent
+distincts. Les aliases symboliques de la même racine convergent ; deux clones
+différents ne partagent pas leurs secrets implicitement. Le manifeste projet
+ne reçoit ni valeurs ni références locales. Les fichiers sources ne sont pas
+modifiés.
+
+Le parseur utilise le dialecte `godotenv` sans expansion : `$VAR`, `${VAR}` et
+`$(...)` restent des valeurs littérales ; aucune variable d'environnement
+n'est lue et aucune commande exécutée. La taille d'un fichier est plafonnée à
+1 MiB ; chaque valeur à 1 800 octets pour rester compatible avec Windows
+Credential Manager.
+
+L'import stocke uniquement les valeurs : il n'approuve aucune destination,
+n'active pas de liaison proxy et ne livre aucun fichier au guest. `--fallback`
+choisit explicitement le magasin JSON local propriétaire (`0600`), qui n'est
+pas chiffré par just-code.
+
 ## Révocation
 
 `just-code auth remove` révoque l'accès avant de supprimer l'entrée du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. La révocation raisonne par **entrée de magasin**, pas par nom de liaison : un `credentialRef` peut alimenter la liaison Albert depuis une entrée nommée autrement, et c'est la liaison invitée effectivement alimentée qui est retirée (l'instantané le consigne sous la forme `entrée@magasin#liaison`). Supprimer l'entrée d'un magasin ne touche pas les instances liées à l'autre magasin ; une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée, cette variable n'appartenant pas à just-code ; une source non confirmable est révoquée puis signalée. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne — y compris lorsque l'entrée supprimée n'est pas nommée `albert` mais alimente la liaison Albert — car retirer la copie du magasin ne révoquerait rien.

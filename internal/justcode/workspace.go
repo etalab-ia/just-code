@@ -133,6 +133,11 @@ func isDotenvName(name string) bool {
 	return strings.HasSuffix(lower, ".env")
 }
 
+// IsProjectDotenvName reports whether a filename is in the dotenv family
+// that may hold local values. It is shared by transfer filtering and the
+// explicit secret-import discovery UI.
+func IsProjectDotenvName(name string) bool { return isDotenvName(name) }
+
 // gitleaksFinding is the subset of a gitleaks JSON report that the gate shows.
 type gitleaksFinding struct {
 	RuleID string `json:"RuleID"`
