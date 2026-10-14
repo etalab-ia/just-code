@@ -1,8 +1,8 @@
 # D-003: Project dotenv secret delivery contract
 
 Date: 7 October 2026
-Status: initial contract; phase 0 qualification and schema remain open
-Tracking: #145; phase 0 #148; phase 1 #147
+Status: transport and loader qualified on macOS arm64 (evidence in PR #182); phase 2 host-local bindings implemented
+Tracking: #145; phase 0 #148; phase 1 #147; phase 2 #149
 
 ## Context
 
@@ -97,3 +97,62 @@ does not create a project manifest entry, approve a binding, or deliver
 anything to a guest. The user documentation is in `docs/credentials.md`.
 
 M1 comprises phases 0–3; M2 comprises phases 4–5, not this storage foundation.
+
+## Phase 2 Host-Local Bindings
+
+The delivery decision is split in two, on purpose. The credential value stays
+where Phase 1 put it, referenced by an opaque name in the project secret index.
+What the guest may see, and toward which hosts the value may be substituted, is
+a separate host-local record:
+
+    <stateDir>/project-secrets/<namespace>/bindings.json
+
+It carries the profile, component, variable, derived guest variable and the
+approved destination list — and never a value, a credential reference or
+anything derived from one. Approving a destination is the security decision
+that enables substitution, so it must not travel with a clone; a checkout that
+is copied to another machine delivers nothing until it is approved there.
+
+The active profile is explicit and singular. Development and production are
+never combined implicitly: a binding recorded for a profile other than the
+active one is an error, not something to fall back on. Clearing the profile
+while bindings remain is refused, because that state fails every start with an
+unexplained error.
+
+Guest variables are derived from the component and variable
+(`.env` + `API_KEY` -> `JC_API_KEY`, `apps/api/.env` + `API_KEY` ->
+`JC_APPS_API_API_KEY`) so two components that define the same variable stay
+distinct. The derived names are validated for uniqueness, and the built-in
+binding names (`ALBERT_API_KEY`, `GITHUB_TOKEN`, `CONTEXT7_API_KEY`) are
+reserved: two registrations for one variable would shadow a system credential.
+
+The guest sees an opaque dollar-free marker
+(`__JUST_CODE_SECRET_<digest>__`), not the proxy default `$MSB_<VAR>`. This is
+not cosmetic. Real-loader tests show the default form is erased by ordinary
+application loaders — Node `dotenv-expand` removes an undefined `$MSB_...`
+reference in every quote mode tested, Go `godotenv` removes it unquoted, and
+`python-dotenv` removes the braced form — while the opaque marker survives all
+of them. The runtime matrix in PR #182 confirms the same marker is substituted
+correctly for raw headers and Basic auth, stays distinct across bindings that
+share a destination, and is denied toward an unauthorized host.
+
+The two failure modes are deliberately fatal rather than degrading:
+
+- an approved binding whose imported entry is gone, or whose profile is not
+  active, blocks the start (the user asked for a delivery just-code cannot
+  perform);
+- an unreadable or locked credential store blocks it too. Dropping the binding
+  would make the omission the desired set, and the runtime's secret
+  modification is a patch — so "nothing to say" means "remove it", and a
+  transient store failure would unregister a live credential.
+
+That patch semantics is also why the instance state now records the
+project-secret guest variables that were applied (`projectBindings`). A lifted
+approval is only actually unregistered when its variable is named explicitly in
+`SecretsRemove`; without that record a revoked binding would keep working
+through every later refresh.
+
+Incompatible entries are not delivered and are reported by name rather than
+silently skipped. Values that an application must consume locally — database
+passwords, signing keys — remain out of scope: they need the separate,
+explicitly consented delivery design of Phase 4.

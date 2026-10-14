@@ -128,7 +128,7 @@ func (f *fakeMSBClient) Start(_ context.Context, name string) error {
 	return f.startErr
 }
 
-func (f *fakeMSBClient) ModifyNextStart(_ context.Context, name string, env map[string]string, bindings []msbSecretBinding) error {
+func (f *fakeMSBClient) ModifyNextStart(_ context.Context, name string, env map[string]string, bindings []msbSecretBinding, previouslyApplied []string) error {
 	f.record("modify " + name)
 	f.modifiedEnv = cloneStringMap(env)
 	f.modifiedBindings = append([]msbSecretBinding(nil), bindings...)
@@ -1332,7 +1332,7 @@ func TestMSBConfiguredPortsReplacePreviewDefaultsAndStayLoopback(t *testing.T) {
 func TestMSBNextStartOptionsRefreshesSecret(t *testing.T) {
 	env := map[string]string{"OPENCODE_SERVER_PASSWORD": "new-password"}
 	bindings := bindingsMetadata(testBindings("new-key"))
-	options := msbNextStartOptions(env, bindings)
+	options := msbNextStartOptions(env, bindings, nil)
 	if options.Policy != msb.ModificationPolicyNextStart || !reflect.DeepEqual(options.Env, env) {
 		t.Fatalf("modify options = %+v", options)
 	}
@@ -1603,7 +1603,7 @@ func TestMicrosandboxFullModeNextStartUsesProxySecretAndScrubsRawEnv(t *testing.
 		t.Fatalf("full mode next-start env must not carry the real key: %v", client.modifiedEnv)
 	}
 	bindings := bindingsMetadata(testBindings(m.cfg.APIKey))
-	options := msbNextStartOptions(m.nextStartEnv(), bindings)
+	options := msbNextStartOptions(m.nextStartEnv(), bindings, nil)
 	if !containsString(options.EnvRemove, msbAPISecretEnv) {
 		t.Fatalf("next-start must remove a persisted plaintext key: %v", options.EnvRemove)
 	}
@@ -2067,7 +2067,7 @@ func TestReconcileVMRestartLeavesGuestRunningWhenSkillPreflightFails(t *testing.
 	m := newTestMicrosandbox(t, client)
 	m.cfg.Isolation = IsolationBackend
 	m.cfg.ProjectSkillsManaged = true
-	err := m.applyReconcileOp(context.Background(), OpRestartVM, nil)
+	err := m.applyReconcileOp(context.Background(), OpRestartVM, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
 		t.Fatalf("reconcile restart error = %v, want a managed skill preflight refusal", err)
 	}

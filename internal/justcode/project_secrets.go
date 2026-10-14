@@ -70,6 +70,10 @@ func NewProjectSecretStore(root, stateDir string, store CredentialStore) (*Proje
 func (s *ProjectSecretStore) Namespace() string { return s.namespace }
 func (s *ProjectSecretStore) Root() string      { return s.root }
 
+// Kind reports which credential store backs this project's values, for the
+// persisted bound-entry record.
+func (s *ProjectSecretStore) Kind() string { return s.store.Kind() }
+
 // ProjectSecretEntry is metadata only. Component is the relative dotenv file
 // identity; it is not a component name shared across projects.
 type ProjectSecretEntry struct {
@@ -77,6 +81,12 @@ type ProjectSecretEntry struct {
 	Component string `json:"component"`
 	Name      string `json:"name"`
 	Reference string `json:"reference"`
+}
+
+// identity is the profile/component/name triple that names one imported value
+// within a project namespace.
+func (e ProjectSecretEntry) identity() string {
+	return e.Profile + "\x00" + e.Component + "\x00" + e.Name
 }
 
 type projectSecretIndex struct {

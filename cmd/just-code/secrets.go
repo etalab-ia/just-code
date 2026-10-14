@@ -102,14 +102,23 @@ func secretsCmd(args []string) (int, error) {
 		return 0, nil
 	}
 	if args[0] != "import" {
-		return 2, fmt.Errorf("unknown secrets command %q (expected import)", args[0])
+		if args[0] == "bindings" {
+			return secretsBindingsCmd(args[1:])
+		}
+		if args[0] == "profile" {
+			return secretsProfileCmd(args[1:])
+		}
+		return 2, fmt.Errorf("unknown secrets command %q (expected import, bindings or profile)", args[0])
 	}
 	return projectSecretsImportCmd(args[1:])
 }
 
 func printSecretsUsage() {
 	fmt.Println("Usage: just-code secrets import [--root PATH] --profile NAME [--file PATH ...] [--apply [--yes]] [--fallback]")
+	fmt.Println("       just-code secrets bindings list | approve <profile> <component> <NAME> --destination <host> | revoke <profile> <component> <NAME>")
+	fmt.Println("       just-code secrets profile <name> | --clear")
 	fmt.Println("Preview is read-only. --apply stores literal values in the selected project/profile/file scope; it does not approve or deliver them to the guest.")
+	fmt.Println("Approving a binding (secrets bindings approve) is the separate host-local step that lets the sandbox proxy expose one imported value toward specific destinations.")
 	fmt.Println("Without --file, an interactive terminal offers bounded dotenv-file discovery. Non-interactive use must name each --file.")
 }
 

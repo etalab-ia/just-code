@@ -415,7 +415,7 @@ func TestStartCreateRotationFailureRemovesSandbox(t *testing.T) {
 // later refresh and restart.
 func TestStaleBindingIsRemovedFromTheProxy(t *testing.T) {
 	// Only albert is desired; github and context7 are approved nowhere.
-	options := msbNextStartOptions(nil, bindingsMetadata(testBindings("k")))
+	options := msbNextStartOptions(nil, bindingsMetadata(testBindings("k")), nil)
 	for _, guestEnv := range []string{"GITHUB_TOKEN", "CONTEXT7_API_KEY"} {
 		if !containsString(options.SecretsRemove, guestEnv) {
 			t.Fatalf("%s must be revoked in the same modification: %v", guestEnv, options.SecretsRemove)
@@ -441,7 +441,7 @@ func TestStaleBindingIsRemovedFromTheProxy(t *testing.T) {
 		{msbSecretBinding: msbSecretBindings()[1], source: bindingSourceStore, store: "native"},
 		{msbSecretBinding: msbSecretBindings()[2], source: bindingSourceStore, store: "native"},
 	})
-	if got := msbNextStartOptions(nil, all).SecretsRemove; len(got) != 0 {
+	if got := msbNextStartOptions(nil, all, nil).SecretsRemove; len(got) != 0 {
 		t.Fatalf("nothing may be stale when every binding is desired: %v", got)
 	}
 }
