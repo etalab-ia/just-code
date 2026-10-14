@@ -94,6 +94,9 @@ func run(args []string) (int, error) {
 	if parsed.action == "ports" {
 		return portsCommand(parsed.portsArgs)
 	}
+	if parsed.action == "secrets" {
+		return secretsCmd(parsed.secretsArgs)
+	}
 	if parsed.action == "import" {
 		return albertCodeImportCmd(parsed.importArgs)
 	}
@@ -471,6 +474,7 @@ type parsedArgs struct {
 	modelsArgs []string
 	// workspaceArgs holds the words after the workspace command.
 	workspaceArgs []string
+	secretsArgs   []string
 	// importArgs holds the words after the import command.
 	importArgs []string
 	// mcpArgs holds the words belonging to the mcp command; global flags are
@@ -559,6 +563,11 @@ func parseArgs(args []string) (parsedArgs, error) {
 			p.action = "ports"
 			actionSet = true
 			p.portsArgs = args[i+1:]
+			return p, nil
+		case a == "secrets" && !actionSet:
+			p.action = "secrets"
+			actionSet = true
+			p.secretsArgs = args[i+1:]
 			return p, nil
 		case a == "auth" && !actionSet:
 			p.action = "auth"
@@ -1045,6 +1054,7 @@ Commands:
   ports      Configure Microsandbox TCP preview ports (list, add, remove)
   import     Preview or import an existing Albert Code project
   auth       Manage global credentials (add, status, remove)
+  secrets    Import and manage project-scoped dotenv values (import)
   bindings   Approve or revoke optional credential bindings for this
              project (list, approve, revoke)
   trust      Approve execution-relevant project OpenCode inputs (status,
@@ -1075,7 +1085,10 @@ Runtime selection:
 
   A .env in the working directory is NOT loaded implicitly any more; exported
   variables still are. To see what an existing .env holds and where each value
-  belongs, run 'just-code config import-env <path>' (preview only). The Albert
+  belongs, run 'just-code config import-env <path>' (preview only). To preview
+  project-scoped application secret import, run:
+  'just-code secrets import --profile development --file .env'. Import does not
+  enable guest delivery. The Albert
   key belongs in the credential store: 'just-code auth add albert'.
 
 Isolation:

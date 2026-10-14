@@ -369,6 +369,8 @@ type ProjectLock struct {
 	// Zero values use conservative defaults.
 	WaitTimeout  time.Duration
 	PollInterval time.Duration
+	// Test seam for OS-specific transient create errors.
+	retryableCreateError func(error) bool
 }
 
 var projectLockTokenCounter uint64
@@ -392,6 +394,10 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 		pollInterval = 50 * time.Millisecond
 	}
 	started := time.Now()
+	retryableCreate := l.retryableCreateError
+	if retryableCreate == nil {
+		retryableCreate = isTransientFilesystemError
+	}
 	ownerToken := projectLockToken()
 	// The steal file proves ownership of a stale-lock removal: two waiters
 	// can both observe the same dead PID, and an unconditional Remove would
@@ -415,6 +421,11 @@ func (l *ProjectLock) Acquire() (release func(), err error) {
 			return func() { removeProjectLockIfOwned(l.FS, l.Path, ownerToken) }, nil
 		}
 		if !os.IsExist(err) {
+			if retryableCreate(err) {
+				lastReadErr = fmt.Errorf("create project lock %s: %w", l.Path, err)
+				time.Sleep(pollInterval)
+				continue
+			}
 			return nil, err
 		}
 		// Stale-lock detection: if the holder is dead, break the lock — but
@@ -518,7 +529,12 @@ func projectLockPID(data []byte) (int, bool) {
 }
 
 func projectLockFileOwned(fs FS, path string, token []byte) bool {
-	data, err := fs.ReadFile(path)
+	var data []byte
+	err := retryFilesystemOperation(func() error {
+		var err error
+		data, err = fs.ReadFile(path)
+		return err
+	}, isTransientFilesystemError)
 	return err == nil && bytesEqual(data, token)
 }
 

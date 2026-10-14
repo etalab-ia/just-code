@@ -3,9 +3,12 @@ package justcode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -212,5 +215,95 @@ func TestFileStoreRemoveAbsentIsNotFound(t *testing.T) {
 	}
 	if _, serr := os.Lstat(s.Path); serr == nil {
 		t.Fatal("Remove created the store file")
+	}
+}
+
+func TestFileStoreConcurrentProjectsAndAuthProcesses(t *testing.T) {
+	const workers = 6
+	ctx := context.Background()
+	store := &FileCredentialStore{Path: filepath.Join(t.TempDir(), "credentials.json"), CreateOnConsent: true}
+	state := t.TempDir()
+	roots := make([]string, workers)
+	for i := range roots {
+		roots[i] = t.TempDir()
+		if err := store.Put(ctx, CredentialKind(fmt.Sprintf("obsolete-%d", i)), "disposable"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Separate test processes guarantee this exercises the file lock, not a
+	// same-process mutex. Every child uses the production store adapter.
+	errs := make(chan error, workers)
+	for i := range roots {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestFileStoreConcurrentProcessHelper$")
+		cmd.Env = append(os.Environ(),
+			"JUST_CODE_FILE_STORE_HELPER_PATH="+store.Path,
+			"JUST_CODE_FILE_STORE_HELPER_ROOT="+roots[i],
+			"JUST_CODE_FILE_STORE_HELPER_STATE="+state,
+			fmt.Sprintf("JUST_CODE_FILE_STORE_HELPER_ID=%d", i))
+		go func() {
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				err = fmt.Errorf("store helper failed: %w: %s", err, out)
+			}
+			errs <- err
+		}()
+	}
+	var helperErrors []error
+	for range roots {
+		if err := <-errs; err != nil {
+			helperErrors = append(helperErrors, err)
+		}
+	}
+	if len(helperErrors) != 0 {
+		t.Fatal(errors.Join(helperErrors...))
+	}
+	for i, root := range roots {
+		if _, err := store.Get(ctx, CredentialKind(fmt.Sprintf("obsolete-%d", i))); !errors.Is(err, ErrCredentialNotFound) {
+			t.Fatalf("concurrent removal was lost: worker %d, %v", i, err)
+		}
+		if i == 0 {
+			if got, err := store.Get(ctx, CredentialAlbert); err != nil || got != "auth-3" {
+				t.Fatalf("global auth credential lost: %v", err)
+			}
+			continue
+		}
+		project, err := NewProjectSecretStore(root, state, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := project.Get(ctx, "development", ".env", "KEY")
+		if err != nil || got != fmt.Sprintf("project-%d-3", i) {
+			t.Fatalf("published project reference lost: worker %d, %v", i, err)
+		}
+	}
+}
+
+func TestFileStoreConcurrentProcessHelper(t *testing.T) {
+	storePath := os.Getenv("JUST_CODE_FILE_STORE_HELPER_PATH")
+	if storePath == "" {
+		return
+	}
+	id, err := strconv.Atoi(os.Getenv("JUST_CODE_FILE_STORE_HELPER_ID"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	store := &FileCredentialStore{Path: storePath, CreateOnConsent: true}
+	project, err := NewProjectSecretStore(os.Getenv("JUST_CODE_FILE_STORE_HELPER_ROOT"), os.Getenv("JUST_CODE_FILE_STORE_HELPER_STATE"), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for j := 0; j < 4; j++ {
+		if id == 0 {
+			err = store.Put(ctx, CredentialAlbert, fmt.Sprintf("auth-%d", j))
+		} else {
+			_, err = project.Import(ctx, "development", ".env", map[string]string{"KEY": fmt.Sprintf("project-%d-%d", id, j)})
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Remove(ctx, CredentialKind(fmt.Sprintf("obsolete-%d", id))); err != nil {
+		t.Fatal(err)
 	}
 }
