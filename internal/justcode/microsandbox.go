@@ -164,6 +164,11 @@ type MicrosandboxRuntime struct {
 	// readStoredWith. It is a seam so tests can drive the store paths
 	// without a real keychain.
 	credentialRead credentialReader
+	// ProjectSecrets is the project-scoped secret store (Phase 2). Nil means
+	// the runtime derives it from the workspace root and the host credential
+	// store; a caller that already resolved one (the CLI, or tests) injects it
+	// so the index's recorded store matches the store actually used.
+	ProjectSecrets *ProjectSecretStore
 }
 
 // NewMicrosandboxRuntime builds a Microsandbox backend with production
@@ -215,8 +220,11 @@ type msbClient interface {
 	Start(ctx context.Context, name string) error
 	// ModifyNextStart persists env and secret-reference changes for the next
 	// boot. Bindings carry metadata only (guest variable, host transport
-	// variable, allowed hosts) — never a value.
-	ModifyNextStart(ctx context.Context, name string, env map[string]string, bindings []msbSecretBinding) error
+	// variable, allowed hosts) — never a value. previouslyApplied lists the
+	// project-secret guest variables recorded as applied on the last run, so
+	// a lifted approval is actually unregistered instead of surviving as a
+	// stale patch entry.
+	ModifyNextStart(ctx context.Context, name string, env map[string]string, bindings []msbSecretBinding, previouslyApplied []string) error
 	// RotateSecretsLive re-registers each binding as a host env reference on
 	// a running sandbox (NoRestart). It is the create path's second step:
 	// creation registers an inert sentinel, and this rotates it to the
@@ -337,6 +345,19 @@ func (m *MicrosandboxRuntime) stateDirOrDefault() string {
 	return DefaultStateDir()
 }
 
+// appliedProjectBindings reads the project-secret guest variables recorded as
+// applied for this instance. They are the memory the runtime's patch-style
+// secret modification needs to unregister a binding whose approval was lifted:
+// an unreadable state file is reported as empty, which only means a stale
+// registration may survive one more refresh — never that a live one is dropped.
+func (m *MicrosandboxRuntime) appliedProjectBindings() []string {
+	applied, err := ReadInstanceState(DefaultFS, instanceStatePath(m.stateDirOrDefault(), m.InstanceName()))
+	if err != nil || applied == nil {
+		return nil
+	}
+	return append([]string(nil), applied.ProjectBindings...)
+}
+
 // resolveBindings computes the binding set in effect for this instance right
 // now: the required Albert binding (credentialRef > legacy env > stored
 // albert) plus every optional binding that is both approved for this instance
@@ -383,6 +404,76 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 			return nil, fmt.Errorf("cannot read the approved %s credential for %s: %w", b.Kind, m.InstanceName(), err)
 		}
 		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store, entry: string(b.Kind)})
+	}
+	// Phase 2: approved project-secret bindings, after the built-ins. They are
+	// resolved last so a system binding always wins a name collision — which
+	// validation already refuses — and so the built-in behavior is unchanged
+	// for every project that has no project-secret bindings.
+	project, err := m.resolveProjectSecretBindings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, project...)
+	return out, nil
+}
+
+// resolveProjectSecretBindings turns the host-local approvals of this project
+// into resolved bindings. A project with no binding record resolves to nothing
+// and never touches a credential store, so the built-in path is unaffected.
+//
+// Fail-closed rules, all of which block the start rather than degrade it:
+//   - an approved binding whose imported entry is missing, whose profile is
+//     not the active one, or which exists with no active profile selected is
+//     an error (ProjectSecretStore.Deliveries);
+//   - an unreadable or locked credential store is an error, never a silent
+//     omission — an omitted binding becomes the desired set, and the runtime
+//     patch semantics would then remove a live registration.
+func (m *MicrosandboxRuntime) resolveProjectSecretBindings(ctx context.Context) ([]resolvedBinding, error) {
+	record, err := m.projectSecretDeliveries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(record.deliveries) == 0 {
+		for _, undelivered := range record.undelivered {
+			fmt.Fprintf(os.Stderr, "Note: the imported project secret %s is not approved for guest delivery; run 'just-code secrets bindings approve' to expose it.\n", undelivered)
+		}
+		return nil, nil
+	}
+	store, err := m.projectSecretStore()
+	if err != nil {
+		return nil, err
+	}
+	var out []resolvedBinding
+	seen := map[string]bool{}
+	for _, d := range record.deliveries {
+		if seen[d.GuestEnv] {
+			return nil, fmt.Errorf("two project secret bindings share the guest variable %s", d.GuestEnv)
+		}
+		seen[d.GuestEnv] = true
+		value, err := store.Get(ctx, d.Profile, d.Component, d.Name)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read the approved project secret %s (%s): %w", d.Name, d.Component, err)
+		}
+		ref := d.Reference
+		out = append(out, resolvedBinding{
+			msbSecretBinding: msbSecretBinding{
+				Kind:        CredentialKind(d.GuestEnv),
+				GuestEnv:    d.GuestEnv,
+				Placeholder: ProjectSecretPlaceholder(store.Namespace(), d.Profile, d.Component, d.Name),
+				HostEnv:     "JUST_CODE_HOST_PROJECT_" + d.GuestEnv,
+				AllowHosts:  append([]string(nil), d.Destinations...),
+				// Required once approved: the approval is the opt-in, and an
+				// approved-but-unreadable value must be an error, not a skip.
+				Optional: false,
+				Project: &ProjectBindingRef{
+					Profile: d.Profile, Component: d.Component, Name: d.Name, Reference: ref,
+				},
+			},
+			source: bindingSourceStore,
+			value:  value,
+			store:  store.Kind(),
+			entry:  ref,
+		})
 	}
 	return out, nil
 }
@@ -523,7 +614,7 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 		// The composed OPENCODE_CONFIG_CONTENT (managed model selection over
 		// the base asset) rides the same modification, so a model change is
 		// effective on the next boot of a stopped sandbox.
-		if err := m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings)); err != nil {
+		if err := m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings), m.appliedProjectBindings()); err != nil {
 			return err
 		}
 		if err := m.Client.Start(ctx, m.InstanceName()); err != nil {

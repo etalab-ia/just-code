@@ -147,6 +147,48 @@ n'active pas de liaison proxy et ne livre aucun fichier au guest. `--fallback`
 choisit explicitement le magasin JSON local propriétaire (`0600`), qui n'est
 pas chiffré par just-code.
 
+## Exposer un secret importé au guest (`secrets bindings`)
+
+Importer ne donne aucun accès. L'étape séparée qui autorise le proxy à exposer
+une valeur est l'approbation de liaison, enregistrée localement à l'hôte :
+
+```bash
+just-code secrets profile development
+just-code secrets bindings approve development .env API_KEY --destination api.example.com
+just-code secrets bindings list
+just-code secrets bindings revoke development .env API_KEY
+```
+
+`--destination` est répétable. Approuver une destination **est** la décision de
+sécurité : c'est ce qui autorise la substitution de la valeur vers ces hôtes et
+nulle part ailleurs. L'approbation vit dans l'état local de l'hôte, jamais dans
+le dépôt, donc elle ne suit pas un clone. Une même destination peut être
+partagée par plusieurs liaisons : la qualification native montre que
+l'autorisation reste propre à chaque liaison.
+
+La variable invitée est dérivée du composant et du nom (`JC_API_KEY` pour
+`.env`, `JC_APPS_API_API_KEY` pour `apps/api/.env`), sauf `--guest-env`
+explicite. Les noms réservés aux liaisons système (`ALBERT_API_KEY`,
+`GITHUB_TOKEN`, `CONTEXT7_API_KEY`) sont refusés : deux liaisons ne doivent
+jamais se disputer une variable.
+
+Dans le guest, la variable contient un marqueur opaque sans dollar
+(`__JUST_CODE_SECRET_…__`), jamais la valeur. Le choix de ce marqueur est
+qualifié : les chargeurs dotenv usuels suppriment une référence `$MSB_…` non
+définie, y compris entre guillemets, alors qu'un marqueur opaque survit aux
+modes testés (voir `tests/integration/project-secrets/`).
+
+Le profil actif est explicite : `secrets profile <name>` sélectionne le seul
+profil livré, et `--clear` est refusé tant que des liaisons restent approuvées,
+car cet état ferait échouer chaque démarrage. Une liaison approuvée dont la
+valeur importée a disparu, ou dont le magasin est verrouillé, **bloque le
+démarrage** au lieu d'être ignorée : omettre une liaison la transformerait en
+état désiré, et le runtime retirerait alors une inscription active.
+
+Retirer une approbation (`revoke`) supprime l'accès du guest, pas la valeur
+importée ; l'inscription proxy est retirée à la prochaine application, et le
+guest conserve un marqueur inerte jusqu'au redémarrage.
+
 ## Révocation
 
 `just-code auth remove` révoque l'accès avant de supprimer l'entrée du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. La révocation raisonne par **entrée de magasin**, pas par nom de liaison : un `credentialRef` peut alimenter la liaison Albert depuis une entrée nommée autrement, et c'est la liaison invitée effectivement alimentée qui est retirée (l'instantané le consigne sous la forme `entrée@magasin#liaison`). Supprimer l'entrée d'un magasin ne touche pas les instances liées à l'autre magasin ; une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée, cette variable n'appartenant pas à just-code ; une source non confirmable est révoquée puis signalée. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne — y compris lorsque l'entrée supprimée n'est pas nommée `albert` mais alimente la liaison Albert — car retirer la copie du magasin ne révoquerait rien.

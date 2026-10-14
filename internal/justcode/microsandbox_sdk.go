@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -394,12 +395,12 @@ func (sdkMSBClient) Start(ctx context.Context, name string) error {
 // SecretsRemove names the managed variables absent from the desired set: the
 // SDK modification is a patch, so a registration persisted by an earlier
 // apply survives unless it is named explicitly.
-func msbNextStartOptions(env map[string]string, bindings []msbSecretBinding) msb.ModifyOptions {
+func msbNextStartOptions(env map[string]string, bindings []msbSecretBinding, previouslyApplied []string) msb.ModifyOptions {
 	opts := msb.ModifyOptions{
 		Env:           env,
 		EnvRemove:     allBindingGuestEnvs(),
 		Secrets:       make(map[string]msb.SecretModifySpec, len(bindings)),
-		SecretsRemove: staleBindingGuestEnvs(bindings),
+		SecretsRemove: staleBindingGuestEnvs(bindings, previouslyApplied),
 		Policy:        msb.ModificationPolicyNextStart,
 	}
 	for _, b := range bindings {
@@ -408,12 +409,12 @@ func msbNextStartOptions(env map[string]string, bindings []msbSecretBinding) msb
 	return opts
 }
 
-func (sdkMSBClient) ModifyNextStart(ctx context.Context, name string, env map[string]string, bindings []msbSecretBinding) error {
+func (sdkMSBClient) ModifyNextStart(ctx context.Context, name string, env map[string]string, bindings []msbSecretBinding, previouslyApplied []string) error {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {
 		return err
 	}
-	_, err = h.Modify(ctx, msbNextStartOptions(env, bindings))
+	_, err = h.Modify(ctx, msbNextStartOptions(env, bindings, previouslyApplied))
 	return err
 }
 
@@ -432,25 +433,41 @@ func msbRotateLiveOptions(bindings []msbSecretBinding) msb.ModifyOptions {
 	return opts
 }
 
-// staleBindingGuestEnvs lists the guest variables of registered bindings that
-// are absent from the desired set. The SDK modification is a patch: omitting a
-// name never removes it, so a registration persisted by an earlier apply
-// survives every later refresh unless it is named explicitly. Without this,
-// an optional binding whose approval is lifted (bindings.json deleted,
-// unreadable, or revoked) would keep its proxy registration — and therefore
-// its credential — through the next refresh and restart, which is exactly the
-// state the per-project approval exists to prevent.
-func staleBindingGuestEnvs(bindings []msbSecretBinding) []string {
+// staleBindingGuestEnvs lists the guest variables whose proxy registration
+// must be dropped: the registered built-ins absent from the desired set, plus
+// the project-secret variables that were applied on an earlier run and are not
+// in the desired set now. The SDK modification is a patch: omitting a name
+// never removes it, so a registration persisted by an earlier apply survives
+// every later refresh unless it is named explicitly. Without this, an optional
+// binding whose approval is lifted (bindings.json deleted, unreadable, or
+// revoked) would keep its proxy registration — and therefore its credential —
+// through the next refresh and restart, which is exactly the state the
+// per-project approval exists to prevent.
+//
+// previouslyApplied carries the project-secret guest variables recorded as
+// applied on the last run. They cannot be derived from the registry because
+// they are project data, so the caller supplies the persisted record.
+func staleBindingGuestEnvs(bindings []msbSecretBinding, previouslyApplied []string) []string {
 	desired := make(map[string]bool, len(bindings))
 	for _, b := range bindings {
 		desired[b.GuestEnv] = true
 	}
+	seen := map[string]bool{}
 	var stale []string
-	for _, b := range msbSecretBindings() {
-		if !desired[b.GuestEnv] {
-			stale = append(stale, b.GuestEnv)
+	add := func(env string) {
+		if env == "" || desired[env] || seen[env] {
+			return
 		}
+		seen[env] = true
+		stale = append(stale, env)
 	}
+	for _, b := range msbSecretBindings() {
+		add(b.GuestEnv)
+	}
+	for _, env := range previouslyApplied {
+		add(env)
+	}
+	sort.Strings(stale)
 	return stale
 }
 

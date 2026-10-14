@@ -84,7 +84,7 @@ func TestP09NextStartOptionsUseEnvReference(t *testing.T) {
 	bindings := bindingsMetadata([]resolvedBinding{
 		{msbSecretBinding: mustBinding(t, CredentialAlbert), source: bindingSourceStore, value: "raw-secret-value"},
 	})
-	options := msbNextStartOptions(nil, bindings)
+	options := msbNextStartOptions(nil, bindings, nil)
 	spec, ok := options.Secrets[msbAPISecretEnv]
 	if !ok {
 		t.Fatalf("secrets = %+v", options.Secrets)
@@ -123,7 +123,7 @@ func TestCustomPlaceholderSurvivesCreateAndModifyOptions(t *testing.T) {
 	}
 
 	for name, opts := range map[string]msb.ModifyOptions{
-		"next-start": msbNextStartOptions(nil, []msbSecretBinding{binding}),
+		"next-start": msbNextStartOptions(nil, []msbSecretBinding{binding}, nil),
 		"live":       msbRotateLiveOptions([]msbSecretBinding{binding}),
 	} {
 		got, ok := opts.Secrets[binding.GuestEnv]

@@ -47,6 +47,20 @@ type msbSecretBinding struct {
 	// Optional bindings are inert until the project approves them explicitly
 	// (host-local bindings.json); global storage alone never binds.
 	Optional bool
+	// Project is set for a Phase 2 project-secret binding: it names the
+	// imported entry the value comes from. Nil for the built-in bindings.
+	Project *ProjectBindingRef
+}
+
+// ProjectBindingRef identifies a project-scoped binding beyond the shared
+// binding metadata: which imported entry feeds it and by which opaque store
+// reference. It carries no value and no destination list of its own; those
+// live in the binding record the user approved.
+type ProjectBindingRef struct {
+	Profile   string
+	Component string
+	Name      string
+	Reference string
 }
 
 // msbSecretBootstrapValue is the non-secret sentinel the create path
@@ -270,10 +284,25 @@ type resolvedBinding struct {
 // storeEntry is the credential-store entry a resolved binding addresses:
 // the explicit entry name when set (a credentialRef), otherwise the kind.
 func (r resolvedBinding) storeEntry() string {
+	if r.Project != nil {
+		// A project binding always resolves from its opaque index reference,
+		// never from a credentialRef or a kind.
+		return r.Project.Reference
+	}
 	if r.entry != "" {
 		return r.entry
 	}
 	return string(r.Kind)
+}
+
+// projectIdentity is the non-secret descriptor of a project-secret binding,
+// empty for a built-in binding. It participates in the binding-set revision so
+// approving, moving or dropping a project binding refreshes the runtime.
+func (r resolvedBinding) projectIdentity() string {
+	if r.Project == nil {
+		return ""
+	}
+	return r.Project.Profile + "\x00" + r.Project.Component + "\x00" + r.Project.Name + "\x00" + r.Project.Reference
 }
 
 // storeGenerationOf builds the composite rotation marker for the binding
@@ -350,7 +379,7 @@ func bindingsRevision(bindings []resolvedBinding) string {
 	for _, b := range sorted {
 		hosts := append([]string(nil), b.AllowHosts...)
 		sort.Strings(hosts)
-		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv, b.Placeholder, b.store, b.storeEntry()}, hosts...) {
+		for _, part := range append([]string{string(b.Kind), string(b.source), b.GuestEnv, b.Placeholder, b.store, b.storeEntry(), b.projectIdentity()}, hosts...) {
 			_, _ = h.Write([]byte(part))
 			_, _ = h.Write([]byte{0})
 		}
@@ -372,6 +401,20 @@ type boundStoreEntry struct {
 
 func formatBoundStoreEntry(e boundStoreEntry) string {
 	return e.Entry + "@" + e.Store + "#" + string(e.Binding)
+}
+
+// projectBindingGuestEnvs lists the guest variables of the project-secret
+// bindings in a resolved set, sorted. InstanceState persists it so a later
+// run can unregister a binding whose approval was lifted.
+func projectBindingGuestEnvs(bindings []resolvedBinding) []string {
+	var out []string
+	for _, b := range bindings {
+		if b.Project != nil {
+			out = append(out, b.GuestEnv)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // boundRecordForm distinguishes the persisted record generations, because
