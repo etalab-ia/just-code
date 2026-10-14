@@ -1,0 +1,12 @@
+{
+  "name": "just-code-project-secret-loader-qualification",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test loaders.test.mjs"
+  },
+  "devDependencies": {
+    "dotenv": "16.4.7",
+    "dotenv-expand": "12.0.2"
+  }
+}

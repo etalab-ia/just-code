@@ -8,3 +8,6 @@ workspace/
 
 # Python
 __pycache__/
+
+# Opt-in guest loader qualification dependencies
+/tests/integration/project-secrets/node_modules/
