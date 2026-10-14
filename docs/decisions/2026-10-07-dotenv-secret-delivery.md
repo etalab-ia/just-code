@@ -106,7 +106,7 @@ The host importer disables expansion, but that does not control application
 loaders in the guest. Real-library tests now reproduce a compatibility hazard:
 Node `dotenv-expand` 12.0.2 removes undefined `$MSB_...` references even after
 single/double quoted dotenv parsing, and Go `godotenv` 1.5.1 removes an unquoted
-reference. Python `python-dotenv` 1.2.1 preserves bare dollar references but
+reference. Python `python-dotenv` 1.2.2 preserves bare dollar references but
 expands the braced form. Plain Node `dotenv` 16.4.7 preserves the reference.
 
 Dollar-free opaque markers survive every quote/interpolation mode exercised by

@@ -11,7 +11,7 @@ From the repository root:
 ```sh
 npm ci --prefix tests/integration/project-secrets --ignore-scripts
 npm test --prefix tests/integration/project-secrets
-uv run --no-project --with python-dotenv==1.2.1 python tests/integration/project-secrets/test_python_loaders.py -v
+uv run --no-project --with python-dotenv==1.2.2 python tests/integration/project-secrets/test_python_loaders.py -v
 go test ./internal/justcode -run 'TestOpaqueProjectSecretMarkers|TestDollarProjectSecretMarker' -count=1
 ```
 
@@ -26,7 +26,7 @@ tests clear the environment temporarily, and Go uses `Unmarshal` only.
 |---|---|---|---|
 | Node dotenv | 16.4.7 | Preserved, unquoted/single/double quoted | Preserved by parse alone |
 | Node dotenv-expand | 12.0.2 | Preserved in all tested quote modes | Undefined `$MSB_...` erased, including after quoted parsing |
-| Python python-dotenv | 1.2.1 | Preserved in all tested quote/interpolation modes | Bare `$MSB_...` preserved; `${MSB_...}` erased with interpolation |
+| Python python-dotenv | 1.2.2 | Preserved in all tested quote/interpolation modes | Bare `$MSB_...` preserved; `${MSB_...}` erased with interpolation |
 | Go godotenv | 1.5.1 | Preserved in all tested quote modes | Unquoted undefined `$MSB_...` erased |
 
 Node: 14 tests; Python: 2 tests with subcases; Go: 2 tests. All passed locally.
