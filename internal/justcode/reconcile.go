@@ -169,6 +169,10 @@ type InstanceState struct {
 	// unregistered when the previous names are named explicitly; this record
 	// is that memory.
 	ProjectBindings []string `json:"projectBindings,omitempty"`
+	// GuestSecretFiles lists the managed guest dotenv files (Phase 3) this
+	// instance holds, sorted. They carry markers, never values; the record
+	// lets a later run remove a file whose approval was withdrawn.
+	GuestSecretFiles []string `json:"guestSecretFiles,omitempty"`
 	// Pending journals the operations of the current apply that have not
 	// completed yet, so an interrupted apply resumes instead of restarting
 	// from scratch or silently skipping.
@@ -515,6 +519,12 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// invisible forever — and the state file would attest it was applied.
 	if !plan.CreatesInstance() && applied != nil {
 		st.CPUs, st.MemoryMB = applied.CPUs, applied.MemoryMB
+	}
+	// The managed guest secret files are published by the start path, not
+	// derived from the desired configuration: carry the applied record
+	// forward so the journal write does not erase it and orphan every file.
+	if applied != nil {
+		st.GuestSecretFiles = append([]string(nil), applied.GuestSecretFiles...)
 	}
 	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
 		return fmt.Errorf("persisting reconcile journal for %s: %w", m.InstanceName(), err)

@@ -280,6 +280,10 @@ type ProjectSecretDelivery struct {
 	ProjectSecretBinding
 	// Reference is the opaque credential-store entry from the index.
 	Reference string
+	// Marker is the guest-visible placeholder for this identity. It is
+	// computed once here so the environment binding and any generated guest
+	// dotenv file expose exactly the same placeholder.
+	Marker string
 }
 
 // projectSecretDeliveries resolves this project's approved bindings, cheaply:
@@ -548,7 +552,11 @@ func (s *ProjectSecretStore) Deliveries(ctx context.Context) ([]ProjectSecretDel
 		if !ok {
 			return nil, nil, fmt.Errorf("project secret binding %s is approved but no imported value matches it; re-import the component or remove the approval", b.Name)
 		}
-		deliveries = append(deliveries, ProjectSecretDelivery{ProjectSecretBinding: b, Reference: entry.Reference})
+		deliveries = append(deliveries, ProjectSecretDelivery{
+			ProjectSecretBinding: b,
+			Reference:            entry.Reference,
+			Marker:               ProjectSecretPlaceholder(s.namespace, b.Profile, b.Component, b.Name),
+		})
 	}
 	// Report imported entries the active profile does not deliver, so the
 	// omission is visible rather than silent.

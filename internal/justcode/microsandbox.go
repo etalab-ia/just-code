@@ -459,7 +459,7 @@ func (m *MicrosandboxRuntime) resolveProjectSecretBindings(ctx context.Context) 
 			msbSecretBinding: msbSecretBinding{
 				Kind:        CredentialKind(d.GuestEnv),
 				GuestEnv:    d.GuestEnv,
-				Placeholder: ProjectSecretPlaceholder(store.Namespace(), d.Profile, d.Component, d.Name),
+				Placeholder: d.Marker,
 				HostEnv:     "JUST_CODE_HOST_PROJECT_" + d.GuestEnv,
 				AllowHosts:  append([]string(nil), d.Destinations...),
 				// Required once approved: the approval is the opt-in, and an
@@ -524,7 +524,63 @@ func (m *MicrosandboxRuntime) start(ctx context.Context, bindings []resolvedBind
 			return err
 		}
 	}
+	// Phase 3: publish the approved project secrets as managed guest dotenv
+	// files, after the workspace exists so the files are not overwritten by
+	// the transfer, and before the GitHub preparation so a failure stops the
+	// start rather than leaving a half-delivered project.
+	if err := m.syncProjectSecretGuestFiles(ctx, bindings); err != nil {
+		return err
+	}
 	return m.configureGitHubWorkspace(ctx, bindings)
+}
+
+// syncProjectSecretGuestFiles renders the approved deliveries into the guest
+// and records the managed paths, so the next run can remove a file whose
+// approval was withdrawn. It is a no-op for a project with no project-secret
+// binding, which keeps the built-in path unchanged.
+func (m *MicrosandboxRuntime) syncProjectSecretGuestFiles(ctx context.Context, bindings []resolvedBinding) error {
+	var deliveries []ProjectSecretDelivery
+	for _, b := range bindings {
+		if b.Project == nil {
+			continue
+		}
+		deliveries = append(deliveries, ProjectSecretDelivery{
+			ProjectSecretBinding: ProjectSecretBinding{
+				Profile: b.Project.Profile, Component: b.Project.Component, Name: b.Project.Name,
+				GuestEnv: b.GuestEnv, Destinations: append([]string(nil), b.AllowHosts...),
+			},
+			Reference: b.Project.Reference,
+			Marker:    b.Placeholder,
+		})
+	}
+	applied, err := ReadInstanceState(DefaultFS, instanceStatePath(m.stateDirOrDefault(), m.InstanceName()))
+	if err != nil {
+		return fmt.Errorf("reading the applied state before publishing project secret files: %w", err)
+	}
+	var previouslyManaged []string
+	if applied != nil {
+		previouslyManaged = applied.GuestSecretFiles
+	}
+	if len(deliveries) == 0 && len(previouslyManaged) == 0 {
+		return nil
+	}
+	managed, err := m.syncGuestSecretFiles(ctx, deliveries, previouslyManaged)
+	if err != nil {
+		return err
+	}
+	if applied == nil {
+		// Nothing applied yet: the reconciliation path owns the state file,
+		// so leave a journal-free record for the paths now managed.
+		applied = &InstanceState{SchemaVersion: instanceStateSchemaVersion, Instance: m.InstanceName()}
+	}
+	applied.GuestSecretFiles = managed
+	if err := WriteInstanceState(DefaultFS, instanceStatePath(m.stateDirOrDefault(), m.InstanceName()), *applied); err != nil {
+		return fmt.Errorf("recording the published project secret files: %w", err)
+	}
+	if len(managed) > 0 {
+		fmt.Printf("Published %d managed project secret file(s) into the guest workspace.\n", len(managed))
+	}
+	return nil
 }
 
 func (m *MicrosandboxRuntime) startInstance(ctx context.Context, bindings []resolvedBinding) error {
