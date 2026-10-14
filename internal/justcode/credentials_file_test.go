@@ -248,10 +248,14 @@ func TestFileStoreConcurrentProjectsAndAuthProcesses(t *testing.T) {
 			errs <- err
 		}()
 	}
+	var helperErrors []error
 	for range roots {
 		if err := <-errs; err != nil {
-			t.Fatal(err)
+			helperErrors = append(helperErrors, err)
 		}
+	}
+	if len(helperErrors) != 0 {
+		t.Fatal(errors.Join(helperErrors...))
 	}
 	for i, root := range roots {
 		if _, err := store.Get(ctx, CredentialKind(fmt.Sprintf("obsolete-%d", i))); !errors.Is(err, ErrCredentialNotFound) {

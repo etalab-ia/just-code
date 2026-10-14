@@ -88,6 +88,16 @@ type fileStoreData struct {
 // for operations that need existing data; Put interprets it via
 // CreateOnConsent.
 func (f *FileCredentialStore) read() (fileStoreData, error) {
+	var data fileStoreData
+	err := retryFilesystemOperation(func() error {
+		var err error
+		data, err = f.readOnce()
+		return err
+	}, isTransientFilesystemError)
+	return data, err
+}
+
+func (f *FileCredentialStore) readOnce() (fileStoreData, error) {
 	data := fileStoreData{SchemaVersion: fileStoreSchemaVersion, Credentials: map[string]string{}}
 	// Symlink defense: refuse to follow a symlinked store file. A
 	// pre-positioned link must not redirect reads (or writes, via the
@@ -179,7 +189,7 @@ func (f *FileCredentialStore) write(data fileStoreData) error {
 	if err := tmp.Close(); err != nil {
 		return &StoreError{Op: "add", Kind: "file", State: "unavailable", Err: err}
 	}
-	if err := os.Rename(name, f.Path); err != nil {
+	if err := retryFilesystemOperation(func() error { return os.Rename(name, f.Path) }, isTransientFilesystemError); err != nil {
 		return &StoreError{Op: "add", Kind: "file", State: "unavailable", Err: err}
 	}
 	return nil
@@ -288,7 +298,13 @@ func (f *FileCredentialStore) mutationLock(create bool) (func(), error) {
 		return nil, err
 	}
 	lockPath := filepath.Join(canonical, filepath.Base(f.Path)+".lock")
-	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	var lockInfo os.FileInfo
+	err = retryFilesystemOperation(func() error {
+		var err error
+		lockInfo, err = os.Lstat(lockPath)
+		return err
+	}, isTransientFilesystemError)
+	if err == nil && lockInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("credential store lock must not be a symlink")
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
