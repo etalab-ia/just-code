@@ -1,8 +1,8 @@
 # D-003: Project dotenv secret delivery contract
 
 Date: 7 October 2026
-Status: transport and loader qualified on macOS arm64; phase 2 host-local bindings implemented
-Tracking: #145; phase 0 #148; phase 1 #147; phase 2 #149
+Status: transport and loader qualified on macOS arm64; phases 2 and 3 implemented
+Tracking: #145; phase 0 #148; phase 1 #147; phase 2 #149; phase 3 #150
 
 ## Context
 
@@ -150,10 +150,10 @@ The two failure modes are deliberately fatal rather than degrading:
 
 That patch semantics is why the host-local inventory
 (`<stateDir>/project-secrets/<namespace>/applied.json`) records the guest
-variables the sandbox currently holds. A lifted approval is only actually
-unregistered when its variable is named explicitly in `SecretsRemove`; without
-that inventory a revoked binding would keep working through every later
-refresh.
+variables and managed files the sandbox currently holds. A lifted approval is
+only actually unregistered when its variable is named explicitly in
+`SecretsRemove`; without that inventory a revoked binding would keep working
+through every later refresh.
 
 The inventory is deliberately host-local and *not* part of the instance state.
 Two reasons, both found by review rather than by reasoning: the runtime's state

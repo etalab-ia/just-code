@@ -189,6 +189,42 @@ Retirer une approbation (`revoke`) supprime l'accès du guest, pas la valeur
 importée ; l'inscription proxy est retirée à la prochaine application, et le
 guest conserve un marqueur inerte jusqu'au redémarrage.
 
+## Fichiers dotenv générés dans le guest
+
+À chaque démarrage, les liaisons approuvées sont aussi écrites dans le
+workspace du guest, à l'emplacement de leur composant :
+
+```
+/workspace/.env
+/workspace/apps/api/.env
+```
+
+Chaque fichier ne contient que les marqueurs opaques des variables approuvées
+pour ce composant, précédés d'un en-tête `# just-code managed: do not edit`.
+Les composants gardent des fichiers distincts : l'ordre de chargement du
+framework est donc préservé, et deux sous-projets qui définissent la même
+variable ne se mélangent pas. Un composant sans liaison approuvée ne produit
+aucun fichier, pour ne pas masquer un fichier fourni par le projet.
+
+just-code n'écrase jamais un fichier qu'il n'a pas écrit. Si un `.env` fourni
+par le projet occupe la cible, la publication est **refusée** avec le chemin
+concerné, au lieu de détruire votre contenu. Les écritures passent par un
+fichier temporaire puis un renommage, et un fichier géré dont l'approbation est
+retirée est supprimé au démarrage suivant — la suppression revérifie l'en-tête
+au moment d'agir, pour ne jamais effacer un fichier que vous auriez mis à la
+place.
+
+L'inventaire de ce que le sandbox contient réellement (variables invitées et
+fichiers gérés) est conservé localement à l'hôte, à côté des approbations
+(`~/.local/state/just-code/project-secrets/<projet>/applied.json`). Il est relu
+à chaque application : c'est ce qui permet à une révocation de désinscrire
+effectivement la liaison, y compris après un `restart`.
+
+Ces fichiers ne contiennent jamais de valeur : seulement les mêmes marqueurs que
+les variables d'environnement du guest. La valeur réelle reste sur l'hôte et
+n'est substituée que par le proxy réseau, uniquement vers les destinations
+approuvées. Un client qui signe localement le marqueur reste hors périmètre.
+
 ## Révocation
 
 `just-code auth remove` révoque l'accès avant de supprimer l'entrée du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. La révocation raisonne par **entrée de magasin**, pas par nom de liaison : un `credentialRef` peut alimenter la liaison Albert depuis une entrée nommée autrement, et c'est la liaison invitée effectivement alimentée qui est retirée (l'instantané le consigne sous la forme `entrée@magasin#liaison`). Supprimer l'entrée d'un magasin ne touche pas les instances liées à l'autre magasin ; une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée, cette variable n'appartenant pas à just-code ; une source non confirmable est révoquée puis signalée. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne — y compris lorsque l'entrée supprimée n'est pas nommée `albert` mais alimente la liaison Albert — car retirer la copie du magasin ne révoquerait rien.
