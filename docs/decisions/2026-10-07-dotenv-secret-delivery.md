@@ -88,7 +88,8 @@ confirmed (and requires `--yes` without a terminal). Parsing uses the
 maintained `godotenv` parser with dollar references masked so interpolation is
 not evaluated; parser errors are redacted. Repeated keys are last-wins and
 identified in the preview. Native-store portability limits each value to
-1,800 bytes; a dotenv file is capped at 1 MiB. These constraints are surfaced
+951 UTF-8 bytes (the base64 envelope becomes a UTF-16 Windows credential blob
+capped at 2,560 bytes); a dotenv file is capped at 1 MiB. These constraints are surfaced
 before storage, never by truncation.
 
 The command only stores values under the current canonical-root scope. It

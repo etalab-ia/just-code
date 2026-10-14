@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf16"
 )
 
 // Native stores accept arbitrary service names but reject/transform empty and
@@ -225,6 +226,22 @@ func TestProjectSecretsUnchangedImportRetainsReference(t *testing.T) {
 	after, err := s.readIndex()
 	if err != nil || !reflect.DeepEqual(before.Entries, after.Entries) {
 		t.Fatalf("unchanged credentials must retain their references: err=%v", err)
+	}
+}
+
+func TestProjectSecretSizeLimitMatchesWindowsUTF16Blob(t *testing.T) {
+	for _, size := range []int{0, MaxProjectSecretValueBytes, MaxProjectSecretValueBytes + 1, 1000, 1800} {
+		value := strings.Repeat("a", size)
+		// This is the actual representation used by WinCredStore.Put:
+		// Encoding.Unicode.GetBytes on the ASCII base64 envelope.
+		blobBytes := len(utf16.Encode([]rune(encodeProjectSecret(value)))) * 2
+		err := validateProjectSecretValues(map[string]string{"KEY": value})
+		if (err == nil) != (blobBytes <= 2560) {
+			t.Errorf("size %d produced %d blob bytes: validation error=%v", size, blobBytes, err)
+		}
+	}
+	if err := validateProjectSecretValues(map[string]string{"KEY": strings.Repeat("é", 476)}); err == nil {
+		t.Fatal("limit must count UTF-8 value bytes, not characters")
 	}
 }
 

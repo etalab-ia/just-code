@@ -3,6 +3,7 @@ package justcode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -185,6 +186,11 @@ func (f *FileCredentialStore) write(data fileStoreData) error {
 }
 
 func (f *FileCredentialStore) Put(ctx context.Context, kind CredentialKind, value string) error {
+	release, err := f.mutationLock(f.CreateOnConsent)
+	if err != nil {
+		return err
+	}
+	defer release()
 	data, err := f.read()
 	if err != nil {
 		if err != ErrFileStoreNotConsented {
@@ -235,6 +241,14 @@ func (f *FileCredentialStore) Generation(ctx context.Context, kind CredentialKin
 }
 
 func (f *FileCredentialStore) Remove(ctx context.Context, kind CredentialKind) error {
+	release, err := f.mutationLock(false)
+	if err != nil {
+		if errors.Is(err, ErrFileStoreNotConsented) {
+			return ErrCredentialNotFound
+		}
+		return err
+	}
+	defer release()
 	data, err := f.read()
 	if err != nil {
 		if err == ErrFileStoreNotConsented {
@@ -250,6 +264,36 @@ func (f *FileCredentialStore) Remove(ctx context.Context, kind CredentialKind) e
 	}
 	delete(data.Credentials, string(kind))
 	return f.write(data)
+}
+
+// All mutations, including global auth operations, share this cross-process
+// lock. Atomic rename alone does not protect a read-modify-write transaction.
+func (f *FileCredentialStore) mutationLock(create bool) (func(), error) {
+	dir := filepath.Dir(f.Path)
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if !create {
+			return nil, ErrFileStoreNotConsented
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("credential store directory must be a non-symlink directory")
+	}
+	canonical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(canonical, filepath.Base(f.Path)+".lock")
+	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("credential store lock must not be a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	return (&ProjectLock{Path: lockPath, FS: realFS{}}).Acquire()
 }
 
 // Verify reports whether the store file exists and parses. It never

@@ -139,8 +139,8 @@ modifiés.
 Le parseur utilise le dialecte `godotenv` sans expansion : `$VAR`, `${VAR}` et
 `$(...)` restent des valeurs littérales ; aucune variable d'environnement
 n'est lue et aucune commande exécutée. La taille d'un fichier est plafonnée à
-1 MiB ; chaque valeur à 1 800 octets pour rester compatible avec Windows
-Credential Manager.
+1 MiB ; chaque valeur à 951 octets UTF-8 pour que son enveloppe base64, encodée
+en UTF-16 par Windows Credential Manager, reste dans sa limite de 2 560 octets.
 
 L'import stocke uniquement les valeurs : il n'approuve aucune destination,
 n'active pas de liaison proxy et ne livre aucun fichier au guest. `--fallback`

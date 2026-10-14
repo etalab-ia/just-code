@@ -110,10 +110,10 @@ type ProjectSecretImportResult struct {
 var ErrProjectSecretCleanupPending = errors.New("project secret cleanup pending; retry with the same credential store")
 var ErrProjectSecretSnapshotChanged = errors.New("project secret set changed since preview; review a fresh preview before applying")
 
-// Windows Credential Manager caps the encoded credential blob at 2560 bytes.
-// Keep each UTF-8 value small enough that the versioned base64 envelope fits
-// every native backend supported by just-code.
-const MaxProjectSecretValueBytes = 1800
+// Windows Credential Manager caps the blob at 2560 bytes. WinCredStore encodes
+// our ASCII envelope as UTF-16: 951 raw bytes produce 1278 code units (2556
+// bytes), while 952 bytes produce 1282 code units (2564 bytes).
+const MaxProjectSecretValueBytes = 951
 
 func validateProjectSecretValues(values map[string]string) error {
 	for name, value := range values {
@@ -123,7 +123,7 @@ func validateProjectSecretValues(values map[string]string) error {
 		if !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
 			return fmt.Errorf("dotenv variable %s is not valid UTF-8 text", name)
 		}
-		if len(encodeProjectSecret(value)) > 2560 {
+		if len(encodeProjectSecret(value))*2 > 2560 {
 			return fmt.Errorf("dotenv variable %s exceeds the native credential store limit (%d bytes)", name, MaxProjectSecretValueBytes)
 		}
 	}
