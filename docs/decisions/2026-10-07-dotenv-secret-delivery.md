@@ -146,11 +146,21 @@ The two failure modes are deliberately fatal rather than degrading:
   modification is a patch — so "nothing to say" means "remove it", and a
   transient store failure would unregister a live credential.
 
-That patch semantics is also why the instance state now records the
-project-secret guest variables that were applied (`projectBindings`). A lifted
-approval is only actually unregistered when its variable is named explicitly in
-`SecretsRemove`; without that record a revoked binding would keep working
+That patch semantics is why the host-local inventory
+(`<stateDir>/project-secrets/<namespace>/applied.json`) records the guest
+variables and managed files the sandbox currently holds. A lifted approval is
+only actually unregistered when its variable is named explicitly in
+`SecretsRemove`; without that inventory a revoked binding would keep working
 through every later refresh.
+
+The inventory is deliberately host-local and *not* part of the instance state.
+Two reasons, both found by review rather than by reasoning: the runtime's state
+file describes the VM configuration and drives reconciliation, so writing it a
+second time from the start path races that plan; and reconciliation journals
+the desired state before its operations run, so the applied inventory would be
+overwritten exactly when a revocation needs it. The inventory is read at the
+moment each apply runs, including the direct start that `restart` performs —
+the path the CLI tells a user to take after revoking.
 
 Incompatible entries are not delivered and are reported by name rather than
 silently skipped. Values that an application must consume locally — database

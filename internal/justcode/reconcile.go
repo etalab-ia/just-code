@@ -163,16 +163,6 @@ type InstanceState struct {
 	// whose credential came from the environment, which just-code cannot
 	// revoke. A missing state file means "unknown", treated as bound.
 	BoundCredentials []string `json:"boundCredentials,omitempty"`
-	// ProjectBindings lists the guest variables of the project-secret
-	// bindings (Phase 2) applied to this instance, sorted. The runtime's
-	// secret modification is a patch, so a lifted approval is only actually
-	// unregistered when the previous names are named explicitly; this record
-	// is that memory.
-	ProjectBindings []string `json:"projectBindings,omitempty"`
-	// GuestSecretFiles lists the managed guest dotenv files (Phase 3) this
-	// instance holds, sorted. They carry markers, never values; the record
-	// lets a later run remove a file whose approval was withdrawn.
-	GuestSecretFiles []string `json:"guestSecretFiles,omitempty"`
 	// Pending journals the operations of the current apply that have not
 	// completed yet, so an interrupted apply resumes instead of restarting
 	// from scratch or silently skipping.
@@ -209,11 +199,6 @@ type DesiredState struct {
 	CredentialGeneration string
 	// BoundCredentials lists the store-sourced credential kinds (P09).
 	BoundCredentials []string
-	// ProjectBindings lists the guest variables of the applied
-	// project-secret bindings (Phase 2), sorted. They participate in the
-	// revision through CredentialRev, so approving or dropping one is a
-	// change the plan must act on.
-	ProjectBindings []string
 	// Non-secret server credentials participate in the revision.
 	Username string
 	// GitHubOrigin participates only when the optional binding is resolved.
@@ -520,23 +505,8 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if !plan.CreatesInstance() && applied != nil {
 		st.CPUs, st.MemoryMB = applied.CPUs, applied.MemoryMB
 	}
-	// The managed guest secret files are published by the start path, not
-	// derived from the desired configuration: carry the applied record
-	// forward so the journal write does not erase it and orphan every file.
-	if applied != nil {
-		st.GuestSecretFiles = append([]string(nil), applied.GuestSecretFiles...)
-	}
 	if err := WriteInstanceState(DefaultFS, path, st); err != nil {
 		return fmt.Errorf("persisting reconcile journal for %s: %w", m.InstanceName(), err)
-	}
-	// The registrations the guest currently holds, read before the journal is
-	// applied: a project binding dropped by this apply is only unregistered
-	// when its guest variable is named explicitly (the SDK modification is a
-	// patch). The desired record is already persisted above; this is the
-	// previous one.
-	var previousProjectBindings []string
-	if applied != nil {
-		previousProjectBindings = append([]string(nil), applied.ProjectBindings...)
 	}
 	return withHostSecrets(bindings, func() error {
 		for i, op := range pending {
@@ -548,7 +518,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 					return fmt.Errorf("reconcile project skills before restarting the backend: %w", err)
 				}
 			}
-			if err := m.applyReconcileOp(ctx, op, bindings, previousProjectBindings); err != nil {
+			if err := m.applyReconcileOp(ctx, op, bindings); err != nil {
 				// Journal the remaining ops: the next run resumes here.
 				st.Pending = opsToJournal(pending[i:])
 				_ = WriteInstanceState(DefaultFS, path, st)
@@ -600,7 +570,6 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 		}
 		d.CredentialRev = bindingsRevision(bindings)
 		d.BoundCredentials = storeBoundEntries(bindings)
-		d.ProjectBindings = projectBindingGuestEnvs(bindings)
 		d.CredentialGeneration = storeGenerationOf(DefaultFS, DefaultStateDir(), bindings)
 		return d
 	}
@@ -609,11 +578,6 @@ func (m *MicrosandboxRuntime) desiredState(resolved bool, bindings []resolvedBin
 		d.CredentialRev = applied.CredentialRev
 		d.CredentialGeneration = string(applied.CredentialGen)
 		d.BoundCredentials = append([]string(nil), applied.BoundCredentials...)
-		// An unresolved binding set must not erase the record of what was
-		// applied: derived from nothing, the next refresh would treat every
-		// project variable as stale and drop registrations that are still
-		// approved.
-		d.ProjectBindings = append([]string(nil), applied.ProjectBindings...)
 	} else {
 		// Nothing applied to carry over, but an earlier apply outside the
 		// journal may still have left a store-bound secret behind: record
@@ -639,7 +603,6 @@ func (d DesiredState) toState() InstanceState {
 		CredentialRev:    d.CredentialRev,
 		CredentialGen:    credentialGenJSON(d.CredentialGeneration),
 		BoundCredentials: append([]string(nil), d.BoundCredentials...),
-		ProjectBindings:  append([]string(nil), d.ProjectBindings...),
 	}
 }
 
@@ -731,12 +694,16 @@ func (m *MicrosandboxRuntime) workspaceProvenanceChanged(ctx context.Context) bo
 
 // applyReconcileOp executes one plan operation. Every operation is
 // idempotent, which is what makes the journal safe to replay.
-func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op ReconcileOp, bindings []resolvedBinding, previousProjectBindings []string) error {
+func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op ReconcileOp, bindings []resolvedBinding) error {
 	switch op {
 	case OpCreate, OpStartVM:
 		return m.Start(ctx)
 	case OpRefreshCredentials:
-		return m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings), previousProjectBindings)
+		// The previous inventory is read here, at the moment the refresh
+		// runs, rather than carried in the journal: a resumed journal must
+		// still name the variables a revocation has to unregister, and the
+		// host-local record is the only place that remembers them.
+		return m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings), m.appliedProjectBindings())
 	case OpRestartBackend:
 		return m.launchBackend(ctx)
 	case OpRestartVM:

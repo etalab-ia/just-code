@@ -296,6 +296,14 @@ type projectSecretResolution struct {
 
 // projectSecretStore builds the store for this project's workspace root, or an
 // error if the project cannot be scoped.
+// projectSecretInventoryStore resolves the store that backs the host-local
+// project secret records: the binding approvals and the applied inventory.
+// It exists so the two callers can state their intent, while the resolution
+// rule stays in one place.
+func (m *MicrosandboxRuntime) projectSecretInventoryStore() (*ProjectSecretStore, error) {
+	return m.projectSecretStore()
+}
+
 func (m *MicrosandboxRuntime) projectSecretStore() (*ProjectSecretStore, error) {
 	if m.ProjectSecrets != nil {
 		return m.ProjectSecrets, nil

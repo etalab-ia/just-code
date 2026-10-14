@@ -2,8 +2,11 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -177,6 +180,110 @@ func isManagedGuestSecretFile(content string) bool {
 	return strings.TrimRight(first, "\r") == guestSecretHeaderPrefix
 }
 
+// projectSecretAppliedRecord is the host-local inventory of what this
+// project's sandbox currently holds: the guest variables registered for
+// project secrets, and the managed guest dotenv files.
+//
+// It lives beside the binding approvals and never inside InstanceState. Two
+// reasons, both learned the hard way: the runtime's state file describes the
+// VM configuration and drives reconciliation, so writing it from a second
+// code path races the plan (a partial record looks like a changed
+// creation-fixed field), and the reconcile journal writes the *desired* state
+// before the ops run, which would overwrite the applied inventory exactly when
+// it is needed — naming the variables a revocation has to unregister.
+type projectSecretAppliedRecord struct {
+	SchemaVersion int      `json:"schemaVersion"`
+	Namespace     string   `json:"namespace"`
+	Envs          []string `json:"envs"`
+	Files         []string `json:"files"`
+}
+
+const projectSecretAppliedSchemaVersion = 1
+
+// ProjectSecretAppliedPath is the host-local inventory of applied project
+// secret deliveries for one namespace.
+func ProjectSecretAppliedPath(stateDir, namespace string) string {
+	return filepath.Join(stateDir, "project-secrets", namespace, "applied.json")
+}
+
+// ProjectSecretApplied is the applied inventory: which guest variables and
+// which managed guest files the sandbox holds for this project.
+type ProjectSecretApplied struct {
+	Envs  []string
+	Files []string
+}
+
+// ReadProjectSecretApplied returns the applied inventory. A missing record is
+// empty, not an error: it means nothing was applied yet. A record that belongs
+// to another project is refused.
+func ReadProjectSecretApplied(fs FS, stateDir, namespace string) (ProjectSecretApplied, error) {
+	record := projectSecretAppliedRecord{SchemaVersion: projectSecretAppliedSchemaVersion, Namespace: namespace}
+	data, err := fs.ReadFile(ProjectSecretAppliedPath(stateDir, namespace))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ProjectSecretApplied{}, nil
+		}
+		return ProjectSecretApplied{}, fmt.Errorf("read the applied project secret inventory: %w", err)
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return ProjectSecretApplied{}, fmt.Errorf("the applied project secret inventory is not valid JSON: %w", err)
+	}
+	if record.SchemaVersion != projectSecretAppliedSchemaVersion || record.Namespace != namespace {
+		return ProjectSecretApplied{}, fmt.Errorf("the applied project secret inventory belongs to a different project or schema")
+	}
+	for _, env := range record.Envs {
+		if env == "" || reservedGuestEnvs()[env] {
+			return ProjectSecretApplied{}, fmt.Errorf("the applied project secret inventory names an invalid guest variable")
+		}
+	}
+	for _, guestPath := range record.Files {
+		if err := validateManagedGuestPath(guestPath); err != nil {
+			return ProjectSecretApplied{}, err
+		}
+	}
+	return ProjectSecretApplied{Envs: append([]string(nil), record.Envs...), Files: append([]string(nil), record.Files...)}, nil
+}
+
+// WriteProjectSecretApplied records the inventory after a successful apply.
+func WriteProjectSecretApplied(fs FS, stateDir, namespace string, applied ProjectSecretApplied) error {
+	for _, env := range applied.Envs {
+		if env == "" || reservedGuestEnvs()[env] {
+			return fmt.Errorf("refusing to record an invalid applied guest variable")
+		}
+	}
+	for _, guestPath := range applied.Files {
+		if err := validateManagedGuestPath(guestPath); err != nil {
+			return err
+		}
+	}
+	envs := append([]string(nil), applied.Envs...)
+	files := append([]string(nil), applied.Files...)
+	sort.Strings(envs)
+	sort.Strings(files)
+	record := projectSecretAppliedRecord{
+		SchemaVersion: projectSecretAppliedSchemaVersion,
+		Namespace:     namespace,
+		Envs:          envs,
+		Files:         files,
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(fs, ProjectSecretAppliedPath(stateDir, namespace), append(data, '\n'), 0o600)
+}
+
+// validateManagedGuestPath refuses a recorded path that is not inside the
+// guest workspace. The record is host state and the paths are written by
+// just-code, but a corrupted or hand-edited record must not turn the removal
+// step into an arbitrary delete inside the guest.
+func validateManagedGuestPath(guestPath string) error {
+	if !strings.HasPrefix(guestPath, msbGuestWorkspace+"/") || strings.Contains(guestPath, "..") {
+		return fmt.Errorf("recorded project secret file %q is not inside the guest workspace", guestPath)
+	}
+	return nil
+}
+
 // publishGuestSecretFiles applies a plan inside the running guest. Writes go
 // through a temporary file in the same directory followed by a rename, so a
 // reader never observes a half-written dotenv. Removals only ever target a
@@ -197,11 +304,24 @@ func (m *MicrosandboxRuntime) publishGuestSecretFiles(ctx context.Context, plan 
 		}
 	}
 	for _, guestPath := range plan.Removes {
-		if err := m.guestShell(ctx, "rm -f "+shellQuote(guestPath)); err != nil {
+		if err := m.removeManagedGuestFile(ctx, guestPath); err != nil {
 			return fmt.Errorf("removing the obsolete project secret file %s: %w", guestPath, err)
 		}
 	}
 	return nil
+}
+
+// removeManagedGuestFile deletes a guest path only while it still carries
+// just-code's header, checked in the same shell invocation as the removal: a
+// separate read would leave a window in which a guest process replaces the
+// file with its own content, and the removal would then destroy user data.
+func (m *MicrosandboxRuntime) removeManagedGuestFile(ctx context.Context, guestPath string) error {
+	if err := validateManagedGuestPath(guestPath); err != nil {
+		return err
+	}
+	script := fmt.Sprintf("f=%s; if [ -f \"$f\" ]; then head -n1 \"$f\" | grep -qxF %s && rm -f \"$f\"; fi",
+		shellQuote(guestPath), shellQuote(guestSecretHeaderPrefix))
+	return m.guestShell(ctx, script)
 }
 
 // writeGuestFileAtomically writes payload to guestPath via a sibling temporary
@@ -223,22 +343,32 @@ func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, gues
 }
 
 // readGuestSecretFiles reads the current content of the given guest paths.
-// A path that does not exist is absent from the result. The content read is
-// markers and headers only: no value is ever written into these files.
+// A path that is genuinely absent is absent from the result. A path that
+// exists but cannot be read is an error, not an absence: treating it as
+// absence would turn a conflict with the project's own file into an
+// overwrite.
 func (m *MicrosandboxRuntime) readGuestSecretFiles(ctx context.Context, guestPaths []string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, guestPath := range guestPaths {
-		// The paths come from just-code's own plan, never from user input,
-		// but they are quoted anyway: the guest shell is not a place to
-		// rely on the absence of metacharacters.
-		stdout, _, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), "cat "+shellQuote(guestPath)+" 2>/dev/null")
+		if err := validateManagedGuestPath(guestPath); err != nil {
+			return nil, err
+		}
+		// Exit 3 means "no such file"; any other failure is reported. The
+		// paths come from just-code's own plan, never from user input, and
+		// are quoted regardless: the guest shell is not a place to rely on
+		// the absence of metacharacters.
+		command := "f=" + shellQuote(guestPath) + "; if [ ! -e \"$f\" ]; then exit 3; fi; cat \"$f\""
+		stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), command)
 		if err != nil {
 			return nil, err
 		}
-		if code != 0 {
-			continue
+		switch code {
+		case 0:
+			out[guestPath] = stdout
+		case 3:
+		default:
+			return nil, fmt.Errorf("cannot read the existing guest file %s (exit %d): %s", guestPath, code, strings.TrimSpace(stderr))
 		}
-		out[guestPath] = stdout
 	}
 	return out, nil
 }

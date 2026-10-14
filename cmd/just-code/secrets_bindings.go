@@ -218,10 +218,12 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 	fmt.Printf("Approving %s#%s for %s -> guest %s, destinations: %s\n",
 		binding.Component, binding.Name, binding.Profile, binding.GuestEnv, strings.Join(binding.Destinations, ", "))
 	fmt.Println("The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.")
-	if err := justcode.SetProjectSecretActiveProfile(justcode.DefaultFS, stateDir, store.Namespace(), opts.Profile); err != nil {
+	// Record the approval first: it validates the binding, and a rejected
+	// approval must not leave the project pointed at a different profile.
+	if err := justcode.ApproveProjectSecretBinding(justcode.DefaultFS, stateDir, store.Namespace(), binding); err != nil {
 		return 1, err
 	}
-	if err := justcode.ApproveProjectSecretBinding(justcode.DefaultFS, stateDir, store.Namespace(), binding); err != nil {
+	if err := justcode.SetProjectSecretActiveProfile(justcode.DefaultFS, stateDir, store.Namespace(), opts.Profile); err != nil {
 		return 1, err
 	}
 	// Verify the approval resolves now, so a typo in the variable name is

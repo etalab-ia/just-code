@@ -2067,7 +2067,7 @@ func TestReconcileVMRestartLeavesGuestRunningWhenSkillPreflightFails(t *testing.
 	m := newTestMicrosandbox(t, client)
 	m.cfg.Isolation = IsolationBackend
 	m.cfg.ProjectSkillsManaged = true
-	err := m.applyReconcileOp(context.Background(), OpRestartVM, nil, nil)
+	err := m.applyReconcileOp(context.Background(), OpRestartVM, nil)
 	if err == nil || !strings.Contains(err.Error(), "project-skill inventory") {
 		t.Fatalf("reconcile restart error = %v, want a managed skill preflight refusal", err)
 	}

@@ -26,8 +26,29 @@ func (c *guestFSClient) WriteFile(_ context.Context, name, guestPath string, dat
 	return nil
 }
 
-// Exec understands only the three shapes this package issues: mkdir -p, the
-// atomic mv, and rm -f. Anything else is a test bug, not a silent success.
+// guestFileFromCommand extracts the path a just-code guest command operates
+// on. Every command this package issues begins by binding the target to `f`.
+func guestFileFromCommand(command string) (string, bool) {
+	const marker = "f="
+	idx := strings.Index(command, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := command[idx+len(marker):]
+	quote := rest[0]
+	if quote != '\'' && quote != '"' {
+		return "", false
+	}
+	end := strings.IndexByte(rest[1:], quote)
+	if end < 0 {
+		return "", false
+	}
+	return rest[1 : 1+end], true
+}
+
+// Exec understands only the shapes this package issues: mkdir -p, the atomic
+// mv, the header-checked removal, and plain rm -f. Anything else is a test bug
+// and must not be reported as success.
 func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, string, error) {
 	c.record("exec " + name + " " + command)
 	switch {
@@ -46,6 +67,25 @@ func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, stri
 		delete(c.files, src)
 		c.files[dst] = content
 		return 0, "", nil
+	case strings.Contains(command, "grep -qxF"):
+		// Header-checked removal: only a file still bearing just-code's
+		// header is deleted, mirroring the guest script.
+		path, ok := guestFileFromCommand(command)
+		if !ok {
+			return 1, "unexpected removal shape", nil
+		}
+		content, present := c.files[path]
+		if !present {
+			return 0, "", nil
+		}
+		first := content
+		if idx := strings.IndexByte(content, '\n'); idx >= 0 {
+			first = content[:idx]
+		}
+		if first == guestSecretHeaderPrefix {
+			delete(c.files, path)
+		}
+		return 0, "", nil
 	case strings.HasPrefix(command, "rm -f "):
 		delete(c.files, unquoteGuest(strings.TrimPrefix(command, "rm -f ")))
 		return 0, "", nil
@@ -56,13 +96,13 @@ func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, stri
 
 func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {
 	c.record("execcapture " + name + " " + command)
-	if !strings.HasPrefix(command, "cat ") {
+	path, ok := guestFileFromCommand(command)
+	if !ok {
 		return "", "unsupported command", 1, nil
 	}
-	path := unquoteGuest(strings.TrimSuffix(strings.TrimPrefix(command, "cat "), " 2>/dev/null"))
-	content, ok := c.files[path]
-	if !ok {
-		return "", "", 1, nil
+	content, present := c.files[path]
+	if !present {
+		return "", "", 3, nil
 	}
 	return content, "", 0, nil
 }

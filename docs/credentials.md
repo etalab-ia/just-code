@@ -210,7 +210,15 @@ just-code n'écrase jamais un fichier qu'il n'a pas écrit. Si un `.env` fourni
 par le projet occupe la cible, la publication est **refusée** avec le chemin
 concerné, au lieu de détruire votre contenu. Les écritures passent par un
 fichier temporaire puis un renommage, et un fichier géré dont l'approbation est
-retirée est supprimé au démarrage suivant.
+retirée est supprimé au démarrage suivant — la suppression revérifie l'en-tête
+au moment d'agir, pour ne jamais effacer un fichier que vous auriez mis à la
+place.
+
+L'inventaire de ce que le sandbox contient réellement (variables invitées et
+fichiers gérés) est conservé localement à l'hôte, à côté des approbations
+(`~/.local/state/just-code/project-secrets/<projet>/applied.json`). Il est relu
+à chaque application : c'est ce qui permet à une révocation de désinscrire
+effectivement la liaison, y compris après un `restart`.
 
 Ces fichiers ne contiennent jamais de valeur : seulement les mêmes marqueurs que
 les variables d'environnement du guest. La valeur réelle reste sur l'hôte et
