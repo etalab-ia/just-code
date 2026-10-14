@@ -27,6 +27,14 @@ openssl version
 
 Host LAN IP is required explicitly and must be assigned to this Mac and reachable by guest networking. TLS TCP defaults to 18443, DNS UDP defaults to 15354. Both are nonprivileged. Occupied ports are rejected; no process is killed or evicted. If occupied, select different unoccupied ports with the arguments below. No `sudo`, host interface modification, host resolver changes, or host trust commands.
 
+**The lab listens on all interfaces for the duration of the run.** The mock TLS
+and DNS services bind `0.0.0.0` on the two chosen ports, because the guest VM
+must reach them at the host LAN address; they are therefore reachable by
+anything else on the same network while the run lasts. They serve only fixed
+empty HTTP responses and two `.test` names with synthetic addresses, and expose
+no files, credentials or host state — but treat the ports as LAN-visible for
+the length of a run, and prefer a trusted network.
+
 ## Run
 
 From the extracted kit directory:

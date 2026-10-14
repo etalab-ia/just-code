@@ -57,17 +57,29 @@ def main():
         print('FAIL orchestration (diagnostics retained privately in RUN_DIR)',flush=True)
         rc=1
     finally:
+        # Every step here is best-effort: a process that already exited, or one
+        # that ignores SIGTERM, must not abort the block before the VM cleanup
+        # below. An unguarded killpg raises ProcessLookupError on that race,
+        # and an unguarded wait raises TimeoutExpired.
         if probe and probe.poll() is None:
-            os.killpg(probe.pid,signal.SIGTERM)
-            try: probe.wait(timeout=10)
-            except subprocess.TimeoutExpired: os.killpg(probe.pid,signal.SIGKILL);probe.wait()
+            try:
+                os.killpg(probe.pid,signal.SIGTERM)
+                try: probe.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(probe.pid,signal.SIGKILL);probe.wait()
+            except (ProcessLookupError,subprocess.TimeoutExpired,OSError):
+                print('Note: the native probe process could not be stopped cleanly.',flush=True)
         if (directory/'probe').exists() and (directory/'vm-name').exists():
             try:
                 c=subprocess.run([str(directory/'probe'),'--dir',str(directory),'--cleanup'],env=env,capture_output=True,text=True,timeout=45)
                 with open(directory/'native-private.log','a') as log: log.write(c.stderr)
                 print(c.stdout,end='');rc=rc or c.returncode
             except Exception: print('FAIL emergency-cleanup; retain RUN_DIR and use README cleanup command');rc=1
-        if lab and lab.poll() is None: os.killpg(lab.pid,signal.SIGTERM);lab.wait(timeout=10)
+        if lab and lab.poll() is None:
+            try:
+                os.killpg(lab.pid,signal.SIGTERM);lab.wait(timeout=10)
+            except (ProcessLookupError,subprocess.TimeoutExpired,OSError):
+                print('Note: the lab process could not be stopped cleanly; stop only the lab.py PID whose --dir is this RUN_DIR.',flush=True)
         print('Retained private RUN_DIR. Copy results.txt only; cleanup command is in README.',flush=True)
     return rc
 if __name__=='__main__': sys.exit(main())
