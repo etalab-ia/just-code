@@ -1,8 +1,8 @@
 # D-003: Project dotenv secret delivery contract
 
 Date: 7 October 2026
-Status: transport and loader qualified on macOS arm64 (evidence in PR #182); phase 2 host-local bindings implemented
-Tracking: #145; phase 0 #148; phase 1 #147; phase 2 #149
+Status: transport and loader qualified on macOS arm64; phases 2 and 3 implemented
+Tracking: #145; phase 0 #148; phase 1 #147; phase 2 #149; phase 3 #150
 
 ## Context
 
@@ -37,20 +37,22 @@ workspace and persisted SDK configuration.
 
 ## Qualification boundary
 
-The pinned SDK source verifies custom placeholder fields on create and modify;
-just-code now pins that adapter contract in unit tests. That is API/serializer
-evidence, not proof of live proxy behavior for several placeholders, overlapping
-allowed hosts, dotenv parser expansion, or application-specific clients.
-Retain the existing disjoint-host validation until the pinned runtime is
-exercised with canary secrets. Do not enable body/query substitution: the
-existing qualified policy is headers only. A client that signs or otherwise
-transforms the placeholder is unsupported unless separately qualified.
+The pinned SDK supports custom placeholders on create/modify. Real guest-loader
+tests and two native 0.7.6 canary runs now qualify dollar-free markers, multiple
+secrets on a shared destination, independent host authorization, raw/Basic
+headers, rotation, removal and next-boot re-add. Phase 2 may replace the old
+disjoint-host restriction with per-binding destination approval and distinct
+markers, but no production registry policy changes in this qualification PR.
+Do not enable body/query substitution. Clients that sign or otherwise transform
+tokens locally remain unsupported without separate evidence. This is macOS
+arm64 SDK/lab evidence, not the Phase 2/3 application acceptance matrix.
 
 ## Consequences
 
 M1 can represent project-scoped bindings without colliding on common guest
-variable names. Import metadata and generated guest targets remain to be
-implemented. The first delivery slice must fail closed for missing approvals,
+variable names. Import/storage is merged in #159; custom binding approvals,
+runtime integration and generated guest targets remain to be implemented.
+The first delivery slice must fail closed for missing approvals,
 unavailable stores, unqualified clients, and unsafe target paths; it must not
 fall back to plaintext guest delivery.
 
@@ -166,3 +168,20 @@ Incompatible entries are not delivered and are reported by name rather than
 silently skipped. Values that an application must consume locally — database
 passwords, signing keys — remain out of scope: they need the separate,
 explicitly consented delivery design of Phase 4.
+
+## Guest Loader Evidence (2026-10-14)
+
+The host importer disables expansion, but that does not control application
+loaders in the guest. Real-library tests now reproduce a compatibility hazard:
+Node `dotenv-expand` 12.0.2 removes undefined `$MSB_...` references even after
+single/double quoted dotenv parsing, and Go `godotenv` 1.5.1 removes an unquoted
+reference. Python `python-dotenv` 1.2.2 preserves bare dollar references but
+expands the braced form. Plain Node `dotenv` 16.4.7 preserves the reference.
+
+Dollar-free opaque markers survive every quote/interpolation mode exercised by
+these tests. Phase 2 should therefore use a stable marker such as
+`__JUST_CODE_SECRET_<opaque-id>__`, not the default dollar-form placeholder.
+The native canary/proxy tests now pass as well; no new production binding policy
+is enabled by the test harness. See the reproducible
+[loader matrix](../../tests/integration/project-secrets/README.md) and
+[native evidence](../../tests/integration/project-secrets/native/evidence/README.md).
