@@ -219,7 +219,7 @@ func classify(rel string) string {
 		return "disk-image"
 	case strings.Contains(lower, "log") || strings.Contains(lower, "journal"):
 		return "log"
-	case strings.HasSuffix(lower, ".db") || strings.Contains(lower, "config") ||
+	case strings.Contains(lower, ".db") || strings.Contains(lower, "config") ||
 		strings.Contains(lower, "registry") || strings.HasSuffix(lower, ".json"):
 		return "store"
 	default:
@@ -656,8 +656,11 @@ func run() {
 			listExact(scanDir, "reader.py", "scan.py"))
 
 	// --- negative controls -------------------------------------------------
-	// C: the value rides inside the shell's argv for five minutes.
-	cCtl, e := s.ExecStream(ctx, "/bin/sh", []string{"-c", "sleep 300 # jcp4argv-" + canaries[cC]}, msb.WithExecTimeout(320*time.Second))
+	// C: the value rides inside the shell's argv for five minutes. The
+	// command is deliberately compound: a bare `sh -c "sleep 300"` is exec
+	// optimized into sleep, which strips the canary from the process table and
+	// would make every argv assertion below unfalsifiable.
+	cCtl, e := s.ExecStream(ctx, "/bin/sh", []string{"-c", "sleep 300; true # jcp4argv-" + canaries[cC]}, msb.WithExecTimeout(320*time.Second))
 	diagnostic("argv-control-start", e, "")
 	// F: the value rides in a per-exec environment variable.
 	fCtl, e2 := s.ExecStream(ctx, "sleep", []string{"300"}, msb.WithExecEnv(map[string]string{envVarF: canaries[cF]}), msb.WithExecTimeout(320*time.Second))
@@ -828,8 +831,12 @@ func run() {
 			diagnostic("host-scan-violation", nil, "canary "+h.Canary+" in disallowed host location class "+h.Class+" at "+h.Path)
 		}
 	}
-	result("host-files-clean-for-delivered", !viol1)
+	result("no-host-exposure-outside-declared-classes", !viol1)
 	result("host-persisted-store-shows-control", hostHasClass(cD, "store", hits1))
+	// The disk-backed channel is EXPECTED to expose its value on the host (the
+	// guest disk is a host file). Asserting the observation keeps the finding
+	// honest: if it stops appearing, the detector is broken, not the exposure.
+	result("disk-channel-host-exposure-detected", hostHasClass(cA, "disk-image", hits1) || hostHasClass(cA, "snapshot", hits1))
 	if hostHasClass(cA, "disk-image", hits1) {
 		diagnostic("disk-value-on-host", nil,
 			"channel A value is present in the host-side guest disk image: disk-backed delivery fails a strict reading of criterion 4 while the VM exists")
