@@ -1,4 +1,5 @@
 META runtime_archive_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89 runtime_version=0.7.6
+META kit=p3v2 source=f483a8003d7745dfe3cdea7363d5f366af51eebc sdk=0.7.6 runtime=0.7.6 archive_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89 go=go1.27.1
 PASS create-inert-sentinels
 PASS rotate-to-envrefs
 PASS exact-guest-env-markers

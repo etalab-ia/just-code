@@ -200,6 +200,15 @@ PASS node-runtime-and-loaders-installed  PASS cleanup-own-vm
 PASS python-loader-installed
 ```
 
+Both transcripts carry the probe's own META line naming the kit revision and
+the source commit, so a recorded run is always tied to a revision of the
+harness:
+
+```
+META kit=p3v2 source=f483a8003d7745dfe3cdea7363d5f366af51eebc sdk=0.7.6 runtime=0.7.6 \
+     archive_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89 go=go1.27.1
+```
+
 The two cases that carry the phase-3 claim are `node-header-substituted` and
 `python-header-substituted`: a real Node application and a real Python
 application each read their own component's generated file, took the marker

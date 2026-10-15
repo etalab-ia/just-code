@@ -17,13 +17,17 @@ VENDORED-OK project_secret_bindings.go    == just-code@f483a8003d77 (package cla
 |---|---|
 | runtime archive (darwin/aarch64) | `a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89` |
 | SDK / runtime version | 0.7.6 |
-| run 1 results SHA256 | `d336c109eca2e84e892da3e8a6a33936dd434a6e1305523fcd46eae885545ffe` |
-| run 2 results SHA256 | `d336c109eca2e84e892da3e8a6a33936dd434a6e1305523fcd46eae885545ffe` |
+| run 1 results SHA256 | `f6affc8a0219d4450120ca7012c25b6000ab9089bddfea5af8c3788fe75e3440` |
+| run 2 results SHA256 | `f6affc8a0219d4450120ca7012c25b6000ab9089bddfea5af8c3788fe75e3440` |
 | kit revision | `p3v2` (from the probe's own META line) |
 
-Both runs report the same META line and the same 19 `PASS` cases, so the two
-files are byte-identical: the transcript contains case names and fixed
-metadata, not random canaries, paths, VM names or timestamps. Each run used a
+Both runs report the same two META lines and the same 19 `PASS` cases, so the
+two files are byte-identical: the transcript contains case names and fixed
+metadata, not random canaries, paths, VM names or timestamps. The second META
+line is the probe's own, and it is what binds the transcript to what ran — it
+names the kit revision (`p3v2`), the source commit and the Go toolchain. A run
+that did not produce it fails (`FAIL probe-meta-line-missing`) rather than
+recording evidence that cannot be tied to a revision. Each run used a
 fresh random VM name, an isolated `MSB_HOME` under a short `/tmp/jcp3-*` root,
 its own temporary CA and its own lab journal, and cleaned up its own VM
 (`cleanup-own-vm`).
