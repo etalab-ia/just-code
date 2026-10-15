@@ -26,7 +26,7 @@ package main
 //	D   negative control: inline value at create       (MUST be persisted)
 //	F   negative control: per-exec environment value   (MUST be in environ)
 //
-// Removal, restart and snapshot resurrection are measured for A and B.
+// Removal, restart and snapshot capture are measured for A and B.
 // Only synthetic canaries are used; nothing touches the tester's
 // ~/.microsandbox, an installed msb, the trust store, DNS, or interfaces.
 
@@ -933,10 +933,11 @@ func run() {
 		}()
 		result("snapshot-restored", e == nil && fork != nil)
 		if fork != nil {
-			// The restored VM either holds the disk file with the exact
-			// canary (snapshots preserve disk-backed deliveries — a copy of
-			// the value now lives outside any in-guest deletion) or it does
-			// not (the runtime did not flush it — also reported plainly).
+			// The value was re-delivered just before the snapshot, so a
+			// restored VM holding it means a snapshot captures a delivery
+			// that was live at snapshot time (a copy that no later in-guest
+			// deletion can revoke). Absence means the runtime did not flush
+			// the write into the snapshot — also reported plainly.
 			var restoredDigest string
 			var restoredOK bool
 			func() {
@@ -950,9 +951,9 @@ func run() {
 					}
 				}
 			}()
-			diskResurrected := restoredOK && restoredDigest == digest(canaries[cA])
-			diagnostic("snapshot-disk-resurrection", nil,
-				fmt.Sprintf("disk-backed delivered value present in restored VM: %v", diskResurrected))
+			diskValueInSnapshot := restoredOK && restoredDigest == digest(canaries[cA])
+			diagnostic("snapshot-captures-delivered-value", nil,
+				fmt.Sprintf("value delivered to disk present in a VM restored from that snapshot: %v", diskValueInSnapshot))
 			result("snapshot-excludes-tmpfs", !fsExists(fork, tmpfsPath) && !fsExists(fork, stdinPath))
 			c, d := context.WithTimeout(ctx, 60*time.Second)
 			_ = fork.Stop(c)
@@ -1051,7 +1052,18 @@ func removeSnapshotIfOurs(ctx context.Context, dir, mainName string) {
 	}
 	c, d := context.WithTimeout(ctx, 60*time.Second)
 	defer d()
-	diagnostic("cleanup-snapshot", msb.Snapshot.Remove(c, selector, true), "")
+	err := msb.Snapshot.Remove(c, selector, true)
+	switch {
+	case err == nil:
+		// The selector record is dropped so the runner's later emergency
+		// cleanup does not retry a snapshot that is already gone and report a
+		// misleading SnapshotNotFound diagnostic.
+		_ = os.Remove(filepath.Join(dir, "snapshot-name"))
+	case msb.IsKind(err, msb.ErrSnapshotNotFound):
+		// Already removed (by the run, or by an earlier cleanup): expected.
+	default:
+		diagnostic("cleanup-snapshot", err, "")
+	}
 }
 
 func cleanupOwned(dir string) {
@@ -1081,7 +1093,9 @@ func cleanupOwned(dir string) {
 		selector := strings.TrimSpace(string(b))
 		parts := strings.SplitN(selector, ":", 2)
 		if len(parts) == 2 && strings.HasPrefix(parts[0], "jc-p4-") && strings.HasPrefix(parts[1], "jcp4snap-") {
-			diagnostic("cleanup-snapshot", msb.Snapshot.Remove(ctx, selector, true), "")
+			if err := msb.Snapshot.Remove(ctx, selector, true); err != nil && !msb.IsKind(err, msb.ErrSnapshotNotFound) {
+				diagnostic("cleanup-snapshot", err, "")
+			}
 		}
 	}
 	result("cleanup", true)

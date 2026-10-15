@@ -121,17 +121,22 @@ Lifecycle (criterion 5's "how long"):
 - `tmpfs-cleared-on-restart` — a restart wipes the tmpfs content;
   `tmpfs-mount-persists-across-restart` — but the mount itself comes back.
 - `snapshot-created`, `snapshot-restored` — the snapshot machinery worked
-  (if it cannot run, the resurrection question is unanswered and the run
-  fails rather than implying safety).
-- `snapshot-excludes-tmpfs` — the tmpfs value is NOT present in a VM
-  restored from a snapshot taken while it was delivered: snapshots cannot
-  resurrect RAM-backed deliveries.
-- `DIAGNOSTIC snapshot-disk-resurrection` — whether the disk value IS
-  present in the restored VM. Either way it is reported plainly: `true`
-  means a snapshot is a durable host-side copy of the value that no in-guest
-  deletion can revoke (snapshots must be excluded by policy for channel A);
-  `false` means the pinned runtime did not flush the write into the snapshot
-  (the SDK's own tests flag stop-flush as not yet guaranteed) — also
+  (if it cannot run, whether a snapshot captures a delivered value is
+  unanswered and the run fails rather than implying safety). The value is
+  re-delivered before the snapshot on purpose: this measures what a snapshot
+  does to a value that is live when it is taken, not whether a deleted value
+  comes back. It does not.
+- `snapshot-excludes-tmpfs` — the tmpfs value is NOT present in a VM restored
+  from a snapshot taken while it was delivered: a RAM-backed delivery is not
+  captured by a snapshot.
+- `DIAGNOSTIC snapshot-captures-delivered-value` — whether a value delivered
+  to the disk IS present in a VM restored from a snapshot taken while it was
+  live. Either way it is reported plainly: `true` means a snapshot holds a
+  copy of the value that no later in-guest deletion can revoke, which is
+  ordinary snapshot behaviour and a lifecycle rule for the delivery contract
+  (revoking a secret does not reach snapshots already taken); `false` means
+  the pinned runtime did not flush the write into the snapshot (the SDK's own
+  tests flag stop-flush as not yet guaranteed) — also
   reported, with `DIAGNOSTIC snapshot-captures-disk-value` stating whether
   the value's bytes are in the host-side snapshot files.
 
@@ -186,13 +191,26 @@ in `runtime-download.py`) on that machine:
   agent warning matters.
 - Channel E2 additionally shows a host→guest value transfer whose only guest
   landing zone is process memory.
-- Channel A (disk) delivers the same readability but its value lives in the
-  host-side guest disk image while the VM exists — visible in the transcript
-  (`disk-value-on-host`) — and possibly in snapshots
-  (`snapshot-disk-resurrection`): under a strict reading of criterion 4,
-  channel A is disqualified; under a reading that treats the guest's
-  encrypted-at-rest-by-policy disk as in-scope, it is a policy call, and the
-  kit reports the facts for that call.
+- Channel A (disk) delivers the same readability, and its value additionally
+  lives inside the host-side guest disk image while the VM exists
+  (`disk-value-on-host`). This is **not** a transport leak: the guest's disk
+  *is* a host file, so any file a guest writes necessarily appears there. It
+  matters for two reasons only, and both are policy for the phase-4 contract
+  rather than a defect:
+  1. criterion 4 forbids an **intermediate** host file used to stage the
+     value on its way in. The disk image is the guest's own storage, not a
+     staging file, so a strict reading of "no host file at all" would also
+     forbid the ordinary case of an application reading a file in its own
+     workspace — which is the point of the feature.
+  2. any snapshot taken while the file exists captures it, and deleting the
+     file afterwards does not remove it from snapshots already taken
+     (`snapshot-captures-delivered-value`). This is normal snapshot
+     behaviour and belongs in the contract as a documented lifecycle rule,
+     not as a reason to avoid the workspace.
+
+  Channel B (tmpfs) is the alternative when a value should not be captured:
+  it is RAM-backed, absent from the host image and from snapshots, and cleared
+  on restart (so it is re-delivered at every boot).
 
 A passing run does **not** prove (state these honestly in the issue):
 
@@ -215,7 +233,7 @@ A passing run does **not** prove (state these honestly in the issue):
    SDK 0.7.6, and the `python:3.12-alpine` guest image, on darwin/arm64.
 6. **Concurrent revocation.** If a snapshot exists, deleting the value in
    the guest cannot revoke the copy inside the snapshot (measured by
-   `snapshot-disk-resurrection`); for channel B the snapshot simply does not
+   `snapshot-captures-delivered-value`); for channel B the snapshot simply does not
    contain it (`snapshot-excludes-tmpfs`).
 
 ## Kit contents
