@@ -14,7 +14,10 @@ are the lab's two own ports (LAN-visible by design; see README).
 import argparse, ipaddress, os, pathlib, re, shutil, signal, socket, subprocess, sys, tempfile, time
 
 HERE = pathlib.Path(__file__).resolve().parent
-META_PROBE = re.compile(r'^META kit=p3v1 source=[0-9a-f]{40} sdk=0\.7\.6 runtime=0\.7\.6 archive_sha256=[0-9a-f]{64} go=go[0-9.]+$')
+# The kit revision is matched generically: pinning it here once cost a silent
+# drop of this whole line when the probe moved to the next revision, which left
+# the recorded evidence unbound to the source commit it claims to qualify.
+META_PROBE = re.compile(r'^META kit=p3v[0-9]+ source=[0-9a-f]{40} sdk=0\.7\.6 runtime=0\.7\.6 archive_sha256=[0-9a-f]{64} go=go[0-9.]+$')
 META_RUNTIME = re.compile(r'^META runtime_archive_sha256=[0-9a-f]{64} runtime_version=0\.7\.6$')
 CASE = re.compile(r'^(PASS|FAIL) [a-z0-9-]+$')
 PROXY_NOISE = re.compile(r'(?i)(proxy-authorization|authorization|bearer|basic)')
@@ -43,6 +46,26 @@ def ip_is_local(ip):
     except (OSError, subprocess.TimeoutExpired):
         return False
     return re.search(r'inet ' + re.escape(ip) + r'\b', out) is not None
+
+
+def host_state_fingerprint(home):
+    """A cheap recursive fingerprint of ~/.microsandbox: names, sizes and
+    mtimes. A top-level listing would miss a runtime mutating inside its own
+    subdirectories, which is exactly how the managed runtime stores state."""
+    if not home.is_dir():
+        return None
+    out = []
+    for root, dirs, files in os.walk(home):
+        dirs.sort()
+        for name in sorted(dirs) + sorted(files):
+            path = os.path.join(root, name)
+            try:
+                st = os.lstat(path)
+            except OSError:
+                out.append((path, 'unreadable'))
+                continue
+            out.append((os.path.relpath(path, home), st.st_size, int(st.st_mtime)))
+    return out
 
 
 def default_dns_upstream():
@@ -89,7 +112,7 @@ def main():
     except ValueError:
         fail('--dns-upstream must be an IPv4 resolver address')
     home = pathlib.Path.home() / '.microsandbox'
-    before = set(os.listdir(home)) if home.is_dir() else None
+    before = host_state_fingerprint(home)
 
     # The vendored just-code sources must match the pinned commit byte for
     # byte (package clause aside) or the run qualifies nothing.
@@ -122,8 +145,16 @@ def main():
             except subprocess.TimeoutExpired:
                 proc.kill()
         # Remove ONLY our own VM, identified by the name file we wrote.
-        subprocess.run([str(probe_bin), '-cleanup', '-dir', str(run_dir)], env=env,
-                       capture_output=True, timeout=60)
+        # The probe binary may not exist yet on an early failure (runtime
+        # download, openssl, lab startup, build): an unguarded call would raise
+        # FileNotFoundError, mask the real error, and skip the directory
+        # removal below — leaving the throwaway CA key and runtime behind.
+        if probe_bin.exists():
+            try:
+                subprocess.run([str(probe_bin), '-cleanup', '-dir', str(run_dir)], env=env,
+                               capture_output=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                pass
         shutil.rmtree(run_dir, ignore_errors=True)
 
     def on_signal(signum, _frame):
@@ -201,9 +232,16 @@ def main():
                     results.append(line)
 
         # --- host-state budget: ~/.microsandbox untouched -------------------
-        after = set(os.listdir(home)) if home.is_dir() else None
+        after = host_state_fingerprint(home)
         if before != after:
             results.append('FAIL host-msb-state-touched')
+
+        # --- the run must be bound to what actually ran --------------------
+        # Without the probe's own META line the transcript names no source
+        # commit and no kit revision: a run of a different probe would be
+        # indistinguishable from this one.
+        if not any(META_PROBE.match(r) for r in results):
+            results.append('FAIL probe-meta-line-missing')
 
         ok = probe.returncode == 0 and all(not r.startswith('FAIL') for r in results)
     finally:

@@ -1,7 +1,7 @@
 # Phase 3 Native Qualification Evidence
 
 Date: 2026-10-15, two runs (roughly 10:55 and 10:56 local time).
-Platform: macOS arm64 (MacBook-Pro-Luis.local), macOS 27.0.1, Go 1.27.1.
+Platform: macOS arm64 (Apple Silicon), macOS 27.0.1, Go 1.27.1.
 Project revision: `f483a8003d7745dfe3cdea7363d5f366af51eebc` — the merge commit
 of PR #184 on `main`, i.e. the code that actually ships.
 
@@ -19,7 +19,7 @@ VENDORED-OK project_secret_bindings.go    == just-code@f483a8003d77 (package cla
 | SDK / runtime version | 0.7.6 |
 | run 1 results SHA256 | `d336c109eca2e84e892da3e8a6a33936dd434a6e1305523fcd46eae885545ffe` |
 | run 2 results SHA256 | `d336c109eca2e84e892da3e8a6a33936dd434a6e1305523fcd46eae885545ffe` |
-| kit revision | p3v2 |
+| kit revision | `p3v2` (from the probe's own META line) |
 
 Both runs report the same META line and the same 19 `PASS` cases, so the two
 files are byte-identical: the transcript contains case names and fixed

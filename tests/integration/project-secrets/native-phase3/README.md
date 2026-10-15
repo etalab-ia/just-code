@@ -81,7 +81,8 @@ short:
   and the `guestShell` body. The `GuestClient` interface's three method
   signatures are exact copies of the corresponding `msbClient` entries.
 - **KIT STUB** (never executed by any assertion; each fails loudly if called):
-  credential-store resolution — `DefaultCredentialStore`,
+  credential-store resolution — `DefaultCredentialStore` (returns nil, which
+  the vendored callers turn into a loud failure via `NewFileCredentialStore`),
   `NewFileCredentialStore`, `NewProjectSecretStore`,
   `ProjectSecretStore.readIndex`. Phase 3 consumes *deliveries*; the kit
   constructs them directly with the vendored `ProjectSecretPlaceholder`, the
@@ -180,9 +181,9 @@ default, and never modified.
 
 ### Recorded native run (2026-10-15)
 
-`python3 run.py --ip 192.168.86.28` was run twice on macOS arm64
-(MacBook-Pro-Luis.local, macOS 27.0.1, Go 1.27.1) against the landed merge
-commit `f483a8003d7745dfe3cdea7363d5f366af51eebc`. **All 19 assertions passed
+`python3 run.py --ip <the host's LAN IPv4>` was run twice on macOS arm64
+(Apple Silicon, macOS 27.0.1, Go 1.27.1) against the landed merge commit
+`f483a8003d7745dfe3cdea7363d5f366af51eebc`. **All 19 assertions passed
 both times**, with the byte-identical sanitized transcript in
 [`evidence/`](evidence/README.md):
 
@@ -213,8 +214,12 @@ variable name without mixing.
 - The lab persists **SHA256 digests** of header values only, inside the run
   directory, which is deleted on cleanup. `results.txt` contains case names,
   `DIAGNOSTIC` records (scrubbed) and the `META` line — no canaries.
-- `~/.microsandbox` is snapshotted before and after; any change fails the
-  run (`FAIL host-msb-state-touched`).
+- `~/.microsandbox` is fingerprinted recursively (names, sizes, mtimes) before
+  and after; any change fails the run (`FAIL host-msb-state-touched`).
+- The transcript must contain the probe's own `META` line, which names the kit
+  revision and the source commit; a run whose META line is missing or filtered
+  out fails (`FAIL probe-meta-line-missing`) instead of producing evidence that
+  cannot be tied to what ran.
 
 ## Cleanup
 

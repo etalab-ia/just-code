@@ -5,7 +5,7 @@ package jcvendor
 // The two vendored files in this package (project_secret_guest_files.go and
 // project_secret_bindings.go) are byte-identical copies of just-code's
 // internal/justcode sources at commit
-// c830b14fe258fe9e58ce68fb231ad212ea7d30e3, with only the package clause
+// f483a8003d7745dfe3cdea7363d5f366af51eebc, with only the package clause
 // renamed. They reference symbols defined elsewhere in just-code; this file
 // supplies exactly those symbols so the vendored files compile unchanged.
 //
