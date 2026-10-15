@@ -262,3 +262,68 @@ approuvées. Un client qui signe localement le marqueur reste hors périmètre.
 ## Révocation
 
 `just-code auth remove` révoque l'accès avant de supprimer l'entrée du magasin : sur les instances Microsandbox en cours d'exécution, la liaison proxy est supprimée à chaud (l'invité garde un placeholder inerte jusqu'au prochain redémarrage — un avertissement le signale) ; sur les instances arrêtées, la référence persistée est retirée pour le prochain démarrage. La révocation raisonne par **entrée de magasin**, pas par nom de liaison : un `credentialRef` peut alimenter la liaison Albert depuis une entrée nommée autrement, et c'est la liaison invitée effectivement alimentée qui est retirée (l'instantané le consigne sous la forme `entrée@magasin#liaison`). Supprimer l'entrée d'un magasin ne touche pas les instances liées à l'autre magasin ; une instance dont la clé venait de l'environnement (variable `ALBERT_API_KEY`) est ignorée, cette variable n'appartenant pas à just-code ; une source non confirmable est révoquée puis signalée. Sur Tart et agent-vm, la clé est lisible en clair dans l'invité : la suppression est **refusée** tant qu'une telle instance tourne — y compris lorsque l'entrée supprimée n'est pas nommée `albert` mais alimente la liaison Albert — car retirer la copie du magasin ne révoquerait rien.
+
+## Profils
+
+Un profil nomme un jeu de valeurs pour un même projet : `development`,
+`production`, ou ce que le projet utilise. Le périmètre d'import est
+**checkout → profil → fichier/composant → variable** : deux profils ayant la
+même variable restent distincts, et un même nom de variable dans deux
+composants aussi.
+
+Un seul profil est actif à la fois (`just-code secrets profile <nom>`), et il
+n'est jamais deviné : `--clear` est refusé tant que des liaisons restent
+approuvées, parce que cet état ferait échouer chaque démarrage. `development` et
+`production` ne sont jamais combinés implicitement : une liaison enregistrée
+pour un autre profil que l'actif est une erreur, pas un repli.
+
+## Limites de protection
+
+Ce que chaque mode garantit, et ce qu'il ne garantit pas.
+
+**Livraison par proxy (défaut).** La valeur ne franchit jamais la frontière :
+l'invité ne détient qu'un marqueur. En revanche, **le guest peut utiliser la
+valeur** vers les hôtes approuvés — n'importe quel processus de l'invité, y
+compris l'agent, peut appeler ces hôtes et obtenir la substitution. Empêcher la
+lecture et autoriser l'usage sont deux choses différentes : approuver une
+destination est précisément ce choix.
+
+**Livraison lisible dans l'invité (`--delivery guest`).** Tout ce qui tourne
+dans le sandbox, y compris l'agent, peut lire la valeur, et elle le reste tant
+que le sandbox la détient. Un instantané pris pendant qu'elle est livrée la
+capture : révoquer ensuite ne nettoie pas cet instantané. Ce mode existe pour
+les valeurs qu'une application consomme localement ; pour tout ce qui passe par
+le réseau, le mode proxy est le bon.
+
+**Sources conservées.** just-code ne modifie ni ne supprime les fichiers `.env`
+d'origine : ils restent sur l'hôte, et dans l'historique Git s'ils sont
+versionnés. L'espace de travail scellé empêche leur transfert vers l'invité,
+mais rien ne les retire du poste. Les nettoyer relève de l'utilisateur.
+
+**Magasin.** Les valeurs sont confiées au magasin natif de la plateforme
+(Trousseau, Secret Service, Credential Manager) ; just-code n'ajoute aucun
+chiffrement de son côté. Le magasin de repli (`--fallback`) est un fichier JSON
+en clair, lisible par le seul propriétaire (`0600`), **non chiffré** : il
+demande un consentement explicite et son état est rappelé à chaque affichage.
+
+**Affichage.** Aucune commande just-code n'affiche une valeur : ni l'aperçu
+d'import, ni la liste des liaisons, ni `config explain`.
+
+## Différence avec `config import-env`
+
+Les deux commandes importent un fichier `.env`, et rien d'autre ne les
+rapproche :
+
+| | `config import-env` | `secrets import` |
+| --- | --- | --- |
+| Objet | la configuration **de just-code** | les secrets **de l'application** |
+| Destination | les champs de configuration gérés | le magasin d'identifiants |
+| Suite | rien n'est écrit : prévisualisation seule | stockage, puis approbation séparée pour la livraison |
+| Clés d'identifiants | jamais copiées ; signalées vers le magasin | c'est précisément ce qui est importé |
+| Fichier source | jamais modifié | jamais modifié |
+
+`config import-env` sert donc à adopter un `.env` hérité qui portait la
+configuration de l'outil (`RUNTIME`, `ISOLATION`, chemins). `secrets import`
+sert à extraire les variables propres au projet pour que le sandbox puisse les
+recevoir. Un même fichier peut alimenter les deux, et c'est le cas courant d'un
+`.env` de projet qui contenait aussi des réglages de l'outil.
