@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.8.1...just-code-v0.9.0) (2026-10-15)
+
+
+### Features
+
+* configure Microsandbox ports per project ([e35a002](https://github.com/etalab-ia/just-code/commit/e35a002f419db1053f1c8e83b6a81bed55e93932))
+* deliver approved project secrets through the Microsandbox proxy ([1951c7e](https://github.com/etalab-ia/just-code/commit/1951c7e6d29031e6c408b793f69ee47f902727da))
+* exposer les secrets projet approuvés via le proxy Microsandbox (phase 2) ([8d5ecf1](https://github.com/etalab-ia/just-code/commit/8d5ecf1cdc2b98d48527ecd10e1635cc8a81a4f9))
+* fichiers dotenv gérés dans le guest pour les secrets approuvés (phase 3) ([f483a80](https://github.com/etalab-ia/just-code/commit/f483a8003d7745dfe3cdea7363d5f366af51eebc))
+* import project-scoped dotenv secrets ([77a5695](https://github.com/etalab-ia/just-code/commit/77a5695a68df228444145f7c6520234022029e0a))
+* importer les secrets dotenv par projet (phase 1) ([0af624b](https://github.com/etalab-ia/just-code/commit/0af624b58b0d3eeb648bd0a398e74b741aaa5099))
+* publish approved project secrets as managed guest dotenv files ([c830b14](https://github.com/etalab-ia/just-code/commit/c830b14fe258fe9e58ce68fb231ad212ea7d30e3))
+
+
+### Bug Fixes
+
+* bind the qualification transcript to what actually ran ([f9bbcee](https://github.com/etalab-ia/just-code/commit/f9bbceefd653b234284803c80850891b290ae16b))
+* make the native runner cleanup exception-safe and document lab exposure ([0764fdc](https://github.com/etalab-ia/just-code/commit/0764fdca63b600d7f761490c071a9ce168276e9a))
+* make the project secret inventory authoritative on every apply path ([f3d31f7](https://github.com/etalab-ia/just-code/commit/f3d31f7d11fc8254723d3bce3d251f0626b68c21))
+* pin python-dotenv 1.2.2 for the loader qualification ([252e1de](https://github.com/etalab-ia/just-code/commit/252e1dea7cc1e14ea96b0c398241a4d5f164549d))
+* retry Windows credential-file contention ([52b4f6f](https://github.com/etalab-ia/just-code/commit/52b4f6f7a5a4839d001a8073db42db3261411580))
+* serialize fallback mutations and validate Windows blob sizes ([e18f46a](https://github.com/etalab-ia/just-code/commit/e18f46a0a8b42f9884ea42122618a0f91915f995))
+
 ## [0.8.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.8.0...just-code-v0.8.1) (2026-10-07)
 
 
