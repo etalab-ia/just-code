@@ -216,6 +216,15 @@ invitée, puisque rien n'est substitué vers un hôte — et il n'existe **aucun
 repli automatique** de l'un vers l'autre : une valeur n'est jamais lisible dans
 l'invité sans une approbation explicite.
 
+Quatre formes de valeur sont **refusées** à l'approbation, parce qu'aucun
+encodage ne les fait lire à l'identique par les chargeurs dotenv que just-code
+épingle : une apostrophe, un `$`, deux antislashs consécutifs, et une valeur qui
+se termine par un antislash. Le refus nomme la variable et la raison ; une
+valeur refusée est un désagrément, une valeur silencieusement modifiée est un
+incident qui se produit loin d'ici. Pour ces valeurs, la livraison par proxy
+reste la bonne réponse dès lors que l'application joint le service par le
+réseau.
+
 Le fichier livré est écrit en `0600`, et la restriction est appliquée au fichier
 temporaire **avant** le renommage : le runtime crée les fichiers en `0644`, donc
 restreindre après coup laisserait une fenêtre pendant laquelle le secret serait

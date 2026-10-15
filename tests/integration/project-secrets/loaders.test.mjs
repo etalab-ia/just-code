@@ -97,3 +97,26 @@ test("the two refused classes are refused for different reasons", () => {
   assert.equal(dotenv.parse(`K='${dollar}'\n`).K, dollar);
   assert.equal(expand({ parsed: dotenv.parse(`K='${dollar}'\n`), processEnv: {} }).parsed.K, "pre-post");
 });
+
+// Backslashes are the class the encoder refuses in two shapes, and this
+// records why it is not Node's doing: Node reads every one of them exactly.
+// The refusal is driven by python-dotenv (pair, and trailing) and godotenv
+// (trailing, which it refuses as an unterminated quote).
+test("Node reads the backslash shapes the encoder refuses", () => {
+  const values = {
+    interior: "back\\slash",
+    leading: "\\leading",
+    pair: "a\\\\b",
+    trailing: "trailing\\",
+  };
+  // The realistic shape: the risky value followed by another quoted value,
+  // which is what a generated file contains.
+  const body = Object.entries(values)
+    .map(([name, value]) => `K_${name}='${value}'\n`)
+    .join("");
+  const parsed = dotenv.parse(`${body}K_AFTER='after'\n`);
+  for (const [name, value] of Object.entries(values)) {
+    assert.equal(parsed[`K_${name}`], value, `Node must read K_${name} exactly`);
+  }
+  assert.equal(parsed.K_AFTER, "after");
+});

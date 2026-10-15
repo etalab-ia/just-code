@@ -62,3 +62,19 @@ func TestARawValueWouldBreakTheWholeFile(t *testing.T) {
 		t.Fatal("a raw multiline value must break the file, which is why it is encoded")
 	}
 }
+
+func TestATrailingBackslashIsRefusedBecauseGodotenvRejectsTheFile(t *testing.T) {
+	// Even single-quoted, a trailing backslash escapes the closing quote: the
+	// Go loader refuses the whole file, so the refusal in the encoder is
+	// driven by this loader and not by caution.
+	if _, err := dotenvLiteral(`trailing\`); err == nil {
+		t.Fatal("a trailing backslash must be refused")
+	}
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("K_TARGET='trailing\\'\nK_AFTER='after'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := godotenv.Read(path); err == nil {
+		t.Fatal("godotenv must refuse a file whose quoted value ends with a backslash; if it no longer does, the refusal can be revisited")
+	}
+}

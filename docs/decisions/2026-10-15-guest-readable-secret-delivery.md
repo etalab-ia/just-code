@@ -58,19 +58,30 @@ is not confined to the variable. Measured against the loaders just-code pins
   so one PEM-shaped secret would take down every other secret in that `.env`.
   Leading or trailing whitespace, `#`, quotes and backslashes are truncated or
   transformed. The importer deliberately preserves values that do this.
-- **Single quotes** carry newlines, whitespace, `#`, double quotes, backslashes
-  and the empty value exactly in all four configurations.
-- Two classes cannot be represented without choosing one loader and breaking
-  another. A **single quote** inside the value: `godotenv` refuses the whole
-  file (Node and Python read it, so the refusal is driven by the strictest
-  loader). A **`$`**: expanded by `dotenv-expand` and `godotenv`, literal for
-  plain `dotenv`, and the usual escape `\$` is then left as a literal backslash
-  by plain `dotenv` and rejected by `python-dotenv`.
+- **Single quotes** carry newlines, whitespace, `#`, double quotes, an interior
+  backslash and the empty value exactly in all four configurations. A
+  backslash is only safe on its own, between ordinary characters.
+- Four classes cannot be represented without choosing one loader and breaking
+  another, so they are **refused**, at approval time so the user is present,
+  naming the variable and the character. A refused secret is a nuisance; a
+  silently altered one fails far from here.
+  - A **single quote** inside the value: `godotenv` refuses the whole file.
+  - A **`$`**: expanded by `dotenv-expand` and `godotenv`, literal for plain
+    `dotenv`, and the usual escape `\$` is then left as a literal backslash by
+    plain `dotenv` and rejected by `python-dotenv`.
+  - **Two consecutive backslashes**: `python-dotenv` silently collapses them to
+    one, so the application would receive a different secret than the one
+    approved.
+  - A **trailing backslash**: it escapes the closing quote. `python-dotenv`
+    then loses the value *and the following line*, and `godotenv` refuses the
+    whole file. The shape matters and is the one a generated file always has:
+    the value is followed by another quoted value.
 
-Both classes are therefore **refused**, at approval time so the user is
-present, naming the variable and the character. A refused secret is a nuisance;
-a silently altered one fails far from here. The round-trip is checked against
-real loaders rather than asserted: `godotenv` in
+The first two were found by reading the loaders; the last two came from a
+native qualification kit and were confirmed by measurement, after an earlier
+version of this record claimed single quotes preserved backslashes "exactly in
+every loader" on the strength of an interior backslash alone. The round-trip is
+now checked against real loaders rather than asserted: `godotenv` in
 `internal/justcode/project_secret_encoding_loaders_test.go`, and Node and
 Python in `tests/integration/project-secrets/`.
 

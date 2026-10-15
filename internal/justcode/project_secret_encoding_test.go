@@ -20,7 +20,10 @@ func TestDotenvLiteralRoundTripsThroughTheQualifiedLoaders(t *testing.T) {
 		"   leading",
 		"hash # inside",
 		`has " quote`,
+		// A backslash is safe on its own, including at the start: only a pair
+		// and a trailing one are refused below.
 		`back\slash`,
+		`\leading`,
 		"",
 	} {
 		literal, err := dotenvLiteral(value)
@@ -38,9 +41,11 @@ func TestDotenvLiteralRoundTripsThroughTheQualifiedLoaders(t *testing.T) {
 
 func TestDotenvLiteralRefusesWhatNoLoaderAgreesOn(t *testing.T) {
 	for name, value := range map[string]string{
-		"single quote": "it's",
-		"dollar":       "pre$VAR-post",
-		"braced":       "a${VAR}b",
+		"single quote":       "it's",
+		"dollar":             "pre$VAR-post",
+		"braced":             "a${VAR}b",
+		"backslash pair":     `a\\b`,
+		"trailing backslash": `trailing\`,
 	} {
 		if _, err := dotenvLiteral(value); err == nil {
 			t.Fatalf("%s must be refused rather than written ambiguously", name)

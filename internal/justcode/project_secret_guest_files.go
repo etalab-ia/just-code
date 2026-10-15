@@ -41,10 +41,16 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 //   - A raw value containing a newline does not merely corrupt that variable;
 //     godotenv refuses the whole file. Leading or trailing whitespace, a
 //     "#", a quote or a backslash are likewise mangled or truncated raw.
-//   - Single quotes preserve newlines, whitespace, "#", double quotes and
-//     backslashes in every loader tested, so they are the encoding to use.
+//   - Single quotes preserve newlines, whitespace, "#", double quotes and an
+//     interior backslash in every loader tested, so they are the encoding to
+//     use.
 //   - A single quote inside the value cannot be escaped: godotenv then
 //     refuses the whole file, and python-dotenv misparses it.
+//   - A backslash is only safe on its own, between ordinary characters.
+//     Two in a row are collapsed to one by python-dotenv, silently. A
+//     trailing backslash escapes the closing quote: python-dotenv then loses
+//     the value *and* the following line, and godotenv refuses the whole
+//     file. Both are refused rather than delivered wrong.
 //   - A "$" followed by a name or "{" is expanded by dotenv-expand and by
 //     godotenv, and the usual escape, "\$", is then left as a literal
 //     backslash by plain Node dotenv and rejected by python-dotenv. So a
@@ -60,6 +66,12 @@ func dotenvLiteral(value string) (string, error) {
 	}
 	if strings.ContainsRune(value, '$') {
 		return "", fmt.Errorf("contains \"$\", which dotenv-expand and godotenv expand but plain Node dotenv and python-dotenv do not: no single encoding is exact for every loader")
+	}
+	if strings.Contains(value, `\\`) {
+		return "", fmt.Errorf("contains two consecutive backslashes, which python-dotenv silently collapses to one")
+	}
+	if strings.HasSuffix(value, `\`) {
+		return "", fmt.Errorf("ends with a backslash, which escapes the closing quote: python-dotenv then loses this value and the next line, and godotenv refuses the whole file")
 	}
 	return "'" + value + "'", nil
 }

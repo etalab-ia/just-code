@@ -66,3 +66,34 @@ class GuestReadableEncodingTests(unittest.TestCase):
                             interpolate=interpolate,
                         )
                         self.assertEqual(values[name], value)
+
+
+class BackslashEncodingTests(unittest.TestCase):
+    """Why the encoder refuses a backslash pair and a trailing backslash.
+
+    Node reads all of these exactly; python-dotenv does not, so the refusal is
+    driven by this loader. The shape matters: a value is always followed by
+    another quoted value in a generated file, and that is where the trailing
+    backslash does its damage.
+    """
+
+    def _values(self, body):
+        with patch.dict(os.environ, {}, clear=True):
+            return dotenv_values(stream=io.StringIO(body))
+
+    def test_a_backslash_pair_is_silently_collapsed(self):
+        values = self._values("K_TARGET='a\\\\b'\nK_AFTER='after'\n")
+        self.assertEqual(values["K_AFTER"], "after")
+        self.assertNotEqual(values["K_TARGET"], "a\\\\b")
+        self.assertEqual(values["K_TARGET"], "a\\b")
+
+    def test_a_trailing_backslash_loses_the_value_and_the_next_line(self):
+        values = self._values("K_TARGET='trailing\\'\nK_AFTER='after'\n")
+        self.assertIsNone(values.get("K_TARGET"))
+        self.assertIsNone(values.get("K_AFTER"))
+
+    def test_an_interior_and_a_leading_backslash_are_fine(self):
+        values = self._values("K_A='back\\slash'\nK_B='\\leading'\nK_AFTER='after'\n")
+        self.assertEqual(values["K_A"], "back\\slash")
+        self.assertEqual(values["K_B"], "\\leading")
+        self.assertEqual(values["K_AFTER"], "after")
