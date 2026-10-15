@@ -48,6 +48,32 @@ guest writes lives in a host file. What the contract forbids is an
 default, so the mode is set explicitly and verified, and the value is delivered
 only after the file exists with the restrictive mode.
 
+**Encoding.** A value is written as a single-quoted dotenv literal. This is not
+cosmetic: dotenv has no escaping that every loader agrees on, and the failure
+is not confined to the variable. Measured against the loaders just-code pins
+(Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2, `python-dotenv`
+1.2.2, `godotenv` 1.5.1):
+
+- A **raw** value containing a newline makes `godotenv` refuse the *whole file*,
+  so one PEM-shaped secret would take down every other secret in that `.env`.
+  Leading or trailing whitespace, `#`, quotes and backslashes are truncated or
+  transformed. The importer deliberately preserves values that do this.
+- **Single quotes** carry newlines, whitespace, `#`, double quotes, backslashes
+  and the empty value exactly in all four configurations.
+- Two classes cannot be represented without choosing one loader and breaking
+  another. A **single quote** inside the value: `godotenv` refuses the whole
+  file (Node and Python read it, so the refusal is driven by the strictest
+  loader). A **`$`**: expanded by `dotenv-expand` and `godotenv`, literal for
+  plain `dotenv`, and the usual escape `\$` is then left as a literal backslash
+  by plain `dotenv` and rejected by `python-dotenv`.
+
+Both classes are therefore **refused**, at approval time so the user is
+present, naming the variable and the character. A refused secret is a nuisance;
+a silently altered one fails far from here. The round-trip is checked against
+real loaders rather than asserted: `godotenv` in
+`internal/justcode/project_secret_encoding_loaders_test.go`, and Node and
+Python in `tests/integration/project-secrets/`.
+
 **Snapshot lifecycle.** A snapshot taken while a guest-readable value is
 delivered captures it, and deleting the file afterwards does not remove it from
 snapshots already taken. This is ordinary snapshot behaviour, not a defect, and

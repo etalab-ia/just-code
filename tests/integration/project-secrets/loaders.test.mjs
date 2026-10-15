@@ -44,3 +44,56 @@ test("default dollar placeholders are not safe through interpolation", () => {
     assert.equal(result.parsed.API_KEY, "");
   }
 });
+
+// The guest-readable delivery encoding: a value is written as a single-quoted
+// literal, and these are the value classes that form must carry exactly. The
+// Go side (internal/justcode/project_secret_encoding_loaders_test.go) proves
+// the encoder emits this form; these tests prove the loaders read it back.
+const guestReadableValues = {
+  PLAIN: "plainvalue",
+  MULTILINE: "-----BEGIN KEY-----\nAAAA\n-----END KEY-----",
+  TRAILING: "trailing   ",
+  LEADING: "   leading",
+  HASH: "hash # inside",
+  DQUOTE: 'has " quote',
+  BACKSLASH: "back\\slash",
+  EMPTY: "",
+};
+
+for (const [name, value] of Object.entries(guestReadableValues)) {
+  test(`single-quoted ${name} round-trips through dotenv`, () => {
+    const parsed = dotenv.parse(`${name}='${value}'\n`);
+    assert.equal(parsed[name], value);
+  });
+
+  test(`single-quoted ${name} round-trips through dotenv-expand`, () => {
+    const parsed = dotenv.parse(`${name}='${value}'\n`);
+    const result = expand({ parsed, processEnv: {} });
+    assert.equal(result.parsed[name], value);
+  });
+}
+
+test("a raw multiline value breaks the whole file for the line-oriented parsers", () => {
+  // Not confined to one variable: this is why the value is encoded.
+  const raw = "TLS_KEY=-----BEGIN KEY-----\nAAAA\n-----END KEY-----\nAPI_KEY=still-here\n";
+  const parsed = dotenv.parse(raw);
+  assert.notEqual(parsed.TLS_KEY, "-----BEGIN KEY-----\nAAAA\n-----END KEY-----");
+});
+
+test("the two refused classes are refused for different reasons", () => {
+  // Pinned so a future attempt to "just escape it" has the evidence in front
+  // of it. The reasons are not the same, and neither is a Node problem.
+  const apostrophe = "it's";
+  const dollar = "pre$VAR-post";
+
+  // Node reads the apostrophe fine — dotenv takes the last quote on the line.
+  // The refusal is driven by the Go loader, which refuses the whole file; see
+  // internal/justcode/project_secret_encoding_loaders_test.go.
+  assert.equal(dotenv.parse(`K='${apostrophe}'\n`).K, apostrophe);
+
+  // The dollar case is a genuine conflict between loaders rather than a
+  // mangling: the same bytes mean the literal value to plain dotenv and
+  // "pre-post" once expansion runs, so no encoding can be exact for both.
+  assert.equal(dotenv.parse(`K='${dollar}'\n`).K, dollar);
+  assert.equal(expand({ parsed: dotenv.parse(`K='${dollar}'\n`), processEnv: {} }).parsed.K, "pre-post");
+});
