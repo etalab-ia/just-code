@@ -42,7 +42,7 @@ func TestStartPathDeliversGuestReadableValue(t *testing.T) {
 	if !ok {
 		t.Fatalf("the delivered file is missing: %v", client.files)
 	}
-	if !strings.Contains(content, "DB_PASSWORD=local-secret\n") {
+	if !strings.Contains(content, "DB_PASSWORD='local-secret'\n") {
 		t.Fatalf("the real value must be delivered: %q", content)
 	}
 	if mode := client.modes[guestPath]; mode != 0o600 {

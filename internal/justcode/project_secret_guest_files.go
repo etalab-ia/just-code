@@ -27,6 +27,47 @@ import (
 // the component so a human reading the guest can tell where it came from.
 const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 
+// dotenvLiteral renders a value for a dotenv file, and reports whether the
+// value can be represented unambiguously at all.
+//
+// dotenv has no single escaping that every loader agrees on, and this was
+// measured against the loaders just-code pins (Node dotenv 16.4.7 with and
+// without dotenv-expand 12.0.2, python-dotenv 1.2.1, godotenv 1.5.1):
+//
+//   - A raw value containing a newline does not merely corrupt that variable;
+//     godotenv refuses the whole file. Leading or trailing whitespace, a
+//     "#", a quote or a backslash are likewise mangled or truncated raw.
+//   - Single quotes preserve newlines, whitespace, "#", double quotes and
+//     backslashes in every loader tested, so they are the encoding to use.
+//   - A single quote inside the value cannot be escaped: godotenv then
+//     refuses the whole file, and python-dotenv misparses it.
+//   - A "$" followed by a name or "{" is expanded by dotenv-expand and by
+//     godotenv, and the usual escape, "\$", is then left as a literal
+//     backslash by plain Node dotenv and rejected by python-dotenv. So a
+//     value containing "$" cannot be delivered through dotenv syntax without
+//     picking one loader's semantics and breaking another's.
+//
+// Values that cannot be represented are refused rather than written: a
+// mangled secret is worse than a refused one, because it fails silently and
+// far from here.
+func dotenvLiteral(value string) (string, error) {
+	if strings.ContainsRune(value, '\'') {
+		return "", fmt.Errorf("contains a single quote, which dotenv cannot escape: godotenv refuses the whole file and python-dotenv misparses it")
+	}
+	if strings.ContainsRune(value, '$') {
+		return "", fmt.Errorf("contains \"$\", which dotenv-expand and godotenv expand but plain Node dotenv and python-dotenv do not: no single encoding is exact for every loader")
+	}
+	return "'" + value + "'", nil
+}
+
+// CheckGuestReadableValue reports whether a value can be delivered into a
+// dotenv file. It is exported so the approval can refuse an undeliverable
+// value while the user is still present, instead of letting every start fail.
+func CheckGuestReadableValue(value string) error {
+	_, err := dotenvLiteral(value)
+	return err
+}
+
 // GuestSecretFile is one managed dotenv file to publish inside the guest.
 type GuestSecretFile struct {
 	// Component is the project-relative source path, e.g. "apps/api/.env".
@@ -101,7 +142,11 @@ func BuildGuestSecretFiles(deliveries []ProjectSecretDelivery) ([]GuestSecretFil
 				if d.Value == nil {
 					return nil, fmt.Errorf("component %s variable %s is guest-readable but its value was not resolved", component, d.Name)
 				}
-				b.WriteString(d.Name + "=" + *d.Value + "\n")
+				literal, err := dotenvLiteral(*d.Value)
+				if err != nil {
+					return nil, fmt.Errorf("component %s variable %s cannot be delivered in a dotenv file: the value %w", component, d.Name, err)
+				}
+				b.WriteString(d.Name + "=" + literal + "\n")
 			case d.Marker == "":
 				return nil, fmt.Errorf("component %s variable %s has no guest marker", component, d.Name)
 			default:

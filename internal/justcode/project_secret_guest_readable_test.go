@@ -60,7 +60,7 @@ func TestBuildGuestSecretFilesRendersValuesForGuestReadableBindings(t *testing.T
 	if !file.Secret {
 		t.Fatal("a file holding a real value must be marked secret")
 	}
-	if !strings.Contains(file.Content, "DB_PASSWORD=local-secret-value\n") {
+	if !strings.Contains(file.Content, "DB_PASSWORD='local-secret-value'\n") {
 		t.Fatalf("the real value must be rendered: %q", file.Content)
 	}
 	if !strings.Contains(file.Content, "API_KEY=__JUST_CODE_SECRET_aaa__\n") {
@@ -96,7 +96,7 @@ func TestBuildGuestSecretFilesRequiresAResolvedValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(files[0].Content, "EMPTY_ONE=\n") {
+	if !strings.Contains(files[0].Content, "EMPTY_ONE=''\n") {
 		t.Fatalf("an empty secret must render as an empty assignment: %q", files[0].Content)
 	}
 }

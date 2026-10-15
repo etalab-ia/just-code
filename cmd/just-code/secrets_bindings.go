@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -241,6 +242,21 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 	}
 	if binding.GuestEnv == "" && !guestReadable {
 		binding.GuestEnv = justcode.ProjectSecretGuestEnv(binding.Component, binding.Name)
+	}
+	if guestReadable {
+		// Fail here rather than at the next start: whether a value can be
+		// written into a dotenv file exactly is a property of the value, and
+		// the user is present now. A value that no encoding carries would
+		// otherwise refuse every start until it is withdrawn.
+		value, err := store.Get(context.Background(), binding.Profile, binding.Component, binding.Name)
+		if err != nil {
+			return 1, fmt.Errorf("cannot read %s (%s) to check that it can be delivered: %w", binding.Name, binding.Component, err)
+		}
+		if err := justcode.CheckGuestReadableValue(value); err != nil {
+			return 1, fmt.Errorf("%s (%s) cannot be delivered as a guest-readable dotenv value: %w\n"+
+				"Use the default proxy delivery if the application reaches the service over the network, or wait for standalone file delivery for this one.",
+				binding.Name, binding.Component, err)
+		}
 	}
 	if guestReadable {
 		fmt.Printf("Approving %s#%s for %s as GUEST-READABLE (written to %s)\n",
