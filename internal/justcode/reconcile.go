@@ -473,6 +473,22 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 				return err
 			}
 		}
+		// Guest-readable project secrets are guest-local managed data for the
+		// same reason: the approvals are host-local and deliberately absent
+		// from the VM configuration revision, so a delivery or a revocation
+		// never changes that revision. Deferring them to a later start would
+		// defer them forever, because a healthy sandbox plans no-op every
+		// time — and what stays behind on a revocation is the plaintext
+		// value, not an inert placeholder.
+		//
+		// Only a resolved binding set may reach this: the applied environment
+		// inventory is derived from it, and an unresolved set would look like
+		// "nothing is bound" and unregister live proxy variables.
+		if resolved {
+			if err := m.syncProjectSecretDelivery(ctx, bindings); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 

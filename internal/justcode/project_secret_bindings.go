@@ -25,14 +25,23 @@ import (
 // says which of those entries the runtime may expose and where.
 
 // ProjectSecretBinding is one approved mapping from an imported value to a
-// guest-visible placeholder and destination set.
+// guest-visible placeholder and destination set, or to a guest-readable file
+// when the application consumes the value locally.
 type ProjectSecretBinding struct {
 	// Profile and Component identify the imported entry this binding exposes.
 	Profile   string `json:"profile"`
 	Component string `json:"component"`
 	Name      string `json:"name"`
+	// Delivery selects how the value reaches the guest. Empty means proxy
+	// (the default): the guest holds a marker and the proxy substitutes the
+	// value toward the approved hosts. Guest means the real value is written
+	// into the guest for applications that consume it locally, which is a
+	// different and explicitly approved trade: the agent can read it. There is
+	// no automatic fallback between the two.
+	Delivery string `json:"delivery,omitempty"`
 	// GuestEnv is the variable the guest sees; the value under it is the
-	// placeholder, never the credential.
+	// placeholder, never the credential. A guest-readable binding has no
+	// guest variable: the value is a file, not an environment placeholder.
 	GuestEnv string `json:"guestEnv"`
 	// Destinations are the only hosts that may receive the real value.
 	// Overlapping destinations across bindings are allowed: the qualified
@@ -40,6 +49,30 @@ type ProjectSecretBinding struct {
 	// tests/integration/project-secrets/native covers the shared-host and
 	// cross-host denial cases.
 	Destinations []string `json:"destinations"`
+}
+
+// Project secret delivery modes.
+const (
+	// ProjectSecretDeliveryProxy is the default and the safe one: the value
+	// never enters the guest, only a placeholder the proxy substitutes.
+	ProjectSecretDeliveryProxy = "proxy"
+	// ProjectSecretDeliveryGuest writes the real value into the guest for an
+	// application that must consume it locally. The agent can read it, and the
+	// approval is the consent.
+	ProjectSecretDeliveryGuest = "guest"
+)
+
+// DeliveryMode normalizes the binding's delivery selection.
+func (b ProjectSecretBinding) DeliveryMode() string {
+	if b.Delivery == "" {
+		return ProjectSecretDeliveryProxy
+	}
+	return b.Delivery
+}
+
+// GuestReadable reports whether this binding hands the real value to the guest.
+func (b ProjectSecretBinding) GuestReadable() bool {
+	return b.DeliveryMode() == ProjectSecretDeliveryGuest
 }
 
 func (b ProjectSecretBinding) identity() string {
@@ -179,6 +212,28 @@ func validateProjectSecretBindingSet(set projectSecretBindingSet, namespace stri
 		if !validSecretProfile(b.Profile) || !validSecretComponent(b.Component) || !validSecretIdentifier(b.Name) {
 			return fmt.Errorf("project secret bindings contain an invalid identity")
 		}
+		switch b.DeliveryMode() {
+		case ProjectSecretDeliveryProxy, ProjectSecretDeliveryGuest:
+		default:
+			return fmt.Errorf("project secret binding %s has an unknown delivery mode %q", b.Name, b.Delivery)
+		}
+		if b.GuestReadable() {
+			// The value is a file, not a proxied placeholder: there is nothing
+			// for the proxy to substitute, so a destination set here would
+			// describe an authorization the binding does not use, and a guest
+			// variable would name a placeholder that is never exposed.
+			if len(b.Destinations) > 0 {
+				return fmt.Errorf("guest-readable binding %s must not declare destinations: the value is read locally, not substituted toward a host", b.Name)
+			}
+			if b.GuestEnv != "" {
+				return fmt.Errorf("guest-readable binding %s must not declare a guest variable: the value is delivered as a file", b.Name)
+			}
+			if byIdentity[b.identity()] {
+				return fmt.Errorf("project secret bindings contain a duplicate entry for %s", b.Name)
+			}
+			byIdentity[b.identity()] = true
+			continue
+		}
 		if b.GuestEnv == "" || !isGuestEnvName(b.GuestEnv) {
 			return fmt.Errorf("project secret binding %s has an invalid guest variable name", b.Name)
 		}
@@ -284,6 +339,12 @@ type ProjectSecretDelivery struct {
 	// computed once here so the environment binding and any generated guest
 	// dotenv file expose exactly the same placeholder.
 	Marker string
+	// Value is the resolved credential, set only for a guest-readable
+	// delivery, immediately before the SDK call that writes it into the guest.
+	// It is a pointer so "not resolved" is distinct from a legitimately empty
+	// secret: a nil value on a guest-readable delivery is an error, never an
+	// empty string.
+	Value *string
 }
 
 // projectSecretDeliveries resolves this project's approved bindings, cheaply:
@@ -476,7 +537,10 @@ func ApproveProjectSecretBinding(fs FS, stateDir, namespace string, b ProjectSec
 	if err != nil {
 		return err
 	}
-	if b.GuestEnv == "" {
+	// A proxy binding derives its guest variable; a guest-readable one has
+	// none, because the value is delivered as a file rather than exposed as a
+	// placeholder.
+	if b.GuestEnv == "" && !b.GuestReadable() {
 		b.GuestEnv = ProjectSecretGuestEnv(b.Component, b.Name)
 	}
 	replaced := false

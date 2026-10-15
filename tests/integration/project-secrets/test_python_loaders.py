@@ -35,3 +35,34 @@ class ProjectSecretLoaderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuestReadableEncodingTests(unittest.TestCase):
+    """The single-quoted literal is the guest-readable delivery encoding.
+
+    The Go encoder emits this form (see
+    internal/justcode/project_secret_encoding_loaders_test.go); these cases
+    prove python-dotenv reads it back exactly, with and without interpolation.
+    """
+
+    VALUES = {
+        "PLAIN": "plainvalue",
+        "MULTILINE": "-----BEGIN KEY-----\nAAAA\n-----END KEY-----",
+        "TRAILING": "trailing   ",
+        "LEADING": "   leading",
+        "HASH": "hash # inside",
+        "DQUOTE": 'has " quote',
+        "BACKSLASH": "back\\slash",
+        "EMPTY": "",
+    }
+
+    def test_single_quoted_values_round_trip(self):
+        with patch.dict(os.environ, {}, clear=True):
+            for name, value in self.VALUES.items():
+                for interpolate in [False, True]:
+                    with self.subTest(name=name, interpolate=interpolate):
+                        values = dotenv_values(
+                            stream=io.StringIO(f"{name}='{value}'\n"),
+                            interpolate=interpolate,
+                        )
+                        self.assertEqual(values[name], value)

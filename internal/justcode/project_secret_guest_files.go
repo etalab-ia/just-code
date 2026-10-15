@@ -15,24 +15,73 @@ import (
 // with the Microsandbox proxy and exposes a marker under a guest variable.
 // Many applications, though, read a dotenv file rather than the environment,
 // and some frameworks load a different file per sub-project. This file renders
-// the approved deliveries into those files, carrying the marker — never a
-// value — and refuses to touch anything just-code did not write.
+// the approved deliveries into those files and refuses to touch anything
+// just-code did not write.
 //
-// The published file is a delivery target, not a secret: it contains the same
-// opaque marker the guest environment holds. The real value still exists only
-// on the host, and only the network proxy substitutes it, only toward the
-// destinations the user approved.
+// Two kinds of value appear here, and they are not interchangeable. A
+// proxy-protected binding contributes the opaque marker the guest environment
+// already holds: the real value stays on the host and only the proxy
+// substitutes it, only toward the approved destinations. A guest-readable
+// binding contributes the real value, because nothing will substitute it — the
+// application consumes it locally. Such a file is a secret: it is created
+// 0600, it is marked in its header, and everything in the guest, including the
+// agent, can read it. See docs/decisions/2026-10-15-guest-readable-secret-delivery.md.
 
 // guestSecretHeaderPrefix marks a file just-code owns. The second line names
 // the component so a human reading the guest can tell where it came from.
 const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 
+// dotenvLiteral renders a value for a dotenv file, and reports whether the
+// value can be represented unambiguously at all.
+//
+// dotenv has no single escaping that every loader agrees on, and this was
+// measured against the loaders just-code pins (Node dotenv 16.4.7 with and
+// without dotenv-expand 12.0.2, python-dotenv 1.2.1, godotenv 1.5.1):
+//
+//   - A raw value containing a newline does not merely corrupt that variable;
+//     godotenv refuses the whole file. Leading or trailing whitespace, a
+//     "#", a quote or a backslash are likewise mangled or truncated raw.
+//   - Single quotes preserve newlines, whitespace, "#", double quotes and
+//     backslashes in every loader tested, so they are the encoding to use.
+//   - A single quote inside the value cannot be escaped: godotenv then
+//     refuses the whole file, and python-dotenv misparses it.
+//   - A "$" followed by a name or "{" is expanded by dotenv-expand and by
+//     godotenv, and the usual escape, "\$", is then left as a literal
+//     backslash by plain Node dotenv and rejected by python-dotenv. So a
+//     value containing "$" cannot be delivered through dotenv syntax without
+//     picking one loader's semantics and breaking another's.
+//
+// Values that cannot be represented are refused rather than written: a
+// mangled secret is worse than a refused one, because it fails silently and
+// far from here.
+func dotenvLiteral(value string) (string, error) {
+	if strings.ContainsRune(value, '\'') {
+		return "", fmt.Errorf("contains a single quote, which dotenv cannot escape: godotenv refuses the whole file and python-dotenv misparses it")
+	}
+	if strings.ContainsRune(value, '$') {
+		return "", fmt.Errorf("contains \"$\", which dotenv-expand and godotenv expand but plain Node dotenv and python-dotenv do not: no single encoding is exact for every loader")
+	}
+	return "'" + value + "'", nil
+}
+
+// CheckGuestReadableValue reports whether a value can be delivered into a
+// dotenv file. It is exported so the approval can refuse an undeliverable
+// value while the user is still present, instead of letting every start fail.
+func CheckGuestReadableValue(value string) error {
+	_, err := dotenvLiteral(value)
+	return err
+}
+
 // GuestSecretFile is one managed dotenv file to publish inside the guest.
 type GuestSecretFile struct {
 	// Component is the project-relative source path, e.g. "apps/api/.env".
 	Component string
-	// Content is the rendered dotenv text. It contains markers only.
+	// Content is the rendered dotenv text: markers for proxy-protected
+	// bindings, and real values for guest-readable ones.
 	Content string
+	// Secret reports that Content holds at least one real value, so the file
+	// is written with owner-only permissions and never briefly world-readable.
+	Secret bool
 }
 
 // GuestPath is the in-guest path this file is published to.
@@ -41,9 +90,10 @@ func (f GuestSecretFile) GuestPath() (string, error) {
 }
 
 // BuildGuestSecretFiles renders the approved deliveries into one file per
-// component. Only approved values appear, and each appears as the marker its
-// binding already exposes in the guest environment, so an application reading
-// either source gets the same placeholder.
+// component. A proxy-protected binding contributes the marker its guest
+// environment already exposes, so an application reading either source gets
+// the same placeholder. A guest-readable binding contributes the real value,
+// because there is no proxy in front of it to substitute anything.
 //
 // A component with no approved binding produces no file: generating an empty
 // dotenv would silently shadow whatever the project ships.
@@ -65,24 +115,49 @@ func BuildGuestSecretFiles(deliveries []ProjectSecretDelivery) ([]GuestSecretFil
 	for _, component := range components {
 		entries := byComponent[component]
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+		holdsSecret := false
+		for _, d := range entries {
+			if d.GuestReadable() {
+				holdsSecret = true
+				break
+			}
+		}
 		var b strings.Builder
 		b.WriteString(guestSecretHeaderPrefix + "\n")
 		b.WriteString("# source: " + component + "\n")
-		b.WriteString("# Each value below is an opaque placeholder. The real value stays on\n")
-		b.WriteString("# the host; the sandbox proxy substitutes it only toward the hosts this\n")
-		b.WriteString("# project approved.\n")
+		if holdsSecret {
+			b.WriteString("# WARNING: this file contains real secret values. Everything running in\n")
+			b.WriteString("# this sandbox, including the agent, can read them.\n")
+			b.WriteString("# Values marked as placeholders are not secrets: the proxy substitutes\n")
+			b.WriteString("# those toward the hosts this project approved.\n")
+		} else {
+			b.WriteString("# Each value below is an opaque placeholder. The real value stays on\n")
+			b.WriteString("# the host; the sandbox proxy substitutes it only toward the hosts this\n")
+			b.WriteString("# project approved.\n")
+		}
 		seen := map[string]bool{}
 		for _, d := range entries {
 			if seen[d.Name] {
 				return nil, fmt.Errorf("component %s has two approved bindings for %s", component, d.Name)
 			}
 			seen[d.Name] = true
-			if d.Marker == "" {
+			switch {
+			case d.GuestReadable():
+				if d.Value == nil {
+					return nil, fmt.Errorf("component %s variable %s is guest-readable but its value was not resolved", component, d.Name)
+				}
+				literal, err := dotenvLiteral(*d.Value)
+				if err != nil {
+					return nil, fmt.Errorf("component %s variable %s cannot be delivered in a dotenv file: the value %w", component, d.Name, err)
+				}
+				b.WriteString(d.Name + "=" + literal + "\n")
+			case d.Marker == "":
 				return nil, fmt.Errorf("component %s variable %s has no guest marker", component, d.Name)
+			default:
+				b.WriteString(d.Name + "=" + d.Marker + "\n")
 			}
-			b.WriteString(d.Name + "=" + d.Marker + "\n")
 		}
-		files = append(files, GuestSecretFile{Component: component, Content: b.String()})
+		files = append(files, GuestSecretFile{Component: component, Content: b.String(), Secret: holdsSecret})
 	}
 	return files, nil
 }
@@ -299,7 +374,7 @@ func (m *MicrosandboxRuntime) publishGuestSecretFiles(ctx context.Context, plan 
 		if err != nil {
 			return err
 		}
-		if err := m.writeGuestFileAtomically(ctx, guestPath, []byte(file.Content)); err != nil {
+		if err := m.writeGuestFileAtomically(ctx, guestPath, []byte(file.Content), file.Secret); err != nil {
 			return fmt.Errorf("publishing %s: %w", guestPath, err)
 		}
 	}
@@ -326,16 +401,40 @@ func (m *MicrosandboxRuntime) removeManagedGuestFile(ctx context.Context, guestP
 
 // writeGuestFileAtomically writes payload to guestPath via a sibling temporary
 // file and a rename, creating the parent directory first.
-func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, guestPath string, payload []byte) error {
+//
+// A file holding a real secret is created empty with mode 0600 BEFORE the
+// payload is written, and the mode is verified before the rename. The
+// runtime's filesystem write creates files 0644, so writing first and
+// restricting afterwards would leave the value readable by every account in
+// the guest for that window, and a crash inside the window would leave it that
+// way permanently. Writing into an existing file preserves its mode: the
+// phase-4 probe measures this (`rewrite-mode`: 0600 after a rewrite of a 0600
+// file), which is what makes the ordering safe.
+func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, guestPath string, payload []byte, secret bool) error {
 	dir := path.Dir(guestPath)
 	tmp := guestPath + ".jc-tmp"
 	if err := m.guestShell(ctx, "mkdir -p "+shellQuote(dir)); err != nil {
 		return err
 	}
+	if secret {
+		// umask 077 rather than `install -m`: both are portable enough, but
+		// this needs no external binary to exist in the guest image.
+		if err := m.guestShell(ctx, "umask 077; : > "+shellQuote(tmp)); err != nil {
+			return fmt.Errorf("creating %s with restrictive permissions: %w", tmp, err)
+		}
+	}
 	if err := m.Client.WriteFile(ctx, m.InstanceName(), tmp, payload); err != nil {
 		return err
 	}
-	if err := m.guestShell(ctx, "mv -f "+shellQuote(tmp)+" "+shellQuote(guestPath)); err != nil {
+	move := "mv -f " + shellQuote(tmp) + " " + shellQuote(guestPath)
+	if secret {
+		// The mode is checked in the same invocation that renames, so a file
+		// that somehow lost its restriction is never published under the
+		// final name: the check is what turns the assumption above into a
+		// guarantee.
+		move = "f=" + shellQuote(tmp) + "; if [ \"$(stat -c %a \"$f\")\" != \"600\" ]; then rm -f \"$f\"; exit 5; fi; " + move
+	}
+	if err := m.guestShell(ctx, move); err != nil {
 		_ = m.guestShell(ctx, "rm -f "+shellQuote(tmp))
 		return err
 	}
