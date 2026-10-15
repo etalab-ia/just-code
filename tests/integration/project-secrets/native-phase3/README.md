@@ -115,6 +115,12 @@ go.mod / go.sum         module pinned to microsandbox SDK v0.7.6
   or pip needed on the host**: the guest installs its own throwaway packages
   (`apk add nodejs npm`, `npm ci`, `pip install`) from public registries
   through the lab's DNS relay.
+  - If `go` is managed by `proto` and the shell reports
+    `proto::detect::failed`, there is no version pinned for that directory:
+    either `proto pin go <version>` inside the kit, or put the installed
+    toolchain on PATH directly (e.g.
+    `export PATH="$HOME/.proto/tools/go/1.27.1/bin:$PATH"`). This is a host
+    quirk, not a kit failure.
 - The machine's **LAN IPv4** (e.g. from `ipconfig getifaddr en0`).
 - Ports `19443/tcp` and `15356/udp` free (defaults; override with `--tls`/`--dns`).
 - The guest pulls the `python:3.12-alpine` image from Docker Hub on first run.
@@ -128,6 +134,12 @@ python3 test_lab.py                 # lab DNS unit tests (runs anywhere)
 python3 verify_vendored.py          # vendored sources match the pinned commit
 python3 run.py --ip <LAN IPv4>      # e.g. --ip 192.168.1.42
 ```
+
+The run needs the fixture directories to exist inside the guest; the probe
+creates them itself (`mkdir -p`) before writing, because the sandbox write API
+does not create parents. A first run that fails at `guest-fixtures-pushed` with
+a bare "No such file or directory" means that step was skipped — do not
+"fix" it by weakening the assertion.
 
 Optional flags: `--tls <port>`, `--dns <port>`,
 `--dns-upstream <resolver IPv4>` (default: the host's first configured
@@ -165,6 +177,34 @@ resolver. Host DNS is never read beyond `/etc/resolv.conf` for the relay
 default, and never modified.
 
 ## Evidence and privacy
+
+### Recorded native run (2026-10-15)
+
+`python3 run.py --ip 192.168.86.28` was run twice on macOS arm64
+(MacBook-Pro-Luis.local, macOS 27.0.1, Go 1.27.1) against the landed merge
+commit `f483a8003d7745dfe3cdea7363d5f366af51eebc`. **All 19 assertions passed
+both times**, with the byte-identical sanitized transcript in
+[`evidence/`](evidence/README.md):
+
+```
+PASS create-inert-sentinels              PASS node-parses-file-marker
+PASS rotate-to-envrefs                   PASS python-parses-file-marker
+PASS exact-guest-env-markers             PASS node-header-substituted
+PASS published-managed-paths             PASS python-header-substituted
+PASS root-file-exact-marker-only         PASS components-do-not-bleed
+PASS api-file-exact-marker-only          PASS evil-denied-failclosed
+PASS no-temp-file-left                   PASS persisted-envrefs-no-raw-canary
+PASS guest-fixtures-pushed               PASS no-host-mounts
+PASS node-runtime-and-loaders-installed  PASS cleanup-own-vm
+PASS python-loader-installed
+```
+
+The two cases that carry the phase-3 claim are `node-header-substituted` and
+`python-header-substituted`: a real Node application and a real Python
+application each read their own component's generated file, took the marker
+from it, and issued the HTTPS request — and the lab recorded the substituted
+canary. `components-do-not-bleed` proves two components can define the same
+variable name without mixing.
 
 - Only synthetic random canaries are used (two per run). They live in the
   runner process environment and the throwaway VM, never in files under the

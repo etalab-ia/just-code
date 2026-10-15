@@ -432,6 +432,13 @@ func run() {
 			diagnostic("push-read-embed", err, embedPath)
 			return false
 		}
+		// The sandbox write API does not create parents: the fixture
+		// directory has to exist before the file is written. Without this the
+		// first run fails at the first fixture with a bare "no such file".
+		if code, stderr, e := rt.Client.Exec(ctx, name, "mkdir -p "+kitQuote(pathDir(guestPath))); e != nil || code != 0 {
+			diagnostic("push-mkdir", e, guestPath+" "+stderr)
+			return false
+		}
 		if err := rt.Client.WriteFile(ctx, name, guestPath, data); err != nil {
 			diagnostic("push-write", err, guestPath)
 			return false
@@ -523,4 +530,18 @@ func main() {
 	if failed {
 		os.Exit(1)
 	}
+}
+
+// kitQuote wraps a value as a single-quoted POSIX shell word.
+func kitQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// pathDir returns the parent directory of a POSIX guest path.
+func pathDir(guestPath string) string {
+	idx := strings.LastIndex(guestPath, "/")
+	if idx <= 0 {
+		return "/"
+	}
+	return guestPath[:idx]
 }
