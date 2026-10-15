@@ -15,13 +15,17 @@ import (
 // with the Microsandbox proxy and exposes a marker under a guest variable.
 // Many applications, though, read a dotenv file rather than the environment,
 // and some frameworks load a different file per sub-project. This file renders
-// the approved deliveries into those files, carrying the marker — never a
-// value — and refuses to touch anything just-code did not write.
+// the approved deliveries into those files and refuses to touch anything
+// just-code did not write.
 //
-// The published file is a delivery target, not a secret: it contains the same
-// opaque marker the guest environment holds. The real value still exists only
-// on the host, and only the network proxy substitutes it, only toward the
-// destinations the user approved.
+// Two kinds of value appear here, and they are not interchangeable. A
+// proxy-protected binding contributes the opaque marker the guest environment
+// already holds: the real value stays on the host and only the proxy
+// substitutes it, only toward the approved destinations. A guest-readable
+// binding contributes the real value, because nothing will substitute it — the
+// application consumes it locally. Such a file is a secret: it is created
+// 0600, it is marked in its header, and everything in the guest, including the
+// agent, can read it. See docs/decisions/2026-10-15-guest-readable-secret-delivery.md.
 
 // guestSecretHeaderPrefix marks a file just-code owns. The second line names
 // the component so a human reading the guest can tell where it came from.
@@ -398,26 +402,39 @@ func (m *MicrosandboxRuntime) removeManagedGuestFile(ctx context.Context, guestP
 // writeGuestFileAtomically writes payload to guestPath via a sibling temporary
 // file and a rename, creating the parent directory first.
 //
-// A file holding a real secret is chmodded 0600 on the temporary file, before
-// the rename: the runtime's filesystem write creates files 0644, so chmodding
-// after the rename would leave a window in which the secret is readable by
-// every account in the guest.
+// A file holding a real secret is created empty with mode 0600 BEFORE the
+// payload is written, and the mode is verified before the rename. The
+// runtime's filesystem write creates files 0644, so writing first and
+// restricting afterwards would leave the value readable by every account in
+// the guest for that window, and a crash inside the window would leave it that
+// way permanently. Writing into an existing file preserves its mode: the
+// phase-4 probe measures this (`rewrite-mode`: 0600 after a rewrite of a 0600
+// file), which is what makes the ordering safe.
 func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, guestPath string, payload []byte, secret bool) error {
 	dir := path.Dir(guestPath)
 	tmp := guestPath + ".jc-tmp"
 	if err := m.guestShell(ctx, "mkdir -p "+shellQuote(dir)); err != nil {
 		return err
 	}
+	if secret {
+		// umask 077 rather than `install -m`: both are portable enough, but
+		// this needs no external binary to exist in the guest image.
+		if err := m.guestShell(ctx, "umask 077; : > "+shellQuote(tmp)); err != nil {
+			return fmt.Errorf("creating %s with restrictive permissions: %w", tmp, err)
+		}
+	}
 	if err := m.Client.WriteFile(ctx, m.InstanceName(), tmp, payload); err != nil {
 		return err
 	}
+	move := "mv -f " + shellQuote(tmp) + " " + shellQuote(guestPath)
 	if secret {
-		if err := m.guestShell(ctx, "chmod 600 "+shellQuote(tmp)); err != nil {
-			_ = m.guestShell(ctx, "rm -f "+shellQuote(tmp))
-			return fmt.Errorf("restricting the permissions of %s: %w", tmp, err)
-		}
+		// The mode is checked in the same invocation that renames, so a file
+		// that somehow lost its restriction is never published under the
+		// final name: the check is what turns the assumption above into a
+		// guarantee.
+		move = "f=" + shellQuote(tmp) + "; if [ \"$(stat -c %a \"$f\")\" != \"600\" ]; then rm -f \"$f\"; exit 5; fi; " + move
 	}
-	if err := m.guestShell(ctx, "mv -f "+shellQuote(tmp)+" "+shellQuote(guestPath)); err != nil {
+	if err := m.guestShell(ctx, move); err != nil {
 		_ = m.guestShell(ctx, "rm -f "+shellQuote(tmp))
 		return err
 	}

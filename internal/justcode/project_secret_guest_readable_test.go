@@ -101,7 +101,7 @@ func TestBuildGuestSecretFilesRequiresAResolvedValue(t *testing.T) {
 	}
 }
 
-func TestSecretFileIsRestrictedBeforeItBecomesVisible(t *testing.T) {
+func TestSecretFileIsRestrictedBeforeThePayloadExists(t *testing.T) {
 	m, client := newGuestFSRuntime(t, nil)
 	managed, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		guestDelivery(".env", "DB_PASSWORD", "local-secret"),
@@ -113,29 +113,52 @@ func TestSecretFileIsRestrictedBeforeItBecomesVisible(t *testing.T) {
 	if len(managed) != 1 || managed[0] != guestPath {
 		t.Fatalf("managed: %v", managed)
 	}
-	mode, ok := client.modes[guestPath]
-	if !ok || mode != 0o600 {
-		t.Fatalf("the delivered file must end up 0600, got %v (present=%v)", mode, ok)
+	if mode := client.modes[guestPath]; mode != 0o600 {
+		t.Fatalf("the delivered file must end up 0600, got %v", mode)
 	}
-	// The restriction must land on the temporary name, before the rename:
-	// chmodding afterwards leaves a window in which the secret is readable by
-	// every account in the guest.
-	chmodTmp, chmodFinal := false, false
+
+	// The ordering is the security property. Writing the payload first and
+	// restricting afterwards would leave the secret readable by every account
+	// in the guest for that window, and a crash inside the window would leave
+	// it that way for good.
+	create, write, move := -1, -1, -1
+	for i, call := range client.calls {
+		switch {
+		case strings.HasPrefix(call, "exec ") && strings.Contains(call, "umask 077; : > '"):
+			create = i
+		case strings.HasPrefix(call, "writefile "):
+			write = i
+		case strings.Contains(call, "stat -c %a") && strings.Contains(call, "mv -f"):
+			move = i
+		}
+	}
+	if create < 0 || write < 0 || move < 0 {
+		t.Fatalf("expected a pre-create, a payload write and a checked rename: %v", client.calls)
+	}
+	if !(create < write && write < move) {
+		t.Fatalf("the temporary file must exist with its mode before the payload lands: create=%d write=%d move=%d", create, write, move)
+	}
 	for _, call := range client.calls {
-		if !strings.Contains(call, "chmod 600 ") {
-			continue
-		}
-		if strings.Contains(call, guestPath+".jc-tmp") {
-			chmodTmp = true
-		} else if strings.Contains(call, guestPath) {
-			chmodFinal = true
+		if strings.HasPrefix(call, "exec ") && strings.Contains(call, "chmod ") {
+			t.Fatalf("restricting after the payload exists is the window this avoids: %v", call)
 		}
 	}
-	if !chmodTmp || chmodFinal {
-		t.Fatalf("permissions must be set on the temporary file only: tmp=%v final=%v", chmodTmp, chmodFinal)
+}
+
+func TestAPublishedFileWithTheWrongModeIsRefused(t *testing.T) {
+	// The control for the check above: force the temporary file to 0644 and
+	// the delivery must fail without publishing anything, rather than trusting
+	// that the pre-creation worked.
+	m, client := newGuestFSRuntime(t, nil)
+	wrong := os.FileMode(0o644)
+	client.tmpModeOverride = &wrong
+	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+		guestDelivery(".env", "DB_PASSWORD", "local-secret"),
+	}, nil); err == nil {
+		t.Fatal("a temporary file that is not 0600 must not be published under its final name")
 	}
-	if _, err := os.Stat(guestPath); err == nil {
-		t.Fatal("the test must not touch the real filesystem")
+	if _, ok := client.files[msbGuestWorkspace+"/.env"]; ok {
+		t.Fatal("nothing may be published when the restriction is missing")
 	}
 }
 

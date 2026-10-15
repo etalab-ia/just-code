@@ -594,6 +594,11 @@ func (m *MicrosandboxRuntime) syncProjectSecretDelivery(ctx context.Context, bin
 		return err
 	}
 	if err := WriteProjectSecretApplied(DefaultFS, m.stateDirOrDefault(), store.Namespace(), ProjectSecretApplied{Envs: desiredEnvs, Files: managed}); err != nil {
+		// The record is what makes a later revocation able to find the file.
+		// Without it the guest holds a plaintext value that no later run
+		// knows about, so remove what was just written and report: the next
+		// run re-delivers from the approvals, which are the durable record.
+		_, _ = m.syncGuestSecretFiles(ctx, nil, managed)
 		return fmt.Errorf("recording the applied project secret inventory: %w", err)
 	}
 	if len(managed) > 0 {

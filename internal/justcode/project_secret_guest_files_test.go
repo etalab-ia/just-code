@@ -20,6 +20,11 @@ type guestFSClient struct {
 	// a file holding a real secret was restricted before it became visible
 	// under its final name.
 	modes map[string]os.FileMode
+	// tmpModeOverride forces the mode of a pre-created temporary file to
+	// something else. Without it there is no way to show that the published
+	// mode check fires: the fake would always create 0600 and the check would
+	// be a line that can never fail.
+	tmpModeOverride *os.FileMode
 }
 
 func newGuestFSClient() *guestFSClient {
@@ -29,6 +34,11 @@ func newGuestFSClient() *guestFSClient {
 func (c *guestFSClient) WriteFile(_ context.Context, name, guestPath string, data []byte) error {
 	c.record("writefile " + name + " " + guestPath)
 	c.files[guestPath] = string(data)
+	// The mode is deliberately left alone: the real runtime writes into an
+	// existing file without changing its permissions (measured by the
+	// phase-4 probe as `rewrite-mode`), and a fake that reset the mode here
+	// would be stricter than the runtime and hide the very window the
+	// pre-creation exists to close.
 	return nil
 }
 
@@ -59,6 +69,47 @@ func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, stri
 	c.record("exec " + name + " " + command)
 	switch {
 	case strings.HasPrefix(command, "mkdir -p "):
+		return 0, "", nil
+	case strings.HasPrefix(command, "umask 077; : > "):
+		// Pre-create the temporary file with the restrictive mode, before any
+		// payload exists. umask applies to the creation, so the file is 0600
+		// from the first instant, as it is in the guest.
+		path := unquoteGuest(strings.TrimPrefix(command, "umask 077; : > "))
+		c.files[path] = ""
+		c.modes[path] = 0o600
+		if c.tmpModeOverride != nil {
+			c.modes[path] = *c.tmpModeOverride
+		}
+		return 0, "", nil
+	case strings.Contains(command, "stat -c %a"):
+		// The mode check and the rename are one guest invocation, so a file
+		// that lost its restriction is never published under its final name.
+		path, ok := guestFileFromCommand(command)
+		if !ok {
+			return 1, "unexpected move shape", nil
+		}
+		if c.modes[path] != 0o600 {
+			delete(c.files, path)
+			delete(c.modes, path)
+			return 5, "mode is not 600", nil
+		}
+		idx := strings.LastIndex(command, "mv -f ")
+		if idx < 0 {
+			return 1, "unexpected move shape", nil
+		}
+		parts := strings.Fields(command[idx:])
+		if len(parts) != 4 {
+			return 1, "unexpected mv shape", nil
+		}
+		src, dst := unquoteGuest(parts[2]), unquoteGuest(parts[3])
+		content, ok := c.files[src]
+		if !ok {
+			return 1, "no such file", nil
+		}
+		delete(c.files, src)
+		c.files[dst] = content
+		delete(c.modes, src)
+		c.modes[dst] = 0o600
 		return 0, "", nil
 	case strings.HasPrefix(command, "chmod "):
 		// chmod <mode> <path>: the mode is recorded per path, so a test can

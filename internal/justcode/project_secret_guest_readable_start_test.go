@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,4 +78,63 @@ func TestStartPathDeliversGuestReadableValue(t *testing.T) {
 	if _, still := client.files[guestPath]; still {
 		t.Fatal("revoking the approval must remove the delivered value")
 	}
+}
+
+// `just-code start` does not call Start: it reconciles, and a healthy sandbox
+// whose VM configuration is unchanged plans a no-op. The approvals are
+// host-local and deliberately absent from that revision, so without an explicit
+// step here an approval delivers nothing and, worse, a revocation leaves the
+// plaintext file in the guest while the CLI says the revocation is handled.
+func TestReconcileNoOpAppliesGuestReadableDeliveryAndRevocation(t *testing.T) {
+	isolateHostState(t)
+	m, client := newGuestFSRuntime(t, nil)
+	// The sandbox must already exist and be healthy, or the plan is not a
+	// no-op and the test would exercise the create path instead.
+	client.fakeMSBClient.exists = true
+	client.fakeMSBClient.status = "running"
+	m.cfg.Isolation = IsolationFull
+	m.Probe = func(context.Context, string, string, string) HealthProbe { return HealthProbe{Healthy: true} }
+
+	store := newProjectSecretFakeStore()
+	s := projectSecretFixture(t, m.cfg.WorkspaceDir, m.StateDir, store)
+	m.ProjectSecrets = s
+	importProjectSecrets(t, s, "development", ".env", map[string]string{"DB_PASSWORD": "local-secret"})
+	if err := SetProjectSecretActiveProfile(DefaultFS, m.StateDir, s.Namespace(), "development"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApproveProjectSecretBinding(DefaultFS, m.StateDir, s.Namespace(), ProjectSecretBinding{
+		Profile: "development", Component: ".env", Name: "DB_PASSWORD", Delivery: ProjectSecretDeliveryGuest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The persisted state already matches the desired state, so the plan is a
+	// no-op — the path a healthy `just-code start` takes.
+	desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
+	statePath := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := WriteInstanceState(DefaultFS, statePath, desired.toState()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	guestPath := msbGuestWorkspace + "/.env"
+	if _, ok := client.files[guestPath]; !ok {
+		t.Fatalf("a no-op reconcile must still deliver an approved guest-readable value: %v", client.calls)
+	}
+
+	// The revocation half is the one that matters: what stays behind is the
+	// real value, not an inert placeholder.
+	if _, err := RevokeProjectSecretBinding(DefaultFS, m.StateDir, s.Namespace(), "development", ".env", "DB_PASSWORD"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, still := client.files[guestPath]; still {
+		t.Fatal("a no-op reconcile after a revocation must remove the delivered plaintext")
+	}
+	_ = os.Remove(statePath)
+	_ = os.RemoveAll(filepath.Dir(statePath))
 }

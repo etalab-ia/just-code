@@ -301,6 +301,17 @@ func secretsBindingsRevokeCmd(args []string) (int, error) {
 		return 1, err
 	}
 	stateDir := projectSecretsStateDirFn()
+	// Read the binding before removing it: the consequence of a revocation is
+	// not the same in the two modes, and the plaintext mode is the one where a
+	// wrong message is dangerous.
+	wasGuestReadable := false
+	if record, err := justcode.ReadProjectSecretBindingsRecordFor(store); err == nil {
+		for _, b := range record.Bindings {
+			if b.Profile == opts.Profile && b.Component == opts.Component && b.Name == opts.Name {
+				wasGuestReadable = b.GuestReadable()
+			}
+		}
+	}
 	removed, err := justcode.RevokeProjectSecretBinding(justcode.DefaultFS, stateDir, store.Namespace(), opts.Profile, opts.Component, opts.Name)
 	if err != nil {
 		return 1, err
@@ -310,6 +321,11 @@ func secretsBindingsRevokeCmd(args []string) (int, error) {
 		return 0, nil
 	}
 	fmt.Printf("Revoked the %s#%s project secret binding. The imported value stays in the credential store.\n", opts.Component, opts.Name)
-	fmt.Println("Run 'just-code restart' (or 'just-code start') to unregister it from the running sandbox: the proxy registration is dropped at the next apply, and the guest keeps an inert placeholder until it restarts.")
+	if wasGuestReadable {
+		fmt.Println("The real value is still readable inside the running sandbox until the next start applies the revocation. Run 'just-code start' (it reconciles the delivery) or 'just-code restart'.")
+		fmt.Println("A snapshot taken while it was delivered still holds it; revoking here cannot reach that copy.")
+	} else {
+		fmt.Println("Run 'just-code restart' (or 'just-code start') to unregister it from the running sandbox: the proxy registration is dropped at the next apply, and the guest keeps an inert placeholder until it restarts.")
+	}
 	return 0, nil
 }

@@ -68,3 +68,42 @@ func TestSecretsBindingsApproveGuestReadable(t *testing.T) {
 		t.Fatalf("recorded binding: %+v", record.Bindings)
 	}
 }
+
+func TestRevokeMessageMatchesTheDeliveryMode(t *testing.T) {
+	root, _, _ := withSecretsCLISeams(t)
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("DB_PASSWORD=local-value\nAPI_KEY=remote-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := projectSecretsImportCmd([]string{"--root", root, "--profile", "development", "--file", ".env", "--apply", "--yes"}); code != 0 || err != nil {
+		t.Fatalf("import: code=%d err=%v", code, err)
+	}
+	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "DB_PASSWORD", "--delivery", "guest", "--root", root}); code != 0 || err != nil {
+		t.Fatalf("approve guest: code=%d err=%v", code, err)
+	}
+	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "API_KEY", "--destination", "api.example.com", "--root", root}); code != 0 || err != nil {
+		t.Fatalf("approve proxy: code=%d err=%v", code, err)
+	}
+
+	// The plaintext mode is the one where a wrong message is dangerous: the
+	// guest keeps the real value, not an inert placeholder.
+	out := captureSecretsStdout(t, func() {
+		if code, err := secretsBindingsCmd([]string{"revoke", "development", ".env", "DB_PASSWORD", "--root", root}); code != 0 || err != nil {
+			t.Fatalf("revoke guest: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "still readable inside the running sandbox") || !strings.Contains(out, "snapshot") {
+		t.Fatalf("a guest-readable revocation must state what actually remains: %q", out)
+	}
+	if strings.Contains(out, "inert placeholder") {
+		t.Fatalf("the guest-readable revocation must not reuse the proxy wording: %q", out)
+	}
+
+	out = captureSecretsStdout(t, func() {
+		if code, err := secretsBindingsCmd([]string{"revoke", "development", ".env", "API_KEY", "--root", root}); code != 0 || err != nil {
+			t.Fatalf("revoke proxy: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "inert placeholder") {
+		t.Fatalf("a proxy revocation keeps its own wording: %q", out)
+	}
+}
