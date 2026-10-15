@@ -10,7 +10,7 @@ import (
 
 func TestDotenvLiteralRoundTripsThroughTheQualifiedLoaders(t *testing.T) {
 	// Verified against Node dotenv 16.4.7 (with and without dotenv-expand
-	// 12.0.2), python-dotenv 1.2.1 and godotenv 1.5.1: single quotes preserve
+	// 12.0.2), python-dotenv 1.2.2 and godotenv 1.5.1: single quotes preserve
 	// all of these exactly.
 	for _, value := range []string{
 		"plain",

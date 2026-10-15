@@ -36,7 +36,7 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 //
 // dotenv has no single escaping that every loader agrees on, and this was
 // measured against the loaders just-code pins (Node dotenv 16.4.7 with and
-// without dotenv-expand 12.0.2, python-dotenv 1.2.1, godotenv 1.5.1):
+// without dotenv-expand 12.0.2, python-dotenv 1.2.2, godotenv 1.5.1):
 //
 //   - A raw value containing a newline does not merely corrupt that variable;
 //     godotenv refuses the whole file. Leading or trailing whitespace, a
@@ -46,11 +46,13 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 //     use.
 //   - A single quote inside the value cannot be escaped: godotenv then
 //     refuses the whole file, and python-dotenv misparses it.
-//   - A backslash is only safe on its own, between ordinary characters.
-//     Two in a row are collapsed to one by python-dotenv, silently. A
-//     trailing backslash escapes the closing quote: python-dotenv then loses
-//     the value *and* the following line, and godotenv refuses the whole
-//     file. Both are refused rather than delivered wrong.
+//   - A backslash is safe on its own, including at the start of a value and
+//     before a newline, a space, a "#" or an "=" (all measured). Two in a row
+//     are collapsed to one by python-dotenv, silently. A trailing backslash
+//     escapes the closing quote: godotenv refuses the whole file, and
+//     python-dotenv loses the value and the next line, because every value in
+//     a generated file is followed by another quoted value. Both shapes are
+//     refused rather than delivered wrong.
 //   - A "$" followed by a name or "{" is expanded by dotenv-expand and by
 //     godotenv, and the usual escape, "\$", is then left as a literal
 //     backslash by plain Node dotenv and rejected by python-dotenv. So a
