@@ -16,12 +16,15 @@ import (
 // never in the project.
 
 type projectSecretBindingsOptions struct {
-	Root       string
-	Profile    string
-	Component  string
-	Name       string
-	GuestEnv   string
-	Destin     []string
+	Root      string
+	Profile   string
+	Component string
+	Name      string
+	GuestEnv  string
+	Destin    []string
+	// Delivery is "" for the default (proxy) or "--delivery guest" for a
+	// value the guest reads locally.
+	Delivery   string
 	Clear      bool
 	Fallback   bool
 	ConfirmYes bool
@@ -34,7 +37,7 @@ func parseProjectSecretBindingsArgs(args []string) (projectSecretBindingsOptions
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
-		case "--root", "--profile", "--component", "--name", "--guest-env", "--destination":
+		case "--root", "--profile", "--component", "--name", "--guest-env", "--destination", "--delivery":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 				return opts, fmt.Errorf("%s requires a value", a)
 			}
@@ -53,6 +56,11 @@ func parseProjectSecretBindingsArgs(args []string) (projectSecretBindingsOptions
 				opts.GuestEnv = value
 			case "--destination":
 				opts.Destin = append(opts.Destin, value)
+			case "--delivery":
+				if value != justcode.ProjectSecretDeliveryProxy && value != justcode.ProjectSecretDeliveryGuest {
+					return opts, fmt.Errorf("--delivery must be %q or %q", justcode.ProjectSecretDeliveryProxy, justcode.ProjectSecretDeliveryGuest)
+				}
+				opts.Delivery = value
 			}
 			seen[a] = true
 		case "--clear", "--fallback", "--yes":
@@ -172,9 +180,19 @@ func secretsBindingsListCmd(args []string) (int, error) {
 	if len(record.Bindings) == 0 {
 		fmt.Println("  No approved binding.")
 	} else {
+		guestReadable := 0
 		for _, b := range record.Bindings {
-			fmt.Printf("  %s#%s -> %s\n", b.Component, b.Name, b.GuestEnv)
+			if b.GuestReadable() {
+				guestReadable++
+				fmt.Printf("  %s#%s -> READABLE INSIDE THE SANDBOX (written to %s)\n", b.Component, b.Name, b.Component)
+				fmt.Printf("      the real value is delivered as a file; the agent and anything it runs can read it\n")
+				continue
+			}
+			fmt.Printf("  %s#%s -> %s (proxy-protected)\n", b.Component, b.Name, b.GuestEnv)
 			fmt.Printf("      destinations: %s (host-local approval, never versioned)\n", strings.Join(b.Destinations, ", "))
+		}
+		if guestReadable > 0 {
+			fmt.Printf("  %d binding(s) deliver a real value inside the sandbox; a snapshot taken while they are delivered captures them.\n", guestReadable)
 		}
 	}
 	if record.Pending != "" {
@@ -195,10 +213,18 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 		return 2, err
 	}
 	if opts.Profile == "" || opts.Component == "" || opts.Name == "" {
-		return 2, fmt.Errorf("usage: just-code secrets bindings approve <profile> <component> <NAME> --destination <host> [--destination <host>...] [--guest-env NAME]")
+		return 2, fmt.Errorf("usage: just-code secrets bindings approve <profile> <component> <NAME> " +
+			"[--destination <host> ...] [--guest-env NAME] [--delivery proxy|guest]")
 	}
-	if len(opts.Destin) == 0 {
+	guestReadable := opts.Delivery == justcode.ProjectSecretDeliveryGuest
+	if !guestReadable && len(opts.Destin) == 0 {
 		return 2, fmt.Errorf("at least one --destination is required: approving a destination is what allows the value to be substituted toward it")
+	}
+	if guestReadable && len(opts.Destin) > 0 {
+		return 2, fmt.Errorf("--delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host")
+	}
+	if guestReadable && opts.GuestEnv != "" {
+		return 2, fmt.Errorf("--delivery guest takes no --guest-env: the value is delivered as a file, not as an environment placeholder")
 	}
 	store, err := projectSecretStoreForCLI(opts.Root, opts.Fallback)
 	if err != nil {
@@ -209,15 +235,26 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 		Profile:      opts.Profile,
 		Component:    opts.Component,
 		Name:         opts.Name,
+		Delivery:     opts.Delivery,
 		GuestEnv:     opts.GuestEnv,
 		Destinations: opts.Destin,
 	}
-	if binding.GuestEnv == "" {
+	if binding.GuestEnv == "" && !guestReadable {
 		binding.GuestEnv = justcode.ProjectSecretGuestEnv(binding.Component, binding.Name)
 	}
-	fmt.Printf("Approving %s#%s for %s -> guest %s, destinations: %s\n",
-		binding.Component, binding.Name, binding.Profile, binding.GuestEnv, strings.Join(binding.Destinations, ", "))
-	fmt.Println("The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.")
+	if guestReadable {
+		fmt.Printf("Approving %s#%s for %s as GUEST-READABLE (written to %s)\n",
+			binding.Component, binding.Name, binding.Profile, binding.Component)
+		fmt.Println("This is not the protected mode. The real value is written into the sandbox so an application can read it locally, which means:")
+		fmt.Println("  - everything running in that sandbox, including the agent, can read the value;")
+		fmt.Println("  - it stays readable for as long as the sandbox holds it;")
+		fmt.Println("  - a snapshot taken while it is delivered captures it, and deleting it later does not clean that snapshot.")
+		fmt.Println("Use this only for values an application must consume locally (a database password, a signing key). Protect anything reached over the network with the default delivery instead.")
+	} else {
+		fmt.Printf("Approving %s#%s for %s -> guest %s, destinations: %s\n",
+			binding.Component, binding.Name, binding.Profile, binding.GuestEnv, strings.Join(binding.Destinations, ", "))
+		fmt.Println("The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.")
+	}
 	// Record the approval first: it validates the binding, and a rejected
 	// approval must not leave the project pointed at a different profile.
 	if err := justcode.ApproveProjectSecretBinding(justcode.DefaultFS, stateDir, store.Namespace(), binding); err != nil {

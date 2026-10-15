@@ -31,8 +31,12 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 type GuestSecretFile struct {
 	// Component is the project-relative source path, e.g. "apps/api/.env".
 	Component string
-	// Content is the rendered dotenv text. It contains markers only.
+	// Content is the rendered dotenv text: markers for proxy-protected
+	// bindings, and real values for guest-readable ones.
 	Content string
+	// Secret reports that Content holds at least one real value, so the file
+	// is written with owner-only permissions and never briefly world-readable.
+	Secret bool
 }
 
 // GuestPath is the in-guest path this file is published to.
@@ -41,9 +45,10 @@ func (f GuestSecretFile) GuestPath() (string, error) {
 }
 
 // BuildGuestSecretFiles renders the approved deliveries into one file per
-// component. Only approved values appear, and each appears as the marker its
-// binding already exposes in the guest environment, so an application reading
-// either source gets the same placeholder.
+// component. A proxy-protected binding contributes the marker its guest
+// environment already exposes, so an application reading either source gets
+// the same placeholder. A guest-readable binding contributes the real value,
+// because there is no proxy in front of it to substitute anything.
 //
 // A component with no approved binding produces no file: generating an empty
 // dotenv would silently shadow whatever the project ships.
@@ -65,24 +70,45 @@ func BuildGuestSecretFiles(deliveries []ProjectSecretDelivery) ([]GuestSecretFil
 	for _, component := range components {
 		entries := byComponent[component]
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+		holdsSecret := false
+		for _, d := range entries {
+			if d.GuestReadable() {
+				holdsSecret = true
+				break
+			}
+		}
 		var b strings.Builder
 		b.WriteString(guestSecretHeaderPrefix + "\n")
 		b.WriteString("# source: " + component + "\n")
-		b.WriteString("# Each value below is an opaque placeholder. The real value stays on\n")
-		b.WriteString("# the host; the sandbox proxy substitutes it only toward the hosts this\n")
-		b.WriteString("# project approved.\n")
+		if holdsSecret {
+			b.WriteString("# WARNING: this file contains real secret values. Everything running in\n")
+			b.WriteString("# this sandbox, including the agent, can read them.\n")
+			b.WriteString("# Values marked as placeholders are not secrets: the proxy substitutes\n")
+			b.WriteString("# those toward the hosts this project approved.\n")
+		} else {
+			b.WriteString("# Each value below is an opaque placeholder. The real value stays on\n")
+			b.WriteString("# the host; the sandbox proxy substitutes it only toward the hosts this\n")
+			b.WriteString("# project approved.\n")
+		}
 		seen := map[string]bool{}
 		for _, d := range entries {
 			if seen[d.Name] {
 				return nil, fmt.Errorf("component %s has two approved bindings for %s", component, d.Name)
 			}
 			seen[d.Name] = true
-			if d.Marker == "" {
+			switch {
+			case d.GuestReadable():
+				if d.Value == nil {
+					return nil, fmt.Errorf("component %s variable %s is guest-readable but its value was not resolved", component, d.Name)
+				}
+				b.WriteString(d.Name + "=" + *d.Value + "\n")
+			case d.Marker == "":
 				return nil, fmt.Errorf("component %s variable %s has no guest marker", component, d.Name)
+			default:
+				b.WriteString(d.Name + "=" + d.Marker + "\n")
 			}
-			b.WriteString(d.Name + "=" + d.Marker + "\n")
 		}
-		files = append(files, GuestSecretFile{Component: component, Content: b.String()})
+		files = append(files, GuestSecretFile{Component: component, Content: b.String(), Secret: holdsSecret})
 	}
 	return files, nil
 }
@@ -299,7 +325,7 @@ func (m *MicrosandboxRuntime) publishGuestSecretFiles(ctx context.Context, plan 
 		if err != nil {
 			return err
 		}
-		if err := m.writeGuestFileAtomically(ctx, guestPath, []byte(file.Content)); err != nil {
+		if err := m.writeGuestFileAtomically(ctx, guestPath, []byte(file.Content), file.Secret); err != nil {
 			return fmt.Errorf("publishing %s: %w", guestPath, err)
 		}
 	}
@@ -326,7 +352,12 @@ func (m *MicrosandboxRuntime) removeManagedGuestFile(ctx context.Context, guestP
 
 // writeGuestFileAtomically writes payload to guestPath via a sibling temporary
 // file and a rename, creating the parent directory first.
-func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, guestPath string, payload []byte) error {
+//
+// A file holding a real secret is chmodded 0600 on the temporary file, before
+// the rename: the runtime's filesystem write creates files 0644, so chmodding
+// after the rename would leave a window in which the secret is readable by
+// every account in the guest.
+func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, guestPath string, payload []byte, secret bool) error {
 	dir := path.Dir(guestPath)
 	tmp := guestPath + ".jc-tmp"
 	if err := m.guestShell(ctx, "mkdir -p "+shellQuote(dir)); err != nil {
@@ -334,6 +365,12 @@ func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, gues
 	}
 	if err := m.Client.WriteFile(ctx, m.InstanceName(), tmp, payload); err != nil {
 		return err
+	}
+	if secret {
+		if err := m.guestShell(ctx, "chmod 600 "+shellQuote(tmp)); err != nil {
+			_ = m.guestShell(ctx, "rm -f "+shellQuote(tmp))
+			return fmt.Errorf("restricting the permissions of %s: %w", tmp, err)
+		}
 	}
 	if err := m.guestShell(ctx, "mv -f "+shellQuote(tmp)+" "+shellQuote(guestPath)); err != nil {
 		_ = m.guestShell(ctx, "rm -f "+shellQuote(tmp))

@@ -453,6 +453,13 @@ func (m *MicrosandboxRuntime) resolveProjectSecretBindings(ctx context.Context) 
 	var out []resolvedBinding
 	seen := map[string]bool{}
 	for _, d := range record.deliveries {
+		// A guest-readable binding is not a proxy binding: the value is
+		// written into the guest for local consumption, so registering a
+		// placeholder with the proxy would be pointless and would widen the
+		// value's exposure beyond what the user approved.
+		if d.GuestReadable() {
+			continue
+		}
 		if seen[d.GuestEnv] {
 			return nil, fmt.Errorf("two project secret bindings share the guest variable %s", d.GuestEnv)
 		}
@@ -567,7 +574,14 @@ func (m *MicrosandboxRuntime) syncProjectSecretDelivery(ctx context.Context, bin
 	if err != nil {
 		return err
 	}
-	deliveries := m.projectSecretDeliveriesOf(bindings)
+	record, err := m.projectSecretDeliveries(ctx)
+	if err != nil {
+		return err
+	}
+	deliveries, err := m.projectSecretFileDeliveries(ctx, store, record.deliveries)
+	if err != nil {
+		return err
+	}
 	desiredEnvs := projectBindingGuestEnvs(bindings)
 	if len(deliveries) == 0 && len(applied.Envs) == 0 && len(applied.Files) == 0 {
 		return nil
@@ -586,6 +600,35 @@ func (m *MicrosandboxRuntime) syncProjectSecretDelivery(ctx context.Context, bin
 		fmt.Printf("Published %d managed project secret file(s) into the guest workspace.\n", len(managed))
 	}
 	return nil
+}
+
+// projectSecretFileDeliveries renders the approved bindings into the set the
+// guest receives as files. A guest-readable value is resolved here, at the
+// last moment before the SDK call that writes it; a proxy-protected one keeps
+// its marker, because the placeholder is all the guest may hold.
+func (m *MicrosandboxRuntime) projectSecretFileDeliveries(ctx context.Context, store *ProjectSecretStore, approved []ProjectSecretDelivery) ([]ProjectSecretDelivery, error) {
+	out := make([]ProjectSecretDelivery, 0, len(approved))
+	guestReadable := 0
+	for _, d := range approved {
+		if d.GuestReadable() {
+			value, err := store.Get(ctx, d.Profile, d.Component, d.Name)
+			if err != nil {
+				return nil, fmt.Errorf("cannot read the guest-readable project secret %s (%s): %w", d.Name, d.Component, err)
+			}
+			d.Value = &value
+			guestReadable++
+		}
+		out = append(out, d)
+	}
+	if guestReadable > 0 {
+		// The warning is the point of the separate approval: it is repeated at
+		// every start because the exposure lasts as long as the sandbox does.
+		fmt.Fprintf(os.Stderr, "Warning: %d project secret(s) are delivered readable inside %s. "+
+			"Everything running in that sandbox, including the agent, can read them; they are readable for as long as the sandbox holds them, "+
+			"and a snapshot taken now captures them. Run 'just-code secrets bindings list' to review.\n",
+			guestReadable, m.InstanceName())
+	}
+	return out, nil
 }
 
 // projectSecretDeliveriesOf renders the project-scoped bindings of a resolved

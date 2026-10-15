@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -14,10 +16,14 @@ import (
 type guestFSClient struct {
 	*fakeMSBClient
 	files map[string]string
+	// modes records the permission set for a path, so a test can assert that
+	// a file holding a real secret was restricted before it became visible
+	// under its final name.
+	modes map[string]os.FileMode
 }
 
 func newGuestFSClient() *guestFSClient {
-	return &guestFSClient{fakeMSBClient: &fakeMSBClient{}, files: map[string]string{}}
+	return &guestFSClient{fakeMSBClient: &fakeMSBClient{}, files: map[string]string{}, modes: map[string]os.FileMode{}}
 }
 
 func (c *guestFSClient) WriteFile(_ context.Context, name, guestPath string, data []byte) error {
@@ -46,13 +52,27 @@ func guestFileFromCommand(command string) (string, bool) {
 	return rest[1 : 1+end], true
 }
 
-// Exec understands only the shapes this package issues: mkdir -p, the atomic
-// mv, the header-checked removal, and plain rm -f. Anything else is a test bug
-// and must not be reported as success.
+// Exec understands only the shapes this package issues: mkdir -p, chmod, the
+// atomic mv, the header-checked removal, and plain rm -f. Anything else is a
+// test bug and must not be reported as success.
 func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, string, error) {
 	c.record("exec " + name + " " + command)
 	switch {
 	case strings.HasPrefix(command, "mkdir -p "):
+		return 0, "", nil
+	case strings.HasPrefix(command, "chmod "):
+		// chmod <mode> <path>: the mode is recorded per path, so a test can
+		// assert the restriction happened on the temporary file, before the
+		// content was reachable under its final name.
+		parts := strings.Fields(command)
+		if len(parts) != 3 {
+			return 1, "unexpected chmod shape", nil
+		}
+		mode, err := strconv.ParseUint(parts[1], 8, 32)
+		if err != nil {
+			return 1, "unexpected chmod mode", nil
+		}
+		c.modes[unquoteGuest(parts[2])] = os.FileMode(mode)
 		return 0, "", nil
 	case strings.HasPrefix(command, "mv -f "):
 		parts := strings.Fields(command)
@@ -66,6 +86,10 @@ func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, stri
 		}
 		delete(c.files, src)
 		c.files[dst] = content
+		if mode, ok := c.modes[src]; ok {
+			delete(c.modes, src)
+			c.modes[dst] = mode
+		}
 		return 0, "", nil
 	case strings.Contains(command, "grep -qxF"):
 		// Header-checked removal: only a file still bearing just-code's

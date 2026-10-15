@@ -189,6 +189,40 @@ Retirer une approbation (`revoke`) supprime l'accès du guest, pas la valeur
 importée ; l'inscription proxy est retirée à la prochaine application, et le
 guest conserve un marqueur inerte jusqu'au redémarrage.
 
+## Secrets lisibles dans le guest (`--delivery guest`)
+
+Certaines valeurs ne peuvent pas passer par le proxy réseau, parce que
+l'application les consomme localement : un mot de passe de base de données, une
+clé de signature. Il n'y a alors aucune requête sortante à réécrire, donc la
+valeur réelle doit exister dans l'invité. C'est un mode **distinct**, approuvé
+séparément :
+
+```bash
+just-code secrets bindings approve development .env DB_PASSWORD --delivery guest
+```
+
+Ce mode n'est pas le mode protégé, et l'approbation affiche l'avertissement
+correspondant :
+
+- tout ce qui tourne dans le sandbox, **y compris l'agent**, peut lire la valeur ;
+- elle reste lisible aussi longtemps que le sandbox la détient ;
+- un instantané pris pendant qu'elle est livrée la capture, et supprimer le
+  fichier ensuite ne nettoie pas cet instantané.
+
+Le mode par défaut (`--delivery proxy`, ou sans option) reste la protection par
+proxy : la valeur ne franchit jamais la frontière. Les deux modes sont
+exclusifs — une liaison lisible dans l'invité n'a ni destination ni variable
+invitée, puisque rien n'est substitué vers un hôte — et il n'existe **aucun
+repli automatique** de l'un vers l'autre : une valeur n'est jamais lisible dans
+l'invité sans une approbation explicite.
+
+Le fichier livré est écrit en `0600`, et la restriction est appliquée au fichier
+temporaire **avant** le renommage : le runtime crée les fichiers en `0644`, donc
+restreindre après coup laisserait une fenêtre pendant laquelle le secret serait
+lisible par tous les comptes de l'invité. Un fichier qui contient une valeur
+réelle porte un avertissement en tête, et `just-code secrets bindings list`
+distingue les deux modes.
+
 ## Fichiers dotenv générés dans le guest
 
 À chaque démarrage, les liaisons approuvées sont aussi écrites dans le
