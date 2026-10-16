@@ -20,7 +20,7 @@ tâches.
 | --- | --- | --- | --- |
 | macOS arm64 (`darwin/arm64`) | oui | oui | **oui** |
 | Linux x86-64 (`linux/amd64`) | oui | oui | non |
-| Linux arm64 (`linux/arm64`) | oui | oui | non |
+| Linux arm64 (`linux/arm64`) | oui | oui | **oui** |
 | Windows x86-64 (`windows/amd64`) | oui | oui | non |
 | Windows arm64 (`windows/arm64`) | oui | oui | non |
 | macOS Intel (`darwin/amd64`) | **non** | — | — |
@@ -44,19 +44,25 @@ séparément.
 
 | Plateforme | Adaptateur | Contrat de l'adaptateur testé | Magasin réel exercé |
 | --- | --- | --- | --- |
-| macOS | Trousseau (`security`) | oui | non (preuve non conservée) |
+| macOS | Trousseau (`security`) | oui | **oui** |
 | Linux | Secret Service (`secret-tool`) | oui | non |
 | Windows | Credential Manager (PowerShell, P/Invoke `advapi32`) | oui | non |
 
-Le Trousseau a bien été exercé sur macOS arm64 : `put` / `get` / `remove`,
-rotation, et absence d'erreur sur un retrait d'élément absent. Mais le
-transcript de cette exécution n'a pas été conservé dans le dépôt, et ce document
-ne reconnaît comme qualifié que ce qui est adossé à une preuve conservée. La
-colonne reste donc à « non » jusqu'à ce qu'une exécution produise un fichier
-dans `tests/integration/credentials/evidence/`. La commande qui la produit est
-`go test ./internal/justcode/ -run TestRealStore -v` sur une machine où le
-service répond ; sur un poste macOS avec une session ouverte, les tests
-s'exécutent, ailleurs ils s'ignorent — un test ignoré n'est pas une preuve.
+Le Trousseau a été qualifié sur macOS arm64 le 2026-10-16 (hôte Scaleway
+Mac mini M4, trousseau dédiée déverrouillée — sur un hôte headless, le
+trousseau `login` n'est pas déverrouillable) : les transcripts
+`darwin-arm64-run-1.txt` et `darwin-arm64-run-2.txt` sous
+`tests/integration/credentials/evidence/` montrent `put` / `get` / `remove`,
+rotation et retrait d'élément absent, exécutés deux fois de suite contre la
+révision qualifiée. Linux arm64 a été qualifié le même jour sur un hôte
+KVM réel (Scaleway Mac mini M2 sous Asahi Fedora 42, noyau arm64 à pages
+de 16 K) ; les preuves sont sous `tests/integration/qualification/linux-arm64/`
+et `tests/integration/credentials/evidence/linux-arm64-*.txt`. Les Instances
+Scaleway arm64 classiques n'exposent pas de virtualisation emboîtée et ne
+peuvent donc pas servir d'hôtes de qualification pour la microVM. Sur un
+poste avec une session ouverte, la commande de preuve reste
+`go test ./internal/justcode/ -run TestRealStore -v` ; un test ignoré n'est
+pas une preuve.
 
 Le contrat testé partout est celui qui compte pour la confidentialité : la
 valeur ne passe jamais par argv — elle est écrite sur l'entrée standard de

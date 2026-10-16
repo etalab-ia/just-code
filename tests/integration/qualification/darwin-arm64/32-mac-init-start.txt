@@ -1,0 +1,17 @@
+META step=32-mac-init-start source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:34:08Z
+just-code (Go)
+  version:  v0.10.0
+  commit:   db9b8fcd2d27
++ init
+
+Next: run 'just-code' in this directory to start the agent in its sealed workspace.
+INIT_EXIT: 
++ first start (gate)
+Warning: cannot resolve the credentials of jc-qualif-7ab2a (credential store (keychain) get: denied: exit 36: ); reusing the persisted secret references. Store the credential and restart to bind it.
+just-code: cannot apply the credential operations of jc-qualif-7ab2a ([create]): the credential set could not be resolved (<nil>). Store or restore the credential, then retry; nothing was changed
+~/.local/bin/just-code start --microsandbox --isolation full 2>&1  0.03s user 0.05s system 16% cpu 0.542 total
+tail -3  0.00s user 0.00s system 0% cpu 0.542 total
+START_EXIT: 
++ check
+just-code: no just-code runtime is running
+CHECK_EXIT: 

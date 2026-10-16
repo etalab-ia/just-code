@@ -1,0 +1,16 @@
+META step=40-asahi-inventory source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:41:26Z
+Linux 0434d6cc-f201-4703-a8ae-10ad1aae40ed 6.14.2-401.asahi.fc42.aarch64+16k #1 SMP PREEMPT_DYNAMIC Wed Apr 16 12:06:15 UTC 2025 aarch64 GNU/Linux
+NAME="Fedora Linux Asahi Remix"
+VERSION="42 (Forty Two [Adams])"
+crw-rw-rw-. 1 root kvm 10, 232 Oct 16  2026 /dev/kvm
+KVM rw: yes
+10
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi       1.7Gi        10Gi        52Mi       3.8Gi        13Gi
+just-code (Go)
+  version:  v0.2.1-0.20261016152331-db9b8fcd2d27
+  commit:   db9b8fcd2d27
++ doctor missing runtime (expect fail, no side effects)
+just-code: managed Microsandbox runtime is missing or failed integrity checks; run 'just-code start --microsandbox' to install or repair it
+DOCTOR_MISSING_EXIT: 1
+ls: cannot access '/tmp/msb-empty': No such file or directory

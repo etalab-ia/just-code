@@ -1,0 +1,23 @@
+META step=39c-lab-network-full source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d pin-override=0.7.6 date=2026-10-16T17:02Z (superseded by 39d; kept for the failure signature)
+  ok  CLI msb épinglée
+  ok  T1 DB hôte sans valeur brute
+  ok  T2 msb inspect sans valeur brute
+  ok  T3 invité voit le placeholder
+FAIL  T4 substitution en-tête: obtenu ''
+  ok  T5 hôte non autorisé: requête jamais livrée
+FAIL  T5 violation absente du journal runtime
+  ok  T6 canal query: violation (non substitué par défaut)
+FAIL  T7 Basic auth substitué (base64 reconnu) (attendu: user:p02-harness-canary-1922, obtenu: )
+FAIL  T8a 1er saut: obtenu ''
+  ok  T8b 2e saut (hôte non autorisé) bloqué
+   ✓ Modified     p02-cred-harness
+FAIL  T9 rotation: obtenu ''
+   ✓ Modified     p02-cred-harness
+FAIL  T10 après suppression: placeholder littéral (pas de valeur) (attendu: Bearer $MSB_P02_CANARY, obtenu: )
+  ok  T11a ré-ajout refusé sans --next-start
+   ✓ Modified     p02-cred-harness (next start)
+   ✓ Stopped      p02-cred-harness
+   ✓ Started      p02-cred-harness
+FAIL  T11b ré-ajout: obtenu ''
+
+réussites: 8, échecs: 7

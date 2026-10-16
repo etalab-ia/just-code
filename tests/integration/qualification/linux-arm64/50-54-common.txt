@@ -1,0 +1,50 @@
+META step=50-asahi-filter source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:44:14Z
++ workspace status
+Excluded by the default-deny filter:
+  .env (dotenv file (default-deny))
+  bin/payload.bin (git-ignored (local or derived state); re-include explicitly if the guest needs it)
+  gh-token.txt (gitleaks: github-pat)
+
+Will cross into the guest:
+Guest workspace ready: 4 file(s) in /workspace.
++ canary in guest?
+canary-not-in-guest
++ export/sync round trip
+Apply with 'git apply' after reviewing, or push them through the GitHub workflow (P13).
+Guest workspace ready: 5 file(s) in /workspace.
+asahi-guest-change
+META step=51-asahi-tui source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:44:16Z
+META step=52-asahi-lifecycle source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:44:33Z
+Stopping jc-proj-a-d23e7...
+jc-proj-a-d23e7 started (isolation full; the TUI runs inside the microVM).
+
+real	0m2.177s
+user	0m0.847s
+sys	0m0.076s
+jc-proj-a-d23e7 is running
+isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).
+.git
+.gitignore
+.just-code
+README.md
+guest-note.txt
+META step=53-asahi-import source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:44:35Z
+Sources detected: .albert-code/skills.txt, opencode.json, AGENTS.md
+Review: OpenCode setting "theme" is preserved but not imported
+Review: legacy skill "web" is absent from the current official catalogue
+Review: provider.albert contains custom settings; values withheld
+Preview only. Pass --apply to write the just-code project manifest and lockfile.
+Wrote /home/m1/qualif/proj-b/.just-code/lock.json
+Imported the recognized settings into /home/m1/qualif/proj-b/.just-code/project.json. Legacy configuration files were left untouched.
+This Albert Code project has already been imported; no project files changed.
+custom-user-theme
+META step=54-asahi-team-repo source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:44:36Z
+On branch master
+nothing to commit, working tree clean
+just-code: no just-code runtime is running
+CHECK_FRESH_EXIT: 1
+No versioned project skills are selected; nothing to update.
+UPDATE_EXIT: 0
+Guest workspace ready: 5 file(s) in /workspace.
+Apply with 'git apply' after reviewing, or push them through the GitHub workflow (P13).
+Stopping jc-team-clone-bb59a...

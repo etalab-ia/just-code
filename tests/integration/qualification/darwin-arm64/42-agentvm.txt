@@ -1,0 +1,26 @@
+META step=42-mac-agentvm source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T17:05:20Z
+limactl version 2.2.1
+base template agent-vm-base is not ready; it will be built on the next start.
+DOCTOR_AVM_EXIT: 
+META step=42c-mac-agentvm-check source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T17:08:13Z
+NAME                          STATUS     SSH                VMTYPE    ARCH       CPUS    MEMORY    DISK     DIR
+agent-vm-base                 Stopped    127.0.0.1:49375    vz        aarch64    2       4GiB      20GiB    ~/.lima/agent-vm-base
+opencode-jc-proj-avm-f27e4    Running    127.0.0.1:49400    vz        aarch64    2       4GiB      20GiB    ~/.lima/opencode-jc-proj-avm-f27e4
+just-code: no just-code runtime is running
+CHECK_AVM_EXIT: 
+Stopping opencode-jc-proj-avm-f27e4...
+AVM_STOP_EXIT: 0
+META step=42d-mac-agentvm-full source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T17:08:28Z
+Starting opencode-jc-proj-avm-f27e4 with Lima...
+Launching OpenCode server inside opencode-jc-proj-avm-f27e4...
+AVM_START_EXIT: 
+just-code: Get "http://127.0.0.1:4096/global/health": dial tcp 127.0.0.1:4096: connect: connection refused
+CHECK_EXIT: 
+url: 
+Stopping opencode-jc-proj-avm-f27e4...
+META step=42e-mac-agentvm-health source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T17:12:07Z
+ <- health-ok
+{"healthy":true,"version":"1.19.3"}
+albert provider: registered, default deepseek-v4-flash
+CHECK_EXIT: 
+Stopping opencode-jc-proj-avm-f27e4...

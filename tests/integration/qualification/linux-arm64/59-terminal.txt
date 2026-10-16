@@ -1,0 +1,20 @@
+META step=59-asahi-terminal source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:50:04Z
+n
+PTY_SIZE: 0 40
+Project ~/qualif/proj-d | profile tty40 | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[A[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+NARROW_N_EXIT: 0
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+n
+PTY_SIZE: 0 200
+Project ~/qualif/proj-d | profile tty200 | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[A[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+WIDE_N_EXIT: 0
+bash: line 14: 11776 Killed                  timeout -s INT -k 2 3 script -qec "~/bin/just-code secrets import --profile ttycc --file t.env --apply" /dev/null > /dev/null 2>&1
+CTRLC_EXIT: 137
+      9 development
+      1 tty40

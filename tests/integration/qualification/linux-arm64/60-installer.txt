@@ -1,0 +1,12 @@
+META step=60-asahi-installer source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:50:17Z
+just-code setup — global configuration
+
+Enter your Albert API key (input hidden where the terminal supports it; empty to cancel): The key was rejected (HTTP 401: the key was not accepted). Re-run 'just-code setup' and re-enter it.
+INSTALL_EXIT: 0
+just-code (Go)
+  version:  v0.10.0
+  commit:   db9b8fcd2d27
+  built:    2026-10-16T15:23:31Z
+  go:       go1.25.8
+0692b86d5f80feb5e29e973ab2ada168a8ae5ae431eee9dc812554e58c8253e5  just-code-linux-arm64
+0692b86d5f80feb5e29e973ab2ada168a8ae5ae431eee9dc812554e58c8253e5  (installed)

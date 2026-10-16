@@ -1,0 +1,16 @@
+META step=32b-mac-start-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:34:20Z
++ start (keychain unlocked in-session)
+Source set: the Git working tree (tracked, untracked, and ignored files; .git metadata is not transferred).
+Warning: gitleaks is not installed, so secret detection did not run; the dotenv name filter still applied.
+Provisioning the sealed guest workspace: writing 271 B to the guest...
+Guest workspace ready: 2 file(s) in /workspace.
+~/.local/bin/just-code start --microsandbox --isolation full 2>&1  1.06s user 0.48s system 17% cpu 8.712 total
+tail -4  0.00s user 0.00s system 0% cpu 8.711 total
+START_EXIT: 
++ check
+jc-proj-a-2eef1 is running
+isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).
+CHECK_EXIT: 
++ msb list
+NAME               IMAGE                                                                                                 STATUS     CREATED
+jc-proj-a-2eef1    ghcr.io/anomalyco/opencode@sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631    running    2026-10-16 18:34:25
