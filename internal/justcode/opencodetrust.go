@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,8 +84,11 @@ func WriteTrustRecord(fs FS, stateDir, projectRoot string, r TrustRecord) error 
 }
 
 // hashFileContent returns the sha256 of the file's content, hex-encoded.
-// Symlinks are refused: an approval record must pin actual content, not a
-// path that can be repointed after approval.
+// Symlinks and non-regular files are refused: an approval record must pin
+// actual content, not a path that can be repointed after approval, and a
+// non-regular file (FIFO, device) could hang or stream unbounded data into
+// the hash. The content is hashed by streaming so a large regular file never
+// loads into memory.
 func hashFileContent(path string) (string, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -93,12 +97,26 @@ func hashFileContent(path string) (string, error) {
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return "", fmt.Errorf("%s is a symlink; refusing to approve a repointable path", path)
 	}
-	data, err := os.ReadFile(path)
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file; refusing to hash it", path)
+	}
+	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(fi, opened) {
+		return "", fmt.Errorf("%s changed while opening; refusing to hash it", path)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // UnapprovedInputs computes the execution-relevant inputs of a project that

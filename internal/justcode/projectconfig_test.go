@@ -114,3 +114,46 @@ func TestDiscoverProjectExecutionInputs(t *testing.T) {
 		t.Fatalf("auto-discovered = %v (mjs must be excluded)", inputs.AutoDiscoveredPlugins)
 	}
 }
+
+func TestParseProjectOpenCodeConfigRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "real.json")
+	if err := os.WriteFile(target, []byte(`{"plugin": ["./p.ts"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "opencode.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// Discovery keeps reporting the entry so the trust flow can block on it;
+	// only the read refuses.
+	if got := FindProjectOpenCodeConfig(dir); got != link {
+		t.Fatalf("discovery must keep reporting the symlinked config, got %q", got)
+	}
+	if _, err := ParseProjectOpenCodeConfig(link); err == nil {
+		t.Fatal("parse must refuse a symlinked config instead of reading its target")
+	}
+	if _, err := DiscoverProjectExecutionInputs(dir); err == nil {
+		t.Fatal("input discovery must fail closed on a symlinked config")
+	}
+}
+
+func TestParseProjectOpenCodeConfigSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.json")
+	oversized := `{"x": "` + strings.Repeat("a", maxOpenCodeConfigSize) + `"}`
+	if err := os.WriteFile(path, []byte(oversized), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseProjectOpenCodeConfig(path); err == nil || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("expected size-limit refusal, got %v", err)
+	}
+	atLimit := `{"x": "` + strings.Repeat("a", maxOpenCodeConfigSize-len(`{"x": ""}`)) + `"}`
+	if err := os.WriteFile(path, []byte(atLimit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseProjectOpenCodeConfig(path); err != nil {
+		t.Fatalf("a config at exactly the limit must parse: %v", err)
+	}
+}
