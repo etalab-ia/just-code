@@ -54,6 +54,16 @@ the guest's own shell, and the guest prints only `managed=yes|no` and a token
 when the digests match. Nothing prints content, and the value never becomes an
 argument either, so it cannot reach the guest process table.
 
+The expected digest travels on the command's standard input, not in argv, and
+that is not a detail: the same log records exec argv, so a digest of the
+secret written as an argument would land in the host log this section is
+about. A digest is not the secret, but for a value with little entropy it is
+enough to test guesses offline, and keeping it off argv costs nothing. The
+first line of the file is compared as-is rather than with carriage returns
+stripped: normalising would let a file whose first line reads
+`# just-code mana\rged: do not edit` pass as just-code's own, which is a way
+to have a user's file overwritten.
+
 One limit is deliberate and stated rather than papered over: this proves the
 file's content is the one just-code wanted, not who wrote it. If a sandbox is
 rebuilt and a file at the same path happens to hold the same bytes, the plan
