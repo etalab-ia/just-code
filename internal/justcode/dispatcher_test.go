@@ -2,8 +2,12 @@ package justcode
 
 import (
 	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -190,5 +194,105 @@ func TestDispatcherCheckFullModeReportsVMState(t *testing.T) {
 	})
 	if err := d.Check(context.Background(), nil); err != nil {
 		t.Fatalf("full-mode check must not probe any endpoint: %v", err)
+	}
+}
+
+// freeLocalPort returns a loopback port with nothing listening on it: a
+// listener is bound to grab a port and closed again, which is race-free for a
+// listen socket that never accepted a connection.
+func freeLocalPort(t *testing.T) uint16 {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return uint16(port)
+}
+
+func TestDispatcherCheckReportsConfiguredPortReachability(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	live, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := freeLocalPort(t)
+	cfg := Config{
+		Isolation:       IsolationFull,
+		PortsConfigured: true,
+		Ports:           []PortMapping{{Host: uint16(live), Guest: 8080}, {Host: dead, Guest: 8081}},
+	}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatalf("a dead preview port must not fail check: %v", checkErr)
+	}
+	reachable := "port " + strconv.Itoa(live) + " (guest 8080): reachable (200 OK)"
+	if !strings.Contains(out, reachable) {
+		t.Fatalf("reachable port was not reported: %q", out)
+	}
+	unreachable := "port " + strconv.Itoa(int(dead)) + " (guest 8081): no answer from the host forward"
+	if !strings.Contains(out, unreachable) || !strings.Contains(out, "must bind 0.0.0.0 inside the guest") {
+		t.Fatalf("unreachable port hint was not reported: %q", out)
+	}
+}
+
+func TestDispatcherCheckProbesPortsEvenWhenHealthFails(t *testing.T) {
+	// Backend mode with the fake's dead health endpoint: the probe results
+	// must still print, because preview reachability does not depend on the
+	// OpenCode backend being healthy.
+	dead := freeLocalPort(t)
+	cfg := Config{
+		PortsConfigured: true,
+		Ports:           []PortMapping{{Host: dead, Guest: 3000}},
+	}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	_ = checkErr // the health result is owned by CheckBackend's own tests
+	if !strings.Contains(out, "no answer from the host forward") {
+		t.Fatalf("port probe output missing while the health endpoint was down: %q", out)
+	}
+}
+
+func TestDispatcherCheckDoesNotProbeLegacyPortRange(t *testing.T) {
+	// Without configured ports the implicit 3000-3010 forwards exist, but
+	// check must stay quiet about them: they are defaults, not choices.
+	d := NewDispatcherWith(Config{Isolation: IsolationFull}, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatalf("check without configured ports failed: %v", checkErr)
+	}
+	if strings.Contains(out, "host forward") || strings.Contains(out, "reachable (") {
+		t.Fatalf("legacy port range was probed: %q", out)
 	}
 }
