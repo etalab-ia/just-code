@@ -589,16 +589,16 @@ func (m *MicrosandboxRuntime) syncProjectSecretDelivery(ctx context.Context, bin
 	// The file set is published first: if it fails, the inventory still
 	// describes what the guest holds, so the next run retries the removal or
 	// the write instead of forgetting it.
-	managed, digests, err := m.syncGuestSecretFiles(ctx, deliveries, applied.Files, applied.FileDigests)
+	managed, err := m.syncGuestSecretFiles(ctx, deliveries, applied.Files)
 	if err != nil {
 		return err
 	}
-	if err := WriteProjectSecretApplied(DefaultFS, m.stateDirOrDefault(), store.Namespace(), ProjectSecretApplied{Envs: desiredEnvs, Files: managed, FileDigests: digests}); err != nil {
+	if err := WriteProjectSecretApplied(DefaultFS, m.stateDirOrDefault(), store.Namespace(), ProjectSecretApplied{Envs: desiredEnvs, Files: managed}); err != nil {
 		// The record is what makes a later revocation able to find the file.
 		// Without it the guest holds a plaintext value that no later run
 		// knows about, so remove what was just written and report: the next
 		// run re-delivers from the approvals, which are the durable record.
-		_, _, _ = m.syncGuestSecretFiles(ctx, nil, managed, digests)
+		_, _ = m.syncGuestSecretFiles(ctx, nil, managed)
 		return fmt.Errorf("recording the applied project secret inventory: %w", err)
 	}
 	if len(managed) > 0 {

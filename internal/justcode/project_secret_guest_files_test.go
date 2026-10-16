@@ -410,12 +410,8 @@ func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
 	deliveries := []ProjectSecretDelivery{guestDelivery(".env", "DB_PASSWORD", secret)}
 
 	first, firstClient := newGuestFSRuntime(t, nil)
-	_, digests, err := first.syncGuestSecretFiles(t.Context(), deliveries, nil, nil)
-	if err != nil {
+	if _, err := first.syncGuestSecretFiles(t.Context(), deliveries, nil); err != nil {
 		t.Fatal(err)
-	}
-	if len(digests) != 1 {
-		t.Fatalf("expected one recorded digest, got %v", digests)
 	}
 
 	// The second pass inspects an existing file, which is the path that used
@@ -424,7 +420,7 @@ func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
 	// The assertions below run whether or not the sync succeeds, and before
 	// any check on its error: a command that reads the file back is the leak
 	// even when the sync then refuses to publish.
-	_, _, syncErr := second.syncGuestSecretFiles(t.Context(), deliveries, []string{guestPath}, digests)
+	_, syncErr := second.syncGuestSecretFiles(t.Context(), deliveries, []string{guestPath})
 	inspected := false
 	for _, call := range client.calls {
 		if !strings.HasPrefix(call, "execcapture ") {
@@ -449,12 +445,49 @@ func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
 	}
 }
 
+// TestARotatedValueReachesTheGuest is the regression for the bug Codex caught:
+// the inspection must compare the file against the content this run wants, not
+// against what was written before, or a rotated secret silently stays old.
+func TestARotatedValueReachesTheGuest(t *testing.T) {
+	guestPath := msbGuestWorkspace + "/.env"
+	m, client := newGuestFSRuntime(t, nil)
+	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+		guestDelivery(".env", "DB_PASSWORD", "first-value"),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(client.files[guestPath], "first-value") {
+		t.Fatalf("the first value must be delivered: %q", client.files[guestPath])
+	}
+
+	// Rotate the approved value and start again, using the same runtime so the
+	// guest file is the one left by the previous pass.
+	before := len(client.calls)
+	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+		guestDelivery(".env", "DB_PASSWORD", "rotated-value"),
+	}, []string{guestPath}); err != nil {
+		t.Fatal(err)
+	}
+	wrote := false
+	for _, call := range client.calls[before:] {
+		if strings.Contains(call, "mv -f") {
+			wrote = true
+		}
+	}
+	if !wrote {
+		t.Fatal("a rotated value must be rewritten: comparing against the previous digest would leave the old secret in the guest")
+	}
+	if !strings.Contains(client.files[guestPath], "rotated-value") || strings.Contains(client.files[guestPath], "first-value") {
+		t.Fatalf("the guest must hold the rotated value and not the old one: %q", client.files[guestPath])
+	}
+}
+
 func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 	m, client := newGuestFSRuntime(t, nil)
 	deliveries := []ProjectSecretDelivery{
 		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
 	}
-	managed, digests, err := m.syncGuestSecretFiles(t.Context(), deliveries, nil, nil)
+	managed, err := m.syncGuestSecretFiles(t.Context(), deliveries, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +511,7 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 
 	// A second pass with identical content is a no-op.
 	before := len(client.calls)
-	if _, _, err := m.syncGuestSecretFiles(t.Context(), deliveries, managed, digests); err != nil {
+	if _, err := m.syncGuestSecretFiles(t.Context(), deliveries, managed); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range client.calls[before:] {
@@ -488,7 +521,7 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 	}
 
 	// Withdrawing every approval removes the managed file.
-	if _, _, err := m.syncGuestSecretFiles(t.Context(), nil, managed, digests); err != nil {
+	if _, err := m.syncGuestSecretFiles(t.Context(), nil, managed); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := client.files[guestPath]; ok {
@@ -500,9 +533,9 @@ func TestSyncGuestSecretFilesRefusesToClobberProjectFile(t *testing.T) {
 	guestPath := msbGuestWorkspace + "/.env"
 	own := "API_KEY=the-projects-own-value\n"
 	m, client := newGuestFSRuntime(t, map[string]string{guestPath: own})
-	_, _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+	_, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
-	}, nil, nil)
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "were not written by just-code") {
 		t.Fatalf("the publish must be refused: %v", err)
 	}
@@ -513,10 +546,10 @@ func TestSyncGuestSecretFilesRefusesToClobberProjectFile(t *testing.T) {
 
 func TestSyncGuestSecretFilesWritesEachComponentSeparately(t *testing.T) {
 	m, client := newGuestFSRuntime(t, nil)
-	managed, _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+	managed, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_bbb__", "api.example.com"),
 		testDelivery("apps/api/.env", "API_KEY", "JC_APPS_API_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
-	}, nil, nil)
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
