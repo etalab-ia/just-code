@@ -139,7 +139,10 @@ func dotenvLiteral(value string) (string, error) {
 // treats a backtick like a quote in that one check, so an interior or trailing
 // quote or backtick, a lone leading backtick, and even a backtick-wrapped value
 // are preserved by the raw loaders — but a value wrapped in a matching backtick
-// pair is refused because Node, unlike Python and Go, would strip the pair.
+// pair is refused by this predicate because Node, unlike Python and Go, would
+// strip the pair. That is a limit of the raw form alone: the quoted form carries
+// the value, so such a value is refused only when something else has already
+// ruled quoting out.
 //
 // Non-ASCII is not a reason to refuse. Unlike a quoted value, an unquoted one
 // is never decoded, so UTF-8 bytes pass through as written and a path such as
