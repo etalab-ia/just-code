@@ -110,8 +110,10 @@ loaders just-code pins (Node `dotenv` 16.4.7 with and without `dotenv-expand`
   out by the value *and* the raw form must be ruled out as well. Quoting is
   ruled out by a carriage return, an apostrophe, a `$`, a backslash pair or a
   trailing backslash; the raw form is ruled out by a `$`, a `#`, a newline, a
-  carriage return, an empty value, a leading quote, a wrapping backtick pair or
-  a character the loaders trim at an edge. So a backslash pair followed by a
+  carriage return, an empty value, a leading single or double quote, a wrapping
+  backtick pair or a character the loaders trim at an edge. (A leading double
+  quote rules out *raw* only; it rules out *nothing* on its own, because the
+  quoted form carries it.) So a backslash pair followed by a
   `#` is refused for its raw `#`, a value carrying both a newline and a trailing
   backslash for its raw newline, and a backslash pair followed by a trailing
   space for its raw edge-trimmed character — none of them an apostrophe case,
@@ -125,10 +127,15 @@ loaders just-code pins (Node `dotenv` 16.4.7 with and without `dotenv-expand`
     *not* such an obstacle: it is the reason the raw form exists, so `it's a\\b`
     and `C:\Users\O'Brien\` are delivered raw, not refused, and `it's` on its
     own is delivered raw as well.
-  - A **quote in first position**: written raw a leading single or double quote
-    opens a quoted value, so `godotenv` refuses the whole file and
-    `python-dotenv` misparses it. Interior and trailing quotes are ordinary
-    bytes.
+  - A **quote in first position**, but only where quoting is already ruled
+    out. Written raw, a leading single or double quote opens a quoted value, so
+    `godotenv` refuses the whole file and `python-dotenv` misparses it. A
+    leading **double** quote is still delivered — the single-quoted form
+    carries it (`dotenvLiteral("\"abc")` returns `'"abc'`), so only a value
+    that another character has already pushed to the raw form is refused for
+    it. A leading **single** quote defeats quoting on its own, since quoting
+    can carry no single quote at all, so it is refused unconditionally.
+    Interior and trailing quotes are ordinary bytes.
   - A value **wrapped in a matching backtick pair**: plain Node `dotenv` strips
     the wrapping pair from an unquoted value while `python-dotenv` and
     `godotenv` keep it, so neither form is exact in every loader. A lone leading
@@ -153,8 +160,9 @@ as `C:\Répertoire\` was refused though every pinned loader carries it, and the
 sweep above replaced that guess. The same sweep showed quotes and backticks are
 **positional, not forbidden**: an earlier version refused every value holding
 one, though interior and trailing quotes round-trip raw in all three loaders,
-and only a leading quote or a wrapping backtick pair is undeliverable. The
-round-trip is now checked against real loaders rather than asserted:
+and only a wrapping backtick pair, or a leading quote on a value quoting has
+already failed, is undeliverable. The round-trip is now checked against real
+loaders rather than asserted:
 `godotenv` in `internal/justcode/project_secret_encoding_loaders_test.go`, and
 Node and Python in `tests/integration/project-secrets/`.
 

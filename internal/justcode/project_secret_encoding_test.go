@@ -288,7 +288,11 @@ func TestDotenvLiteralDeliversPositionalQuotesAndBackticks(t *testing.T) {
 		"interior backtick and a pair": "a" + bt + "b" + bs + bs,
 	}
 	quoted := map[string]string{
-		"double quote alone":      "a\"b",
+		"double quote alone": "a\"b",
+		// A leading double quote is carried by quoting: it only breaks the
+		// raw form, where it would open a quoted value. It is refused only
+		// when another character has already ruled quoting out.
+		"leading double quote":    "\"abc",
 		"backticks around a word": bt + "ab" + bt,
 		"lone leading backtick":   bt + "abc",
 		"empty backtick pair":     bt + bt,

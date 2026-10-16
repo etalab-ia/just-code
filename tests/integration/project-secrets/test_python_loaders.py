@@ -64,13 +64,15 @@ class GuestReadableEncodingTests(unittest.TestCase):
                         self.assertEqual(values[name], value)
 
 
-class BackslashEncodingTests(unittest.TestCase):
-    """Why the encoder refuses a backslash pair and a trailing backslash.
+class QuotedFormFailureTests(unittest.TestCase):
+    """Why the quoted form cannot carry a backslash pair or a trailing backslash.
 
-    Node reads all of these exactly; python-dotenv does not, so the refusal is
-    driven by this loader. The shape matters: a value is always followed by
-    another quoted value in a generated file, and that is where the trailing
-    backslash does its damage.
+    These are properties of the failing form, not encoder refusals: the encoder
+    writes both shapes unquoted, and each reads back exactly. Node reads all of
+    these quoted shapes exactly; python-dotenv does not, so the choice is driven
+    by this loader. The shape matters: a value is always followed by another
+    quoted value in a generated file, and that is where the trailing backslash
+    does its damage.
     """
 
     def _values(self, body):

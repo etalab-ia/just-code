@@ -221,9 +221,12 @@ simples sont la forme par défaut : ils portent exactement les retours à la
 ligne, les espaces, `#`, les guillemets doubles et l'accent grave. Ils ne
 portent **pas** l'apostrophe : on ne peut pas l'échapper dans une valeur quotée,
 si bien que `godotenv` refuse le fichier entier et que `python-dotenv` lit de
-travers. Quand les guillemets ne suffisent pas — deux antislashs consécutifs,
-une valeur qui se termine par un antislash, une apostrophe, ou une apostrophe à
-côté de l'un de ces cas — la valeur est écrite **sans guillemets**. Dans une
+travers. Un guillemet **double** en première position ne gêne pas les
+guillemets, eux : la forme quotée le porte, seule la forme brute y verrait
+l'ouverture d'une valeur quotée. Quand les guillemets ne suffisent pas — deux
+antislashs consécutifs, une valeur qui se termine par un antislash, une
+apostrophe, ou une apostrophe à côté de l'un de ces cas — la valeur est écrite
+**sans guillemets**. Dans une
 valeur non quotée, aucun des trois chargeurs ne traite les antislashs : les deux
 formes y passent donc verbatim. C'est ce qui rend livrables les chemins Windows
 et UNC (`C:\Users\`, `\\serveur\partage\`) et toute valeur terminée par un
@@ -231,10 +234,11 @@ séparateur de répertoire que les guillemets altéreraient ou feraient refuser 
 fichier entier.
 
 La forme brute a ses propres limites : un `#`, un `$`, un retour à la ligne,
-un retour chariot, un guillemet **en première position**, une valeur encadrée
-par deux accents graves, ou un caractère que les chargeurs suppriment en début
-ou en fin de valeur y sont refusés. Les guillemets et l'accent grave sont
-**positionnels, pas interdits** : en position intérieure ou finale ce sont des
+un retour chariot, un guillemet simple ou double **en première position**, une
+valeur encadrée par deux accents graves, ou un caractère que les chargeurs
+suppriment en début ou en fin de valeur y sont refusés. Les guillemets et
+l'accent grave sont **positionnels, pas interdits** : en position intérieure ou
+finale ce sont des
 octets ordinaires. Une apostrophe intérieure ou finale (`it's`, `O'Brien`)
 passe donc brute, car les guillemets ne la portent jamais ; elle n'est refusée
 que si la forme brute la refuse aussi — apostrophe en première position, ou
@@ -250,10 +254,12 @@ liste de caractères : il faut que les guillemets ne puissent pas porter la
 valeur **et** que la forme brute la refuse aussi. Les guillemets sont mis en
 échec par un retour chariot, une apostrophe, un `$`, une paire d'antislashs ou
 un antislash final ; la forme brute est refusée par un `$`, un `#`, un retour à
-la ligne, un retour chariot, une valeur vide, un guillemet en première position,
-une valeur encadrée par deux accents graves, ou un caractère que les chargeurs
-rognent en bord de valeur. Sont donc refusés, entre autres : un `$`, un retour
-chariot, un guillemet ou une apostrophe en première position, une apostrophe
+la ligne, un retour chariot, une valeur vide, un guillemet simple ou double en
+première position, une valeur encadrée par deux accents graves, ou un caractère
+que les chargeurs rognent en bord de valeur. Sont donc refusés, entre autres :
+un `$`, un retour chariot, un guillemet double en première position **dans une
+valeur que les guillemets ne portent pas déjà**, une apostrophe en première
+position (elle fait échouer les guillemets à elle seule), une apostrophe
 accompagnée d'un autre obstacle brut, une paire d'antislashs suivie d'un `#` ou
 d'un retour à la ligne, une valeur encadrée par deux accents graves quand les
 guillemets ne peuvent pas la porter, et une séquence UTF-8 invalide. Le refus

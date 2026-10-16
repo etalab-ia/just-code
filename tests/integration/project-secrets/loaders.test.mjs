@@ -80,20 +80,25 @@ test("a raw multiline value breaks the whole file for the line-oriented parsers"
   assert.notEqual(parsed.TLS_KEY, "-----BEGIN KEY-----\nAAAA\n-----END KEY-----");
 });
 
-test("the two refused classes are refused for different reasons", () => {
+test("single quotes cannot carry an apostrophe, and a dollar is loader-dependent", () => {
   // Pinned so a future attempt to "just escape it" has the evidence in front
-  // of it. The reasons are not the same, and neither is a Node problem.
+  // of it. These are failures of the *quoted* form, not encoder refusals: the
+  // encoder writes an apostrophe raw, and that raw form round-trips. Neither
+  // is a Node problem, which is why the assertions below still pass.
   const apostrophe = "it's";
   const dollar = "pre$VAR-post";
 
-  // Node reads the apostrophe fine — dotenv takes the last quote on the line.
-  // The refusal is driven by the Go loader, which refuses the whole file; see
-  // internal/justcode/project_secret_encoding_loaders_test.go.
+  // The quoted spelling is the broken one. Node happens to read it back (it
+  // takes the last quote on the line), but godotenv refuses the whole file and
+  // python-dotenv misparses it, so the quoted form cannot be emitted. That is
+  // why the encoder routes a value holding an apostrophe to the raw form; see
+  // dotenvQuotedObstacle in internal/justcode/project_secret_guest_files.go.
   assert.equal(dotenv.parse(`K='${apostrophe}'\n`).K, apostrophe);
 
   // The dollar case is a genuine conflict between loaders rather than a
   // mangling: the same bytes mean the literal value to plain dotenv and
-  // "pre-post" once expansion runs, so no encoding can be exact for both.
+  // "pre-post" once expansion runs, so no encoding is exact for both and the
+  // value is refused instead of silently altered.
   assert.equal(dotenv.parse(`K='${dollar}'\n`).K, dollar);
   assert.equal(expand({ parsed: dotenv.parse(`K='${dollar}'\n`), processEnv: {} }).parsed.K, "pre-post");
 });
