@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Phase 3: managed guest dotenv files. Phase 2 registers the approved values
@@ -55,15 +57,17 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 //     separator. Raw is a fallback, not the default: it is used only when
 //     quoting cannot represent the value, so nothing already working changes
 //     form.
-//   - Raw is safe only over a narrow character set. An unquoted value is
-//     ended by a newline, truncated at a "#" that follows a space, trimmed of
-//     leading and trailing whitespace, opened as a quoted value by a leading
-//     quote (godotenv raises "unterminated quoted value" on a leading double
-//     quote), read as a quote by plain Node dotenv on a backtick, and expanded
-//     on "$". Everything outside printable ASCII, and a "#", "$", a quote, a
-//     backtick, or a leading or trailing space, is therefore refused raw and
-//     falls back to being refused outright when quoting cannot carry it
-//     either. See dotenvRawObstacle for the exact set.
+//   - Raw is safe only over a restricted character set. An unquoted value is
+//     ended by a newline, truncated at a "#" that follows a space, opened as a
+//     quoted value by a leading quote (godotenv raises "unterminated quoted
+//     value" on a leading double quote), read as a quote by plain Node dotenv
+//     on a backtick, and expanded on "$". A "#", "$", a quote, a backtick, a
+//     newline or a carriage return is therefore refused anywhere, and a value
+//     that begins or ends with a character a loader strips is refused at the
+//     edge. Everything else, including every non-ASCII letter, mark,
+//     punctuation and symbol, is carried verbatim: an unquoted value undergoes
+//     no decoding, so a path such as C:\Répertoire\ or 秘密\ survives whole.
+//     See dotenvRawObstacle for the exact set.
 //   - A "$" followed by a name or "{" is expanded by dotenv-expand and by
 //     godotenv, and the usual escape, "\$", is then left as a literal
 //     backslash by plain Node dotenv and rejected by python-dotenv. So a
@@ -79,6 +83,14 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 // mangled secret is worse than a refused one, because it fails silently and
 // far from here.
 func dotenvLiteral(value string) (string, error) {
+	// Neither form survives invalid UTF-8, so it is refused once, for both.
+	// python-dotenv raises on the undecodable bytes and loses the whole file;
+	// Go and Node substitute U+FFFD and carry on with the wrong value, and a
+	// quoted invalid byte can even leave godotenv reading the next line as
+	// part of this value. The original bytes cannot be delivered as a string.
+	if !utf8.ValidString(value) {
+		return "", fmt.Errorf("the value is not valid UTF-8, which the loaders decode as replacement characters or refuse the file over")
+	}
 	quotedErr := dotenvQuotedObstacle(value)
 	if quotedErr == nil {
 		return "'" + value + "'", nil
@@ -93,23 +105,41 @@ func dotenvLiteral(value string) (string, error) {
 // dotenvRawObstacle reports why a value cannot be written unquoted, or nil
 // when it can.
 //
-// The accepted set is printable ASCII (0x20-0x7E) minus "#", "$", a single
-// quote, a double quote and a backtick, with no leading or trailing space and
-// at least one character. It was checked exhaustively over every value of up
-// to three characters drawn from that set, and over a reduced alphabet
-// including the space and the backslash up to eight characters plus random
-// strings to length 40, against all three pinned loaders, in the shape a
-// generated file actually has (the raw value between quoted values). Every
-// value the predicate accepts round-trips byte-exactly in all three; each
-// character it rejects is rejected because an unquoted value trims it
-// (leading or trailing space), cuts the value at it ("#" after a space),
-// expands it ("$"), opens a quoted value with it and never closes it (a
-// leading quote, and a backtick in plain Node dotenv), or cannot carry it on
-// one line (a newline, and anything outside printable ASCII).
+// The accepted set excludes, anywhere in the value: "$", "#", a single quote,
+// a double quote, a backtick, a newline and a carriage return. It excludes, at
+// the first or last position only: every character a loader strips when it
+// trims an unquoted value. The value must be non-empty.
+//
+// The set was measured, not assumed. A sweep over every assigned code point,
+// placed at the leading, trailing and interior position of a value in a
+// generated file (the raw value between two quoted values), run through all
+// three pinned loaders, found exactly three interior failures — LF, CR and the
+// already-refused "#" and "$" — and an edge-trim set that is the union of what
+// each loader strips:
+//
+//	unicode.IsSpace(r)                        (Go, Python and Node all strip these)
+//	+ U+001C..U+001F                          (Python's str.isspace, not Go's)
+//	+ U+FEFF                                  (Node's trim)
+//
+// An interior occurrence of a whitespace character is left alone by every
+// loader, so only the edges are constrained: a tab or a NBSP inside the value
+// is exact, while the same character at the end would be dropped silently.
+//
+// Non-ASCII is not a reason to refuse. Unlike a quoted value, an unquoted one
+// is never decoded, so UTF-8 bytes pass through as written and a path such as
+// C:\Répertoire\, naïve\ or 秘密\ round-trips exactly in all three loaders.
+// Refusing them would reject the majority of the world's file names for a
+// hazard that only exists inside quotes.
+//
+// Invalid UTF-8 never reaches this predicate: dotenvLiteral checks the whole
+// value once, before either form, because a quoted invalid byte is refused by
+// python-dotenv and can even swallow the next line in godotenv.
 func dotenvRawObstacle(value string) error {
 	if value == "" {
 		return fmt.Errorf("is empty, and an unquoted empty value is indistinguishable from an absent one")
 	}
+	leading := true
+	var trailing rune
 	for _, r := range value {
 		switch r {
 		case '$':
@@ -122,20 +152,55 @@ func dotenvRawObstacle(value string) error {
 			return fmt.Errorf("contains a double quote, which makes godotenv refuse the whole file as an unterminated quoted value at the start of an unquoted one")
 		case '`':
 			return fmt.Errorf("contains a backtick, which plain Node dotenv reads as a quote")
+		case '\n':
+			return fmt.Errorf("contains a newline, which ends an unquoted value")
+		case '\r':
+			return fmt.Errorf("contains a carriage return, which the loaders normalise to a newline")
 		}
-		if r < 0x20 || r > 0x7e {
-			return fmt.Errorf("contains a character outside printable ASCII (%U), which an unquoted value cannot carry on one line", r)
+		if leading && dotenvTrimmedAtEdge(r) {
+			return fmt.Errorf("starts with %U, which the loaders strip from the edge of an unquoted value", r)
 		}
+		leading = false
+		trailing = r
 	}
-	if strings.HasPrefix(value, " ") || strings.HasSuffix(value, " ") {
-		return fmt.Errorf("starts or ends with a space, which an unquoted value trims")
+	if dotenvTrimmedAtEdge(trailing) {
+		return fmt.Errorf("ends with %U, which the loaders strip from the edge of an unquoted value", trailing)
 	}
 	return nil
 }
 
+// dotenvTrimmedAtEdge reports whether a loader strips this character from the
+// leading or trailing edge of an unquoted value. It is the union of the three
+// pinned loaders' trim sets, measured per character, so a value carrying one
+// at its edge is refused rather than delivered with the character gone.
+func dotenvTrimmedAtEdge(r rune) bool {
+	if unicode.IsSpace(r) {
+		return true
+	}
+	// Python's str.isspace includes the four information separators; Go's
+	// unicode.IsSpace deliberately does not.
+	if r >= 0x1c && r <= 0x1f {
+		return true
+	}
+	// JavaScript's String.trim strips a zero-width no-break space.
+	return r == 0xfeff
+}
+
 // dotenvQuotedObstacle reports why a value cannot be written as a
 // single-quoted literal, or nil when it can.
+//
+// A carriage return is refused: Node dotenv and python-dotenv normalise CR and
+// CRLF to LF inside a quoted value, so 'a\rb' is delivered as "a\nb" and a
+// PEM-style secret pasted from a Windows source would be altered in place.
+// A double-quoted "\r" escape does reproduce a bare CR, but the three loaders
+// then disagree about backslashes and escaped quotes inside double quotes, so
+// there is no second form safe to fall back to. A value whose newlines were
+// written on Windows cannot be delivered as itself; it is refused, and the
+// refusal says so. LF alone is preserved exactly by every loader.
 func dotenvQuotedObstacle(value string) error {
+	if strings.ContainsRune(value, '\r') {
+		return fmt.Errorf("contains a carriage return, which Node dotenv and python-dotenv normalise to a newline inside a quoted value")
+	}
 	if strings.ContainsRune(value, '\'') {
 		return fmt.Errorf("contains a single quote, which dotenv cannot escape: godotenv refuses the whole file and python-dotenv misparses it")
 	}

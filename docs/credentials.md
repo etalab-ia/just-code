@@ -216,14 +216,28 @@ invitée, puisque rien n'est substitué vers un hôte — et il n'existe **aucun
 repli automatique** de l'un vers l'autre : une valeur n'est jamais lisible dans
 l'invité sans une approbation explicite.
 
-Quatre formes de valeur sont **refusées** à l'approbation, parce qu'aucun
-encodage ne les fait lire à l'identique par les chargeurs dotenv que just-code
-épingle : une apostrophe, un `$`, deux antislashs consécutifs, et une valeur qui
-se termine par un antislash. Le refus nomme la variable et la raison ; une
-valeur refusée est un désagrément, une valeur silencieusement modifiée est un
+Deux encodages sont utilisés selon ce que la valeur contient. Les guillemets
+simples sont la forme par défaut : ils portent exactement les retours à la
+ligne, les espaces, `#`, les guillemets doubles et un antislash isolé. Quand
+les guillemets ne suffisent pas — deux antislashs consécutifs, ou une valeur qui
+se termine par un antislash — la valeur est écrite **sans guillemets**. Dans une
+valeur non quotée, aucun des trois chargeurs ne traite les antislashs : les deux
+formes y passent donc verbatim. C'est ce qui rend livrables les chemins Windows
+et UNC (`C:\Users\`, `\\serveur\partage\`) et toute valeur terminée par un
+séparateur de répertoire que les guillemets altéreraient ou feraient refuser le
+fichier entier.
+
+La forme brute n'accepte pas n'importe quoi : un `#`, un `$`, une apostrophe, un
+guillemet, un accent grave, un caractère de contrôle, ou un caractère que les
+chargeurs suppriment en début ou en fin de valeur y sont refusés. Le jeu accepté
+a été mesuré, pas supposé, contre les trois chargeurs épinglés. Le **non-ASCII
+est accepté** : une valeur non quotée n'est jamais décodée, donc `C:\Répertoire\`
+ou `naïve\` passent octet pour octet. Seuls restent **refusés** à l'approbation
+les cas qu'aucune des deux formes ne porte : une apostrophe, un `$`, un retour
+chariot, et une séquence UTF-8 invalide. Le refus nomme la variable et la raison ;
+une valeur refusée est un désagrément, une valeur silencieusement modifiée est un
 incident qui se produit loin d'ici. Pour ces valeurs, la livraison par proxy
-reste la bonne réponse dès lors que l'application joint le service par le
-réseau.
+reste la bonne réponse dès lors que l'application joint le service par le réseau.
 
 Le fichier livré est écrit en `0600`, et la restriction est appliquée au fichier
 temporaire **avant** le renommage : le runtime crée les fichiers en `0644`, donc

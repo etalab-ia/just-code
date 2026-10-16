@@ -60,6 +60,140 @@ func TestDotenvLiteralUsesTheRawFormForTheBackslashShapes(t *testing.T) {
 	}
 }
 
+// A value that quoting cannot carry is not automatically refused: an unquoted
+// value is never decoded, so anything the loaders do not strip, cut or expand
+// passes through byte-for-byte. Non-ASCII is the large case of this, and it is
+// most of the world's file names.
+func TestDotenvLiteralUsesTheRawFormForNonASCII(t *testing.T) {
+	for name, value := range map[string]string{
+		"accented windows path":  `C:\Répertoire\`,
+		"accented trailing path": `naïve\`,
+		"greek":                  `Ω\`,
+		"cjk":                    `秘密\`,
+		"emoji":                  `🚀\`,
+		"arabic":                 `مجلد\`,
+		"mixed":                  `C:\Données\rép-🚀\`,
+		"accents and pair":       `C:\\Répertoire`,
+	} {
+		literal, err := dotenvLiteral(value)
+		if err != nil {
+			t.Fatalf("%s (%q) must be representable: %v", name, value, err)
+		}
+		if literal != value {
+			t.Fatalf("%s must be written unquoted and verbatim: got %q, want %q", name, literal, value)
+		}
+	}
+}
+
+// A carriage return is refused by both forms. Quoting would normalise it to a
+// newline in Node and Python; raw would end the value. Refusing is the only
+// outcome that does not alter the secret.
+func TestDotenvLiteralRefusesACarriageReturn(t *testing.T) {
+	for name, value := range map[string]string{
+		"bare cr":         "a\rb",
+		"crlf":            "line1\r\nline2",
+		"cr at the end":   "a\r",
+		"cr in a key pem": "-----BEGIN KEY-----\r\nAAAA\r\n-----END KEY-----",
+	} {
+		_, err := dotenvLiteral(value)
+		if err == nil {
+			t.Fatalf("%s must be refused: a quoted value is normalised and a raw one ends at the CR", name)
+		}
+		if !strings.Contains(err.Error(), "carriage return") {
+			t.Fatalf("%s: the refusal must name the carriage return: %v", name, err)
+		}
+	}
+}
+
+// The edge of an unquoted value is where the loaders trim. The raw form must
+// refuse a character the loaders strip at the edge, whatever it is, because it
+// would deliver the value with that character silently gone.
+func TestDotenvRawObstacleRefusesATrimmedEdge(t *testing.T) {
+	for name, value := range map[string]string{
+		"leading space":            " a",
+		"trailing space":           "a ",
+		"leading tab":              "\ta",
+		"trailing tab":             "a\t",
+		"trailing nbsp":            "a\u00a0",
+		"leading nbsp":             "\u00a0a",
+		"trailing ideographic":     "a\u3000",
+		"leading ideographic":      "\u3000a",
+		"trailing hair space":      "a\u200a",
+		"leading ogham space":      "\u1680a",
+		"leading file separator":   "\x1ca",
+		"trailing group separator": "a\x1d",
+		"trailing bom":             "a\ufeff",
+		"leading bom":              "\ufeffa",
+		"vertical tab":             "\x0ba",
+	} {
+		if err := dotenvRawObstacle(value); err == nil {
+			t.Fatalf("%s (%q) must be refused raw: the loaders strip that edge character", name, value)
+		}
+	}
+	// The same characters are exact in the interior, so raw must carry them.
+	for name, value := range map[string]string{
+		"interior tab":            "a\tb",
+		"interior nbsp":           "a\u00a0b",
+		"interior ideographic":    "a\u3000b",
+		"interior file separator": "a\x1cb",
+		"interior bom":            "a\ufeffb",
+	} {
+		if err := dotenvRawObstacle(value); err != nil {
+			t.Fatalf("%s (%q) must be representable raw: %v", name, value, err)
+		}
+	}
+}
+
+// The refusal above is about the raw form, not about the value: quoting keeps
+// leading and trailing whitespace exactly, so those values are still
+// delivered, in their quoted form. Only a value that needs raw for another
+// reason (a backslash pair, a trailing backslash) and also carries a trimmed
+// edge has no form left.
+func TestDotenvLiteralStillDeliversWhitespaceEdgesByQuoting(t *testing.T) {
+	for name, value := range map[string]string{
+		"leading nbsp":   "\u00a0a",
+		"trailing nbsp":  "a\u00a0",
+		"trailing space": "a ",
+		"leading tab":    "\ta",
+		"trailing bom":   "a\ufeff",
+		"interior nbsp":  "a\u00a0b",
+	} {
+		literal, err := dotenvLiteral(value)
+		if err != nil {
+			t.Fatalf("%s (%q) must be representable by quoting: %v", name, value, err)
+		}
+		if literal != "'"+value+"'" {
+			t.Fatalf("%s must be single-quoted and verbatim: got %q", name, literal)
+		}
+	}
+	// A pair plus a trimmed edge has no form: quoting collapses the pair,
+	// raw drops the edge character.
+	if _, err := dotenvLiteral(`a\\b `); err == nil {
+		t.Fatal("a backslash pair with a trailing space must be refused: neither form is exact")
+	}
+}
+
+// Invalid UTF-8 is refused before either form. Measured: python-dotenv raises
+// UnicodeDecodeError and loses the file, Go and Node substitute replacement
+// characters (and a quoted invalid byte can make godotenv read the following
+// line into this value), so no encoding delivers the original bytes.
+func TestDotenvLiteralRefusesInvalidUTF8(t *testing.T) {
+	for name, value := range map[string]string{
+		"truncated sequence": "ab\xc3",
+		"lone continuation":  "C:\\R\xe9pertoire\\",
+		"overlong":           "ab\xc0\xaf",
+		"bad byte":           "ab\xff",
+	} {
+		_, err := dotenvLiteral(value)
+		if err == nil {
+			t.Fatalf("%s must be refused: the loaders decode it as replacement characters", name)
+		}
+		if !strings.Contains(err.Error(), "UTF-8") {
+			t.Fatalf("%s: the refusal must name the encoding: %v", name, err)
+		}
+	}
+}
+
 // Quoting stays the default for everything it can carry, so nothing that
 // worked before changes form.
 func TestDotenvLiteralPrefersQuotesWhenTheyWork(t *testing.T) {
