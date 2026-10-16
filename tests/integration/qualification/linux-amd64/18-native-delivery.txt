@@ -1,0 +1,82 @@
+META step=18-native-delivery date=2026-10-16T15:45:21Z
++ re-import into the NATIVE store (no --fallback)
+Project ~/qualif/proj-d | profile development | .env
+  Variables: API_TOKEN, DUPE_KEY
+  Plan: 2 added, 0 changed, 0 unchanged, 0 removed
+  Duplicate assignments (last definition wins): DUPE_KEY
+Stored .env (2 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+IMPORT_.env: 0
+Project ~/qualif/proj-d | profile development | sub/app.env
+  Variables: APP_SECRET
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+Stored sub/app.env (1 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+IMPORT_sub/app.env: 0
+Project ~/qualif/proj-d | profile development | classes.env
+  Variables: APOS_VALUE, DBL_BACKSLASH, TRAILING_BACKSLASH, WIN_PATH
+  Plan: 4 added, 0 changed, 0 unchanged, 0 removed
+Stored classes.env (4 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+IMPORT_classes.env: 0
++ index store kind now:
+secret-service
++ re-approve bindings
+Approving .env#API_TOKEN for development -> guest JC_API_TOKEN, destinations: httpbin.org
+The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.
+Approved. It takes effect at the next start of this project's sandbox.
+APPROVE_PROXY: 0
+APPROVE_APOS_VALUE: 0
+APPROVE_DBL_BACKSLASH: 0
+APPROVE_TRAILING_BACKSLASH: 0
+APPROVE_WIN_PATH: 0
++ start
+Warning: 4 project secret(s) are delivered readable inside jc-proj-d-6ca2d. Everything running in that sandbox, including the agent, can read them; they are readable for as long as the sandbox holds them, and a snapshot taken now captures them. Run 'just-code secrets bindings list' to review.
+Published 2 managed project secret file(s) into the guest workspace.
+START_EXIT: 0
+instance: jc-proj-d-6ca2d
++ /workspace/.env (expect MARKER only, 0600):
+-rw-r--r--    1 root     root           257 Oct 16 15:45 /workspace/.env
+# just-code managed: do not edit
+# source: .env
+# Each value below is an opaque placeholder. The real value stays on
+# the host; the sandbox proxy substitutes it only toward the hosts this
+# project approved.
+API_TOKEN=__JUST_CODE_SECRET_9bc8dc02f16692d8__
++ /workspace/classes.env (expect REAL fake values, 0600):
+-rw-------    1 root     root           429 Oct 16 15:45 /workspace/classes.env
+# just-code managed: do not edit
+# source: classes.env
+# WARNING: this file contains real secret values. Everything running in
+# this sandbox, including the agent, can read them.
+# Values marked as placeholders are not secrets: the proxy substitutes
+# those toward the hosts this project approved.
+APOS_VALUE='fake-OBrien-03'
+DBL_BACKSLASH=fakepath\\with\\pairs
+TRAILING_BACKSLASH=endswithfake\
+WIN_PATH='C:\Users\fake\file.txt'
++ guest env JC_API_TOKEN (expect marker):
+1
+JC_API_TOKEN=<redacted-shape>
++ guest proxy env:
+none
++ live substitution: guest calls httpbin with the marker in Authorization
+marker shape: __JUST_CODE_SECRET_9...
+{
+  "args": {}, 
+  "data": "", 
+  "files": {}, 
+  "form": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Authorization": "Bearer dev-fake-token-0001", 
+    "Host": "httpbin.org", 
+    "User-Agent": "curl/8.22.0", 
+    "X-Amzn-Trace-Id": "Root=1-6ad246b1-619c59987d411a5e35f1c370"
+  }, 
+  "json": null, 
+  "method": "GET", 
+  "origin": "78.232.49.27", 
+  "url": "https://httpbin.org/anything"
+}
+SUBSTITUTION_EXIT: 0

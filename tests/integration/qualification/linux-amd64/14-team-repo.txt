@@ -1,0 +1,54 @@
+META step=14-team-repo date=2026-10-16T15:38:19Z
++ fresh clone contents:
+.env
+.env.local
+.git
+.gitignore
+.just-code
+README.md
+gh-token.txt
+guest-note.txt
++ check (no instance for this clone yet)
+Note: /root/qualif/team-clone/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/team-clone/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+just-code: no just-code runtime is running
+CHECK_EXIT: 1
++ update (no changes expected)
+Note: /root/qualif/team-clone/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/team-clone/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+No versioned project skills are selected; nothing to update.
+UPDATE_EXIT: 0
++ start (own instance for the clone)
+      belongs in the credential store: 'just-code auth add albert').
+just-code: jc-proj-a-8d2aa is already running. Run `just-code stop` before starting microsandbox.
+START_EXIT: 1
++ instances now:
+NAME               IMAGE                                                                                                 STATUS     CREATED
+jc-proj-a-8d2aa    ghcr.io/anomalyco/opencode@sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631    running    2026-10-16 15:31:03
++ make a guest-side change and export it on the test branch
+error: the following required arguments were not provided:
+  <NAME>
+
+Usage: msb exec <NAME> -- <COMMAND>...
+
+For more information, try '--help'.
+just-code: jc-team-clone-c4817 does not exist yet; run 'just-code start' first
+error: can't open patch '/tmp/team-export.patch': No such file or directory
+d6189ba version just-code config
+e62150f import guest change
++ stop
+No just-code runtime is running for this project.
++ retry after stopping proj-a:
+Guest workspace ready: 5 file(s) in /workspace.
+START_EXIT: 0
+NAME                   IMAGE                                                                                                 STATUS     CREATED
+jc-team-clone-c4817    ghcr.io/anomalyco/opencode@sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631    running    2026-10-16 15:38:44
+jc-proj-a-8d2aa        ghcr.io/anomalyco/opencode@sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631    stopped    2026-10-16 15:31:03
+clone instance: jc-team-clone-c4817
+Apply with 'git apply' after reviewing, or push them through the GitHub workflow (P13).
+66b4fbd test branch change from guest
+Stopping jc-team-clone-c4817...

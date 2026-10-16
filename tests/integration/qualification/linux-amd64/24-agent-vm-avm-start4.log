@@ -1,0 +1,9 @@
++ start --agent-vm with ALBERT_API_KEY env
+Warning: agent-vm has no secret injection, so the real ALBERT_API_KEY is readable inside the VM (isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate it. Prefer --microsandbox for untrusted work, and treat the guest as holding a live credential.
+Building the agent-vm-base base template (this takes several minutes)...
+just-code: limactl create failed for agent-vm-base: limactl create --name=agent-vm-base template:debian-13 --set .mounts=[] --disk=20 --memory=4 --cpus=2 --tty=false failed (exit 1)
+
+real	0m1.223s
+user	0m1.093s
+sys	0m0.145s
+START_AVM4_EXIT: 1

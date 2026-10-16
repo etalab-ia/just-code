@@ -1,0 +1,7 @@
++ start --agent-vm --isolation backend --acknowledge-guest-credentials
+just-code: credential store (secret-service) get: denied: exit 1: secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY
+
+real	0m0.093s
+user	0m0.044s
+sys	0m0.055s
+START_AVM2_EXIT: 1

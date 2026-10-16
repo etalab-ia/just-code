@@ -1,0 +1,54 @@
+META step=16-bindings date=2026-10-16T15:41:47Z
++ select profile development
+Active project-secret profile for /root/qualif/proj-d: development.
+Approved bindings for this profile are delivered at the next start.
+PROFILE_EXIT: 0
++ approve proxy binding for API_TOKEN toward https://httpbin.org
+Approving .env#API_TOKEN for development -> guest JC_API_TOKEN, destinations: https://httpbin.org
+The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.
+just-code: project secret binding API_TOKEN: "https://httpbin.org" is not a DNS name
+APPROVE_PROXY_EXIT: 1
+just-code: project secret index has an invalid schema, scope or credential store
++ build classes.env with mandated value classes (exact bytes via python)
+APOS_VALUE=fake-OBrien-03$
+DBL_BACKSLASH=fakepath\\with\\pairs$
+TRAILING_BACKSLASH=endswithfake\$
+WIN_PATH=C:\Users\fake\file.txt$
+DOLLAR_VALUE=has$dollar-fake$
+CR_VALUE=bad^Mreturn-fake$
+INVALID_UTF8=badM-^?M-~-fake$
+LEADING_APOS="'leading-apos-fake"$
++ import classes.env (preview then apply)
+just-code: parse classes.env: dotenv file is too large or contains invalid text
+CLASSES_PREVIEW_EXIT: 1
+Warning: --fallback stores values in a local plaintext-equivalent JSON file; just-code does not encrypt that file.
+just-code: parse classes.env: dotenv file is too large or contains invalid text
+CLASSES_APPLY_EXIT: 1
++ approve delivered classes with --delivery guest (warning expected)
+-- APOS_VALUE
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_APOS_VALUE: 2
+-- DBL_BACKSLASH
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_DBL_BACKSLASH: 2
+-- TRAILING_BACKSLASH
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_TRAILING_BACKSLASH: 2
+-- WIN_PATH
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_WIN_PATH: 2
++ attempt refused classes with --delivery guest (expect named refusal)
+-- DOLLAR_VALUE
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_DOLLAR_VALUE: 2
+-- CR_VALUE
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_CR_VALUE: 2
+-- INVALID_UTF8
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_INVALID_UTF8: 2
+-- LEADING_APOS
+just-code: --delivery guest takes no --destination: the value is read inside the sandbox, not substituted toward a host
+APPROVE_LEADING_APOS: 2
++ bindings list (must distinguish proxy vs guest delivery)
+just-code: project secret index has an invalid schema, scope or credential store

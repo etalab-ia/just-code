@@ -1,0 +1,93 @@
+META step=08-export-sync-roundtrip date=2026-10-16T15:33:12Z
++ workspace export --out /tmp/proj-a-export.tar
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+The guest workspace has no changes to deliver.
+EXPORT_EXIT: 0
+ls: cannot access '/tmp/proj-a-export.tar': No such file or directory
++ export contents (expect: no .env, no gh-token.txt, no bin/)
+tar: /tmp/proj-a-export.tar: Cannot open: No such file or directory
+tar: Error is not recoverable: exiting now
++ write guest-side change via msb exec
++ workspace sync (guest -> host)
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+just-code: the guest workspace has uncommitted changes, so a refresh could overwrite them; export them first ('just-code workspace export') or pass --force to refresh anyway:
+?? .env
+?? guest-note.txt
+SYNC_EXIT: 1
++ host tree after sync:
+.env
+.env.local
+.git
+.gitignore
+.just-code
+README.md
+bin
+gh-token.txt
+leaked-creds.txt
++ guest-note.txt on host:
++ did .env get pulled back / overwritten? (expect: refused or filtered)
+CANARY_DOTENV=should-not-cross
++ workspace export --out /tmp/proj-a-export.tar (guest now has changes)
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+Guest changes written for review: /tmp/proj-a-export.tar
+Apply with 'git apply' after reviewing, or push them through the GitHub workflow (P13).
+EXPORT_EXIT: 0
+-rw------- 1 root root 285 Oct 16 15:33 /tmp/proj-a-export.tar
++ export contents:
++ host tree after export:
+.env
+.env.local
+.git
+.gitignore
+.just-code
+README.md
+bin
+gh-token.txt
+leaked-creds.txt
++ host .env still the canary? (expect yes unless overwritten)
+CANARY_DOTENV=should-not-cross
++ guest-note on host?
+(not on host)
++ git apply reviewed patch
+error: .env: already exists in working directory
++ workspace sync (after export, no --force needed)
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+just-code: the guest workspace has uncommitted changes, so a refresh could overwrite them; export them first ('just-code workspace export') or pass --force to refresh anyway:
+A .env
+ A guest-note.txt
+SYNC_EXIT: 1
++ verify filter still holds on re-transfer:
+Excluded by the default-deny filter:
+  .env (dotenv file (default-deny))
+  .env.local (dotenv file (default-deny))
+  bin/payload.bin (git-ignored (local or derived state); re-include explicitly if the guest needs it)
+  gh-token.txt (gitleaks: github-pat)
+
+Will cross into the guest:
++ guest .env vs host .env — host canary intact:
+CANARY_DOTENV=should-not-cross
++ host git status (did the partial apply land anything?)
+(clean)
++ apply only guest-note.txt (exclude .env — host already has one by design of this test)
+applied
++ sync --force (guest changes now committed on host, refresh is safe)
+  gh-token.txt (gitleaks: github-pat)
+Refreshing the sealed guest workspace: writing 513 B to the guest...
+Guest workspace ready: 6 file(s) in /workspace.
+SYNC_EXIT: 0
++ guest now has guest-note.txt from host tree:
+guest-made-change
++ host .env canary still intact:
+CANARY_DOTENV=should-not-cross
++ guest .env was overwritten by refresh? (host .env must NOT have crossed)
+secret-canary-back

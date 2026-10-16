@@ -1,0 +1,78 @@
+META step=20-profiles-rotation-revocation date=2026-10-16T15:48:13Z
++ profile --clear with bindings present (expect refusal)
+just-code: remove the 5 approved bindings before clearing the active profile
+CLEAR_REFUSAL_EXIT: 1
++ switch to profile staging, import one var, approve it
+Project ~/qualif/proj-d | profile staging | staging.env
+  Variables: STAGING_KEY
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+Stored staging.env (1 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+Approved. It takes effect at the next start of this project's sandbox.
+Active project-secret profile for /root/qualif/proj-d: staging.
+Approved bindings for this profile are delivered at the next start.
++ with staging active, start (development bindings now cross-profile: expect failure)
+  dotenv file (excluded from transfer): r_utf8.env
+  dotenv file (excluded from transfer): staging.env
+  dotenv file (excluded from transfer): sub/app.env
+CROSS_PROFILE_START_EXIT: 0
+Active project-secret profile for /root/qualif/proj-d: development.
+Approved bindings for this profile are delivered at the next start.
++ rotation: change API_TOKEN and APOS_VALUE in the store
+  Plan: 0 added, 1 changed, 1 unchanged, 0 removed
+Stored .env (0 added, 1 changed, 1 unchanged, 0 removed).
+  Plan: 0 added, 1 changed, 3 unchanged, 0 removed
+Stored classes.env (0 added, 1 changed, 3 unchanged, 0 removed).
++ restart and verify rotation
+Published 2 managed project secret file(s) into the guest workspace.
++ substitution now yields the ROTATED value:
+Bearer dev-fake-token-ROTATED
++ old value anywhere in guest? (expect none)
+old-value-gone
++ guest-readable rotated:
+APOS_VALUE='fake-OBrien-ROTATED'
++ revocation: proxy binding
+Revoked the .env#API_TOKEN project secret binding. The imported value stays in the credential store.
+Run 'just-code restart' (or 'just-code start') to unregister it from the running sandbox: the proxy registration is dropped at the next apply, and the guest keeps an inert placeholder until it restarts.
+REVOKE_PROXY_EXIT: 0
++ revocation: one guest-readable binding
+Revoked the classes.env#APOS_VALUE project secret binding. The imported value stays in the credential store.
+The real value is still readable inside the running sandbox until the next start applies the revocation. Run 'just-code start' (it reconciles the delivery) or 'just-code restart'.
+A snapshot taken while it was delivered still holds it; revoking here cannot reach that copy.
+REVOKE_GUEST_EXIT: 0
++ restart after revocation
+Published 2 managed project secret file(s) into the guest workspace.
++ guest state after revocation:
+-- .env:
+# just-code managed: do not edit
+# source: .env
+# Each value below is an opaque placeholder. The real value stays on
+# the host; the sandbox proxy substitutes it only toward the hosts this
+# project approved.
+DUPE_KEY=__JUST_CODE_SECRET_431524a16d3643ac__
+-- classes.env:
+# just-code managed: do not edit
+# source: classes.env
+# WARNING: this file contains real secret values. Everything running in
+# this sandbox, including the agent, can read them.
+# Values marked as placeholders are not secrets: the proxy substitutes
+# those toward the hosts this project approved.
+DBL_BACKSLASH=fakepath\\with\\pairs
+TRAILING_BACKSLASH=endswithfake\
+WIN_PATH='C:\Users\fake\file.txt'
++ substitution now impossible (no marker):
+0
+no-jc-var
+Project secret bindings for /root/qualif/proj-d (profile: development)
+  .env#DUPE_KEY -> JC_DUPE_KEY (proxy-protected)
+      destinations: httpbin.org (host-local approval, never versioned)
+  classes.env#DBL_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#TRAILING_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#WIN_PATH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  3 binding(s) deliver a real value inside the sandbox; a snapshot taken while they are delivered captures them.
+  Imported but not delivered: .env#API_TOKEN, classes.env#APOS_VALUE, staging.env#STAGING_KEY, sub/app.env#APP_SECRET
+  Approve one with: just-code secrets bindings approve <profile> <component> <NAME> --destination <host>
+Values are never shown here, and approving a binding does not display or copy any value.

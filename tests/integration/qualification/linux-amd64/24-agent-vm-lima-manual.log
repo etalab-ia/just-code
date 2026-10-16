@@ -1,0 +1,7 @@
++ manual: limactl create --name=agent-vm-base template://debian-13 ...
+time="2026-10-16T16:02:38Z" level=fatal msg="template \"debian-13.yaml\" not found"
+
+real	0m0.032s
+user	0m0.009s
+sys	0m0.025s
+LIMA_CREATE_EXIT: 1

@@ -1,0 +1,32 @@
+META step=22-terminal-matrix date=2026-10-16T15:50:28Z
+=== 40-column terminal, answer n at the confirm prompt ===
+stty: 'standard input': Inappropriate ioctl for device
+n
+Project ~/qualif/proj-d | profile ttytest | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[A[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+NARROW_EXIT: 0
+=== 200-column terminal, answer n ===
+n
+Project ~/qualif/proj-d | profile ttytest | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[A[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+WIDE_EXIT: 0
+=== Ctrl-C at the confirm prompt (SIGINT after 3s) ===
+Project ~/qualif/proj-d | profile ttytest | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?2026$p[?2027$p[?25l[?2004h[?1004h[>4;2m[=1;1u[?u[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J
+Session terminated, killing shell...CTRLC_EXIT: 124 (130 = SIGINT expected)
+=== nothing persisted? (ttytest profile must be absent from the store) ===
+0
+0 ttytest entries (pass)
+development
+staging
+=== idempotence: apply for real now, then repeat ===
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+Stored t.env (1 added, 0 changed, 0 unchanged, 0 removed).
+  Plan: 0 added, 0 changed, 1 unchanged, 0 removed
+Stored t.env (0 added, 0 changed, 1 unchanged, 0 removed).

@@ -1,0 +1,37 @@
+META step=10-post-install-doctor-and-canary date=2026-10-16T15:36:16Z
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+just-code (Go)
+  version:  v0.2.1-0.20261016152331-db9b8fcd2d27
+  commit:   db9b8fcd2d27
+  built:    2026-10-16T15:23:31Z
+  go:       go1.27.2
+  platform: linux/amd64
++ doctor --microsandbox (runtime now installed — expect pass)
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+info Platform: Linux x86_64
+info Version: v0.7.6
+info MSB_HOME: /root/.microsandbox
+   ✓ msb          /root/.microsandbox/bin/msb
+   ✓ libkrunfw    /root/.microsandbox/bin/../lib/libkrunfw.so.5.6.1
+   ! Root clone   copy fallback — reflink unavailable
+   ✓ CPU virt     svm
+   ✓ KVM device   /dev/kvm
+   ✓ KVM access   read/write
+warn: MSB_HOME does not support reflink clones
+  → clone=auto will use independent sparse copies for flat sandbox roots
+  → sandbox creation may be slower and each private root may allocate more storage
+  → use a reflink-capable filesystem for MSB_HOME to enable copy-on-write clones
+done Host setup is ready.
+Microsandbox runtime is ready.
+DOCTOR_EXIT: 0
++ sync to push the protocol canary attempt
+Refreshing the sealed guest workspace: writing 397 B to the guest...
+Guest workspace ready: 5 file(s) in /workspace.
++ guest tries to read the canary (expect: no .env canary visible — guest .env is its own, host canary must not cross):
+canary-not-in-guest

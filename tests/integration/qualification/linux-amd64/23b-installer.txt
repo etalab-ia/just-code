@@ -1,0 +1,17 @@
+META step=23b-official-installer date=2026-10-16T15:51:46Z
++ pipe installer (correct path), non-TTY (setup re-attach must degrade gracefully)
+just-code setup — global configuration
+
+Enter your Albert API key (input hidden where the terminal supports it; empty to cancel): just-code: setup cancelled; run 'just-code setup' to resume from where it stopped (journal: /root/.local/state/just-code/setup-journal.json)
+just-code was installed, but setup exited with status 1.
+INSTALL_PIPE_EXIT: 1
++ version of the installed binary:
+just-code (Go)
+  version:  v0.10.0
+  commit:   db9b8fcd2d27
+  built:    2026-10-16T15:23:31Z
+  go:       go1.25.8
+  platform: linux/amd64
++ SHA256 check was performed by installer (see above); manual cross-check:
+17777ddd933bb7f090d99f170e56d113e9128d7e3fb63c2b12fd2d64b3a07a97  just-code-linux-x64
+17777ddd933bb7f090d99f170e56d113e9128d7e3fb63c2b12fd2d64b3a07a97  (installed)

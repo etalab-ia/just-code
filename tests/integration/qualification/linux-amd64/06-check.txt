@@ -1,0 +1,5 @@
+META step=06-check date=2026-10-16T15:32:11Z
++ just-code check --isolation full
+jc-proj-a-8d2aa is running
+isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).
+CHECK_EXIT: 0

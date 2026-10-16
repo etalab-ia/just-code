@@ -1,0 +1,27 @@
+META step=12-import-albert-code date=2026-10-16T15:37:31Z
++ init on existing project (must not touch user files)
+Wrote /root/qualif/proj-b/.just-code/project.json
+Wrote /root/qualif/proj-b/.just-code/lock.json
+
+Next: run 'just-code' in this directory to start the agent in its sealed workspace.
++ git status after init:
+?? .just-code/
++ import albert-code (default = preview)
+Albert Code import preview for /root/qualif/proj-b
+Sources detected: .albert-code/skills.txt, opencode.json, AGENTS.md
+Target: Microsandbox, isolation full (sealed guest clone)
+Skills: none
+MCPs: none
+Legacy skill names resolve to the current pinned official catalogue; old guest installations are not copied.
+AGENTS.md: recognized Albert Code managed zone; the source file will be preserved.
+Review: .albert-code/skills.txt contains an invalid skill name
+Review: OpenCode setting "theme" is preserved but not imported
+Review: legacy skill "search-docs" is absent from the current official catalogue
+Review: legacy skill "web" is absent from the current official catalogue
+Review: provider.albert contains custom settings; values withheld
+The old VM, sessions, untracked guest files, and installed tools do not transfer. The guest receives a clone filtered by the default-deny transfer rules; .env is not copied. Legacy config files and .git/info/exclude are not changed.
+Preview only. Pass --apply to write the just-code project manifest and lockfile.
+No changes made.
+PREVIEW_EXIT: 0
++ git status after preview (expect clean):
+?? .just-code/
