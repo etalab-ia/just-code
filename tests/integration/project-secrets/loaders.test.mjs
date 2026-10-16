@@ -146,6 +146,65 @@ test("dotenv reads a raw backslash pair and trailing backslash exactly", () => {
   assert.equal(parsed.K_AFTER, "after");
 });
 
+// The raw form carries non-ASCII verbatim, because an unquoted value is never
+// decoded. These are the values the widened predicate now accepts: before, a
+// non-ASCII byte was refused outright, which rejected most of the world's file
+// names over a hazard that only exists inside quotes.
+const rawNonASCII = {
+  ACCENTED_PATH: "C:\\Répertoire\\",
+  TRAILING_ACCENT: "naïve\\",
+  GREEK: "Ω\\",
+  CJK: "秘密\\",
+  EMOJI: "🚀\\",
+  MIXED: "C:\\Données\\rép-🚀\\",
+};
+
+test("dotenv reads a raw non-ASCII path exactly", () => {
+  const body = Object.entries(rawNonASCII)
+    .map(([name, value]) => `K_${name}=${value}\n`)
+    .join("");
+  const parsed = dotenv.parse(`${body}K_AFTER='after'\n`);
+  for (const [name, value] of Object.entries(rawNonASCII)) {
+    assert.equal(parsed[`K_${name}`], value, `Node must read raw K_${name} exactly`);
+  }
+  assert.equal(parsed.K_AFTER, "after");
+});
+
+test("dotenv-expand reads a raw non-ASCII path exactly", () => {
+  const body = Object.entries(rawNonASCII)
+    .map(([name, value]) => `K_${name}=${value}\n`)
+    .join("");
+  const result = expand({
+    parsed: dotenv.parse(`${body}K_AFTER='after'\n`),
+    processEnv: {},
+  });
+  for (const [name, value] of Object.entries(rawNonASCII)) {
+    assert.equal(
+      result.parsed[`K_${name}`],
+      value,
+      `Node with dotenv-expand must read raw K_${name} exactly`,
+    );
+  }
+  assert.equal(result.parsed.K_AFTER, "after");
+});
+
+// A carriage return is refused by the encoder, and this is why: inside quotes,
+// Node normalises CR and CRLF to LF, so a secret whose newlines came from a
+// Windows source would be altered in place rather than delivered.
+test("a quoted carriage return is normalised to a newline", () => {
+  assert.equal(dotenv.parse("K='a\rb'\n").K, "a\nb");
+  assert.equal(dotenv.parse("K='line1\r\nline2'\n").K, "line1\nline2");
+});
+
+// The edge of an unquoted value is where Node trims; the interior is exact.
+test("Node trims a raw edge but keeps an interior whitespace character", () => {
+  assert.equal(dotenv.parse("K=a\u00a0\n").K, "a");
+  assert.equal(dotenv.parse("K=\u00a0a\n").K, "a");
+  assert.equal(dotenv.parse("K=a\u00a0b\n").K, "a\u00a0b");
+  assert.equal(dotenv.parse("K=\ufeffa\n").K, "a");
+  assert.equal(dotenv.parse("K=a\ufeff\n").K, "a");
+});
+
 test("dotenv-expand reads a raw backslash pair and trailing backslash exactly", () => {
   const body = Object.entries(rawFallback)
     .map(([name, value]) => `K_${name}=${value}\n`)

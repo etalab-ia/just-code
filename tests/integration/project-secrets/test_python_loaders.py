@@ -135,6 +135,69 @@ class RawFallbackEncodingTests(unittest.TestCase):
                 self.assertEqual(values["K_TARGET"], value)
                 self.assertEqual(values["K_AFTER"], "after")
 
+    # Non-ASCII is not a reason to refuse a raw value: python-dotenv reads an
+    # unquoted value as bytes-to-text without decoding escapes, so a path with
+    # an accent, a Greek letter or a CJK character arrives whole.
+    NON_ASCII_CASES = {
+        "C:\\Répertoire\\": "raw",
+        "naïve\\": "raw",
+        "Ω\\": "raw",
+        "秘密\\": "raw",
+        "🚀\\": "raw",
+        "C:\\Données\\rép-🚀\\": "raw",
+    }
+
+    def test_raw_non_ascii_values_round_trip(self):
+        for value, form in self.NON_ASCII_CASES.items():
+            with self.subTest(value=value, form=form):
+                literal = value if form == "raw" else f"'{value}'"
+                body = f"K_BEFORE='before'\nK_TARGET={literal}\nK_AFTER='after'\n"
+                values = self._values(body)
+                self.assertEqual(values["K_BEFORE"], "before")
+                self.assertEqual(values["K_TARGET"], value)
+                self.assertEqual(values["K_AFTER"], "after")
+
+    def _values_from_file(self, content):
+        """Read through a real file, which is how the guest application reads.
+
+        This matters: python-dotenv opens the file in text mode and Python's
+        universal newlines translate CR and CRLF to LF at the read, before the
+        parser sees anything. dotenv_values(stream=...) skips that translation,
+        so a stream-based test would report CR as preserved while the shipping
+        path normalises it.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, ".env")
+            with open(path, "wb") as f:
+                f.write(content)
+            with patch.dict(os.environ, {}, clear=True):
+                return dotenv_values(path)
+
+    def test_a_carriage_return_is_normalised_when_quoted(self):
+        # The reason the encoder refuses a CR outright: read through a file,
+        # python-dotenv sees a newline where the CR was, so a secret pasted
+        # from a Windows source would be altered rather than delivered.
+        self.assertEqual(self._values_from_file(b"K='a\rb'\n")["K"], "a\nb")
+        self.assertEqual(self._values_from_file(b"K='line1\r\nline2'\n")["K"], "line1\nline2")
+
+    def test_a_raw_newline_ends_the_value(self):
+        # A raw newline cannot be carried at all: the value stops at it and
+        # the next line becomes a key of its own, which is why a multiline
+        # value is refused rather than written raw.
+        values = self._values_from_file(b"K_TARGET=a\nb\nK_AFTER='after'\n")
+        self.assertEqual(values["K_TARGET"], "a")
+        self.assertIn("b", values)
+        self.assertEqual(values["K_AFTER"], "after")
+
+    def test_invalid_utf8_loses_the_whole_file(self):
+        # The reason the encoder refuses invalid UTF-8 in both forms: the
+        # loader raises on the undecodable byte and every other secret in the
+        # file is lost with it.
+        with self.assertRaises(UnicodeDecodeError):
+            self._values_from_file(b"K_BEFORE='before'\nK_TARGET=ab\xff\nK_AFTER='after'\n")
+
     def test_a_raw_trailing_backslash_at_end_of_file_is_kept(self):
         self.assertEqual(self._values("K_TARGET=trailing\\")["K_TARGET"], "trailing\\")
 

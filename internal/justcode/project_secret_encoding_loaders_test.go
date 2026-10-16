@@ -93,6 +93,60 @@ func TestATrailingBackslashIsWrittenRawBecauseQuotingBreaksTheFile(t *testing.T)
 	}
 }
 
+// The values newly accepted by the widened raw predicate are checked against
+// the strictest loader, not just against the predicate. A backslash pair or a
+// trailing backslash forces the raw form; anything else stays quoted, so the
+// table states which form each value must take and every value is read back.
+func TestNonASCIIRawValuesRoundTripThroughGodotenv(t *testing.T) {
+	values := map[string]struct {
+		value string
+		raw   bool
+	}{
+		"ACCENTED_PATH":   {`C:\Répertoire\`, true},
+		"TRAILING_ACCENT": {`naïve\`, true},
+		"GREEK":           {`Ω\`, true},
+		"CJK":             {`秘密\`, true},
+		"EMOJI":           {`🚀\`, true},
+		"ARABIC":          {`مجلد\`, true},
+		"MIXED":           {`C:\Données\rép-🚀\`, true},
+		"INTERIOR_TAB":    {"a\tb", false},
+		"INTERIOR_NBSP":   {"a\u00a0b", false},
+	}
+	var b strings.Builder
+	b.WriteString("K_BEFORE='before'\n")
+	for name, entry := range values {
+		literal, err := dotenvLiteral(entry.value)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		want := "'" + entry.value + "'"
+		if entry.raw {
+			want = entry.value
+		}
+		if literal != want {
+			t.Fatalf("%s: got %q, want %q", name, literal, want)
+		}
+		b.WriteString(name + "=" + literal + "\n")
+	}
+	b.WriteString("K_AFTER='after'\n")
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := godotenv.Read(path)
+	if err != nil {
+		t.Fatalf("the generated file must load: %v", err)
+	}
+	if got["K_BEFORE"] != "before" || got["K_AFTER"] != "after" {
+		t.Fatalf("the quoted neighbours must survive too: %q %q", got["K_BEFORE"], got["K_AFTER"])
+	}
+	for name, entry := range values {
+		if got[name] != entry.value {
+			t.Fatalf("%s: godotenv read %q, want %q", name, got[name], entry.value)
+		}
+	}
+}
+
 func TestEncodedRawValuesRoundTripThroughGodotenv(t *testing.T) {
 	// The raw fallback, checked against the strictest loader, in the shape a
 	// generated file actually has: the raw value between quoted values.

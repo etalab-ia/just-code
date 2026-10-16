@@ -62,7 +62,7 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
   so one PEM-shaped secret would take down every other secret in that `.env`.
   A raw value is also trimmed of leading and trailing whitespace, cut short at
   a `#` that follows a space, and expanded on `$`. Raw is therefore restricted
-  to a narrow, measured set (see below), never used as a general encoding.
+  to a measured set (see below), never used as a general encoding.
 - Two shapes quoting cannot carry are written **unquoted** instead of refused:
   **two consecutive backslashes** (`python-dotenv` silently collapses them to
   one when quoted) and a **trailing backslash** (it escapes the closing quote,
@@ -71,18 +71,28 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
   the value followed by another quoted value). An unquoted value has no escape
   processing in any pinned loader, so both round-trip verbatim. This is what
   makes Windows paths and UNC paths deliverable.
-- The **raw character set** was derived by measurement, not by guessing: an
-  unquoted value is accepted only when every character is printable ASCII
-  (0x20-0x7E) other than `#`, `$`, `'`, `"` and `` ` ``, it does not start or
-  end with a space, and it is not empty. It was checked exhaustively over every
-  value of up to three characters drawn from that set, over a reduced alphabet
-  including the space and the backslash to eight characters, and over random
-  strings to length 40, against all three loaders, in the realistic shape (the
-  raw value between quoted values). The characters it excludes are excluded
-  because a raw value trims them (space), cuts itself at them (`#` after a
-  space), expands them (`$`), opens an unclosed quoted value with them (a
-  leading quote, and a backtick in plain Node `dotenv`), or cannot put them on
-  one line (a newline, and anything outside printable ASCII).
+- The **raw character set** was derived by measurement, not by guessing. A
+  sweep over every assigned code point, placed at the **leading, trailing and
+  interior** position of a value in a generated file (the raw value between
+  quoted values), through all three pinned loaders, found:
+  - **interior**: exactly three failures — LF, CR and the already-refused `#`
+    (and `$`, refused for expansion rather than for line handling);
+  - **edges**: an edge-trim set that is the union of what each loader strips:
+    `unicode.IsSpace(r)` (Go, Python and Node all strip these), Python's four
+    information separators `U+001C..U+001F` (Python's `str.isspace`, not Go's),
+    and `U+FEFF` (JavaScript's `String.trim`).
+  A character from that set is refused at an edge and kept in the interior,
+  which is where the loaders differ. **Everything else, including every
+  non-ASCII letter, mark, punctuation and symbol, is carried verbatim**: an
+  unquoted value undergoes no decoding, so `C:\Répertoire\`, `naïve\` or `秘密\`
+  round-trip byte for byte. Refusing non-ASCII would reject most of the world's
+  file names over a hazard that exists only inside quotes.
+- A **carriage return** is refused by both forms. Quoting normalises CR and
+  CRLF to LF in Node `dotenv` and `python-dotenv` — and `python-dotenv` does
+  this at the *file* read (universal newlines), not in the parser, so a value
+  read through a stream looks preserved while the shipping path alters it —
+  while a raw CR ends the value. A PEM secret pasted from a Windows source is
+  exactly the case that hits this.
 - What remains, and cannot be carried by either form, is **refused** at
   approval time so the user is present, naming the variable and the character.
   A refused secret is a nuisance; a silently altered one fails far from here.
@@ -91,14 +101,22 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
   - A **`$`**: expanded by `dotenv-expand` and `godotenv`, literal for plain
     `dotenv`, and the usual escape `\$` is then left as a literal backslash by
     plain `dotenv` and rejected by `python-dotenv`.
+  - A **carriage return**, in both forms, for the reason above.
+  - **Invalid UTF-8**, checked once before either form: `python-dotenv` raises
+    `UnicodeDecodeError` and loses the whole file, Node substitutes U+FFFD, and
+    a quoted invalid byte can leave `godotenv` reading the next line into this
+    value. The original bytes cannot be delivered as a string.
 
 The character-level classes were found by reading the loaders; the backslash
 shapes came from a native qualification kit and were confirmed by measurement,
 after an earlier version of this record claimed single quotes preserved
 backslashes "exactly in every loader" on the strength of an interior backslash
 alone, then refused both shapes rather than measuring whether an unquoted value
-could carry them. The round-trip is now checked against real loaders rather
-than asserted: `godotenv` in
+could carry them. An unquoted value was then restricted to printable ASCII,
+which measurement had never justified either — Codex flagged that a value such
+as `C:\Répertoire\` was refused though every pinned loader carries it, and the
+sweep above replaced that guess. The round-trip is now checked against real
+loaders rather than asserted: `godotenv` in
 `internal/justcode/project_secret_encoding_loaders_test.go`, and Node and
 Python in `tests/integration/project-secrets/`.
 
