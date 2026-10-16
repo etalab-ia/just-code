@@ -216,6 +216,58 @@ invitée, puisque rien n'est substitué vers un hôte — et il n'existe **aucun
 repli automatique** de l'un vers l'autre : une valeur n'est jamais lisible dans
 l'invité sans une approbation explicite.
 
+Deux encodages sont utilisés selon ce que la valeur contient. Les guillemets
+simples sont la forme par défaut : ils portent exactement les retours à la
+ligne, les espaces, `#`, les guillemets doubles et l'accent grave. Ils ne
+portent **pas** l'apostrophe : on ne peut pas l'échapper dans une valeur quotée,
+si bien que `godotenv` refuse le fichier entier et que `python-dotenv` lit de
+travers. Un guillemet **double** en première position ne gêne pas les
+guillemets, eux : la forme quotée le porte, seule la forme brute y verrait
+l'ouverture d'une valeur quotée. Quand les guillemets ne suffisent pas — deux
+antislashs consécutifs, une valeur qui se termine par un antislash, une
+apostrophe, ou une apostrophe à côté de l'un de ces cas — la valeur est écrite
+**sans guillemets**. Dans une
+valeur non quotée, aucun des trois chargeurs ne traite les antislashs : les deux
+formes y passent donc verbatim. C'est ce qui rend livrables les chemins Windows
+et UNC (`C:\Users\`, `\\serveur\partage\`) et toute valeur terminée par un
+séparateur de répertoire que les guillemets altéreraient ou feraient refuser le
+fichier entier.
+
+La forme brute a ses propres limites : un `#`, un `$`, un retour à la ligne,
+un retour chariot, un guillemet simple ou double **en première position**, une
+valeur encadrée par deux accents graves, ou un caractère que les chargeurs
+suppriment en début ou en fin de valeur y sont refusés. Les guillemets et
+l'accent grave sont **positionnels, pas interdits** : en position intérieure ou
+finale ce sont des
+octets ordinaires. Une apostrophe intérieure ou finale (`it's`, `O'Brien`)
+passe donc brute, car les guillemets ne la portent jamais ; elle n'est refusée
+que si la forme brute la refuse aussi — apostrophe en première position, ou
+accompagnée d'un autre obstacle brut (`$`, retour à la ligne, retour chariot,
+caractère rogné en bord de valeur). Un antislash final ou une paire d'antislashs
+n'est **pas** un obstacle, c'est la raison d'être de la forme brute : `it's a\\b`
+et `C:\Users\O'Brien\` passent bruts. Le jeu accepté a été mesuré, pas
+supposé, contre les trois chargeurs épinglés. Le **non-ASCII est accepté** : une
+valeur non quotée n'est jamais décodée, donc `C:\Répertoire\` ou `naïve\`
+passent octet pour octet. Seuls restent **refusés** à l'approbation les cas
+qu'aucune des deux formes ne porte. Le refus est une **conjonction**, pas une
+liste de caractères : il faut que les guillemets ne puissent pas porter la
+valeur **et** que la forme brute la refuse aussi. Les guillemets sont mis en
+échec par un retour chariot, une apostrophe, un `$`, une paire d'antislashs ou
+un antislash final ; la forme brute est refusée par un `$`, un `#`, un retour à
+la ligne, un retour chariot, une valeur vide, un guillemet simple ou double en
+première position, une valeur encadrée par deux accents graves, ou un caractère
+que les chargeurs rognent en bord de valeur. Sont donc refusés, entre autres :
+un `$`, un retour chariot, un guillemet double en première position **dans une
+valeur que les guillemets ne portent pas déjà**, une apostrophe en première
+position (elle fait échouer les guillemets à elle seule), une apostrophe
+accompagnée d'un autre obstacle brut, une paire d'antislashs suivie d'un `#` ou
+d'un retour à la ligne, une valeur encadrée par deux accents graves quand les
+guillemets ne peuvent pas la porter, et une séquence UTF-8 invalide. Le refus
+nomme la variable et la raison ; une valeur refusée est un désagrément, une
+valeur silencieusement modifiée est un incident qui se produit loin d'ici. Pour
+ces valeurs, la livraison par proxy reste la bonne réponse dès lors que
+l'application joint le service par le réseau.
+
 Le fichier livré est écrit en `0600`, et la restriction est appliquée au fichier
 temporaire **avant** le renommage : le runtime crée les fichiers en `0644`, donc
 restreindre après coup laisserait une fenêtre pendant laquelle le secret serait
