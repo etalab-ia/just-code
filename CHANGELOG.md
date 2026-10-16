@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.10.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.9.0...just-code-v0.10.0) (2026-10-16)
+
+
+### Features
+
+* deliver approved secrets readable inside the guest ([a6bbfa5](https://github.com/etalab-ia/just-code/commit/a6bbfa596c91909df1f16c186727e8c33bb8dc8a))
+* livrer les secrets approuvés lisibles dans le guest (phase 4) ([08a0a15](https://github.com/etalab-ia/just-code/commit/08a0a15991245fa8d7ba58605bcc3aaeb18005b8))
+
+
+### Bug Fixes
+
+* apply guest-readable deliveries on the reconcile path, and restrict before writing ([26b934b](https://github.com/etalab-ia/just-code/commit/26b934b5debc075044c56a331bea199ffa18869b))
+* compare each file against the content wanted now, not the last write ([aa0807c](https://github.com/etalab-ia/just-code/commit/aa0807ce2a8478e762d8efb1552352d492c1e434))
+* compare managed guest files by digest instead of reading them back ([2daf132](https://github.com/etalab-ia/just-code/commit/2daf132bdf01a9cc1d6ecf10aaa417678b77501e)), closes [#190](https://github.com/etalab-ia/just-code/issues/190)
+* compare the digest as a field, not as a whole sha256sum line ([a28614d](https://github.com/etalab-ia/just-code/commit/a28614df4f4829e95bf0e24768516a9cf8f6535e))
+* compare the ownership header as bytes, not through a shell variable ([fccde22](https://github.com/etalab-ia/just-code/commit/fccde22e2759d7314354c34a64c28aeab7decd25))
+* compare the ownership header by digest over its exact bytes ([fa3e8e0](https://github.com/etalab-ia/just-code/commit/fa3e8e0f8854dde0fd1b8b11158827ed26e36e98))
+* comparer les fichiers gérés par condensat au lieu de les relire ([a37243d](https://github.com/etalab-ia/just-code/commit/a37243d1cc19d2e43959c2c3502894d4b32116cb))
+* deliver backslash-pair and trailing-backslash values raw instead of refusing them ([2a0f2d5](https://github.com/etalab-ia/just-code/commit/2a0f2d5beb381540ded5e0db463ae4c5f8baaf5a))
+* deliver representable non-ASCII and refuse what no encoding carries ([a7b4e28](https://github.com/etalab-ia/just-code/commit/a7b4e28dd488b69bd053344dcdef1841619895f6))
+* encode guest-readable values instead of writing them raw ([595a8c8](https://github.com/etalab-ia/just-code/commit/595a8c8045138ee75a942bb1b83addbefd95032b))
+* keep the content digest out of argv and stop normalising the header ([16019ab](https://github.com/etalab-ia/just-code/commit/16019ab9231a920afe33ded135b579d69b3666f3))
+* livrer les formes d'antislash que les chargeurs dotenv ne lisent pas exactement entre guillemets ([7294eed](https://github.com/etalab-ia/just-code/commit/7294eed7e95d20dd0b4695aef09dae960ce769ab))
+* make the phase 4 probe controls able to fail ([e1b1efa](https://github.com/etalab-ia/just-code/commit/e1b1efa05344a190c3938e18ee5c6b26e9dc8754))
+* refuse the backslash shapes dotenv loaders do not read exactly ([d2a5a99](https://github.com/etalab-ia/just-code/commit/d2a5a99d68730e6a1636a249d85e5a07afc3dea2))
+* state the phase 4 snapshot finding without overclaiming ([9c37d72](https://github.com/etalab-ia/just-code/commit/9c37d72b8812efdf69a0183b947eeb3510c390dd))
+* treat quotes and backticks as positional in the raw dotenv form ([d63e31e](https://github.com/etalab-ia/just-code/commit/d63e31eb7cc53c836167db4bc03f2659d198a2ea))
+
 ## [0.9.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.8.1...just-code-v0.9.0) (2026-10-15)
 
 
