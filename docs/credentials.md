@@ -236,16 +236,19 @@ par deux accents graves, ou un caractère que les chargeurs suppriment en début
 ou en fin de valeur y sont refusés. Les guillemets et l'accent grave sont
 **positionnels, pas interdits** : en position intérieure ou finale ce sont des
 octets ordinaires. Une apostrophe intérieure ou finale (`it's`, `O'Brien`)
-passe donc brute, car les guillemets ne la portent jamais ; une apostrophe en
-première position, elle, est refusée, tout comme une apostrophe dans une valeur
-que la forme brute ne peut pas porter non plus. Le jeu accepté a été mesuré, pas
+passe donc brute, car les guillemets ne la portent jamais ; elle n'est refusée
+que si la forme brute la refuse aussi — apostrophe en première position, ou
+accompagnée d'un autre obstacle brut (`$`, retour à la ligne, retour chariot,
+caractère rogné en bord de valeur). Un antislash final ou une paire d'antislashs
+n'est **pas** un obstacle, c'est la raison d'être de la forme brute : `it's a\\b`
+et `C:\Users\O'Brien\` passent bruts. Le jeu accepté a été mesuré, pas
 supposé, contre les trois chargeurs épinglés. Le **non-ASCII est accepté** : une
 valeur non quotée n'est jamais décodée, donc `C:\Répertoire\` ou `naïve\`
 passent octet pour octet. Seuls restent **refusés** à l'approbation les cas
 qu'aucune des deux formes ne porte : un `$`, un retour chariot, un guillemet ou
-une apostrophe en première position, une apostrophe dans une valeur que la forme
-brute refuse par ailleurs, une valeur encadrée par deux accents graves quand les
-guillemets ne peuvent pas la porter, et une séquence UTF-8 invalide. Le refus
+une apostrophe en première position ou accompagnée d'un autre obstacle brut,
+une valeur encadrée par deux accents graves quand les guillemets ne peuvent pas
+la porter, et une séquence UTF-8 invalide. Le refus
 nomme la variable et la raison ; une valeur refusée est un désagrément, une
 valeur silencieusement modifiée est un incident qui se produit loin d'ici. Pour
 ces valeurs, la livraison par proxy reste la bonne réponse dès lors que
