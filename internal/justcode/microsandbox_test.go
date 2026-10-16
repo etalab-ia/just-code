@@ -328,7 +328,7 @@ func TestGuestSkillPreflightFindsManagedDirectoriesOmittedFromInventory(t *testi
 func TestLocalOnlyInstructionPreflightRetriesAndExplainsRecovery(t *testing.T) {
 	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
 		{err: errors.New("guest agent is not ready")},
-		{stdout: "before\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n- official/rgaa\n<!-- END JUST-CODE MANAGED SKILLS -->\nafter\n"},
+		{stdout: "before\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n- `official/rgaa` at `" + projectSkillsRevision + "`\n<!-- END JUST-CODE MANAGED SKILLS -->\nafter\n"},
 	}}
 	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true, ProjectSkillsLocalOnly: true})
 	m.Client = client

@@ -119,7 +119,7 @@ func TestNormalizeSkillArchiveRejectsUnsafeEntries(t *testing.T) {
 func TestManagedInstructionsPreserveUnmanagedBytes(t *testing.T) {
 	lock := SkillLock{Repository: projectSkillsRepository, Revision: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64)}
 	original := "User-authored prefix\r\n\r\nMore rules.\n"
-	got, err := MergeManagedInstructions(original, []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": lock})
+	got, err := MergeManagedInstructions(original, []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": lock}, RuntimeMicrosandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestManagedInstructionsPreserveUnmanagedBytes(t *testing.T) {
 	}
 	updatedLock := lock
 	updatedLock.Revision = strings.Repeat("c", 40)
-	updated, err := MergeManagedInstructions(got, []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": updatedLock})
+	updated, err := MergeManagedInstructions(got, []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": updatedLock}, RuntimeMicrosandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +139,10 @@ func TestManagedInstructionsPreserveUnmanagedBytes(t *testing.T) {
 	if err != nil || !strings.Contains(zone, updatedLock.Revision) {
 		t.Fatalf("zone = %q, err = %v", zone, err)
 	}
-	cleared, err := MergeManagedInstructions(updated, nil, nil)
-	if err != nil || !strings.Contains(cleared, original) || strings.Contains(cleared, "official/rgaa") {
+	cleared, err := MergeManagedInstructions(updated, nil, nil, RuntimeMicrosandbox)
+	if err != nil || !strings.Contains(cleared, original) || strings.Contains(cleared, "official/rgaa") ||
+		!strings.Contains(cleared, "BEGIN JUST-CODE MANAGED SKILLS") ||
+		!strings.Contains(cleared, "## Managed just-code instructions") {
 		t.Fatalf("cleared = %q, err = %v", cleared, err)
 	}
 }
@@ -152,9 +154,30 @@ func TestManagedInstructionsRejectAmbiguousMarkers(t *testing.T) {
 		"<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n<!-- END JUST-CODE MANAGED SKILLS -->\n",
 		"<!-- END JUST-CODE MANAGED SKILLS -->\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n",
 	} {
-		if _, err := MergeManagedInstructions(text, []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": {Revision: strings.Repeat("a", 40)}}); err == nil {
+		if _, err := MergeManagedInstructions(text, []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": {Revision: strings.Repeat("a", 40)}}, RuntimeMicrosandbox); err == nil {
 			t.Fatalf("ambiguous managed section was accepted: %q", text)
 		}
+	}
+}
+
+func TestManagedInstructionsScopeStandingGuidanceToMicrosandbox(t *testing.T) {
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64)}
+	// Tart has no host-loopback port forward: pins render, the web-preview
+	// guidance must not.
+	pins, err := MergeManagedInstructions("User rules.\n", []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": lock}, RuntimeTart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(pins, "official/rgaa") || strings.Contains(pins, "Web preview") || strings.Contains(pins, "## Managed just-code instructions") {
+		t.Fatalf("tart zone must carry pins without Microsandbox guidance: %q", pins)
+	}
+	// Without pins there is nothing runtime-neutral to say: no zone at all.
+	none, err := MergeManagedInstructions(pins, nil, nil, RuntimeTart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(none, "BEGIN JUST-CODE MANAGED SKILLS") {
+		t.Fatalf("pin-less tart selection must remove the managed zone: %q", none)
 	}
 }
 
