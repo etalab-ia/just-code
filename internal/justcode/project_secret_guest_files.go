@@ -250,16 +250,6 @@ func PlanGuestSecretPublish(desired []GuestSecretFile, observed map[string]Guest
 	return plan, nil
 }
 
-// isManagedGuestSecretFile reports whether content carries just-code's header
-// as its first line.
-func isManagedGuestSecretFile(content string) bool {
-	first := content
-	if idx := strings.IndexByte(content, '\n'); idx >= 0 {
-		first = content[:idx]
-	}
-	return strings.TrimRight(first, "\r") == guestSecretHeaderPrefix
-}
-
 // projectSecretAppliedRecord is the host-local inventory of what this
 // project's sandbox currently holds: the guest variables registered for
 // project secrets, and the managed guest dotenv files.
