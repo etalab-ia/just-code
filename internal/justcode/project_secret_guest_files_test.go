@@ -173,35 +173,6 @@ func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, stri
 
 func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {
 	c.record("execcapture " + name + " " + command)
-	// The observation command is the one that must never print file content,
-	// so the fake answers it with exactly the lines the real guest would: a
-	// managed flag and, only on a digest match, the token. Anything else the
-	// fake returned here would hide whether the production command leaks.
-	if strings.Contains(command, "sha256sum") {
-		path, ok := guestFileFromCommand(command)
-		if !ok {
-			return "", "unsupported command", 1, nil
-		}
-		content, present := c.files[path]
-		if !present {
-			return "", "", 3, nil
-		}
-		first := content
-		if idx := strings.IndexByte(content, '\n'); idx >= 0 {
-			first = content[:idx]
-		}
-		out := "managed=no\n"
-		if strings.TrimRight(first, "\r") == guestSecretHeaderPrefix {
-			out = "managed=yes\n"
-		}
-		if wanted, ok := wantedDigestFromCommand(command); ok {
-			sum := sha256.Sum256([]byte(content))
-			if hex.EncodeToString(sum[:]) == wanted {
-				out += guestSecretDigestToken + "\n"
-			}
-		}
-		return out, "", 0, nil
-	}
 	path, ok := guestFileFromCommand(command)
 	if !ok {
 		return "", "unsupported command", 1, nil
@@ -213,20 +184,40 @@ func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (st
 	return content, "", 0, nil
 }
 
-// wantedDigestFromCommand extracts the digest the observation command compares
-// against, from its single-quoted shell argument.
-func wantedDigestFromCommand(command string) (string, bool) {
-	const marker = "= '"
-	idx := strings.LastIndex(command, marker)
-	if idx < 0 {
-		return "", false
+// ExecCaptureStdin answers the observation command the way the real guest
+// does: the expected digest arrives on stdin, the file's first line is
+// compared as-is (no CR stripping), and only a digest match prints the token.
+// The fake implements the contract the shell script relies on — `read -r`, then
+// `head -n1` into a positional parameter — because a fake that echoed the file
+// would hide exactly the leak the real command is built to avoid, and a fake
+// that normalised line endings would hide the header forgery.
+func (c *guestFSClient) ExecCaptureStdin(_ context.Context, name, command string, stdin []byte) (string, string, int, error) {
+	c.record("execcapturestdin " + name + " " + command)
+	if !strings.Contains(command, "sha256sum") {
+		return "", "unsupported command", 1, nil
 	}
-	rest := command[idx+len(marker):]
-	end := strings.IndexByte(rest, '\'')
-	if end != sha256.Size*2 {
-		return "", false
+	path, ok := guestFileFromCommand(command)
+	if !ok {
+		return "", "unsupported command", 1, nil
 	}
-	return rest[:end], true
+	content, present := c.files[path]
+	if !present {
+		return "", "", 3, nil
+	}
+	want := strings.TrimRight(string(stdin), "\n")
+	first := content
+	if idx := strings.IndexByte(content, '\n'); idx >= 0 {
+		first = content[:idx]
+	}
+	out := "managed=no\n"
+	if first == guestSecretHeaderPrefix {
+		out = "managed=yes\n"
+	}
+	sum := sha256.Sum256([]byte(content))
+	if hex.EncodeToString(sum[:]) == want {
+		out += guestSecretDigestToken + "\n"
+	}
+	return out, "", 0, nil
 }
 
 func unquoteGuest(value string) string {
@@ -408,6 +399,11 @@ func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
 	const secret = "local-secret-value-that-must-not-be-printed"
 	guestPath := msbGuestWorkspace + "/.env"
 	deliveries := []ProjectSecretDelivery{guestDelivery(".env", "DB_PASSWORD", secret)}
+	content, err := BuildGuestSecretFiles(deliveries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantedDigestHex := digestOfGuestSecretContent(content[0].Content)
 
 	first, firstClient := newGuestFSRuntime(t, nil)
 	if _, err := first.syncGuestSecretFiles(t.Context(), deliveries, nil); err != nil {
@@ -423,7 +419,7 @@ func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
 	_, syncErr := second.syncGuestSecretFiles(t.Context(), deliveries, []string{guestPath})
 	inspected := false
 	for _, call := range client.calls {
-		if !strings.HasPrefix(call, "execcapture ") {
+		if !strings.HasPrefix(call, "execcapture ") && !strings.HasPrefix(call, "execcapturestdin ") {
 			continue
 		}
 		inspected = true
@@ -435,6 +431,12 @@ func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
 		}
 		if strings.Contains(call, secret) {
 			t.Fatalf("the delivered value must never reach the command line: %v", call)
+		}
+		// The expected digest is derived from the value, so it must not reach
+		// argv either: the runtime records exec argv in the same log as
+		// stdout, and a digest of a low-entropy value narrows a guess.
+		if strings.Contains(call, wantedDigestHex) {
+			t.Fatalf("the content digest must travel on stdin, not in the command: %v", call)
 		}
 	}
 	if !inspected {

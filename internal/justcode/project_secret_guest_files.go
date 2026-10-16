@@ -474,14 +474,21 @@ const guestSecretDigestToken = "just-code-digest-ok"
 //   - whether the file exists,
 //   - whether its first line is just-code's header (the header is a constant,
 //     not a secret),
-//   - one token, and only when the file's digest equals the digest recorded
-//     at publish time.
+//   - one token, and only when the file's digest equals the digest just-code
+//     wants there.
 //
-// The comparison runs inside the guest: its `sha256sum` output is compared
-// against the digest just-code recorded, and the guest prints `managed=yes` or
-// `managed=no` plus the token when the two are equal. It never prints the
-// digest or the content, so the host log shows only the result of the
-// comparison.
+// The comparison runs inside the guest and never prints its inputs: the
+// expected digest arrives on the command's **standard input**, not as an
+// argument, because the runtime records exec argv in the same log as stdout. A
+// content digest is not a secret, but it is derived from one, and for a value
+// with little entropy — a short password, or one drawn from a small set — a
+// recorded digest would be enough to test guesses offline. Keeping it out of
+// argv costs nothing.
+//
+// The file's first line is compared directly, without normalising line
+// endings: a header produced by a different tool, or a line whose only
+// difference is an embedded CR, is not just-code's file, and stripping CRs
+// would let `# just-code mana\rged: do not edit` pass as the ownership marker.
 //
 // A path that is genuinely absent is reported absent. A path that exists but
 // cannot be read is an error, not an absence: treating it as absence would
@@ -496,20 +503,20 @@ func (m *MicrosandboxRuntime) observeGuestSecretFile(ctx context.Context, guestP
 	// never from user input, and are quoted regardless: the guest shell is not
 	// a place to rely on the absence of metacharacters.
 	//
-	// The digest is taken as the first field of `sha256sum` rather than from a
-	// whole-line match, so the comparison does not depend on the exact number
-	// of spaces a particular `sha256sum` puts between the digest and the file
-	// name. `set --` leaves the digest in $1 without printing anything, so the
-	// value never reaches stdout and the command stays a single quoted
-	// argument with no embedded quotes.
-	digestScript := "if [ -f \"$f\" ]; then set -- $(sha256sum \"$f\"); " +
-		"if [ \"$1\" = " + shellQuote(wantedDigest) + " ]; then echo " + guestSecretDigestToken + "; fi; fi"
+	// The digest is read from stdin into $1 and the header from the file into
+	// $2, keeping both out of argv and out of stdout. The digest is compared as
+	// the first field of `sha256sum` rather than as a whole line, so the
+	// comparison does not depend on how many spaces a particular `sha256sum`
+	// puts between the digest and the file name.
+	digestScript := "read -r want || exit 5; if [ -f \"$f\" ]; then set -- $(sha256sum \"$f\"); " +
+		"if [ \"$1\" = \"$want\" ]; then echo " + guestSecretDigestToken + "; fi; fi"
 	script := "f=" + shellQuote(guestPath) + "; " +
 		"if [ ! -e \"$f\" ]; then exit 3; fi; " +
 		"if [ ! -f \"$f\" ]; then exit 4; fi; " +
-		"if [ \"$(head -n1 \"$f\" | tr -d '\\r')\" = " + shellQuote(guestSecretHeaderPrefix) + " ]; then echo managed=yes; else echo managed=no; fi; " +
+		"set -- \"$(head -n1 \"$f\")\"; " +
+		"if [ \"$1\" = " + shellQuote(guestSecretHeaderPrefix) + " ]; then echo managed=yes; else echo managed=no; fi; " +
 		digestScript
-	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), script)
+	stdout, stderr, code, err := m.Client.ExecCaptureStdin(ctx, m.InstanceName(), script, []byte(wantedDigest+"\n"))
 	if err != nil {
 		return obs, err
 	}

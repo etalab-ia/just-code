@@ -489,6 +489,18 @@ func TestLocalOnlySkillsRefuseStaleManagedInstructions(t *testing.T) {
 
 func (f *fakeMSBClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {
 	f.record("execcapture " + name + " " + command)
+	return f.nextExecCapture()
+}
+
+func (f *fakeMSBClient) ExecCaptureStdin(_ context.Context, name, command string, _ []byte) (string, string, int, error) {
+	f.record("execcapturestdin " + name + " " + command)
+	return f.nextExecCapture()
+}
+
+// nextExecCapture serves the queued canned results, then the default. Both
+// exec forms share it so a test that queues one result does not have to know
+// which form the code under test chose.
+func (f *fakeMSBClient) nextExecCapture() (string, string, int, error) {
 	if len(f.execCaptureResults) == 0 {
 		if f.execCaptureDefault != nil {
 			return f.execCaptureDefault.stdout, f.execCaptureDefault.stderr, f.execCaptureDefault.code, f.execCaptureDefault.err
