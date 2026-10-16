@@ -162,10 +162,11 @@ which measurement had never justified either — Codex flagged that a value such
 as `C:\Répertoire\` was refused though every pinned loader carries it, and the
 sweep above replaced that guess. The same sweep showed quotes and backticks are
 **positional, not forbidden**: an earlier version refused every value holding
-one, though interior and trailing quotes round-trip raw in all three loaders,
-and only a wrapping backtick pair, or a leading quote on a value quoting has
-already failed, is undeliverable. The round-trip is now checked against real
-loaders rather than asserted:
+one, though interior and trailing quotes round-trip raw in all three loaders.
+In the raw form only two things are undeliverable — a wrapping backtick pair,
+and a leading quote on a value where quoting has already failed — and neither is
+a refusal of the value itself when the quoted form can carry it. The
+round-trip is now checked against real loaders rather than asserted:
 `godotenv` in `internal/justcode/project_secret_encoding_loaders_test.go`, and
 Node and Python in `tests/integration/project-secrets/`.
 
