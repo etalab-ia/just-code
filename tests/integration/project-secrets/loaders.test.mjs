@@ -98,11 +98,12 @@ test("the two refused classes are refused for different reasons", () => {
   assert.equal(expand({ parsed: dotenv.parse(`K='${dollar}'\n`), processEnv: {} }).parsed.K, "pre-post");
 });
 
-// Backslashes are the class the encoder refuses in two shapes, and this
-// records why it is not Node's doing: Node reads every one of them exactly.
-// The refusal is driven by python-dotenv (pair, and trailing) and godotenv
-// (trailing, which it refuses as an unterminated quote).
-test("Node reads the backslash shapes the encoder refuses", () => {
+// Node reads every single-quoted backslash shape exactly, including the pair
+// and the trailing backslash the other two loaders mishandle. Those are why the
+// raw fallback exists: it is not Node's doing. The need is driven by
+// python-dotenv (the pair, silently collapsed, and the trailing backslash) and
+// godotenv (the trailing backslash, refused as an unterminated quote).
+test("Node reads the single-quoted backslash shapes the other loaders mishandle", () => {
   const values = {
     interior: "back\\slash",
     leading: "\\leading",
@@ -124,8 +125,10 @@ test("Node reads the backslash shapes the encoder refuses", () => {
 // The unquoted fallback, exercised on the backslash shapes quoting cannot
 // carry through every loader: a backslash pair and a trailing backslash. The
 // Go encoder writes a value unquoted whenever quoting cannot carry it and the
-// raw form can (see dotenvRawObstacle), which also covers an apostrophe, so
-// what is exercised here is the raw literals these shapes take.
+// raw form can (see dotenvRawObstacle), which also covers an apostrophe. Every
+// value in this table is emitted raw by the encoder; a value it carries quoted
+// despite a backslash (a single interior one, such as `a\=b`) is in the
+// quoted table below. The Go tests assert each choice.
 const rawFallback = {
   PAIR: "a\\\\b",
   QUAD: "a\\\\\\\\b",
@@ -133,10 +136,9 @@ const rawFallback = {
   PROGRAM_FILES: "C:\\Program Files\\",
   UNC: "\\\\server\\share",
   TRAILING: "trailing\\",
-  EQUALS: "a\\=b",
 };
 
-test("dotenv reads a raw backslash pair and trailing backslash exactly", () => {
+test("dotenv reads a raw backslash pair and a trailing backslash exactly", () => {
   const body = Object.entries(rawFallback)
     .map(([name, value]) => `K_${name}=${value}\n`)
     .join("");
@@ -241,6 +243,7 @@ test("dotenv-expand reads a raw interior or trailing quote exactly", () => {
 // through untouched.
 const positionalQuoted = {
   DQUOTE_ALONE: 'a"b',
+  EQUALS: "a\\=b",
   BACKTICKS_AROUND_A_WORD: "`ab`",
   LONE_LEADING_BACKTICK: "`abc",
   EMPTY_BACKTICK_PAIR: "``",

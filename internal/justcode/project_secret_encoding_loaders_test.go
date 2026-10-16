@@ -206,8 +206,10 @@ func TestRefusedShapesAndTheLeadingQuoteMeasurement(t *testing.T) {
 }
 
 func TestEncodedRawValuesRoundTripThroughGodotenv(t *testing.T) {
-	// The raw fallback, checked against the strictest loader, in the shape a
-	// generated file actually has: the raw value between quoted values.
+	// The raw fallback and one quoted neighbour, checked against the strictest
+	// loader, in the shape a generated file actually has: the value between
+	// quoted values. The literal is taken from dotenvLiteral, so EQUALS is
+	// carried quoted, exactly as the encoder decides.
 	values := map[string]string{
 		"PAIR":         `a\\b`,
 		"WINDOWS_PATH": `C:\Users\`,
