@@ -1,4 +1,4 @@
-META step=07-workspace-filter date=2026-10-16T15:32:22Z
+META step=07-workspace-filter date=2026-10-16T15:32:22Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
 + host files:
 .env
 .env.local

@@ -1,4 +1,4 @@
-META step=21-locked-store date=2026-10-16T15:49:05Z
+META step=21-locked-store date=2026-10-16T15:49:05Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
 + plain SSH session, NO D-Bus session bus: store unavailable
 Warning: cannot resolve the credentials of jc-proj-d-6ca2d (cannot read the approved project secret DUPE_KEY (.env): credential not found); reusing the persisted secret references. Store the credential and restart to bind it.
 just-code: cannot apply the credential operations of jc-proj-d-6ca2d ([start-vm]): the credential set could not be resolved (<nil>). Store or restore the credential, then retry; nothing was changed

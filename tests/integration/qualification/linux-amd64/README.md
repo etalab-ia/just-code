@@ -13,6 +13,10 @@ un hôte Linux amd64 jetable :
   installateur utilise le binaire officiel de la release, SHA256 vérifié).
 - Date : 2026-10-16. Chaque fichier porte une ligne `META` avec l'horodatage
   et, pour les étapes qui s'y prêtent, la révision qualifiée.
+  Note de traçabilité : les lignes `META` des fichiers `06` à `24` ont été
+  complétées avec le champ `source` après l'exécution (même journée, même
+  révision, vérifiée dans `03-setup-doctor.txt` et `23b-installer.txt`), en
+  réponse à la revue de la PR ; les contenus d'exécution sont inchangés.
 
 ## Lecture des fichiers
 
@@ -37,9 +41,9 @@ un hôte Linux amd64 jetable :
 | `17-delivery.txt`, `17b-delivery-after-storefix.txt` | incident : démarrage impossible avec un index importé en `--fallback` | **défaut** (#199) |
 | `18-native-delivery.txt` | secrets 2 et 3 avec magasin natif : marqueur seul dans `.env`, valeurs réelles 0600 dans `classes.env`, **substitution réelle vers httpbin.org** depuis l'invité | conforme |
 | `19-negative-substitution.txt` | secrets 2 (contrôle négatif : requête portant un marqueur vers un hôte non approuvé coupée par le proxy) | conforme |
-| `20-lifecycle.txt`, `20b-cross-profile.txt` | secrets 4 à 6 (refus de `--clear`, échec de démarrage inter-profils sur création, rotation, révocation) | conforme |
+| `20-lifecycle.txt`, `20b-cross-profile.txt` | secrets 4 à 6 (refus de `--clear`, rotation, révocation conformes ; inter-profils : échec explicite sur création mais tolérance sur démarrage no-op) | **partiel** (#204) |
 | `21-locked-store.txt` | secrets 7 (magasin indisponible : démarrage échoue explicitement, liaisons préservées) | conforme |
-| `22-terminal-matrix.txt` | terminal/annulation (40 et 200 colonnes, Ctrl-C, idempotence) | conforme |
+| `22-terminal-matrix.txt`, `22b-terminal-matrix.txt` | terminal/annulation (40 et 200 colonnes en PTY vérifié, Ctrl-C, idempotence ; `22b` est l'exécution qualifiante, `22` est la première tentative conservée pour la traçabilité) | conforme |
 | `23b-installer.txt` | installateur officiel pipe `curl \| sh`, binaire `v0.10.0`, SHA256 vérifié | conforme |
 | `24-agent-vm*.txt`, `24-agent-vm-*.log` | 11 (agent-vm / Lima : doctor, construction du modèle, démarrage, arrêt) | **partiel, limité par l'hôte** |
 
@@ -67,6 +71,10 @@ Chacun fait l'objet d'une issue ; ce résumé ne remplace pas leur description.
    cause ; `secret-service` annoncé « accessible » sur une sonde en lecture
    alors que les écritures échouent ; `--fallback` absent de la ligne d'usage
    de `secrets bindings`.
+6. **#204 — Démarrage no-op tolérant une liaison hors profil actif** : sur une
+   instance déjà en cours, `start` avec un profil actif différent des liaisons
+   réussit (exit 0, avertissement seul) en conservant les secrets de l'ancien
+   profil ; seul le chemin de création échoue explicitement.
 
 ## agent-vm (Lima) sur cet hôte
 

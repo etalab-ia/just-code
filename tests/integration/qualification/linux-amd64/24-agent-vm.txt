@@ -1,4 +1,4 @@
-META step=24-agent-vm date=2026-10-16T15:53:12Z
+META step=24-agent-vm date=2026-10-16T15:53:12Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
 + doctor --agent-vm
 Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
       Exported variables are still honoured. To see what the file holds and where each

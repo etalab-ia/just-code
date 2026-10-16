@@ -1,3 +1,4 @@
+META step=qualification-linux-amd64 date=2026-10-16 source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
 + import albert-code --apply
 Albert Code import preview for /root/qualif/proj-b
 Sources detected: .albert-code/skills.txt, opencode.json, AGENTS.md

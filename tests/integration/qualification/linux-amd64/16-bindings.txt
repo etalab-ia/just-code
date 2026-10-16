@@ -1,4 +1,4 @@
-META step=16-bindings date=2026-10-16T15:41:47Z
+META step=16-bindings date=2026-10-16T15:41:47Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
 + select profile development
 Active project-secret profile for /root/qualif/proj-d: development.
 Approved bindings for this profile are delivered at the next start.
