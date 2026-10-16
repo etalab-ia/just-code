@@ -1,0 +1,10 @@
+META step=39-lab-network date=2026-10-16T16:55:00Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d pin-override=0.7.6
+FAIL  T10 après suppression: placeholder littéral (pas de valeur) (attendu: Bearer $MSB_P02_CANARY, obtenu: )
+  ok  T11a ré-ajout refusé sans --next-start
+   ✓ Modified     p02-cred-harness (next start)
+   ✓ Stopped      p02-cred-harness
+   ✓ Started      p02-cred-harness
+FAIL  T11b ré-ajout: obtenu ''
+
+réussites: 8, échecs: 7
+NETWORK_RUN_EXIT: 

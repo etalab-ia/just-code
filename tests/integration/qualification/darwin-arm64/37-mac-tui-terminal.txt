@@ -1,0 +1,17 @@
+META step=37-mac-tui source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:53:33Z
+root       248 22.3 17.4 75243484 702832 pts/0 Ssl+ 16:53   0:04 opencode
++ terminal matrix
+^Dn
+PTY_SIZE: 0 40
+Project ~/qualif/proj-d | profile tty40 | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[A[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+NARROW_EXIT: 0
+^Dn
+PTY_SIZE: 0 200
+Project ~/qualif/proj-d | profile tty200 | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[A[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+WIDE_EXIT: 0

@@ -1,0 +1,14 @@
+META step=56d-asahi-substitution source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:49:06Z
+Published 2 managed project secret file(s) into the guest workspace.
+# just-code managed: do not edit
+# source: .env
+# Each value below is an opaque placeholder. The real value stays on
+# the host; the sandbox proxy substitutes it only toward the hosts this
+# project approved.
+API_TOKEN=__JUST_CODE_SECRET_d37969c9a283387d__
++ substitution:
+Bearer dev-fake-token-ROTATED
++ denial:
+curl: (56) OpenSSL SSL_read: OpenSSL/3.5.8: error:0A000126:SSL routines::unexpected eof while reading, errno 0
+000 exit 56
+re-revoked

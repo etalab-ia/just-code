@@ -1,0 +1,16 @@
+META step=42-asahi-gate source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:41:45Z
+
+Next: run 'just-code' in this directory to start the agent in its sealed workspace.
+INIT_EXIT: 0
+Source set: the Git working tree (tracked, untracked, and ignored files; .git metadata is not transferred).
+Warning: gitleaks is not installed, so secret detection did not run; the dotenv name filter still applied.
+Provisioning the sealed guest workspace: writing 272 B to the guest...
+Guest workspace ready: 2 file(s) in /workspace.
+
+real	0m12.351s
+user	0m2.254s
+sys	0m0.898s
+START_EXIT: 0
+jc-proj-a-d23e7 is running
+isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).
+CHECK_EXIT: 0

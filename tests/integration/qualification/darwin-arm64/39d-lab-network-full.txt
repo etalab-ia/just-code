@@ -1,0 +1,23 @@
+META step=39d-lab-network-full source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d pin-override=0.7.6 dns-aaaa-nodata-patch date=2026-10-16T17:03Z
+  ok  CLI msb épinglée
+  ok  T1 DB hôte sans valeur brute
+  ok  T2 msb inspect sans valeur brute
+  ok  T3 invité voit le placeholder
+  ok  T4 substitution en-tête (hôte autorisé)
+  ok  T5 hôte non autorisé: requête jamais livrée
+  ok  T5 violation journalisée (block-and-log)
+FAIL  T6 canal query: requête livrée avec placeholder
+  ok  T7 Basic auth substitué (base64 reconnu)
+  ok  T8a 1er saut substitué
+  ok  T8b 2e saut (hôte non autorisé) bloqué
+   ✓ Modified     p02-cred-harness
+  ok  T9 rotation live (sans redémarrage)
+   ✓ Modified     p02-cred-harness
+  ok  T10 après suppression: placeholder littéral (pas de valeur)
+  ok  T11a ré-ajout refusé sans --next-start
+   ✓ Modified     p02-cred-harness (next start)
+   ✓ Stopped      p02-cred-harness
+   ✓ Started      p02-cred-harness
+  ok  T11b ré-ajout actif après redémarrage
+
+réussites: 14, échecs: 1

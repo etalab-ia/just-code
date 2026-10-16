@@ -1,0 +1,15 @@
+META step=34c-mac-substitution source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:37:24Z
+Published 2 managed project secret file(s) into the guest workspace.
++ marker file:
+# just-code managed: do not edit
+# source: .env
+# Each value below is an opaque placeholder. The real value stays on
+# the host; the sandbox proxy substitutes it only toward the hosts this
+# project approved.
+API_TOKEN=__JUST_CODE_SECRET_0718ca16165a4738__
++ substitution to httpbin.org:
+Bearer dev-fake-token-ROTATED
++ denial to postman-echo (not approved):
+curl: (56) OpenSSL SSL_read: OpenSSL/3.5.8: error:0A000126:SSL routines::unexpected eof while reading, errno 0
+000 exit 56
+re-revoked
