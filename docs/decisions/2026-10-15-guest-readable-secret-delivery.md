@@ -163,10 +163,14 @@ as `C:\Répertoire\` was refused though every pinned loader carries it, and the
 sweep above replaced that guess. The same sweep showed quotes and backticks are
 **positional, not forbidden**: an earlier version refused every value holding
 one, though interior and trailing quotes round-trip raw in all three loaders.
-In the raw form only two things are undeliverable — a wrapping backtick pair,
-and a leading quote on a value where quoting has already failed — and neither is
-a refusal of the value itself when the quoted form can carry it. The
-round-trip is now checked against real loaders rather than asserted:
+Among the quote characters, the raw form rejects exactly two positions — a
+wrapping backtick pair, and a leading single or double quote — and neither is a
+refusal of the value itself when the quoted form can carry it. Those are
+positions, not the only raw obstacles: the raw form still refuses an empty
+value, `$`, `#`, LF, CR and the edge-trimmed characters listed above. A value
+like `a\\b#c` is therefore refused by both forms, and for two different reasons:
+quoting cannot carry its backslash pair, and the raw form cannot carry its `#`.
+The round-trip is now checked against real loaders rather than asserted:
 `godotenv` in `internal/justcode/project_secret_encoding_loaders_test.go`, and
 Node and Python in `tests/integration/project-secrets/`.
 
