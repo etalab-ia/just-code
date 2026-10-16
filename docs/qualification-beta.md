@@ -191,9 +191,15 @@ aucun secret.
 3. **Approbation lisible dans l'invité.** `… --delivery guest`. Attendu :
    l'avertissement est affiché ; le fichier du composant contient la valeur
    réelle ; il est en `0600` ; `bindings list` distingue les deux modes.
-   Inclure volontairement une valeur non représentable (une apostrophe, un `$`,
-   deux antislashs consécutifs, une valeur finissant par un antislash) : le
-   refus doit nommer la variable et la raison.
+   Tester les deux issues, car elles ne portent pas sur les mêmes valeurs :
+   - **doivent être livrées** et relues à l'identique — une apostrophe, deux
+     antislashs consécutifs, une valeur finissant par un antislash, un chemin
+     Windows (`C:\Users\…\`). Ces formes sont portées par l'encodage non quoté
+     et ne doivent **pas** être refusées ;
+   - **doivent être refusées**, en nommant la variable et la raison — un `$`,
+     un retour chariot, une valeur en UTF-8 invalide, et une valeur commençant
+     par une apostrophe. Ce sont les seules classes qu'aucune des deux formes
+     ne porte dans le cas simple.
 4. **Profils.** `secrets profile <nom>`, puis `--clear` alors que des liaisons
    restent approuvées : le refus est attendu. Une liaison d'un autre profil que
    l'actif doit faire échouer le démarrage, pas être ignorée.

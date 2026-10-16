@@ -260,7 +260,10 @@ snapshot and after teardown — not continuously.
 These measurements cover the runtime's **own** activity, not arbitrary later
 use of the value: the probe never runs a command that prints the value, so a
 clean result here does not contradict the stdout exposure described under
-Transport. The remaining digest-based fix is tracked separately.
+Transport. The digest-based comparison described under Transport has since
+shipped: the inspection runs in the guest, reads the expected digest from the
+command's standard input, and prints only a token, so the value never reaches
+the runtime's execution log.
 
 Values that an application must consume locally are, by construction, readable
 by the agent. That is accepted here with explicit consent, not mitigated.

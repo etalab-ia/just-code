@@ -27,6 +27,12 @@ On a machine where the platform's store service actually answers:
 go test ./internal/justcode/ -run TestRealStore -v -count=1 2>&1 | tee tests/integration/credentials/evidence/$(go env GOOS)-$(go env GOARCH)-run-1.txt
 ```
 
+The command is the same on each platform — macOS needs `security`, Linux
+needs a session `secret-tool`, and Windows needs PowerShell, which is the
+executable the Windows adapter drives Credential Manager through. Under
+PowerShell the `tee` pipeline above is not available; capture with
+`... | Tee-Object -FilePath <name>` instead, or run it from Git Bash.
+
 The tests self-skip when the store is unusable (no session keychain, no
 D-Bus), so a transcript full of `--- SKIP` is not evidence of anything: it
 records that the store was not exercised. A qualifying transcript contains

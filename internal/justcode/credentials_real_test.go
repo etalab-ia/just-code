@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build linux || darwin || windows
 
 package justcode
 
@@ -12,9 +12,16 @@ import (
 // Real-store tests (P08 acceptance: put/get/remove on each supported OS
 // family). They run only when the native store is actually available on
 // the machine: a developer Mac exercises the Keychain, a desktop Linux
-// with a session Secret Service exercises secret-tool. CI containers
-// have no such service, so the tests skip there — the fake-runner tests
-// pin the adapter contracts, these pin the real store behavior.
+// with a session Secret Service exercises secret-tool, and Windows
+// exercises Credential Manager through PowerShell. CI containers have no
+// such service, so the tests skip there — the fake-runner tests pin the
+// adapter contracts, these pin the real store behavior.
+//
+// Windows is included deliberately: leaving it out made the qualification
+// procedure in tests/integration/credentials/evidence/README.md
+// impossible to execute on Windows at all, because the test names it asks
+// for did not exist in a Windows build. Adding a real-store test here is
+// what makes that platform qualifiable rather than merely documented.
 
 // realStoreAvailable reports whether the platform's native store tool
 // is present. Availability of the tool does not prove the service is
@@ -27,8 +34,14 @@ func realStoreAvailable(t *testing.T) CredentialStore {
 		t.Skip("no native credential store adapter on this platform")
 	}
 	tool := "secret-tool"
-	if s.Kind() == "keychain" {
+	switch s.Kind() {
+	case "keychain":
 		tool = "security"
+	case "credential-manager":
+		// The Windows adapter drives Credential Manager through
+		// PowerShell, so the executable whose presence matters is
+		// powershell, not a store-specific CLI (there is none).
+		tool = "powershell"
 	}
 	if _, err := exec.LookPath(tool); err != nil {
 		t.Skipf("%s not installed; native store unavailable", tool)
