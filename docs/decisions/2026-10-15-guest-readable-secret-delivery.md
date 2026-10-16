@@ -136,10 +136,13 @@ loaders just-code pins (Node `dotenv` 16.4.7 with and without `dotenv-expand`
     it. A leading **single** quote defeats quoting on its own, since quoting
     can carry no single quote at all, so it is refused unconditionally.
     Interior and trailing quotes are ordinary bytes.
-  - A value **wrapped in a matching backtick pair**: plain Node `dotenv` strips
-    the wrapping pair from an unquoted value while `python-dotenv` and
-    `godotenv` keep it, so neither form is exact in every loader. A lone leading
-    backtick or an interior backtick is delivered.
+  - A value **wrapped in a matching backtick pair**, but only where quoting is
+    already ruled out. The single-quoted form carries it, so `dotenvLiteral`
+    returns it wrapped in single quotes unchanged and
+    `TestDotenvLiteralDeliversPositionalQuotesAndBackticks` pins that delivery.
+    Written raw it is not exact: plain Node `dotenv` strips the wrapping pair
+    from an unquoted value while `python-dotenv` and `godotenv` keep it. A lone
+    leading backtick or an interior backtick is delivered in either form.
   - A **`$`**: expanded by `dotenv-expand` and `godotenv`, literal for plain
     `dotenv`, and the usual escape `\$` is then left as a literal backslash by
     plain `dotenv` and rejected by `python-dotenv`.
