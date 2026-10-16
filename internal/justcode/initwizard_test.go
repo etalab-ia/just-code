@@ -517,6 +517,9 @@ func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T)
 	if !clear.InstructionsChanged || strings.Contains(clear.InstructionsAfter, "official/rgaa") {
 		t.Fatalf("clearing skills must remove the bounded block: before=%q after=%q", clear.InstructionsBefore, clear.InstructionsAfter)
 	}
+	if !strings.Contains(clear.InstructionsAfter, "## Managed just-code instructions") {
+		t.Fatalf("clearing skills must keep the standing managed instructions: after=%q", clear.InstructionsAfter)
+	}
 	if err := wizard.Apply(clear, true); err != nil {
 		t.Fatal(err)
 	}
@@ -611,8 +614,11 @@ func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.InstructionsPath == "" || plan.InstructionsChanged {
-		t.Fatalf("empty schema-v2 selection must own the managed zone without a preview diff: %+v", plan)
+	if plan.InstructionsPath == "" || !plan.InstructionsChanged ||
+		!strings.Contains(plan.InstructionsAfter, "BEGIN JUST-CODE MANAGED SKILLS") ||
+		!strings.Contains(plan.InstructionsAfter, "## Managed just-code instructions") ||
+		strings.Contains(plan.InstructionsAfter, "official/rgaa") {
+		t.Fatalf("empty schema-v2 selection must own the managed zone with standing instructions and no pins: %+v", plan)
 	}
 	pins := map[string]SkillLock{"official/rgaa": {Revision: projectSkillsRevision}}
 	stale, err := MergeManagedInstructions(userInstructions, []string{"official/rgaa"}, pins)
@@ -626,8 +632,11 @@ func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.
 		t.Fatal(err)
 	}
 	got := readFileForTest(t, instructionsPath)
-	if !bytes.Contains(got, []byte(userInstructions)) || bytes.Contains(got, []byte("BEGIN JUST-CODE MANAGED SKILLS")) {
-		t.Fatalf("empty versioned selection left stale managed instructions or changed user text: %q", got)
+	if !bytes.Contains(got, []byte(userInstructions)) ||
+		!bytes.Contains(got, []byte("BEGIN JUST-CODE MANAGED SKILLS")) ||
+		!bytes.Contains(got, []byte("## Managed just-code instructions")) ||
+		bytes.Contains(got, []byte("official/rgaa")) {
+		t.Fatalf("empty versioned selection must keep the standing zone without stale pins and preserve user text: %q", got)
 	}
 }
 

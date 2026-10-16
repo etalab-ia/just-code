@@ -140,7 +140,9 @@ func TestManagedInstructionsPreserveUnmanagedBytes(t *testing.T) {
 		t.Fatalf("zone = %q, err = %v", zone, err)
 	}
 	cleared, err := MergeManagedInstructions(updated, nil, nil)
-	if err != nil || !strings.Contains(cleared, original) || strings.Contains(cleared, "official/rgaa") {
+	if err != nil || !strings.Contains(cleared, original) || strings.Contains(cleared, "official/rgaa") ||
+		!strings.Contains(cleared, "BEGIN JUST-CODE MANAGED SKILLS") ||
+		!strings.Contains(cleared, "## Managed just-code instructions") {
 		t.Fatalf("cleared = %q, err = %v", cleared, err)
 	}
 }

@@ -411,13 +411,21 @@ func rollbackProjectUpdateLocked(fs FS, root string) (string, error) {
 		}
 		current[name] = contents
 	}
-	previousSkills, previousLocks := oldManifest.Skills, oldLock.Skills
-	if !journal.InstructionsExisted {
-		previousSkills, previousLocks = nil, nil
-	}
-	mergedInstructions, err := MergeManagedInstructions(string(current["AGENTS.md"]), previousSkills, previousLocks)
-	if err != nil {
-		return "", fmt.Errorf("prepare previous managed instructions: %w", err)
+	var mergedInstructions string
+	if journal.InstructionsExisted {
+		var mergeErr error
+		mergedInstructions, mergeErr = MergeManagedInstructions(string(current["AGENTS.md"]), oldManifest.Skills, oldLock.Skills)
+		if mergeErr != nil {
+			return "", fmt.Errorf("prepare previous managed instructions: %w", mergeErr)
+		}
+	} else {
+		// The update had not created AGENTS.md, so the previous state has no
+		// managed zone at all; strip the one the update wrote.
+		var removeErr error
+		mergedInstructions, removeErr = RemoveManagedInstructions(string(current["AGENTS.md"]))
+		if removeErr != nil {
+			return "", fmt.Errorf("prepare previous managed instructions: %w", removeErr)
+		}
 	}
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {

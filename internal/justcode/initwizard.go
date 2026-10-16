@@ -416,34 +416,31 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			}
 		}
 	}
-	wasVersionedWithSkills := plan.ExistingManifest != nil && !oldLocalOnly && len(plan.ExistingManifest.Skills) > 0
-	ownsVersionedSkillState := plan.ExistingManifest != nil && plan.ExistingManifest.SchemaVersion >= projectManifestSchemaVersion && (!oldLocalOnly || !localOnly)
-	if len(selected) > 0 || wasVersionedWithSkills || ownsVersionedSkillState {
-		plan.InstructionsPath = filepath.Join(pc.Root, "AGENTS.md")
-		if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
-			if !info.Mode().IsRegular() {
-				return plan, fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
-			}
-			data, readErr := fs.ReadFile(plan.InstructionsPath)
-			if readErr != nil {
-				return plan, readErr
-			}
-			plan.InstructionsBefore = string(data)
-		} else if !os.IsNotExist(statErr) {
-			return plan, statErr
+	// The managed zone is always owned: versioned projects carry the standing
+	// web-preview guidance even with no pinned skills, and local-only
+	// selections strip any zone a previous versioned setup left behind.
+	plan.InstructionsPath = filepath.Join(pc.Root, "AGENTS.md")
+	if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return plan, fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
 		}
-		instructionsSkills := selected
-		instructionsLocks := plan.SkillLocks
-		if localOnly {
-			instructionsSkills = nil
-			instructionsLocks = nil
+		data, readErr := fs.ReadFile(plan.InstructionsPath)
+		if readErr != nil {
+			return plan, readErr
 		}
-		plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, instructionsSkills, instructionsLocks)
-		if err != nil {
-			return plan, err
-		}
-		plan.InstructionsChanged = plan.InstructionsBefore != plan.InstructionsAfter
+		plan.InstructionsBefore = string(data)
+	} else if !os.IsNotExist(statErr) {
+		return plan, statErr
 	}
+	if localOnly {
+		plan.InstructionsAfter, err = RemoveManagedInstructions(plan.InstructionsBefore)
+	} else {
+		plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, selected, plan.SkillLocks)
+	}
+	if err != nil {
+		return plan, err
+	}
+	plan.InstructionsChanged = plan.InstructionsBefore != plan.InstructionsAfter
 	if !pc.IsGit {
 		plan.Warnings = append(plan.Warnings, "this directory is not a Git repository: the manifest in .just-code/ will not be versioned with the project")
 	}
@@ -707,11 +704,11 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		ids, locks := plan.Answers.Skills, plan.SkillLocks
 		if plan.Answers.SkillsLocalOnly {
-			ids, locks = nil, nil
+			instructionsAfter, err = RemoveManagedInstructions(string(current))
+		} else {
+			instructionsAfter, err = MergeManagedInstructions(string(current), plan.Answers.Skills, plan.SkillLocks)
 		}
-		instructionsAfter, err = MergeManagedInstructions(string(current), ids, locks)
 		if err != nil {
 			return err
 		}
