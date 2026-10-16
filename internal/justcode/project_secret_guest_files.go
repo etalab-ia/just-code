@@ -2,14 +2,21 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+func init() {
+	assertGuestSecretHeaderDigest()
+}
 
 // Phase 3: managed guest dotenv files. Phase 2 registers the approved values
 // with the Microsandbox proxy and exposes a marker under a guest variable.
@@ -29,7 +36,34 @@ import (
 
 // guestSecretHeaderPrefix marks a file just-code owns. The second line names
 // the component so a human reading the guest can tell where it came from.
+//
+// The ownership check compares the digest of these 32 bytes plus the newline
+// (guestSecretHeaderLineDigest), so changing this constant silently disables
+// the check unless its digest is updated with it. assertGuestSecretHeaderDigest
+// fails loudly on a mismatch, and a test pins it.
 const guestSecretHeaderPrefix = "# just-code managed: do not edit"
+
+// guestSecretHeaderLineBytes is the byte length the ownership check reads: the
+// header plus the newline that ends its line.
+const guestSecretHeaderLineBytes = 33
+
+// assertGuestSecretHeaderDigest is evaluated at startup and panics if the
+// header constant and the byte length disagree with the pinned digest. Without
+// it, an edit to the header would leave the ownership check comparing against a
+// digest of the old text, every file would read as "not ours", and a
+// reconciliation would rewrite good files — or, worse if the digest were
+// regenerated carelessly, adopt foreign ones. A panic at import is the right
+// blast radius: the process never serves a wrong answer.
+func assertGuestSecretHeaderDigest() {
+	line := []byte(guestSecretHeaderPrefix + "\n")
+	if len(line) != guestSecretHeaderLineBytes {
+		panic(fmt.Sprintf("guest secret header is %d bytes, not %d: update guestSecretHeaderLineBytes", len(line), guestSecretHeaderLineBytes))
+	}
+	sum := sha256.Sum256(line)
+	if got := hex.EncodeToString(sum[:]); got != guestSecretHeaderLineDigest {
+		panic(fmt.Sprintf("guest secret header digest is %s, not the pinned %s: update guestSecretHeaderLineDigest", got, guestSecretHeaderLineDigest))
+	}
+}
 
 // dotenvLiteral renders a value for a dotenv file, and reports whether the
 // value can be represented unambiguously at all.
@@ -205,10 +239,13 @@ type GuestSecretPublishPlan struct {
 }
 
 // PlanGuestSecretPublish compares the desired files with what the guest
-// currently holds. existing maps a guest path to its current content; a
-// missing path is absent from the map, and previouslyManaged lists the paths
-// just-code published on an earlier run.
-func PlanGuestSecretPublish(desired []GuestSecretFile, existing map[string]string, previouslyManaged []string) (GuestSecretPublishPlan, error) {
+// currently holds. observed maps a guest path to what the guest reported about
+// it; a path absent from the map was not found, and previouslyManaged lists the
+// paths just-code published on an earlier run.
+//
+// The observations carry no content, on purpose: see
+// observeGuestSecretFile for why the comparison never reads a managed file.
+func PlanGuestSecretPublish(desired []GuestSecretFile, observed map[string]GuestSecretPublishObservation, previouslyManaged []string) (GuestSecretPublishPlan, error) {
 	var plan GuestSecretPublishPlan
 	wanted := map[string]bool{}
 	for _, file := range desired {
@@ -217,13 +254,13 @@ func PlanGuestSecretPublish(desired []GuestSecretFile, existing map[string]strin
 			return plan, err
 		}
 		wanted[guestPath] = true
-		current, present := existing[guestPath]
+		obs, present := observed[guestPath]
 		switch {
-		case !present:
+		case !present || !obs.Present:
 			plan.Writes = append(plan.Writes, file)
-		case !isManagedGuestSecretFile(current):
+		case !obs.Managed:
 			plan.Conflicts = append(plan.Conflicts, guestPath)
-		case current == file.Content:
+		case obs.Match:
 			plan.Unchanged = append(plan.Unchanged, guestPath)
 		default:
 			plan.Writes = append(plan.Writes, file)
@@ -235,7 +272,7 @@ func PlanGuestSecretPublish(desired []GuestSecretFile, existing map[string]strin
 		}
 		// Only remove what we still own: a file the user replaced with their
 		// own is theirs, and deleting it would destroy their content.
-		if content, present := existing[guestPath]; present && isManagedGuestSecretFile(content) {
+		if obs, present := observed[guestPath]; present && obs.Present && obs.Managed {
 			plan.Removes = append(plan.Removes, guestPath)
 		}
 	}
@@ -243,16 +280,6 @@ func PlanGuestSecretPublish(desired []GuestSecretFile, existing map[string]strin
 	sort.Strings(plan.Unchanged)
 	sort.Strings(plan.Conflicts)
 	return plan, nil
-}
-
-// isManagedGuestSecretFile reports whether content carries just-code's header
-// as its first line.
-func isManagedGuestSecretFile(content string) bool {
-	first := content
-	if idx := strings.IndexByte(content, '\n'); idx >= 0 {
-		first = content[:idx]
-	}
-	return strings.TrimRight(first, "\r") == guestSecretHeaderPrefix
 }
 
 // projectSecretAppliedRecord is the host-local inventory of what this
@@ -286,6 +313,23 @@ func ProjectSecretAppliedPath(stateDir, namespace string) string {
 type ProjectSecretApplied struct {
 	Envs  []string
 	Files []string
+}
+
+// GuestSecretPublishObservation is what an inspection of one managed guest file
+// may reveal: whether it is there, whether it is still just-code's own file, and
+// whether its content already equals the content just-code now wants there.
+//
+// No field carries file content, so nothing here can be persisted to a host
+// log by the runtime's record of guest executions.
+type GuestSecretPublishObservation struct {
+	Present bool
+	// Managed reports that the first line is just-code's header.
+	Managed bool
+	// Match reports that the file's digest equals the digest of the content
+	// the plan wants to write, so the file is already right and needs no
+	// rewrite. It is compared against the *desired* content, not against what
+	// was written last time: a rotated value must not look unchanged.
+	Match bool
 }
 
 // ReadProjectSecretApplied returns the applied inventory. A missing record is
@@ -441,35 +485,112 @@ func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, gues
 	return nil
 }
 
-// readGuestSecretFiles reads the current content of the given guest paths.
-// A path that is genuinely absent is absent from the result. A path that
-// exists but cannot be read is an error, not an absence: treating it as
-// absence would turn a conflict with the project's own file into an
-// overwrite.
-func (m *MicrosandboxRuntime) readGuestSecretFiles(ctx context.Context, guestPaths []string) (map[string]string, error) {
-	out := map[string]string{}
-	for _, guestPath := range guestPaths {
-		if err := validateManagedGuestPath(guestPath); err != nil {
-			return nil, err
-		}
-		// Exit 3 means "no such file"; any other failure is reported. The
-		// paths come from just-code's own plan, never from user input, and
-		// are quoted regardless: the guest shell is not a place to rely on
-		// the absence of metacharacters.
-		command := "f=" + shellQuote(guestPath) + "; if [ ! -e \"$f\" ]; then exit 3; fi; cat \"$f\""
-		stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), command)
-		if err != nil {
-			return nil, err
-		}
-		switch code {
-		case 0:
-			out[guestPath] = stdout
-		case 3:
-		default:
-			return nil, fmt.Errorf("cannot read the existing guest file %s (exit %d): %s", guestPath, code, strings.TrimSpace(stderr))
-		}
+// guestSecretDigestToken is the marker the guest prints when a managed file is
+// still exactly what this host wrote.
+//
+// The proof is a digest comparison performed inside the guest, so neither the
+// file's content nor a raw digest reaches a command line or a log.
+const guestSecretDigestToken = "just-code-digest-ok"
+
+// guestSecretHeaderLineDigest is the SHA256 of the header line **including its
+// trailing newline**, and it is what the ownership check compares.
+//
+// Comparing the header any other way kept producing a way to forge it, because
+// every text-oriented comparison normalises something a byte-exact one would
+// not: a shell variable drops NUL bytes (bash and dash both do), `tr -d '\r'`
+// strips an interior carriage return, and the guest's busybox `grep -qxF`
+// matches a line that merely *starts* with the marker — GNU grep does too with
+// its binary-file heuristic, and busybox does it even with `-a`, so the flag
+// the usual advice suggests does not close the hole in the image this ships on.
+// A digest over a fixed number of bytes cannot match a line that differs by
+// even one byte anywhere, including a byte after the marker.
+//
+// The value is a digest of a public constant, not of any secret.
+const guestSecretHeaderLineDigest = "bc7625348f136cc1f93c91b6c14fc89fd57550b5a85278b2216a01a201075f7b"
+
+// observeGuestSecretFile reports the three facts a publish decision needs about
+// one guest path, without reading the file's content.
+//
+// This is the result of a measured constraint rather than a preference. The
+// runtime persists the stdout of guest executions in a host log
+// (`logs/exec.log` under `MSB_HOME`; see
+// docs/decisions/2026-10-15-guest-readable-secret-delivery.md), so a `cat` of a
+// managed file copies that plaintext — the real value — into a host log that
+// survives the sandbox. The comparison therefore never prints the file. The
+// guest prints only:
+//
+//   - whether the file exists,
+//   - whether its first line is just-code's header (the header is a constant,
+//     not a secret),
+//   - one token, and only when the file's digest equals the digest just-code
+//     wants there.
+//
+// The comparison runs inside the guest and never prints its inputs: the
+// expected digest arrives on the command's **standard input**, not as an
+// argument, because the runtime records exec argv in the same log as stdout. A
+// content digest is not a secret, but it is derived from one, and for a value
+// with little entropy — a short password, or one drawn from a small set — a
+// recorded digest would be enough to test guesses offline. Keeping it out of
+// argv costs nothing.
+//
+// The file's first line is compared as a **byte stream**, never through a shell
+// variable. Command substitution is not byte-transparent: both bash and dash
+// discard NUL bytes from it, so a file whose first line is
+// `# just-code mana\0ged: do not edit` would come back as just-code's marker
+// and be treated as ours. `grep -qxF` compares the bytes as they are, which
+// makes the check an equality test rather than an approximation of one.
+//
+// A path that is genuinely absent is reported absent. A path that exists but
+// cannot be read is an error, not an absence: treating it as absence would
+// turn a conflict with the project's own file into an overwrite.
+func (m *MicrosandboxRuntime) observeGuestSecretFile(ctx context.Context, guestPath, wantedDigest string) (GuestSecretPublishObservation, error) {
+	var obs GuestSecretPublishObservation
+	if err := validateManagedGuestPath(guestPath); err != nil {
+		return obs, err
 	}
-	return out, nil
+	// Exit 3 means "no such file"; 4 means "present but not a regular file";
+	// any other failure is reported. The paths come from just-code's own plan,
+	// never from user input, and are quoted regardless: the guest shell is not
+	// a place to rely on the absence of metacharacters.
+	//
+	// The header is compared by digest over its exact bytes (see
+	// guestSecretHeaderLineDigest) rather than by grep or a shell variable:
+	// both normalise something, and both leave a forgeable header. The digest
+	// is read from stdin into $1, keeping it out of argv, and compared as the
+	// first field of `sha256sum` rather than as a whole line, so the
+	// comparison does not depend on how many spaces a particular `sha256sum`
+	// puts between the digest and the file name. The two `set --` calls use
+	// their own positional parameters in sequence, so neither disturbs the
+	// other.
+	digestScript := "read -r want || exit 5; if [ -f \"$f\" ]; then set -- $(sha256sum \"$f\"); " +
+		"if [ \"$1\" = \"$want\" ]; then echo " + guestSecretDigestToken + "; fi; fi"
+	headerScript := "set -- $(head -c " + strconv.Itoa(guestSecretHeaderLineBytes) + " \"$f\" | sha256sum); " +
+		"if [ \"$1\" = " + shellQuote(guestSecretHeaderLineDigest) + " ]; then echo managed=yes; else echo managed=no; fi"
+	script := "f=" + shellQuote(guestPath) + "; " +
+		"if [ ! -e \"$f\" ]; then exit 3; fi; " +
+		"if [ ! -f \"$f\" ]; then exit 4; fi; " +
+		headerScript + "; " +
+		digestScript
+	stdout, stderr, code, err := m.Client.ExecCaptureStdin(ctx, m.InstanceName(), script, []byte(wantedDigest+"\n"))
+	if err != nil {
+		return obs, err
+	}
+	switch code {
+	case 0:
+		obs.Present = true
+		for _, line := range strings.Split(stdout, "\n") {
+			switch strings.TrimSpace(line) {
+			case "managed=yes":
+				obs.Managed = true
+			case guestSecretDigestToken:
+				obs.Match = true
+			}
+		}
+	case 3:
+	default:
+		return obs, fmt.Errorf("cannot inspect the existing guest file %s (exit %d): %s", guestPath, code, strings.TrimSpace(stderr))
+	}
+	return obs, nil
 }
 
 // guestSecretManagedPaths lists the guest paths a desired set would occupy.
@@ -498,13 +619,29 @@ func (m *MicrosandboxRuntime) syncGuestSecretFiles(ctx context.Context, deliveri
 	if err != nil {
 		return nil, err
 	}
+	// Each path is compared against the digest of the content this run wants
+	// there, never against what was written last time: an approved value that
+	// has been rotated must read as changed and be rewritten, not as an
+	// unchanged file whose old value silently stays in the guest.
+	wanted := map[string]string{}
+	for _, file := range desired {
+		guestPath, err := file.GuestPath()
+		if err != nil {
+			return nil, err
+		}
+		wanted[guestPath] = digestOfGuestSecretContent(file.Content)
+	}
 	lookup := append([]string(nil), desiredPaths...)
 	lookup = append(lookup, previouslyManaged...)
-	existing, err := m.readGuestSecretFiles(ctx, dedupeStrings(lookup))
-	if err != nil {
-		return nil, err
+	observed := map[string]GuestSecretPublishObservation{}
+	for _, guestPath := range dedupeStrings(lookup) {
+		obs, err := m.observeGuestSecretFile(ctx, guestPath, wanted[guestPath])
+		if err != nil {
+			return nil, err
+		}
+		observed[guestPath] = obs
 	}
-	plan, err := PlanGuestSecretPublish(desired, existing, previouslyManaged)
+	plan, err := PlanGuestSecretPublish(desired, observed, previouslyManaged)
 	if err != nil {
 		return nil, err
 	}
@@ -512,6 +649,14 @@ func (m *MicrosandboxRuntime) syncGuestSecretFiles(ctx context.Context, deliveri
 		return nil, err
 	}
 	return desiredPaths, nil
+}
+
+// digestOfGuestSecretContent is the digest a managed file's content must have.
+// It matches what `sha256sum` prints for the same bytes in the guest, which is
+// what makes the in-guest comparison meaningful.
+func digestOfGuestSecretContent(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
 }
 
 func dedupeStrings(values []string) []string {

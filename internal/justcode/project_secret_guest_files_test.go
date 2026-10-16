@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strconv"
 	"strings"
@@ -182,6 +184,51 @@ func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (st
 	return content, "", 0, nil
 }
 
+// ExecCaptureStdin answers the observation command the way the real guest
+// does: the expected digest arrives on stdin, the file's first line is
+// compared byte for byte, and only a digest match prints the token. The fake
+// implements the contract the shell script relies on — `read -r` for the
+// digest, and a literal string comparison for the header — because a fake that
+// echoed the file would hide exactly the leak the real command is built to
+// avoid, and a fake that normalised the header (stripping CR or NUL, as a shell
+// variable would) would hide the forgeries the real command must reject.
+func (c *guestFSClient) ExecCaptureStdin(_ context.Context, name, command string, stdin []byte) (string, string, int, error) {
+	c.record("execcapturestdin " + name + " " + command)
+	if !strings.Contains(command, "sha256sum") {
+		return "", "unsupported command", 1, nil
+	}
+	path, ok := guestFileFromCommand(command)
+	if !ok {
+		return "", "unsupported command", 1, nil
+	}
+	content, present := c.files[path]
+	if !present {
+		return "", "", 3, nil
+	}
+	want := strings.TrimRight(string(stdin), "\n")
+	// Byte-exact, over the first guestSecretHeaderLineBytes bytes: the same
+	// comparison the guest performs, so a header that differs by an embedded
+	// NUL or CR — or by anything following the marker on the same line — is
+	// not ours. A fake that trimmed or prefix-matched would accept forgeries
+	// the real command rejects.
+	line := content
+	if len(line) > guestSecretHeaderLineBytes {
+		line = line[:guestSecretHeaderLineBytes]
+	}
+	out := "managed=no\n"
+	if len(line) == guestSecretHeaderLineBytes {
+		sum := sha256.Sum256([]byte(line))
+		if hex.EncodeToString(sum[:]) == guestSecretHeaderLineDigest {
+			out = "managed=yes\n"
+		}
+	}
+	sum := sha256.Sum256([]byte(content))
+	if hex.EncodeToString(sum[:]) == want {
+		out += guestSecretDigestToken + "\n"
+	}
+	return out, "", 0, nil
+}
+
 func unquoteGuest(value string) string {
 	return strings.Trim(value, "'\"")
 }
@@ -224,7 +271,14 @@ func TestBuildGuestSecretFilesRendersMarkersOnly(t *testing.T) {
 		t.Fatalf("one file per component, sorted: %+v", files)
 	}
 	for _, f := range files {
-		if !isManagedGuestSecretFile(f.Content) {
+		// The header is the contract the guest-side inspect check mirrors
+		// (see observeGuestSecretFile), so the rendered first line must be
+		// exactly the constant, with no trailing carriage return.
+		firstLine := f.Content
+		if idx := strings.IndexByte(f.Content, '\n'); idx >= 0 {
+			firstLine = f.Content[:idx]
+		}
+		if firstLine != guestSecretHeaderPrefix {
 			t.Fatalf("%s must carry the managed header: %q", f.Component, f.Content)
 		}
 		if strings.Contains(f.Content, "project-env-") {
@@ -291,27 +345,32 @@ func TestPlanGuestSecretPublish(t *testing.T) {
 	}
 	apiPath := msbGuestWorkspace + "/.env"
 	otherPath := msbGuestWorkspace + "/old/.env"
+	// The observations below carry no content, by construction: the plan
+	// decides on "is it ours" and "is it unchanged", never on the bytes.
+	ourUnchanged := GuestSecretPublishObservation{Present: true, Managed: true, Match: true}
+	ourChanged := GuestSecretPublishObservation{Present: true, Managed: true}
+	notOurs := GuestSecretPublishObservation{Present: true}
 
 	// Nothing in the guest yet: a fresh write.
-	plan, err := PlanGuestSecretPublish(desired, map[string]string{}, nil)
+	plan, err := PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{}, nil)
 	if err != nil || len(plan.Writes) != 1 || len(plan.Conflicts) != 0 || len(plan.Removes) != 0 {
 		t.Fatalf("fresh publish: %+v, %v", plan, err)
 	}
 
 	// Identical managed content: no write, so a restart is a true no-op.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: desired[0].Content}, []string{apiPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: ourUnchanged}, []string{apiPath})
 	if err != nil || len(plan.Writes) != 0 || len(plan.Unchanged) != 1 {
 		t.Fatalf("idempotent publish: %+v, %v", plan, err)
 	}
 
 	// Changed managed content: rewrite.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: guestSecretHeaderPrefix + "\nOLD=1\n"}, []string{apiPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: ourChanged}, []string{apiPath})
 	if err != nil || len(plan.Writes) != 1 {
 		t.Fatalf("managed update: %+v, %v", plan, err)
 	}
 
 	// A file the project ships is never overwritten.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: "API_KEY=the-projects-own-value\n"}, nil)
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: notOurs}, nil)
 	if err != nil || len(plan.Writes) != 0 || len(plan.Conflicts) != 1 {
 		t.Fatalf("conflict must be reported, not resolved: %+v, %v", plan, err)
 	}
@@ -322,21 +381,115 @@ func TestPlanGuestSecretPublish(t *testing.T) {
 	}
 
 	// A previously managed file that is no longer wanted is removed.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: desired[0].Content, otherPath: guestSecretHeaderPrefix + "\nOLD=1\n"}, []string{apiPath, otherPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: ourUnchanged, otherPath: ourChanged}, []string{apiPath, otherPath})
 	if err != nil || len(plan.Removes) != 1 || plan.Removes[0] != otherPath {
 		t.Fatalf("obsolete managed file: %+v, %v", plan, err)
 	}
 
 	// A file the user replaced with their own is theirs: never removed.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{otherPath: "MINE=1\n"}, []string{otherPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{otherPath: notOurs}, []string{otherPath})
 	if err != nil || len(plan.Removes) != 0 || len(plan.Writes) != 1 {
 		t.Fatalf("a user-replaced file must survive: %+v, %v", plan, err)
 	}
 
 	// No desired files at all: everything previously managed goes away.
-	plan, err = PlanGuestSecretPublish(nil, map[string]string{apiPath: desired[0].Content}, []string{apiPath})
+	plan, err = PlanGuestSecretPublish(nil, map[string]GuestSecretPublishObservation{apiPath: ourUnchanged}, []string{apiPath})
 	if err != nil || len(plan.Removes) != 1 || len(plan.Writes) != 0 {
 		t.Fatalf("revoking every approval must clean up: %+v, %v", plan, err)
+	}
+}
+
+// TestInspectingAManagedFileNeverReadsItBack is the regression for the leak
+// issue #190 names: the runtime persists the stdout of guest executions in a
+// host log, so a command that prints a managed file copies its plaintext there.
+// This asserts on the command actually issued, not on its result, because a
+// `cat` that happens to return the right bytes is exactly the leak.
+func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
+	const secret = "local-secret-value-that-must-not-be-printed"
+	guestPath := msbGuestWorkspace + "/.env"
+	deliveries := []ProjectSecretDelivery{guestDelivery(".env", "DB_PASSWORD", secret)}
+	content, err := BuildGuestSecretFiles(deliveries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantedDigestHex := digestOfGuestSecretContent(content[0].Content)
+
+	first, firstClient := newGuestFSRuntime(t, nil)
+	if _, err := first.syncGuestSecretFiles(t.Context(), deliveries, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The second pass inspects an existing file, which is the path that used
+	// to read it back with cat.
+	second, client := newGuestFSRuntime(t, firstClient.files)
+	// The assertions below run whether or not the sync succeeds, and before
+	// any check on its error: a command that reads the file back is the leak
+	// even when the sync then refuses to publish.
+	_, syncErr := second.syncGuestSecretFiles(t.Context(), deliveries, []string{guestPath})
+	inspected := false
+	for _, call := range client.calls {
+		if !strings.HasPrefix(call, "execcapture ") && !strings.HasPrefix(call, "execcapturestdin ") {
+			continue
+		}
+		inspected = true
+		if strings.Contains(call, "cat ") || strings.Contains(call, `cat"`) || strings.Contains(call, "cat $") {
+			t.Fatalf("inspecting a managed file must not read it back through stdout: %v", call)
+		}
+		if !strings.Contains(call, "sha256sum") {
+			t.Fatalf("the inspect command must compare a digest computed in the guest: %v", call)
+		}
+		if strings.Contains(call, secret) {
+			t.Fatalf("the delivered value must never reach the command line: %v", call)
+		}
+		// The expected digest is derived from the value, so it must not reach
+		// argv either: the runtime records exec argv in the same log as
+		// stdout, and a digest of a low-entropy value narrows a guess.
+		if strings.Contains(call, wantedDigestHex) {
+			t.Fatalf("the content digest must travel on stdin, not in the command: %v", call)
+		}
+	}
+	if !inspected {
+		t.Fatalf("the second pass did not inspect the existing file: %v", client.calls)
+	}
+	if syncErr != nil {
+		t.Fatalf("inspecting an unchanged managed file must not fail the sync: %v", syncErr)
+	}
+}
+
+// TestARotatedValueReachesTheGuest is the regression for the bug Codex caught:
+// the inspection must compare the file against the content this run wants, not
+// against what was written before, or a rotated secret silently stays old.
+func TestARotatedValueReachesTheGuest(t *testing.T) {
+	guestPath := msbGuestWorkspace + "/.env"
+	m, client := newGuestFSRuntime(t, nil)
+	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+		guestDelivery(".env", "DB_PASSWORD", "first-value"),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(client.files[guestPath], "first-value") {
+		t.Fatalf("the first value must be delivered: %q", client.files[guestPath])
+	}
+
+	// Rotate the approved value and start again, using the same runtime so the
+	// guest file is the one left by the previous pass.
+	before := len(client.calls)
+	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+		guestDelivery(".env", "DB_PASSWORD", "rotated-value"),
+	}, []string{guestPath}); err != nil {
+		t.Fatal(err)
+	}
+	wrote := false
+	for _, call := range client.calls[before:] {
+		if strings.Contains(call, "mv -f") {
+			wrote = true
+		}
+	}
+	if !wrote {
+		t.Fatal("a rotated value must be rewritten: comparing against the previous digest would leave the old secret in the guest")
+	}
+	if !strings.Contains(client.files[guestPath], "rotated-value") || strings.Contains(client.files[guestPath], "first-value") {
+		t.Fatalf("the guest must hold the rotated value and not the old one: %q", client.files[guestPath])
 	}
 }
 
@@ -384,6 +537,69 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 	}
 	if _, ok := client.files[guestPath]; ok {
 		t.Fatal("a withdrawn approval must remove the generated file")
+	}
+}
+
+// TestGuestSecretHeaderDigestMatchesTheConstant pins the two together. The
+// ownership check compares against a digest, so editing the header without
+// updating the digest would make every managed file read as foreign and a
+// reconciliation would rewrite them; the init assertion turns that into a
+// startup panic, and this test says which constant to change.
+func TestGuestSecretHeaderDigestMatchesTheConstant(t *testing.T) {
+	line := []byte(guestSecretHeaderPrefix + "\n")
+	if len(line) != guestSecretHeaderLineBytes {
+		t.Fatalf("the header line is %d bytes, not %d: update guestSecretHeaderLineBytes", len(line), guestSecretHeaderLineBytes)
+	}
+	sum := sha256.Sum256(line)
+	if got := hex.EncodeToString(sum[:]); got != guestSecretHeaderLineDigest {
+		t.Fatalf("the header digest is %s, not the pinned %s: update guestSecretHeaderLineDigest", got, guestSecretHeaderLineDigest)
+	}
+}
+
+// TestAForgeableHeaderIsNotTreatedAsOurs is the regression for the class of
+// bug three reviews found in the ownership check: anything that makes the
+// check normalise or prefix-match the first line turns a foreign file into
+// just-code's own, and the plan then overwrites it. An embedded carriage
+// return survives a CR strip; an embedded NUL is dropped by shell command
+// substitution; and a marker followed by a NUL is matched by grep's
+// whole-line mode, because both GNU and the guest's busybox treat such a line
+// as binary and match on the readable prefix (busybox does it even with `-a`,
+// so that flag does not close it). The check compares a digest over an exact
+// byte count, which none of these can satisfy.
+func TestAForgeableHeaderIsNotTreatedAsOurs(t *testing.T) {
+	guestPath := msbGuestWorkspace + "/.env"
+	for name, firstLine := range map[string]string{
+		"embedded cref":     "# just-code mana\rged: do not edit",
+		"embedded nul":      "# just-code mana\x00ged: do not edit",
+		"marker then nul":   guestSecretHeaderPrefix + "\x00evil",
+		"marker then bytes": guestSecretHeaderPrefix + "extra",
+		"marker then tab":   guestSecretHeaderPrefix + "\t",
+		"trailing space":    guestSecretHeaderPrefix + " ",
+		"leading space":     " " + guestSecretHeaderPrefix,
+		"prefix only":       guestSecretHeaderPrefix[:10],
+	} {
+		content := firstLine + "\nAPI_KEY=the-projects-own-value\n"
+		m, client := newGuestFSRuntime(t, map[string]string{guestPath: content})
+		_, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+			testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
+		}, nil)
+		if err == nil || !strings.Contains(err.Error(), "were not written by just-code") {
+			t.Fatalf("%s: the publish must be refused, not treated as ours: %v", name, err)
+		}
+		if client.files[guestPath] != content {
+			t.Fatalf("%s: the file must be left untouched: %q", name, client.files[guestPath])
+		}
+	}
+
+	// The control: the exact header IS ours, so the same path is a no-op
+	// rather than a conflict, which proves the refusals above are about the
+	// forged bytes and not about a check that never matches.
+	content := guestSecretHeaderPrefix + "\nAPI_KEY=__JUST_CODE_SECRET_aaa__\n"
+	m, _ := newGuestFSRuntime(t, map[string]string{guestPath: content})
+	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
+	}, []string{guestPath}); err != nil {
+		t.Fatalf("an exact managed header must be recognised: %v", err)
 	}
 }
 
