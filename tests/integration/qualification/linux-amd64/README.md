@@ -37,13 +37,13 @@ un hôte Linux amd64 jetable :
 | `12-import-preview.txt`, `12b-import-no-init.txt`, `13-import-apply.txt` | 8 (projet préexistant, `import albert-code` aperçu/application/répétition, réglages non gérés intacts) | conforme |
 | `14-team-repo.txt` | 9 (clone d'équipe : check, `update` sans changement, démarrage, export sur branche de test) | conforme |
 | `15-secrets-import.txt` | secrets 1 (aperçu masqué, doublons signalés, refus non-TTY sans `--yes`, sources inchangées, `--fallback` requis et appliqué) | conforme, voir écarts ci-dessous |
-| `16-bindings.txt`, `16b-bindings.txt` | secrets 2 et 3 (approbations proxy et lisible-invité, classes de valeurs livrées/refusées) | conforme |
+| `16-bindings.txt`, `16b-bindings.txt` | secrets 2 et 3 (approbations proxy et lisible-invité, classes de valeurs livrées/refusées) | **partiel** : livraisons et refus nommés conformes, mais les classes retour-chariot et UTF-8 invalide n'ont que des erreurs d'analyse génériques, sans nommer la variable ni la raison (#208) |
 | `17-delivery.txt`, `17b-delivery-after-storefix.txt` | incident : démarrage impossible avec un index importé en `--fallback` | **défaut** (#199) |
 | `18-native-delivery.txt` | secrets 2 et 3 avec magasin natif : marqueur seul dans `.env`, valeurs réelles 0600 dans `classes.env`, **substitution réelle vers httpbin.org** depuis l'invité | conforme |
 | `19-negative-substitution.txt` | secrets 2 (contrôle négatif : requête portant un marqueur vers un hôte non approuvé coupée par le proxy) | conforme |
-| `20-lifecycle.txt`, `20b-cross-profile.txt` | secrets 4 à 6 (refus de `--clear`, rotation, révocation conformes ; inter-profils : échec explicite sur création mais tolérance sur démarrage no-op) | **partiel** (#204) |
+| `20-lifecycle.txt`, `20b-cross-profile.txt` | secrets 4 à 6 (refus de `--clear`, rotation, révocation conformes) | **non conforme sur l'isolation inter-profils** : le démarrage no-op avec liaisons hors profil actif réussit (`CROSS_PROFILE_START_EXIT: 0` dans `20-lifecycle.txt`) au lieu d'échouer fermé ; seul le chemin de création refuse → **défaut** (#204) |
 | `21-locked-store.txt` | secrets 7 (magasin indisponible : démarrage échoue explicitement, liaisons préservées) | conforme |
-| `22-terminal-matrix.txt`, `22b-terminal-matrix.txt` | terminal/annulation (40 et 200 colonnes en PTY vérifié, Ctrl-C, idempotence ; `22b` est l'exécution qualifiante, `22` est la première tentative conservée pour la traçabilité) | conforme |
+| `22b-terminal-matrix.txt`, `22c-terminal-matrix-v2.txt` | terminal/annulation : 40 et 200 colonnes en PTY vérifié (`22b`), Ctrl-C réel piloté par PTY (SIGINT propre, sortie code 1, rien de persisté — `22c`). La première tentative (`22`, largeur non vérifiée) et le Ctrl-C terminé par `timeout -k` de `22b` sont **retirés de la preuve** à la revue. Pas d'invite d'approbation à exercer : `bindings approve` est non interactif en v0.10.0 (#209) et un échec de résolution y laisse un état partiel (#210) | conforme sur l'import ; voir #209/#210 pour l'approbation |
 | `23b-installer.txt` | installateur officiel pipe `curl \| sh`, binaire `v0.10.0`, SHA256 vérifié | conforme |
 | `24-agent-vm*.txt`, `24-agent-vm-*.log` | 11 (agent-vm / Lima : doctor, construction du modèle, démarrage, arrêt) | **partiel, limité par l'hôte** |
 
@@ -75,6 +75,16 @@ Chacun fait l'objet d'une issue ; ce résumé ne remplace pas leur description.
    instance déjà en cours, `start` avec un profil actif différent des liaisons
    réussit (exit 0, avertissement seul) en conservant les secrets de l'ancien
    profil ; seul le chemin de création échoue explicitement.
+7. **#208 — Diagnostics d'import insuffisants** : les classes retour-chariot et
+   UTF-8 invalide échouent avec des erreurs d'analyse génériques qui ne
+   nomment ni la variable ni la règle violée, et l'approbation ultérieure
+   répond `credential not found`, indiscernable d'un jamais-importé.
+8. **#209 — Pas d'invite d'approbation** : `bindings approve` est non
+   interactif et son drapeau `--yes` n'est jamais lu ; la matrice
+   terminal/annulation ne s'applique donc qu'à l'import en v0.10.0.
+9. **#210 — État partiel après un `approve` en échec** : l'approbation est
+   enregistrée et le profil actif basculé avant la vérification de
+   résolution ; quand celle-ci échoue, l'état reste modifié.
 
 ## agent-vm (Lima) sur cet hôte
 
