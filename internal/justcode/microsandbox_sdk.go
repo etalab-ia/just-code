@@ -553,6 +553,46 @@ func (sdkMSBClient) ExecCapture(ctx context.Context, name, command string) (stdo
 	return out.Stdout(), out.Stderr(), out.ExitCode(), nil
 }
 
+// ExecCaptureStdin runs a shell command with stdin supplied from the host and
+// returns its stdout, stderr and exit code.
+//
+// The data is written to the exec session's stdin pipe, never interpolated into
+// the command: the runtime records exec argv in its own log, so a
+// secret-derived value has to travel out of band. The sink is closed before
+// draining so a guest command that reads to end-of-input sees the end.
+func (sdkMSBClient) ExecCaptureStdin(ctx context.Context, name, command string, stdin []byte) (stdout, stderr string, code int, err error) {
+	sb, err := connectMSBSandbox(ctx, name)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer func() { err = errors.Join(err, sb.Close()) }()
+	h, err := sb.ShellStream(ctx, command, msb.WithExecStdinPipe(), msb.WithExecTimeout(execStdinTimeout))
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer func() { err = errors.Join(err, h.Close()) }()
+	sink := h.TakeStdin()
+	if sink == nil {
+		return "", "", 0, errors.New("the exec session did not provide a stdin pipe")
+	}
+	if _, err := sink.Write(stdin); err != nil {
+		_ = sink.Close()
+		return "", "", 0, fmt.Errorf("writing to the guest command's stdin: %w", err)
+	}
+	if err := sink.Close(); err != nil {
+		return "", "", 0, fmt.Errorf("closing the guest command's stdin: %w", err)
+	}
+	out, err := h.Collect(ctx)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return out.Stdout(), out.Stderr(), out.ExitCode(), nil
+}
+
+// execStdinTimeout bounds a stdin-fed exec so a guest command that never reads
+// its input cannot hang a start forever.
+const execStdinTimeout = 60 * time.Second
+
 func (sdkMSBClient) Stop(ctx context.Context, name string) error {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {

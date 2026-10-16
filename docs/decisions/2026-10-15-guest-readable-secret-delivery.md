@@ -35,6 +35,45 @@ them as controls: a value in a shell command is visible in the process table,
 and a value supplied inline in the runtime's secret configuration is persisted
 in the runtime database.
 
+That guarantee covers the **delivery**. It does not cover every later use of
+the value, and one such use is a real leak: the runtime persists the stdout of
+guest executions in its own log (`logs/exec.log` under `MSB_HOME`), so a
+command that *prints* a guest-readable value — a plain `cat .env` — copies it
+into a persisted host log. The property is therefore "delivery writes no log",
+not "the value can never reach a log", and just-code itself must not read a
+managed file back through guest stdout. Comparing content without exposing it
+means comparing a digest the guest computes, not reading the file.
+
+That last sentence was written here before it was true in the code: the
+inspection path still used `cat` to read a managed file back, so a reconciled
+start or a rotation — anything that compares an already-delivered file — copied
+the real value into `logs/exec.log`, on the host, in plaintext, and that log
+survives the sandbox. The comparison now happens inside the guest: the digest
+of the content this run wants is compared against `sha256sum` of the file by
+the guest's own shell, and the guest prints only `managed=yes|no` and a token
+when the digests match. Nothing prints content, and the value never becomes an
+argument either, so it cannot reach the guest process table.
+
+The expected digest travels on the command's standard input, not in argv, and
+that is not a detail: the same log records exec argv, so a digest of the
+secret written as an argument would land in the host log this section is
+about. A digest is not the secret, but for a value with little entropy it is
+enough to test guesses offline, and keeping it off argv costs nothing. The
+first line of the file is compared as-is rather than with carriage returns
+stripped: normalising would let a file whose first line reads
+`# just-code mana\rged: do not edit` pass as just-code's own, which is a way
+to have a user's file overwritten.
+
+One limit is deliberate and stated rather than papered over: this proves the
+file's content is the one just-code wanted, not who wrote it. If a sandbox is
+rebuilt and a file at the same path happens to hold the same bytes, the plan
+reads it as unchanged. The forgeable case is narrow — rebuilding a sandbox and
+writing the exact expected bytes there is strictly more work than writing the
+original file would have been, so a caller able to do it is already inside the
+guest — but it is a limit, not a proof. Telling the two apart needs a secret
+this sandbox carries, which the guest environment cannot hold without putting
+it where any guest process can read it; that is a channel decision for a later
+phase, not a line of code here.
 **Destination.** A guest-readable value is delivered to the path the
 application already reads — by default the component's own file in the guest
 workspace (`/workspace/.env`, `/workspace/apps/api/.env`), matching where the

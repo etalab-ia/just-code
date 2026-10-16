@@ -239,6 +239,11 @@ type msbClient interface {
 	// ExecCapture is Exec with stdout captured too. Change delivery (P22)
 	// needs the guest's diff text, which Exec discards.
 	ExecCapture(ctx context.Context, name, command string) (stdout, stderr string, code int, err error)
+	// ExecCaptureStdin is ExecCapture with data supplied on the command's
+	// standard input. It exists because the runtime persists exec argv in its
+	// own log, so a secret-derived argument — the digest of a managed file —
+	// would be recorded there. Standard input is not part of argv.
+	ExecCaptureStdin(ctx context.Context, name, command string, stdin []byte) (stdout, stderr string, code int, err error)
 	// Stop gracefully stops a running sandbox.
 	Stop(ctx context.Context, name string) error
 	// Remove deletes the sandbox and its local state.
