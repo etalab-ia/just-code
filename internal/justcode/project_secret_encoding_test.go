@@ -250,7 +250,11 @@ func TestDotenvLiteralRefusesOnlyWhenBothFormsFail(t *testing.T) {
 		// Quoting fails on the backslash pair; raw fails on the "#".
 		"pair then hash": "a" + bs + bs + "b#c",
 		// Quoting fails on the trailing backslash; raw fails on the newline.
-		"trailing backslash then newline": "line1\nline2" + bs,
+		// The order matters: this is a newline followed by a trailing
+		// backslash. A trailing backslash followed by a newline is carried
+		// quoted, since the backslash escapes the closing quote into the
+		// newline that quoting preserves.
+		"newline then trailing backslash": "line1\nline2" + bs,
 		// Quoting fails on the backslash pair; raw fails on the trimmed space.
 		"pair then trailing space": "a" + bs + bs + "b ",
 	} {

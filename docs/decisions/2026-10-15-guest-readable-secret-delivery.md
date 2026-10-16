@@ -112,8 +112,8 @@ loaders just-code pins (Node `dotenv` 16.4.7 with and without `dotenv-expand`
   trailing backslash; the raw form is ruled out by a `$`, a `#`, a newline, a
   carriage return, an empty value, a leading quote, a wrapping backtick pair or
   a character the loaders trim at an edge. So a backslash pair followed by a
-  `#` is refused for its raw `#`, a value whose trailing backslash is followed
-  by a newline for its raw newline, and a backslash pair followed by a trailing
+  `#` is refused for its raw `#`, a value carrying both a newline and a trailing
+  backslash for its raw newline, and a backslash pair followed by a trailing
   space for its raw edge-trimmed character — none of them an apostrophe case,
   which is the point: quoting fails on the backslash shape while raw fails on
   the other character, and only the conjunction refuses.
