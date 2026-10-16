@@ -44,9 +44,19 @@ séparément.
 
 | Plateforme | Adaptateur | Contrat de l'adaptateur testé | Magasin réel exercé |
 | --- | --- | --- | --- |
-| macOS | Trousseau (`security`) | oui | **oui** |
+| macOS | Trousseau (`security`) | oui | non (preuve non conservée) |
 | Linux | Secret Service (`secret-tool`) | oui | non |
 | Windows | Credential Manager (PowerShell, P/Invoke `advapi32`) | oui | non |
+
+Le Trousseau a bien été exercé sur macOS arm64 : `put` / `get` / `remove`,
+rotation, et absence d'erreur sur un retrait d'élément absent. Mais le
+transcript de cette exécution n'a pas été conservé dans le dépôt, et ce document
+ne reconnaît comme qualifié que ce qui est adossé à une preuve conservée. La
+colonne reste donc à « non » jusqu'à ce qu'une exécution produise un fichier
+dans `tests/integration/credentials/evidence/`. La commande qui la produit est
+`go test ./internal/justcode/ -run TestRealStore -v` sur une machine où le
+service répond ; sur un poste macOS avec une session ouverte, les tests
+s'exécutent, ailleurs ils s'ignorent — un test ignoré n'est pas une preuve.
 
 Le contrat testé partout est celui qui compte pour la confidentialité : la
 valeur ne passe jamais par argv — elle est écrite sur l'entrée standard de
@@ -71,6 +81,7 @@ et son état est rappelé à chaque affichage.
 | --- | --- |
 | Qualification native du transport proxy et des marqueurs (phase 0) | `tests/integration/project-secrets/native/evidence/` |
 | Qualification native de bout en bout des fichiers dotenv gérés (phase 3) | `tests/integration/project-secrets/native-phase3/evidence/` |
+| Magasin d'identifiants natif exercé (macOS, Linux, Windows) | `tests/integration/credentials/evidence/` |
 | Matrice des chargeurs dotenv (Node, Python) | `tests/integration/project-secrets/` |
 | Protocole de qualification manuelle par hôte | `docs/qualification-beta.md` |
 
