@@ -271,7 +271,14 @@ func TestBuildGuestSecretFilesRendersMarkersOnly(t *testing.T) {
 		t.Fatalf("one file per component, sorted: %+v", files)
 	}
 	for _, f := range files {
-		if !isManagedGuestSecretFile(f.Content) {
+		// The header is the contract the guest-side inspect check mirrors
+		// (see observeGuestSecretFile), so the rendered first line must be
+		// exactly the constant, with no trailing carriage return.
+		firstLine := f.Content
+		if idx := strings.IndexByte(f.Content, '\n'); idx >= 0 {
+			firstLine = f.Content[:idx]
+		}
+		if firstLine != guestSecretHeaderPrefix {
 			t.Fatalf("%s must carry the managed header: %q", f.Component, f.Content)
 		}
 		if strings.Contains(f.Content, "project-env-") {
