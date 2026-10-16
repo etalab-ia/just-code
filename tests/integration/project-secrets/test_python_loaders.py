@@ -157,6 +157,54 @@ class RawFallbackEncodingTests(unittest.TestCase):
                 self.assertEqual(values["K_TARGET"], value)
                 self.assertEqual(values["K_AFTER"], "after")
 
+    # Quotes and backticks are positional, not forbidden. These are the values
+    # the encoder delivers, each read back through the real loader; the Go side
+    # asserts the same set and the chosen form (project_secret_encoding_test.go,
+    # positional quotes and backticks). A single quote cannot be escaped in a
+    # quoted value and a backslash pair collapses in one, so those shapes are
+    # written raw.
+    POSITIONAL_RAW = {
+        "it's",
+        "it's a\\\\b",
+        "C:\\Users\\O'Brien\\",
+        'a"b\\\\',
+        "a`b\\\\",
+    }
+
+    POSITIONAL_QUOTED = {
+        'a"b',
+        "`ab`",
+        "`abc",
+        "``",
+        "before#after",
+        "value # comment",
+    }
+
+    def test_raw_interior_and_trailing_quotes_round_trip(self):
+        for value in sorted(self.POSITIONAL_RAW):
+            with self.subTest(value=value):
+                body = f"K_BEFORE='before'\nK_TARGET={value}\nK_AFTER='after'\n"
+                values = self._values(body)
+                self.assertEqual(values["K_BEFORE"], "before")
+                self.assertEqual(values["K_TARGET"], value)
+                self.assertEqual(values["K_AFTER"], "after")
+
+    def test_quoted_interior_quotes_and_backticks_round_trip(self):
+        for value in sorted(self.POSITIONAL_QUOTED):
+            with self.subTest(value=value):
+                body = f"K_BEFORE='before'\nK_TARGET='{value}'\nK_AFTER='after'\n"
+                values = self._values(body)
+                self.assertEqual(values["K_BEFORE"], "before")
+                self.assertEqual(values["K_TARGET"], value)
+                self.assertEqual(values["K_AFTER"], "after")
+
+    def test_a_wrapping_backtick_pair_keeps_its_backticks(self):
+        # The other half of the refusal: python-dotenv keeps a wrapping backtick
+        # pair that plain Node dotenv strips from an unquoted value, so no form
+        # is exact in every loader. This is why the encoder refuses it.
+        self.assertEqual(self._values("K_TARGET=`a'b`\n")["K_TARGET"], "`a'b`")
+        self.assertEqual(self._values("K_TARGET=`a\\\\b`\n")["K_TARGET"], "`a\\\\b`")
+
     def _values_from_file(self, content):
         """Read through a real file, which is how the guest application reads.
 

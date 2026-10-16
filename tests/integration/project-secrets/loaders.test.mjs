@@ -188,6 +188,89 @@ test("dotenv-expand reads a raw non-ASCII path exactly", () => {
   assert.equal(result.parsed.K_AFTER, "after");
 });
 
+// Quotes and backticks are positional, not forbidden. The encoder refuses a
+// leading quote and a wrapping backtick pair only where no other form is
+// exact, and delivers everything else. These are the values it now delivers
+// raw, each measured through the real loader; the Go side asserts the same
+// set (project_secret_encoding_test.go, positional quotes and backticks).
+// The form is picked by the encoder, so only the shapes quoting cannot carry
+// appear raw: a single quote cannot be escaped in a quoted value, and a
+// backslash pair collapses in one.
+const positionalRaw = {
+  APOSTROPHE: "it's",
+  APOSTROPHE_AND_PAIR: "it's a\\\\b",
+  WINDOWS_APOSTROPHE: "C:\\Users\\O'Brien\\",
+  DQUOTE_AND_PAIR: 'a"b\\\\',
+  BACKTICK_AND_PAIR: "a`b\\\\",
+};
+
+test("dotenv reads a raw value with an interior or trailing quote exactly", () => {
+  const body = Object.entries(positionalRaw)
+    .map(([name, value]) => `K_${name}=${value}\n`)
+    .join("");
+  const parsed = dotenv.parse(`${body}K_AFTER='after'\n`);
+  for (const [name, value] of Object.entries(positionalRaw)) {
+    assert.equal(parsed[`K_${name}`], value, `Node must read raw K_${name} exactly`);
+  }
+  assert.equal(parsed.K_AFTER, "after");
+});
+
+// The same values through dotenv-expand. A backtick has no expansion meaning,
+// so this is where they would be lost if it did.
+test("dotenv-expand reads a raw interior or trailing quote exactly", () => {
+  const body = Object.entries(positionalRaw)
+    .map(([name, value]) => `K_${name}=${value}\n`)
+    .join("");
+  const result = expand({
+    parsed: dotenv.parse(`${body}K_AFTER='after'\n`),
+    processEnv: {},
+  });
+  for (const [name, value] of Object.entries(positionalRaw)) {
+    assert.equal(
+      result.parsed[`K_${name}`],
+      value,
+      `Node with dotenv-expand must read raw K_${name} exactly`,
+    );
+  }
+  assert.equal(result.parsed.K_AFTER, "after");
+});
+
+// The values the single-quoted form carries. A quote is ordinary inside single
+// quotes, so a double quote, a leading or wrapping backtick and a hash all pass
+// through untouched.
+const positionalQuoted = {
+  DQUOTE_ALONE: 'a"b',
+  BACKTICKS_AROUND_A_WORD: "`ab`",
+  LONE_LEADING_BACKTICK: "`abc",
+  EMPTY_BACKTICK_PAIR: "``",
+  HASH_ALONE: "before#after",
+  SPACE_HASH_ALONE: "value # comment",
+};
+
+test("single-quoted interior quotes and backticks round-trip through dotenv", () => {
+  const body = Object.entries(positionalQuoted)
+    .map(([name, value]) => `K_${name}='${value}'\n`)
+    .join("");
+  const parsed = dotenv.parse(`${body}K_AFTER='after'\n`);
+  for (const [name, value] of Object.entries(positionalQuoted)) {
+    assert.equal(parsed[`K_${name}`], value, `Node must read quoted K_${name} exactly`);
+  }
+  assert.equal(parsed.K_AFTER, "after");
+});
+
+// The shapes no encoding can carry, and what each loader does with them. This
+// is the evidence behind the refusal: Node strips a wrapping backtick pair from
+// an unquoted value, while python-dotenv and godotenv keep it, so raw is wrong
+// for Node and quoted is wrong for Python; see
+// internal/justcode/project_secret_encoding_loaders_test.go.
+test("Node strips a wrapping backtick pair the encoder refuses", () => {
+  assert.equal(dotenv.parse("K=`a'b`\n").K, "a'b");
+  assert.equal(dotenv.parse("K=`a\\\\b`\n").K, "a\\\\b");
+  // Quoting carries both in Node, but python-dotenv and godotenv refuse the
+  // quoted form, so neither form is exact in every loader.
+  assert.equal(dotenv.parse("K='`a'b`'\n").K, "`a'b`");
+});
+
 // A carriage return is refused by the encoder, and this is why: inside quotes,
 // Node normalises CR and CRLF to LF, so a secret whose newlines came from a
 // Windows source would be altered in place rather than delivered.

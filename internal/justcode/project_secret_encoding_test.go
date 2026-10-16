@@ -209,17 +209,77 @@ func TestDotenvLiteralPrefersQuotesWhenTheyWork(t *testing.T) {
 }
 
 func TestDotenvLiteralRefusesWhatNoLoaderAgreesOn(t *testing.T) {
+	// Built from escapes so the file carries no ambiguous quoting: bs is a
+	// backslash, bt a backtick.
+	const bs = "\x5c"
+	const bt = "\x60"
 	for name, value := range map[string]string{
-		"single quote": "it's",
-		"dollar":       "pre$VAR-post",
-		"braced":       "a${VAR}b",
-		// Neither form can carry these: quoting misparses the quote, and an
-		// unquoted value is ended by the newline or trimmed of the space.
-		"quote plus a pair": `it's a\\b`,
-		"newline plus pair": "line1\nline2\\",
+		"dollar": "pre$VAR-post",
+		"braced": "a${VAR}b",
+		// A "#" is fine when quoting carries it, so it is refused only in
+		// combination with a shape quoting cannot: here a trailing backslash.
+		"hash and a backslash":       "before#after" + bs,
+		"space hash and a backslash": "value # comment" + bs,
+		// Neither form can carry these. A leading single or double quote opens
+		// a quoted value, which godotenv refuses and python-dotenv misparses; a
+		// wrapping backtick pair is stripped by plain Node dotenv; and a
+		// newline forces quoting, which a trailing backslash in the same value
+		// rules out.
+		"leading single quote":         "'abc",
+		"leading double quote plus bs": "\"abc" + bs,
+		"backticks plus a quote":       bt + "a'b" + bt,
+		"backticks plus a pair":        bt + "a" + bs + bs + "b" + bt,
+		"newline plus pair":            "line1\nline2" + bs,
 	} {
 		if _, err := dotenvLiteral(value); err == nil {
 			t.Fatalf("%s must be refused rather than written ambiguously", name)
+		}
+	}
+}
+
+// A quote or a backtick is positional, not forbidden. Quoting stays the
+// default, so a value these loaders all read back verbatim when quoted is
+// delivered quoted even though it holds a quote, a backtick or a "#". The raw
+// fallback then carries the shapes quoting cannot: an interior or trailing
+// quote or backtick. Only a leading single or double quote (which opens a
+// quoted value) and a matching backtick pair wrapping the whole value (which
+// plain Node dotenv strips) are refused. Measured through all three pinned
+// loaders; the Node and Python suites repeat the same cases against real
+// loaders.
+func TestDotenvLiteralDeliversPositionalQuotesAndBackticks(t *testing.T) {
+	const bs = "\x5c"
+	const bt = "\x60"
+	raw := map[string]string{
+		"apostrophe":                   "it's",
+		"apostrophe and a pair":        "it's a" + bs + bs + "b",
+		"windows path with a quote":    "C:" + bs + "Users" + bs + "O'Brien" + bs,
+		"double quote and a pair":      "a\"b" + bs + bs,
+		"interior backtick and a pair": "a" + bt + "b" + bs + bs,
+	}
+	quoted := map[string]string{
+		"double quote alone":      "a\"b",
+		"backticks around a word": bt + "ab" + bt,
+		"lone leading backtick":   bt + "abc",
+		"empty backtick pair":     bt + bt,
+		"hash alone":              "before#after",
+		"space hash alone":        "value # comment",
+	}
+	for name, value := range raw {
+		literal, err := dotenvLiteral(value)
+		if err != nil {
+			t.Fatalf("%s (%q) must be deliverable raw: %v", name, value, err)
+		}
+		if literal != value {
+			t.Fatalf("%s must be written unquoted and verbatim: got %q", name, literal)
+		}
+	}
+	for name, value := range quoted {
+		literal, err := dotenvLiteral(value)
+		if err != nil {
+			t.Fatalf("%s (%q) must be deliverable by quoting: %v", name, value, err)
+		}
+		if literal != "'"+value+"'" {
+			t.Fatalf("%s must be quoted and verbatim: got %q", name, literal)
 		}
 	}
 }

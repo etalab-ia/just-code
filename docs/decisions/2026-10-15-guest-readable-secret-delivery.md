@@ -55,28 +55,32 @@ failure is not confined to the variable. Measured against the loaders just-code
 pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
 `python-dotenv` 1.2.2, `godotenv` 1.5.1):
 
-- **Single quotes** carry newlines, whitespace, `#`, double quotes, an interior
-  backslash and the empty value exactly in all four configurations, so they are
-  the default form.
+- **Single quotes** carry newlines, whitespace, `#`, double quotes, the
+  apostrophe, the backtick, an interior backslash and the empty value exactly,
+  in all four configurations, so they are the default form.
 - A **raw** value containing a newline makes `godotenv` refuse the *whole file*,
   so one PEM-shaped secret would take down every other secret in that `.env`.
   A raw value is also trimmed of leading and trailing whitespace, cut short at
   a `#` that follows a space, and expanded on `$`. Raw is therefore restricted
   to a measured set (see below), never used as a general encoding.
-- Two shapes quoting cannot carry are written **unquoted** instead of refused:
+- Three shapes quoting cannot carry are written **unquoted** instead of refused:
   **two consecutive backslashes** (`python-dotenv` silently collapses them to
-  one when quoted) and a **trailing backslash** (it escapes the closing quote,
-  so `python-dotenv` loses the value *and the following line* and `godotenv`
-  refuses the whole file — the shape is the one a generated file always has,
-  the value followed by another quoted value). An unquoted value has no escape
-  processing in any pinned loader, so both round-trip verbatim. This is what
-  makes Windows paths and UNC paths deliverable.
+  one when quoted), a **trailing backslash** (it escapes the closing quote, so
+  `python-dotenv` loses the value *and the following line* and `godotenv`
+  refuses the whole file — the shape is the one a generated file always has, the
+  value followed by another quoted value), and a value holding a **single
+  quote** alongside one of those two, since a single quote cannot be escaped in
+  a quoted value. An unquoted value has no escape processing in any pinned
+  loader, so all three round-trip verbatim. This is what makes Windows paths,
+  UNC paths and paths such as `C:\Users\O'Brien\` deliverable.
 - The **raw character set** was derived by measurement, not by guessing. A
   sweep over every assigned code point, placed at the **leading, trailing and
   interior** position of a value in a generated file (the raw value between
   quoted values), through all three pinned loaders, found:
   - **interior**: exactly three failures — LF, CR and the already-refused `#`
-    (and `$`, refused for expansion rather than for line handling);
+    (and `$`, refused for expansion rather than for line handling; and a
+    wrapping backtick pair, which plain Node `dotenv` strips but the other two
+    keep);
   - **edges**: an edge-trim set that is the union of what each loader strips:
     `unicode.IsSpace(r)` (Go, Python and Node all strip these), Python's four
     information separators `U+001C..U+001F` (Python's `str.isspace`, not Go's),
@@ -96,8 +100,19 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
 - What remains, and cannot be carried by either form, is **refused** at
   approval time so the user is present, naming the variable and the character.
   A refused secret is a nuisance; a silently altered one fails far from here.
-  - A **single quote** inside the value: `godotenv` refuses the whole file, and
-    an unquoted value that starts with one is misread as a quoted value.
+  - A **single quote**, but only where neither form can carry it: inside a
+    quoted value `godotenv` refuses the whole file and `python-dotenv`
+    misparses, and the raw fallback is unavailable when the value also holds a
+    backslash pair or a trailing backslash. A lone apostrophe, or one in a value
+    the raw form can carry, is delivered raw instead of refused.
+  - A **quote in first position**: written raw a leading single or double quote
+    opens a quoted value, so `godotenv` refuses the whole file and
+    `python-dotenv` misparses it. Interior and trailing quotes are ordinary
+    bytes.
+  - A value **wrapped in a matching backtick pair**: plain Node `dotenv` strips
+    the wrapping pair from an unquoted value while `python-dotenv` and
+    `godotenv` keep it, so neither form is exact in every loader. A lone leading
+    backtick or an interior backtick is delivered.
   - A **`$`**: expanded by `dotenv-expand` and `godotenv`, literal for plain
     `dotenv`, and the usual escape `\$` is then left as a literal backslash by
     plain `dotenv` and rejected by `python-dotenv`.
@@ -115,7 +130,11 @@ alone, then refused both shapes rather than measuring whether an unquoted value
 could carry them. An unquoted value was then restricted to printable ASCII,
 which measurement had never justified either — Codex flagged that a value such
 as `C:\Répertoire\` was refused though every pinned loader carries it, and the
-sweep above replaced that guess. The round-trip is now checked against real
+sweep above replaced that guess. The same sweep showed quotes and backticks are
+**positional, not forbidden**: an earlier version refused every value holding
+one, though interior and trailing quotes round-trip raw in all three loaders,
+and only a leading quote or a wrapping backtick pair is undeliverable. The
+round-trip is now checked against real
 loaders rather than asserted: `godotenv` in
 `internal/justcode/project_secret_encoding_loaders_test.go`, and Node and
 Python in `tests/integration/project-secrets/`.

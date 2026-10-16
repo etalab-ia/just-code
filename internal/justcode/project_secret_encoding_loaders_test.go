@@ -93,11 +93,15 @@ func TestATrailingBackslashIsWrittenRawBecauseQuotingBreaksTheFile(t *testing.T)
 	}
 }
 
-// The values newly accepted by the widened raw predicate are checked against
-// the strictest loader, not just against the predicate. A backslash pair or a
-// trailing backslash forces the raw form; anything else stays quoted, so the
-// table states which form each value must take and every value is read back.
-func TestNonASCIIRawValuesRoundTripThroughGodotenv(t *testing.T) {
+// The values the raw predicate accepts are checked against the strictest
+// loader, not just against the predicate. A backslash pair, a trailing
+// backslash or a value quoting cannot carry forces the raw form; anything else
+// stays quoted, so the table states which form each value must take and every
+// value is read back. Non-ASCII and the positional quote and backtick cases
+// share the table because both are about what an unquoted value carries.
+func TestRawAndQuotedValuesRoundTripThroughGodotenv(t *testing.T) {
+	const bs = "\x5c"
+	const bt = "\x60"
 	values := map[string]struct {
 		value string
 		raw   bool
@@ -111,6 +115,20 @@ func TestNonASCIIRawValuesRoundTripThroughGodotenv(t *testing.T) {
 		"MIXED":           {`C:\Données\rép-🚀\`, true},
 		"INTERIOR_TAB":    {"a\tb", false},
 		"INTERIOR_NBSP":   {"a\u00a0b", false},
+		// A quote or a backtick is an ordinary byte unless it is first (a
+		// quote) or wraps the whole value (a backtick pair). These force the
+		// raw form through a backslash shape quoting cannot carry.
+		"APOSTROPHE":          {"it's", true},
+		"APOSTROPHE_PAIR":     {"it's a" + bs + bs + "b", true},
+		"WINDOWS_QUOTE_PATH":  {"C:" + bs + "Users" + bs + "O'Brien" + bs, true},
+		"DQUOTE_PAIR":         {"a\"b" + bs + bs, true},
+		"BACKTICK_PAIR":       {"a" + bt + "b" + bs + bs, true},
+		"DOUBLE_QUOTE_ALONE":  {"a\"b", false},
+		"INTERIOR_BACKTICK":   {"a" + bt + "b", false},
+		"BACKTICK_WORD":       {bt + "ab" + bt, false},
+		"LEADING_BACKTICK":    {bt + "abc", false},
+		"EMPTY_BACKTICK_PAIR": {bt + bt, false},
+		"HASH":                {"before#after", false},
 	}
 	var b strings.Builder
 	b.WriteString("K_BEFORE='before'\n")
@@ -144,6 +162,46 @@ func TestNonASCIIRawValuesRoundTripThroughGodotenv(t *testing.T) {
 		if got[name] != entry.value {
 			t.Fatalf("%s: godotenv read %q, want %q", name, got[name], entry.value)
 		}
+	}
+}
+
+// The shapes the encoder refuses, each asserted against the encoder and the
+// leading-quote case measured against godotenv as well, so the refusal rests on
+// a loader's behaviour rather than on the predicate alone. Only the leading
+// quote is refused by godotenv; a wrapping backtick pair is kept by godotenv
+// and python-dotenv and stripped by plain Node dotenv, which is why it is
+// refused: no single form is exact in every loader.
+func TestRefusedShapesAndTheLeadingQuoteMeasurement(t *testing.T) {
+	const bs = "\x5c"
+	const bt = "\x60"
+	// A plain wrapping backtick pair is not refused on its own: quoting carries
+	// it (backticks are ordinary inside single quotes), so the raw refusal never
+	// surfaces for a value quoting can take. It is refused only in a shape
+	// quoting cannot carry, which is what the two ticks entries below are.
+	refused := map[string]string{
+		"LEADING_SQUOTE": "'abc",
+		"LEADING_DQUOTE": "\"abc" + bs,
+		// A single quote cannot be escaped in a quoted value and a backslash
+		// pair collapses in one, so quoting is out; raw is out as well because
+		// Node strips the wrapping backtick pair.
+		"TICKS_AROUND_APOSTROPHE": bt + "a'b" + bt,
+		"TICKS_AROUND_PAIR":       bt + "a" + bs + bs + "b" + bt,
+		"DOLLAR":                  "pre$VAR-post",
+	}
+	for name, value := range refused {
+		if _, err := dotenvLiteral(value); err == nil {
+			t.Fatalf("%s (%q) must be refused: no form is exact in every loader", name, value)
+		}
+	}
+	// And the measurement behind the leading-quote refusal: written raw, it
+	// makes godotenv reject the whole file, not just this variable.
+	path := filepath.Join(t.TempDir(), ".env")
+	raw := "K_TARGET='abc\nK_AFTER='after'\n"
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := godotenv.Read(path); err == nil {
+		t.Fatal("godotenv must refuse a raw value that opens a quote, which is why a leading quote is refused")
 	}
 }
 
