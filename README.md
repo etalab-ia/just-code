@@ -96,6 +96,7 @@ Quatre autres prompts (toolchain polyglotte, édition et revue de diff, continui
 | [Sécurité du workspace](docs/workspace-security.md) | Workspace scellé, filtre de transfert, export des changements |
 | [Utilisation](docs/usage.md) | Commandes, instances par projet, niveaux d'isolation, répertoire de travail |
 | [Runtime Microsandbox](docs/runtime-microsandbox.md) | Téléchargement vérifié, mode manuel (`MSB_PATH`), prérequis plateforme |
+| [Plateformes](docs/plateformes.md) | Plateformes prises en charge, magasins d'identifiants, et ce qui est réellement qualifié |
 | [Runtime Tart](docs/runtime-tart.md) | Réseau et MTU, images et nommage des VM |
 | [Runtime agent-vm](docs/runtime-agent-vm.md) | VM Lima persistante, template de base |
 | [Dépannage](docs/troubleshooting.md) | Backend jamais healthy, conteneur Docker hérité |

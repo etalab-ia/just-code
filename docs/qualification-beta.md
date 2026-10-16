@@ -169,6 +169,80 @@ de comptes et chemins personnels avant de partager une sortie. Ne pas joindre
 les journaux bruts d'un laboratoire TLS : ils peuvent contenir les valeurs de
 test envoyées aux serveurs.
 
+## Parcours secrets
+
+Ces parcours se qualifient **sans microVM** pour tout ce qui touche le magasin
+et les invites : le magasin d'identifiants vit sur l'hôte. Ce qui concerne la
+livraison exige un invité démarré, donc une plateforme qualifiée.
+
+Préparer un projet jetable avec deux fichiers dotenv (un à la racine, un dans
+un sous-répertoire) et une valeur de test révocable. **Ne jamais** utiliser une
+valeur réelle : les captures et les sorties conservées ne doivent contenir
+aucun secret.
+
+1. **Import.** `secrets import --profile development --file .env` puis
+   `--apply`. Attendu : l'aperçu masque les valeurs, signale les clés répétées,
+   n'écrit rien ; `--apply` demande confirmation dans un terminal ; un script
+   sans `--yes` ne doit pas écrire. Vérifier que les fichiers sources sont
+   inchangés (comparer leur empreinte avant/après).
+2. **Approbation proxy.** `secrets bindings approve … --destination <hôte>`.
+   Attendu : l'approbation est enregistrée localement, jamais dans le dépôt ;
+   `bindings list` la montre ; l'invité ne reçoit qu'un marqueur.
+3. **Approbation lisible dans l'invité.** `… --delivery guest`. Attendu :
+   l'avertissement est affiché ; le fichier du composant contient la valeur
+   réelle ; il est en `0600` ; `bindings list` distingue les deux modes.
+   Tester les deux issues, car elles ne portent pas sur les mêmes valeurs :
+   - **doivent être livrées** et relues à l'identique — une apostrophe, deux
+     antislashs consécutifs, une valeur finissant par un antislash, un chemin
+     Windows (`C:\Users\…\`). Ces formes sont portées par l'encodage non quoté
+     et ne doivent **pas** être refusées ;
+   - **doivent être refusées**, en nommant la variable et la raison — un `$`,
+     un retour chariot, une valeur en UTF-8 invalide, et une valeur commençant
+     par une apostrophe. Ce sont les seules classes qu'aucune des deux formes
+     ne porte dans le cas simple.
+4. **Profils.** `secrets profile <nom>`, puis `--clear` alors que des liaisons
+   restent approuvées : le refus est attendu. Une liaison d'un autre profil que
+   l'actif doit faire échouer le démarrage, pas être ignorée.
+5. **Rotation.** Remplacer la valeur dans le magasin, redémarrer, vérifier que
+   la nouvelle valeur est livrée et que l'ancienne n'apparaît plus.
+6. **Révocation.** `secrets bindings revoke`. Le message doit décrire le mode
+   réellement approuvé ; après application, la valeur ne doit plus être lisible
+   dans l'invité. Sur le mode proxy, l'invité garde un marqueur inerte.
+7. **Magasin verrouillé.** Rendre le magasin indisponible (verrouiller la
+   session, ou retirer l'accès au service) puis démarrer : le démarrage doit
+   **échouer** avec un message explicite, jamais poursuivre en retirant la
+   liaison — une liaison omise deviendrait l'état désiré et désinscrirait une
+   inscription active.
+
+### Terminal et annulation
+
+À exécuter sur les invites d'import et d'approbation :
+
+| Situation | Attendu |
+| --- | --- |
+| Terminal étroit (~40 colonnes) | Aucun débordement ; le libellé et la valeur attendue restent lisibles |
+| Terminal large (~200 colonnes) | Aucun étirement ni alignement cassé |
+| Entrée/sortie redirigées (non-TTY) | Repli sur un mode ligne ; aucune invite interactive ; `--yes` requis pour écrire |
+| Ctrl-C à chaque invite | Rien n'est enregistré : ni approbation partielle, ni profil changé |
+| Interruption au milieu d'une application | Une nouvelle exécution converge vers le même état (idempotence) |
+
+Conserver une capture de l'aperçu d'import et de l'avertissement de livraison
+lisible dans l'invité pour la revue UX, en masquant les valeurs.
+
+### Matrice des magasins d'identifiants
+
+À qualifier séparément du runtime, sur une session où le service répond.
+
+| Plateforme | Magasin | `put` / `get` / `remove` | Valeur absente de `argv` | Verrouillage géré |
+|---|---|---|---|---|
+| macOS | Trousseau | | | |
+| Linux | Secret Service | | | |
+| Windows | Credential Manager | | | |
+
+Un magasin absent ou non fonctionnel donne « non qualifié », jamais « réussi » :
+les tests du magasin réel sont conditionnés à sa disponibilité et s'ignorent
+ailleurs, y compris dans les conteneurs d'intégration continue.
+
 ## Interprétation
 
 - CI verte prouve les cas exécutés par ses jobs, pas la disponibilité d'un

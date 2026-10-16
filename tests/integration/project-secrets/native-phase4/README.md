@@ -247,3 +247,33 @@ A passing run does **not** prove (state these honestly in the issue):
 - `guest/scanner.py`, `guest/reader.py` — stdlib-only in-guest tooling,
   pushed via `FS().Write` at run time.
 - `go.mod` / `go.sum` — SDK pinned at v0.7.6.
+
+## Known failure modes to check before trusting a run
+
+The 2026-10-15 qualification session drove a *different* phase-4 kit revision
+— an end-to-end delivery kit, not this channel probe. That revision was not
+retained, so neither were its transcripts. Four of its failure modes were
+recorded at the time and are repeated here because a re-run is planned; each
+one makes a run look like a product failure when it is a harness failure:
+
+- **The guest fixtures directory was not created**, so the pushed guest
+  tooling was missing and every case that depends on it failed. This is the
+  same defect class the phase-3 kit hit. Note for whoever re-authors it: the
+  SDK's `FS().Mkdir` does create missing parents (`fs.go`: "creates a
+  directory (and any missing parents)"), so the cause is not a missing
+  `-p`; find it rather than assuming.
+- **The host disk classifier did not recognise a `.upper.ext4` file.** This
+  probe's own `classify` matches `upper` and so handles that name; a
+  re-authored kit must carry the same coverage, or a real disk-image hit
+  reads as a clean scan.
+- **A rotation step was rejected by the proxy with `requires restart`**, so
+  the rotation case could not be exercised in that shape.
+- **One assertion depended on a fix that was still unmerged** (the dotenv
+  backslash encoding, PR #188). Assert against merged code, or the run
+  measures a branch rather than the product.
+
+Two habits from the phase-3 session apply: run the kit from a repository
+checkout rather than bouncing it through sandboxes, because harness defects
+cascade silently and the kit's own cleanup cannot recover from wrong runtime
+state; and treat a transcript that is not bound to a source revision as no
+evidence at all.

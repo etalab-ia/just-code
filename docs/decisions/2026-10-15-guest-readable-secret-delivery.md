@@ -58,11 +58,21 @@ The expected digest travels on the command's standard input, not in argv, and
 that is not a detail: the same log records exec argv, so a digest of the
 secret written as an argument would land in the host log this section is
 about. A digest is not the secret, but for a value with little entropy it is
-enough to test guesses offline, and keeping it off argv costs nothing. The
-first line of the file is compared as-is rather than with carriage returns
-stripped: normalising would let a file whose first line reads
-`# just-code mana\rged: do not edit` pass as just-code's own, which is a way
-to have a user's file overwritten.
+enough to test guesses offline, and keeping it off argv costs nothing.
+
+The ownership header is compared by a digest over its exact bytes — the header
+line and its newline — and that choice came from three rounds of review, each
+finding a way to forge a comparison that normalised something. A shell variable
+drops NUL bytes (bash and dash alike), so `# just-code mana\0ged: do not edit`
+came back as the marker. `tr -d '\r'` stripped an interior carriage return, so
+`# just-code mana\rged: do not edit` did too. And `grep -qxF` matches a marker
+followed by a NUL, because GNU grep and the guest's busybox both treat such a
+line as binary and match on the readable prefix — busybox does it even with
+`-a`, which is what the obvious advice suggests and what was measured not to
+work in the shipping image. A digest over a fixed byte count cannot match a
+line differing by one byte anywhere, and needs only `head -c` and `sha256sum`,
+both already present in the guest. In each case the failure was that a foreign
+file read as just-code's own, which lets a synchronization overwrite it.
 
 One limit is deliberate and stated rather than papered over: this proves the
 file's content is the one just-code wanted, not who wrote it. If a sandbox is
@@ -74,6 +84,7 @@ guest — but it is a limit, not a proof. Telling the two apart needs a secret
 this sandbox carries, which the guest environment cannot hold without putting
 it where any guest process can read it; that is a channel decision for a later
 phase, not a line of code here.
+
 **Destination.** A guest-readable value is delivered to the path the
 application already reads — by default the component's own file in the guest
 workspace (`/workspace/.env`, `/workspace/apps/api/.env`), matching where the
@@ -245,6 +256,14 @@ the host process over the FFI boundary), and the macOS unified-log check is
 weaker than the others because `log show` may redact values as `<private>`.
 Absence is measured at the points listed above, before, during and after a
 snapshot and after teardown — not continuously.
+
+These measurements cover the runtime's **own** activity, not arbitrary later
+use of the value: the probe never runs a command that prints the value, so a
+clean result here does not contradict the stdout exposure described under
+Transport. The digest-based comparison described under Transport has since
+shipped: the inspection runs in the guest, reads the expected digest from the
+command's standard input, and prints only a token, so the value never reaches
+the runtime's execution log.
 
 Values that an application must consume locally are, by construction, readable
 by the agent. That is accepted here with explicit consent, not mitigated.
