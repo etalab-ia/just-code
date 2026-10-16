@@ -10,8 +10,13 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+func init() {
+	assertGuestSecretHeaderDigest()
+}
 
 // Phase 3: managed guest dotenv files. Phase 2 registers the approved values
 // with the Microsandbox proxy and exposes a marker under a guest variable.
@@ -31,7 +36,34 @@ import (
 
 // guestSecretHeaderPrefix marks a file just-code owns. The second line names
 // the component so a human reading the guest can tell where it came from.
+//
+// The ownership check compares the digest of these 32 bytes plus the newline
+// (guestSecretHeaderLineDigest), so changing this constant silently disables
+// the check unless its digest is updated with it. assertGuestSecretHeaderDigest
+// fails loudly on a mismatch, and a test pins it.
 const guestSecretHeaderPrefix = "# just-code managed: do not edit"
+
+// guestSecretHeaderLineBytes is the byte length the ownership check reads: the
+// header plus the newline that ends its line.
+const guestSecretHeaderLineBytes = 33
+
+// assertGuestSecretHeaderDigest is evaluated at startup and panics if the
+// header constant and the byte length disagree with the pinned digest. Without
+// it, an edit to the header would leave the ownership check comparing against a
+// digest of the old text, every file would read as "not ours", and a
+// reconciliation would rewrite good files — or, worse if the digest were
+// regenerated carelessly, adopt foreign ones. A panic at import is the right
+// blast radius: the process never serves a wrong answer.
+func assertGuestSecretHeaderDigest() {
+	line := []byte(guestSecretHeaderPrefix + "\n")
+	if len(line) != guestSecretHeaderLineBytes {
+		panic(fmt.Sprintf("guest secret header is %d bytes, not %d: update guestSecretHeaderLineBytes", len(line), guestSecretHeaderLineBytes))
+	}
+	sum := sha256.Sum256(line)
+	if got := hex.EncodeToString(sum[:]); got != guestSecretHeaderLineDigest {
+		panic(fmt.Sprintf("guest secret header digest is %s, not the pinned %s: update guestSecretHeaderLineDigest", got, guestSecretHeaderLineDigest))
+	}
+}
 
 // dotenvLiteral renders a value for a dotenv file, and reports whether the
 // value can be represented unambiguously at all.
@@ -460,6 +492,22 @@ func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, gues
 // file's content nor a raw digest reaches a command line or a log.
 const guestSecretDigestToken = "just-code-digest-ok"
 
+// guestSecretHeaderLineDigest is the SHA256 of the header line **including its
+// trailing newline**, and it is what the ownership check compares.
+//
+// Comparing the header any other way kept producing a way to forge it, because
+// every text-oriented comparison normalises something a byte-exact one would
+// not: a shell variable drops NUL bytes (bash and dash both do), `tr -d '\r'`
+// strips an interior carriage return, and the guest's busybox `grep -qxF`
+// matches a line that merely *starts* with the marker — GNU grep does too with
+// its binary-file heuristic, and busybox does it even with `-a`, so the flag
+// the usual advice suggests does not close the hole in the image this ships on.
+// A digest over a fixed number of bytes cannot match a line that differs by
+// even one byte anywhere, including a byte after the marker.
+//
+// The value is a digest of a public constant, not of any secret.
+const guestSecretHeaderLineDigest = "bc7625348f136cc1f93c91b6c14fc89fd57550b5a85278b2216a01a201075f7b"
+
 // observeGuestSecretFile reports the three facts a publish decision needs about
 // one guest path, without reading the file's content.
 //
@@ -505,18 +553,23 @@ func (m *MicrosandboxRuntime) observeGuestSecretFile(ctx context.Context, guestP
 	// never from user input, and are quoted regardless: the guest shell is not
 	// a place to rely on the absence of metacharacters.
 	//
-	// The header is checked with grep rather than a variable because command
-	// substitution drops NUL bytes (see above). The digest is read from stdin
-	// into $1, keeping it out of argv, and compared as the first field of
-	// `sha256sum` rather than as a whole line, so the comparison does not
-	// depend on how many spaces a particular `sha256sum` puts between the
-	// digest and the file name.
+	// The header is compared by digest over its exact bytes (see
+	// guestSecretHeaderLineDigest) rather than by grep or a shell variable:
+	// both normalise something, and both leave a forgeable header. The digest
+	// is read from stdin into $1, keeping it out of argv, and compared as the
+	// first field of `sha256sum` rather than as a whole line, so the
+	// comparison does not depend on how many spaces a particular `sha256sum`
+	// puts between the digest and the file name. The two `set --` calls use
+	// their own positional parameters in sequence, so neither disturbs the
+	// other.
 	digestScript := "read -r want || exit 5; if [ -f \"$f\" ]; then set -- $(sha256sum \"$f\"); " +
 		"if [ \"$1\" = \"$want\" ]; then echo " + guestSecretDigestToken + "; fi; fi"
+	headerScript := "set -- $(head -c " + strconv.Itoa(guestSecretHeaderLineBytes) + " \"$f\" | sha256sum); " +
+		"if [ \"$1\" = " + shellQuote(guestSecretHeaderLineDigest) + " ]; then echo managed=yes; else echo managed=no; fi"
 	script := "f=" + shellQuote(guestPath) + "; " +
 		"if [ ! -e \"$f\" ]; then exit 3; fi; " +
 		"if [ ! -f \"$f\" ]; then exit 4; fi; " +
-		"if head -n1 \"$f\" | grep -qxF " + shellQuote(guestSecretHeaderPrefix) + "; then echo managed=yes; else echo managed=no; fi; " +
+		headerScript + "; " +
 		digestScript
 	stdout, stderr, code, err := m.Client.ExecCaptureStdin(ctx, m.InstanceName(), script, []byte(wantedDigest+"\n"))
 	if err != nil {

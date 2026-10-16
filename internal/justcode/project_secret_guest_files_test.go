@@ -206,13 +206,21 @@ func (c *guestFSClient) ExecCaptureStdin(_ context.Context, name, command string
 		return "", "", 3, nil
 	}
 	want := strings.TrimRight(string(stdin), "\n")
-	first := content
-	if idx := strings.IndexByte(content, '\n'); idx >= 0 {
-		first = content[:idx]
+	// Byte-exact, over the first guestSecretHeaderLineBytes bytes: the same
+	// comparison the guest performs, so a header that differs by an embedded
+	// NUL or CR — or by anything following the marker on the same line — is
+	// not ours. A fake that trimmed or prefix-matched would accept forgeries
+	// the real command rejects.
+	line := content
+	if len(line) > guestSecretHeaderLineBytes {
+		line = line[:guestSecretHeaderLineBytes]
 	}
 	out := "managed=no\n"
-	if first == guestSecretHeaderPrefix {
-		out = "managed=yes\n"
+	if len(line) == guestSecretHeaderLineBytes {
+		sum := sha256.Sum256([]byte(line))
+		if hex.EncodeToString(sum[:]) == guestSecretHeaderLineDigest {
+			out = "managed=yes\n"
+		}
 	}
 	sum := sha256.Sum256([]byte(content))
 	if hex.EncodeToString(sum[:]) == want {
@@ -532,20 +540,43 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 	}
 }
 
+// TestGuestSecretHeaderDigestMatchesTheConstant pins the two together. The
+// ownership check compares against a digest, so editing the header without
+// updating the digest would make every managed file read as foreign and a
+// reconciliation would rewrite them; the init assertion turns that into a
+// startup panic, and this test says which constant to change.
+func TestGuestSecretHeaderDigestMatchesTheConstant(t *testing.T) {
+	line := []byte(guestSecretHeaderPrefix + "\n")
+	if len(line) != guestSecretHeaderLineBytes {
+		t.Fatalf("the header line is %d bytes, not %d: update guestSecretHeaderLineBytes", len(line), guestSecretHeaderLineBytes)
+	}
+	sum := sha256.Sum256(line)
+	if got := hex.EncodeToString(sum[:]); got != guestSecretHeaderLineDigest {
+		t.Fatalf("the header digest is %s, not the pinned %s: update guestSecretHeaderLineDigest", got, guestSecretHeaderLineDigest)
+	}
+}
+
 // TestAForgeableHeaderIsNotTreatedAsOurs is the regression for the class of
-// bug two reviews found in the ownership check: anything that makes the guest
-// command normalise the first line turns a foreign file into just-code's own,
-// and the plan then overwrites it. An embedded carriage return survives a CR
-// strip; an embedded NUL is dropped by shell command substitution. The check
-// must compare bytes, so both are simply not our header.
+// bug three reviews found in the ownership check: anything that makes the
+// check normalise or prefix-match the first line turns a foreign file into
+// just-code's own, and the plan then overwrites it. An embedded carriage
+// return survives a CR strip; an embedded NUL is dropped by shell command
+// substitution; and a marker followed by a NUL is matched by grep's
+// whole-line mode, because both GNU and the guest's busybox treat such a line
+// as binary and match on the readable prefix (busybox does it even with `-a`,
+// so that flag does not close it). The check compares a digest over an exact
+// byte count, which none of these can satisfy.
 func TestAForgeableHeaderIsNotTreatedAsOurs(t *testing.T) {
 	guestPath := msbGuestWorkspace + "/.env"
 	for name, firstLine := range map[string]string{
-		"embedded cref":  "# just-code mana\rged: do not edit",
-		"embedded nul":   "# just-code mana\x00ged: do not edit",
-		"trailing space": guestSecretHeaderPrefix + " ",
-		"leading space":  " " + guestSecretHeaderPrefix,
-		"prefix only":    guestSecretHeaderPrefix[:10],
+		"embedded cref":     "# just-code mana\rged: do not edit",
+		"embedded nul":      "# just-code mana\x00ged: do not edit",
+		"marker then nul":   guestSecretHeaderPrefix + "\x00evil",
+		"marker then bytes": guestSecretHeaderPrefix + "extra",
+		"marker then tab":   guestSecretHeaderPrefix + "\t",
+		"trailing space":    guestSecretHeaderPrefix + " ",
+		"leading space":     " " + guestSecretHeaderPrefix,
+		"prefix only":       guestSecretHeaderPrefix[:10],
 	} {
 		content := firstLine + "\nAPI_KEY=the-projects-own-value\n"
 		m, client := newGuestFSRuntime(t, map[string]string{guestPath: content})
