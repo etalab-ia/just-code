@@ -49,11 +49,11 @@ default, so the mode is set explicitly and verified, and the value is delivered
 only after the file exists with the restrictive mode.
 
 **Encoding.** A value is written as a single-quoted dotenv literal whenever
-that form carries it, and unquoted only for the two shapes it cannot. This is
-not cosmetic: dotenv has no escaping that every loader agrees on, and the
-failure is not confined to the variable. Measured against the loaders just-code
-pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
-`python-dotenv` 1.2.2, `godotenv` 1.5.1):
+that form carries it, and unquoted whenever quoting cannot carry it and the raw
+form safely can. This is not cosmetic: dotenv has no escaping that every loader
+agrees on, and the failure is not confined to the variable. Measured against the
+loaders just-code pins (Node `dotenv` 16.4.7 with and without `dotenv-expand`
+12.0.2, `python-dotenv` 1.2.2, `godotenv` 1.5.1):
 
 - **Single quotes** carry newlines, whitespace, `#`, double quotes, the
   backtick, an interior backslash and the empty value exactly, in all four
@@ -65,19 +65,20 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
   A raw value is also trimmed of leading and trailing whitespace, cut short at
   a `#` that follows a space, and expanded on `$`. Raw is therefore restricted
   to a measured set (see below), never used as a general encoding.
-- Four shapes quoting cannot carry are written **unquoted** instead of refused:
-  **two consecutive backslashes** (`python-dotenv` silently collapses them to
-  one when quoted), a **trailing backslash** (it escapes the closing quote, so
-  `python-dotenv` loses the value *and the following line* and `godotenv`
-  refuses the whole file — the shape is the one a generated file always has, the
-  value followed by another quoted value), an **apostrophe** (no position saves
-  it: a single quote cannot be escaped in a quoted value, so even `it's` is
-  written raw), and an apostrophe combined with a backslash pair or a trailing
-  backslash (the two backslash shapes are what the raw form is for, so the
-  combination is delivered, not refused). An unquoted value has no escape
-  processing in any pinned loader, so all four round-trip verbatim. This is
-  what makes Windows paths, UNC paths and paths such as `C:\Users\O'Brien\`
-  deliverable.
+- Values quoting cannot carry are written **unquoted** instead of refused,
+  whenever the raw form accepts them. That class is not a fixed set of shapes:
+  it is every value whose only quoting obstacle is an **apostrophe** (no
+  position saves it, since a single quote cannot be escaped in a quoted value,
+  so even `it's` is written raw), a **pair of consecutive backslashes**
+  (`python-dotenv` silently collapses them to one when quoted) or a **trailing
+  backslash** (it escapes the closing quote, so `python-dotenv` loses the value
+  *and the following line* and `godotenv` refuses the whole file — the shape a
+  generated file always has, the value followed by another quoted value), or
+  any combination of the three. An unquoted value has no escape processing in
+  any pinned loader, so all of them round-trip verbatim. This is what makes
+  Windows paths, UNC paths and paths such as `C:\Users\O'Brien\` deliverable.
+  A value that adds any *other* quoting obstacle — a `$`, a carriage return —
+  leaves quoting impossible and is refused if the raw form rejects it too.
 - The **raw character set** was derived by measurement, not by guessing. A
   sweep over every assigned code point, placed at the **leading, trailing and
   interior** position of a value in a generated file (the raw value between
@@ -105,6 +106,17 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
 - What remains, and cannot be carried by either form, is **refused** at
   approval time so the user is present, naming the variable and the character.
   A refused secret is a nuisance; a silently altered one fails far from here.
+  The refusal is a conjunction, not a list of characters: quoting must be ruled
+  out by the value *and* the raw form must be ruled out as well. Quoting is
+  ruled out by a carriage return, an apostrophe, a `$`, a backslash pair or a
+  trailing backslash; the raw form is ruled out by a `$`, a `#`, a newline, a
+  carriage return, an empty value, a leading quote, a wrapping backtick pair or
+  a character the loaders trim at an edge. So a backslash pair followed by a
+  `#` is refused for its raw `#`, a value whose trailing backslash is followed
+  by a newline for its raw newline, and a backslash pair followed by a trailing
+  space for its raw edge-trimmed character — none of them an apostrophe case,
+  which is the point: quoting fails on the backslash shape while raw fails on
+  the other character, and only the conjunction refuses.
   - An **apostrophe**, but only where neither form can carry it. Quoting never
     carries one, so an apostrophe always forces the raw form; it is refused only
     when the raw form refuses the value too — the value opens with the quote, or

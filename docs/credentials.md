@@ -245,10 +245,18 @@ et `C:\Users\O'Brien\` passent bruts. Le jeu accepté a été mesuré, pas
 supposé, contre les trois chargeurs épinglés. Le **non-ASCII est accepté** : une
 valeur non quotée n'est jamais décodée, donc `C:\Répertoire\` ou `naïve\`
 passent octet pour octet. Seuls restent **refusés** à l'approbation les cas
-qu'aucune des deux formes ne porte : un `$`, un retour chariot, un guillemet ou
-une apostrophe en première position ou accompagnée d'un autre obstacle brut,
-une valeur encadrée par deux accents graves quand les guillemets ne peuvent pas
-la porter, et une séquence UTF-8 invalide. Le refus
+qu'aucune des deux formes ne porte. Le refus est une **conjonction**, pas une
+liste de caractères : il faut que les guillemets ne puissent pas porter la
+valeur **et** que la forme brute la refuse aussi. Les guillemets sont mis en
+échec par un retour chariot, une apostrophe, un `$`, une paire d'antislashs ou
+un antislash final ; la forme brute est refusée par un `$`, un `#`, un retour à
+la ligne, un retour chariot, une valeur vide, un guillemet en première position,
+une valeur encadrée par deux accents graves, ou un caractère que les chargeurs
+rognent en bord de valeur. Sont donc refusés, entre autres : un `$`, un retour
+chariot, un guillemet ou une apostrophe en première position, une apostrophe
+accompagnée d'un autre obstacle brut, une paire d'antislashs suivie d'un `#` ou
+d'un retour à la ligne, une valeur encadrée par deux accents graves quand les
+guillemets ne peuvent pas la porter, et une séquence UTF-8 invalide. Le refus
 nomme la variable et la raison ; une valeur refusée est un désagrément, une
 valeur silencieusement modifiée est un incident qui se produit loin d'ici. Pour
 ces valeurs, la livraison par proxy reste la bonne réponse dès lors que

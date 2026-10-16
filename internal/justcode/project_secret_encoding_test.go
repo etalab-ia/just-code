@@ -237,6 +237,33 @@ func TestDotenvLiteralRefusesWhatNoLoaderAgreesOn(t *testing.T) {
 	}
 }
 
+// A refusal is a conjunction, not a list of characters: quoting must be ruled
+// out by the value *and* the raw form must be ruled out as well. These values
+// are the counter-examples to a flat reading of the refusal list -- none of
+// them carries an apostrophe, and each is refused because the character that
+// defeats quoting is not the one that defeats the raw form. A documented
+// refusal list that omits the raw obstacles makes an approver expect these to
+// succeed.
+func TestDotenvLiteralRefusesOnlyWhenBothFormsFail(t *testing.T) {
+	const bs = "\x5c"
+	for name, value := range map[string]string{
+		// Quoting fails on the backslash pair; raw fails on the "#".
+		"pair then hash": "a" + bs + bs + "b#c",
+		// Quoting fails on the trailing backslash; raw fails on the newline.
+		"trailing backslash then newline": "line1\nline2" + bs,
+		// Quoting fails on the backslash pair; raw fails on the trimmed space.
+		"pair then trailing space": "a" + bs + bs + "b ",
+	} {
+		err := CheckGuestReadableValue(value)
+		if err == nil {
+			t.Fatalf("%s (%q) must be refused: neither form can carry it", name, value)
+		}
+		if !strings.Contains(err.Error(), "quoted:") || !strings.Contains(err.Error(), "unquoted:") {
+			t.Fatalf("%s: the refusal must name both forms: %v", name, err)
+		}
+	}
+}
+
 // A quote or a backtick is positional, not forbidden. Quoting stays the
 // default, so a value these loaders all read back verbatim when quoted is
 // delivered quoted even though it holds a quote, a backtick or a "#". The raw

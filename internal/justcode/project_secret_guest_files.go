@@ -56,12 +56,12 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 //     the next line, because every value in a generated file is followed by
 //     another quoted value. Quoting cannot carry either shape.
 //   - An unquoted (raw) value has no escape processing at all in any of the
-//     three loaders, so it is the encoding for exactly those two shapes: a
-//     backslash pair and a trailing backslash round-trip raw verbatim, which
-//     covers Windows and UNC paths and any value ending in a directory
-//     separator. The same fallback also carries any other value quoting
-//     cannot, once its characters are measured to be safe raw. Raw is a
-//     fallback, not the default: it is used only when quoting cannot
+//     three loaders, so a backslash pair and a trailing backslash round-trip
+//     raw verbatim, which covers Windows and UNC paths and any value ending
+//     in a directory separator. Raw is the fallback for every value quoting
+//     cannot carry, not only those two shapes: an apostrophe also forces it,
+//     as does any other value whose characters are measured to be safe raw.
+//     Raw is a fallback, not the default: it is used only when quoting cannot
 //     represent the value, so nothing already working changes form.
 //   - Raw is safe only over a measured character set (see dotenvRawObstacle).
 //     An unquoted value is ended by a newline or a carriage return, truncated
