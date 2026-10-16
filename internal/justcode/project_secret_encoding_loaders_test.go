@@ -63,18 +63,70 @@ func TestARawValueWouldBreakTheWholeFile(t *testing.T) {
 	}
 }
 
-func TestATrailingBackslashIsRefusedBecauseGodotenvRejectsTheFile(t *testing.T) {
+func TestATrailingBackslashIsWrittenRawBecauseQuotingBreaksTheFile(t *testing.T) {
 	// Even single-quoted, a trailing backslash escapes the closing quote: the
-	// Go loader refuses the whole file, so the refusal in the encoder is
-	// driven by this loader and not by caution.
-	if _, err := dotenvLiteral(`trailing\`); err == nil {
-		t.Fatal("a trailing backslash must be refused")
-	}
+	// Go loader refuses the whole file. That is why the encoder writes this
+	// shape unquoted, which godotenv reads exactly.
 	path := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(path, []byte("K_TARGET='trailing\\'\nK_AFTER='after'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := godotenv.Read(path); err == nil {
-		t.Fatal("godotenv must refuse a file whose quoted value ends with a backslash; if it no longer does, the refusal can be revisited")
+		t.Fatal("godotenv must refuse a file whose quoted value ends with a backslash, which is why the encoder does not emit that form")
+	}
+	literal, err := dotenvLiteral(`trailing\`)
+	if err != nil {
+		t.Fatalf("a trailing backslash must be delivered raw, not refused: %v", err)
+	}
+	if literal != `trailing\` {
+		t.Fatalf("a trailing backslash must be written unquoted and verbatim: %q", literal)
+	}
+	if err := os.WriteFile(path, []byte("K_TARGET="+literal+"\nK_AFTER=after\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := godotenv.Read(path)
+	if err != nil {
+		t.Fatalf("the raw form must load: %v", err)
+	}
+	if got["K_TARGET"] != `trailing\` || got["K_AFTER"] != "after" {
+		t.Fatalf("raw trailing backslash: got %q, next line %q", got["K_TARGET"], got["K_AFTER"])
+	}
+}
+
+func TestEncodedRawValuesRoundTripThroughGodotenv(t *testing.T) {
+	// The raw fallback, checked against the strictest loader, in the shape a
+	// generated file actually has: the raw value between quoted values.
+	values := map[string]string{
+		"PAIR":         `a\\b`,
+		"WINDOWS_PATH": `C:\Users\`,
+		"UNC":          `\\server\share`,
+		"TRAILING":     `trailing\`,
+		"EQUALS":       `a\=b`,
+	}
+	var b strings.Builder
+	b.WriteString("K_BEFORE='before'\n")
+	for name, value := range values {
+		literal, err := dotenvLiteral(value)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		b.WriteString(name + "=" + literal + "\n")
+	}
+	b.WriteString("K_AFTER='after'\n")
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := godotenv.Read(path)
+	if err != nil {
+		t.Fatalf("the generated file must load: %v", err)
+	}
+	if got["K_BEFORE"] != "before" || got["K_AFTER"] != "after" {
+		t.Fatalf("the quoted neighbours must survive too: %q %q", got["K_BEFORE"], got["K_AFTER"])
+	}
+	for name, want := range values {
+		if got[name] != want {
+			t.Fatalf("%s: godotenv read %q, want %q", name, got[name], want)
+		}
 	}
 }

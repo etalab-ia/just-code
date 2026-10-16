@@ -33,10 +33,6 @@ class ProjectSecretLoaderTests(unittest.TestCase):
         self.assertEqual(expanded["API_KEY"], "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class GuestReadableEncodingTests(unittest.TestCase):
     """The single-quoted literal is the guest-readable delivery encoding.
 
@@ -97,3 +93,63 @@ class BackslashEncodingTests(unittest.TestCase):
         self.assertEqual(values["K_A"], "back\\slash")
         self.assertEqual(values["K_B"], "\\leading")
         self.assertEqual(values["K_AFTER"], "after")
+
+
+class RawFallbackEncodingTests(unittest.TestCase):
+    """The unquoted fallback, for the two shapes quoting cannot carry.
+
+    The Go encoder writes a value unquoted only when the single-quoted form
+    cannot represent it (see dotenvRawObstacle in
+    internal/justcode/project_secret_guest_files.go). These cases prove the
+    shapes Codex flagged, and the raw literals real values take, read back
+    exactly. The value sits between quoted values, which is the shape a
+    generated file actually has.
+    """
+
+    # Each value is written exactly as a loader must read it back. "quoted"
+    # and "raw" name the form the Go encoder picks for it; the Go tests
+    # (project_secret_encoding_test.go) assert that choice, so the two sides
+    # stay in step.
+    CASES = {
+        "a\\b": "quoted",  # one interior backslash: quotes are enough
+        "a\\\\b": "raw",  # a backslash pair, collapsed when quoted
+        "C:\\Users\\": "raw",  # ends with a backslash
+        "\\\\server\\share": "raw",  # a UNC path, opened by a backslash pair
+        "trailing\\": "raw",  # ends with a backslash
+        "x\\": "raw",  # ends with a backslash
+        "a\\=b": "quoted",
+        "9a8b7c": "quoted",
+    }
+
+    def _values(self, body):
+        with patch.dict(os.environ, {}, clear=True):
+            return dotenv_values(stream=io.StringIO(body))
+
+    def test_values_between_quoted_values_round_trip(self):
+        for value, form in self.CASES.items():
+            with self.subTest(value=value, form=form):
+                literal = f"'{value}'" if form == "quoted" else value
+                body = f"K_BEFORE='before'\nK_TARGET={literal}\nK_AFTER='after'\n"
+                values = self._values(body)
+                self.assertEqual(values["K_BEFORE"], "before")
+                self.assertEqual(values["K_TARGET"], value)
+                self.assertEqual(values["K_AFTER"], "after")
+
+    def test_a_raw_trailing_backslash_at_end_of_file_is_kept(self):
+        self.assertEqual(self._values("K_TARGET=trailing\\")["K_TARGET"], "trailing\\")
+
+    def test_quoting_loses_exactly_what_raw_preserves(self):
+        # The reason the fallback exists: python-dotenv collapses a quoted
+        # backslash pair to one, while the raw form is exact. A pair such as
+        # a\\b is read back as a\b when quoted and as a\\b when raw.
+        quoted = self._values("K_TARGET='a\\\\b'\n")["K_TARGET"]
+        raw = self._values("K_TARGET=a\\\\b\n")["K_TARGET"]
+        self.assertEqual(quoted, "a\\b")
+        self.assertEqual(raw, "a\\\\b")
+
+
+if __name__ == "__main__":
+    # Last in the file on purpose: unittest.main() collects the tests defined
+    # above it and runs them, so anything after it would never be registered.
+    # This is how the README documents running this file.
+    unittest.main()

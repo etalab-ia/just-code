@@ -120,3 +120,46 @@ test("Node reads the backslash shapes the encoder refuses", () => {
   }
   assert.equal(parsed.K_AFTER, "after");
 });
+
+// The unquoted fallback, for the two shapes quoting cannot carry through every
+// loader: a backslash pair and a trailing backslash. The Go encoder writes
+// these unquoted and only these (see dotenvRawObstacle), so the raw literals
+// real values take are what is exercised here.
+const rawFallback = {
+  PAIR: "a\\\\b",
+  QUAD: "a\\\\\\\\b",
+  WINDOWS_PATH: "C:\\Users\\",
+  PROGRAM_FILES: "C:\\Program Files\\",
+  UNC: "\\\\server\\share",
+  TRAILING: "trailing\\",
+  EQUALS: "a\\=b",
+};
+
+test("dotenv reads a raw backslash pair and trailing backslash exactly", () => {
+  const body = Object.entries(rawFallback)
+    .map(([name, value]) => `K_${name}=${value}\n`)
+    .join("");
+  const parsed = dotenv.parse(`${body}K_AFTER='after'\n`);
+  for (const [name, value] of Object.entries(rawFallback)) {
+    assert.equal(parsed[`K_${name}`], value, `Node must read raw K_${name} exactly`);
+  }
+  assert.equal(parsed.K_AFTER, "after");
+});
+
+test("dotenv-expand reads a raw backslash pair and trailing backslash exactly", () => {
+  const body = Object.entries(rawFallback)
+    .map(([name, value]) => `K_${name}=${value}\n`)
+    .join("");
+  const result = expand({
+    parsed: dotenv.parse(`${body}K_AFTER='after'\n`),
+    processEnv: {},
+  });
+  for (const [name, value] of Object.entries(rawFallback)) {
+    assert.equal(
+      result.parsed[`K_${name}`],
+      value,
+      `Node with dotenv-expand must read raw K_${name} exactly`,
+    );
+  }
+  assert.equal(result.parsed.K_AFTER, "after");
+});

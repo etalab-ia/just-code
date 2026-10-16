@@ -38,44 +38,117 @@ const guestSecretHeaderPrefix = "# just-code managed: do not edit"
 // measured against the loaders just-code pins (Node dotenv 16.4.7 with and
 // without dotenv-expand 12.0.2, python-dotenv 1.2.2, godotenv 1.5.1):
 //
-//   - A raw value containing a newline does not merely corrupt that variable;
-//     godotenv refuses the whole file. Leading or trailing whitespace, a
-//     "#", a quote or a backslash are likewise mangled or truncated raw.
 //   - Single quotes preserve newlines, whitespace, "#", double quotes and an
 //     interior backslash in every loader tested, so they are the encoding to
-//     use.
+//     prefer; they are used whenever they work.
 //   - A single quote inside the value cannot be escaped: godotenv then
 //     refuses the whole file, and python-dotenv misparses it.
-//   - A backslash is safe on its own, including at the start of a value and
-//     before a newline, a space, a "#" or an "=" (all measured). Two in a row
-//     are collapsed to one by python-dotenv, silently. A trailing backslash
-//     escapes the closing quote: godotenv refuses the whole file, and
-//     python-dotenv loses the value and the next line, because every value in
-//     a generated file is followed by another quoted value. Both shapes are
-//     refused rather than delivered wrong.
+//   - Two backslashes in a row are collapsed to one by python-dotenv when
+//     quoted, silently. A trailing backslash escapes the closing quote:
+//     godotenv refuses the whole file, and python-dotenv loses the value and
+//     the next line, because every value in a generated file is followed by
+//     another quoted value. Quoting cannot carry either shape.
+//   - An unquoted (raw) value has no escape processing at all in any of the
+//     three loaders, so it is the encoding for exactly those two shapes: a
+//     backslash pair and a trailing backslash round-trip raw verbatim, which
+//     covers Windows and UNC paths and any value ending in a directory
+//     separator. Raw is a fallback, not the default: it is used only when
+//     quoting cannot represent the value, so nothing already working changes
+//     form.
+//   - Raw is safe only over a narrow character set. An unquoted value is
+//     ended by a newline, truncated at a "#" that follows a space, trimmed of
+//     leading and trailing whitespace, opened as a quoted value by a leading
+//     quote (godotenv raises "unterminated quoted value" on a leading double
+//     quote), read as a quote by plain Node dotenv on a backtick, and expanded
+//     on "$". Everything outside printable ASCII, and a "#", "$", a quote, a
+//     backtick, or a leading or trailing space, is therefore refused raw and
+//     falls back to being refused outright when quoting cannot carry it
+//     either. See dotenvRawObstacle for the exact set.
 //   - A "$" followed by a name or "{" is expanded by dotenv-expand and by
 //     godotenv, and the usual escape, "\$", is then left as a literal
 //     backslash by plain Node dotenv and rejected by python-dotenv. So a
 //     value containing "$" cannot be delivered through dotenv syntax without
-//     picking one loader's semantics and breaking another's.
+//     picking one loader's semantics and breaking another's. Any "$" is
+//     refused, including the trailing positions where it would in fact be
+//     inert, because the safe positions depend on the characters that follow
+//     and a rule that reproduces three loaders' expansion grammars is a
+//     liability, not a feature: a "$" is either a literal or an expansion
+//     depending on the loader, and a wrong guess alters a secret.
 //
 // Values that cannot be represented are refused rather than written: a
 // mangled secret is worse than a refused one, because it fails silently and
 // far from here.
 func dotenvLiteral(value string) (string, error) {
+	quotedErr := dotenvQuotedObstacle(value)
+	if quotedErr == nil {
+		return "'" + value + "'", nil
+	}
+	rawErr := dotenvRawObstacle(value)
+	if rawErr == nil {
+		return value, nil
+	}
+	return "", fmt.Errorf("quoted: %v; unquoted: %v", quotedErr, rawErr)
+}
+
+// dotenvRawObstacle reports why a value cannot be written unquoted, or nil
+// when it can.
+//
+// The accepted set is printable ASCII (0x20-0x7E) minus "#", "$", a single
+// quote, a double quote and a backtick, with no leading or trailing space and
+// at least one character. It was checked exhaustively over every value of up
+// to three characters drawn from that set, and over a reduced alphabet
+// including the space and the backslash up to eight characters plus random
+// strings to length 40, against all three pinned loaders, in the shape a
+// generated file actually has (the raw value between quoted values). Every
+// value the predicate accepts round-trips byte-exactly in all three; each
+// character it rejects is rejected because an unquoted value trims it
+// (leading or trailing space), cuts the value at it ("#" after a space),
+// expands it ("$"), opens a quoted value with it and never closes it (a
+// leading quote, and a backtick in plain Node dotenv), or cannot carry it on
+// one line (a newline, and anything outside printable ASCII).
+func dotenvRawObstacle(value string) error {
+	if value == "" {
+		return fmt.Errorf("is empty, and an unquoted empty value is indistinguishable from an absent one")
+	}
+	for _, r := range value {
+		switch r {
+		case '$':
+			return fmt.Errorf("contains \"$\", which dotenv-expand and godotenv expand in an unquoted value but plain Node dotenv and python-dotenv leave alone")
+		case '#':
+			return fmt.Errorf("contains \"#\", which starts a comment in an unquoted value as soon as it follows a space")
+		case '\'':
+			return fmt.Errorf("contains a single quote, which opens a quoted value at the start of an unquoted one")
+		case '"':
+			return fmt.Errorf("contains a double quote, which makes godotenv refuse the whole file as an unterminated quoted value at the start of an unquoted one")
+		case '`':
+			return fmt.Errorf("contains a backtick, which plain Node dotenv reads as a quote")
+		}
+		if r < 0x20 || r > 0x7e {
+			return fmt.Errorf("contains a character outside printable ASCII (%U), which an unquoted value cannot carry on one line", r)
+		}
+	}
+	if strings.HasPrefix(value, " ") || strings.HasSuffix(value, " ") {
+		return fmt.Errorf("starts or ends with a space, which an unquoted value trims")
+	}
+	return nil
+}
+
+// dotenvQuotedObstacle reports why a value cannot be written as a
+// single-quoted literal, or nil when it can.
+func dotenvQuotedObstacle(value string) error {
 	if strings.ContainsRune(value, '\'') {
-		return "", fmt.Errorf("contains a single quote, which dotenv cannot escape: godotenv refuses the whole file and python-dotenv misparses it")
+		return fmt.Errorf("contains a single quote, which dotenv cannot escape: godotenv refuses the whole file and python-dotenv misparses it")
 	}
 	if strings.ContainsRune(value, '$') {
-		return "", fmt.Errorf("contains \"$\", which dotenv-expand and godotenv expand but plain Node dotenv and python-dotenv do not: no single encoding is exact for every loader")
+		return fmt.Errorf("contains \"$\", which dotenv-expand and godotenv expand but plain Node dotenv and python-dotenv do not: no single encoding is exact for every loader")
 	}
 	if strings.Contains(value, `\\`) {
-		return "", fmt.Errorf("contains two consecutive backslashes, which python-dotenv silently collapses to one")
+		return fmt.Errorf("contains two consecutive backslashes, which python-dotenv silently collapses to one when quoted")
 	}
 	if strings.HasSuffix(value, `\`) {
-		return "", fmt.Errorf("ends with a backslash, which escapes the closing quote: python-dotenv then loses this value and the next line, and godotenv refuses the whole file")
+		return fmt.Errorf("ends with a backslash, which escapes the closing quote: python-dotenv then loses this value and the next line, and godotenv refuses the whole file")
 	}
-	return "'" + value + "'", nil
+	return nil
 }
 
 // CheckGuestReadableValue reports whether a value can be delivered into a

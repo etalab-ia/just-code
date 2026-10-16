@@ -39,16 +39,72 @@ func TestDotenvLiteralRoundTripsThroughTheQualifiedLoaders(t *testing.T) {
 	}
 }
 
-func TestDotenvLiteralRefusesWhatNoLoaderAgreesOn(t *testing.T) {
+// The shapes quoting cannot carry are written unquoted, not refused: an
+// unquoted value has no escape processing in any pinned loader.
+func TestDotenvLiteralUsesTheRawFormForTheBackslashShapes(t *testing.T) {
 	for name, value := range map[string]string{
-		"single quote":       "it's",
-		"dollar":             "pre$VAR-post",
-		"braced":             "a${VAR}b",
 		"backslash pair":     `a\\b`,
 		"trailing backslash": `trailing\`,
+		"windows path":       `C:\Users\`,
+		"unc path":           `\\server\share`,
+		"leading pair":       `\\leading`,
+		"pair then a space":  `a\\b c`,
+	} {
+		literal, err := dotenvLiteral(value)
+		if err != nil {
+			t.Fatalf("%s (%q) must be representable: %v", name, value, err)
+		}
+		if literal != value {
+			t.Fatalf("%s must be written unquoted and verbatim: got %q, want %q", name, literal, value)
+		}
+	}
+}
+
+// Quoting stays the default for everything it can carry, so nothing that
+// worked before changes form.
+func TestDotenvLiteralPrefersQuotesWhenTheyWork(t *testing.T) {
+	for _, value := range []string{"plain", `a\b`, `\leading`, "has # hash", "trailing   ", ""} {
+		literal, err := dotenvLiteral(value)
+		if err != nil {
+			t.Fatalf("%q: %v", value, err)
+		}
+		if !strings.HasPrefix(literal, "'") {
+			t.Fatalf("%q is representable quoted, so it must stay quoted; got %q", value, literal)
+		}
+	}
+}
+
+func TestDotenvLiteralRefusesWhatNoLoaderAgreesOn(t *testing.T) {
+	for name, value := range map[string]string{
+		"single quote": "it's",
+		"dollar":       "pre$VAR-post",
+		"braced":       "a${VAR}b",
+		// Neither form can carry these: quoting misparses the quote, and an
+		// unquoted value is ended by the newline or trimmed of the space.
+		"quote plus a pair": `it's a\\b`,
+		"newline plus pair": "line1\nline2\\",
 	} {
 		if _, err := dotenvLiteral(value); err == nil {
 			t.Fatalf("%s must be refused rather than written ambiguously", name)
+		}
+	}
+}
+
+func TestDotenvLiteralRefusalNamesBothForms(t *testing.T) {
+	// Neither form can carry these: a quoted value expands the "$" (and the
+	// trailing space is fine quoted), while an unquoted one trims the space.
+	for name, value := range map[string]string{
+		"dollar and a trailing space": "pre$VAR-post ",
+		"newline and a pair":          "line1\nline2\\",
+	} {
+		_, err := dotenvLiteral(value)
+		if err == nil {
+			t.Fatalf("%s must be refused: neither form can carry it", name)
+		}
+		for _, want := range []string{"quoted:", "unquoted:"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refusal must explain both attempts (%q missing): %v", want, err)
+			}
 		}
 	}
 }
