@@ -34,7 +34,8 @@ noyau arm64 à pages de 16 K (point de vigilance initial, levé).
 | `51b-tui.txt`, `51b-tui.typescript` | TUI dans l'invité (preuve processus) | opencode visible dans l'invité |
 | `55-58-secrets.txt` | Secrets : import, classes, refus, profils, verrou | comportement identique à amd64 |
 | `56b-delivery.txt`, `56c-delivery.txt`, `56d-substitution.txt` | Livraison, substitution live, refus inter-hôte, rotation, révocation | marqueur seul dans l'invité, valeur réelle à httpbin, coupure SSL vers hôte non approuvé |
-| `59-terminal.txt` | Matrice terminal (40/200 cols vérifiées, Ctrl-C) | confirmations correctes, Ctrl-C sans effet |
+| `59-terminal.txt` | Matrice terminal mode ligne (40/200 cols vérifiées) ; le Ctrl-C de ce fichier est terminé par `timeout -k` et **ne vaut pas preuve** | confirmations correctes |
+| `62-asahi-terminal-interactive.txt` | Matrice terminal **mode interactif huh** (pty `script`, Ctrl-C à 40/200 cols, annulation « n », Ctrl-C tardif à 200 cols) | Ctrl-C sort proprement (130) aux deux largeurs une fois la négociation terminal terminée ; « n » annule ; rien de persisté. Pas d'invite d'approbation en v0.10.0 (#209) ; un `approve` en échec laisse un état partiel (#210) |
 | `60-installer.txt` | Installation officielle linux-arm64 | v0.10.0, SHA256 vérifié contre la release |
 
 Le transcript `50-54-common.txt` regroupe plusieurs étapes ; la ligne TUI
