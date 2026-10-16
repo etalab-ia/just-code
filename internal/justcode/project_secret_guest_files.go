@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -205,10 +207,13 @@ type GuestSecretPublishPlan struct {
 }
 
 // PlanGuestSecretPublish compares the desired files with what the guest
-// currently holds. existing maps a guest path to its current content; a
-// missing path is absent from the map, and previouslyManaged lists the paths
-// just-code published on an earlier run.
-func PlanGuestSecretPublish(desired []GuestSecretFile, existing map[string]string, previouslyManaged []string) (GuestSecretPublishPlan, error) {
+// currently holds. observed maps a guest path to what the guest reported about
+// it; a path absent from the map was not found, and previouslyManaged lists the
+// paths just-code published on an earlier run.
+//
+// The observations carry no content, on purpose: see
+// observeGuestSecretFile for why the comparison never reads a managed file.
+func PlanGuestSecretPublish(desired []GuestSecretFile, observed map[string]GuestSecretPublishObservation, previouslyManaged []string) (GuestSecretPublishPlan, error) {
 	var plan GuestSecretPublishPlan
 	wanted := map[string]bool{}
 	for _, file := range desired {
@@ -217,13 +222,13 @@ func PlanGuestSecretPublish(desired []GuestSecretFile, existing map[string]strin
 			return plan, err
 		}
 		wanted[guestPath] = true
-		current, present := existing[guestPath]
+		obs, present := observed[guestPath]
 		switch {
-		case !present:
+		case !present || !obs.Present:
 			plan.Writes = append(plan.Writes, file)
-		case !isManagedGuestSecretFile(current):
+		case !obs.Managed:
 			plan.Conflicts = append(plan.Conflicts, guestPath)
-		case current == file.Content:
+		case obs.Match:
 			plan.Unchanged = append(plan.Unchanged, guestPath)
 		default:
 			plan.Writes = append(plan.Writes, file)
@@ -235,7 +240,7 @@ func PlanGuestSecretPublish(desired []GuestSecretFile, existing map[string]strin
 		}
 		// Only remove what we still own: a file the user replaced with their
 		// own is theirs, and deleting it would destroy their content.
-		if content, present := existing[guestPath]; present && isManagedGuestSecretFile(content) {
+		if obs, present := observed[guestPath]; present && obs.Present && obs.Managed {
 			plan.Removes = append(plan.Removes, guestPath)
 		}
 	}
@@ -271,6 +276,10 @@ type projectSecretAppliedRecord struct {
 	Namespace     string   `json:"namespace"`
 	Envs          []string `json:"envs"`
 	Files         []string `json:"files"`
+	// FileDigests maps each managed guest path to the digest of the content
+	// just-code wrote there, which is what a later start compares against
+	// instead of reading the file back — see GuestSecretPublishObservation.
+	FileDigests map[string]string `json:"fileDigests,omitempty"`
 }
 
 const projectSecretAppliedSchemaVersion = 1
@@ -286,6 +295,33 @@ func ProjectSecretAppliedPath(stateDir, namespace string) string {
 type ProjectSecretApplied struct {
 	Envs  []string
 	Files []string
+	// FileDigests maps each managed guest path to the digest of the content
+	// just-code wrote there, which is what a later run compares against
+	// instead of reading the file back.
+	FileDigests map[string]string
+}
+
+// GuestSecretPublishObservation is what a read-back of one managed guest file
+// may reveal: whether it is still just-code's own file, whether its content is
+// the one just-code wrote, and whether the sandbox is running the same
+// just-code process that wrote it.
+//
+// No field carries file content, so nothing here can be persisted to a host
+// log by the runtime's record of guest executions.
+type GuestSecretPublishObservation struct {
+	Present bool
+	// Managed reports that the first line is just-code's header.
+	Managed bool
+	// Match reports that the file has not changed since just-code last wrote
+	// it: the digest the guest computes now equals the one recorded at
+	// publish time.
+	Match bool
+	// Auth reports that the guest carries the digest key this host process
+	// drew when it published. Without it the file is treated as a conflict,
+	// because after a sandbox rebuild the same path may hold a stranger's
+	// file that merely looks like ours — "the bytes match" says nothing about
+	// who put them there.
+	Auth bool
 }
 
 // ReadProjectSecretApplied returns the applied inventory. A missing record is
@@ -316,7 +352,24 @@ func ReadProjectSecretApplied(fs FS, stateDir, namespace string) (ProjectSecretA
 			return ProjectSecretApplied{}, err
 		}
 	}
-	return ProjectSecretApplied{Envs: append([]string(nil), record.Envs...), Files: append([]string(nil), record.Files...)}, nil
+	applied := ProjectSecretApplied{
+		Envs:        append([]string(nil), record.Envs...),
+		Files:       append([]string(nil), record.Files...),
+		FileDigests: map[string]string{},
+	}
+	for guestPath, digest := range record.FileDigests {
+		if err := validateManagedGuestPath(guestPath); err != nil {
+			return ProjectSecretApplied{}, err
+		}
+		if !isDigestString(digest) {
+			// A recorded digest that is not a digest cannot be compared
+			// against, and treating it as one would silently mark every
+			// managed file as changed (or unchanged) for the wrong reason.
+			return ProjectSecretApplied{}, fmt.Errorf("the applied project secret inventory records a digest for %s that is not a SHA256", guestPath)
+		}
+		applied.FileDigests[guestPath] = digest
+	}
+	return applied, nil
 }
 
 // WriteProjectSecretApplied records the inventory after a successful apply.
@@ -335,11 +388,36 @@ func WriteProjectSecretApplied(fs FS, stateDir, namespace string, applied Projec
 	files := append([]string(nil), applied.Files...)
 	sort.Strings(envs)
 	sort.Strings(files)
+	digests := applied.FileDigests
+	if digests == nil {
+		digests = map[string]string{}
+	}
+	for guestPath, digest := range digests {
+		if err := validateManagedGuestPath(guestPath); err != nil {
+			return err
+		}
+		if !isDigestString(digest) {
+			return fmt.Errorf("refusing to record a digest for %s that is not a SHA256", guestPath)
+		}
+	}
+	// A digest for a path that is no longer managed would otherwise outlive
+	// the binding and be reused if the path is published again under a new
+	// key.
+	managed := map[string]bool{}
+	for _, guestPath := range files {
+		managed[guestPath] = true
+	}
+	for guestPath := range digests {
+		if !managed[guestPath] {
+			delete(digests, guestPath)
+		}
+	}
 	record := projectSecretAppliedRecord{
 		SchemaVersion: projectSecretAppliedSchemaVersion,
 		Namespace:     namespace,
 		Envs:          envs,
 		Files:         files,
+		FileDigests:   digests,
 	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -441,35 +519,74 @@ func (m *MicrosandboxRuntime) writeGuestFileAtomically(ctx context.Context, gues
 	return nil
 }
 
-// readGuestSecretFiles reads the current content of the given guest paths.
-// A path that is genuinely absent is absent from the result. A path that
-// exists but cannot be read is an error, not an absence: treating it as
-// absence would turn a conflict with the project's own file into an
-// overwrite.
-func (m *MicrosandboxRuntime) readGuestSecretFiles(ctx context.Context, guestPaths []string) (map[string]string, error) {
-	out := map[string]string{}
-	for _, guestPath := range guestPaths {
-		if err := validateManagedGuestPath(guestPath); err != nil {
-			return nil, err
-		}
-		// Exit 3 means "no such file"; any other failure is reported. The
-		// paths come from just-code's own plan, never from user input, and
-		// are quoted regardless: the guest shell is not a place to rely on
-		// the absence of metacharacters.
-		command := "f=" + shellQuote(guestPath) + "; if [ ! -e \"$f\" ]; then exit 3; fi; cat \"$f\""
-		stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), command)
-		if err != nil {
-			return nil, err
-		}
-		switch code {
-		case 0:
-			out[guestPath] = stdout
-		case 3:
-		default:
-			return nil, fmt.Errorf("cannot read the existing guest file %s (exit %d): %s", guestPath, code, strings.TrimSpace(stderr))
-		}
+// guestSecretDigestToken is the marker the guest prints when a managed file is
+// still exactly what this host wrote.
+//
+// The proof is a digest comparison performed inside the guest, so neither the
+// file's content nor a raw digest reaches a command line or a log.
+const guestSecretDigestToken = "just-code-digest-ok"
+
+// observeGuestSecretFile reports the three facts a publish decision needs about
+// one guest path, without reading the file's content.
+//
+// This is the result of a measured constraint rather than a preference. The
+// runtime persists the stdout of guest executions in a host log
+// (`logs/exec.log` under `MSB_HOME`; see
+// docs/decisions/2026-10-15-guest-readable-secret-delivery.md), so a `cat` of a
+// managed file copies that plaintext — the real value — into a host log that
+// survives the sandbox. The comparison therefore never prints the file. The
+// guest prints only:
+//
+//   - whether the file exists,
+//   - whether its first line is just-code's header (the header is a constant,
+//     not a secret),
+//   - one token, and only when the file's digest equals the digest recorded
+//     at publish time.
+//
+// The comparison runs inside the guest: its `sha256sum` output is compared
+// against a string built from the digest just-code recorded, and the guest
+// prints `managed=yes` or `managed=no` plus the token when the two are equal.
+// It never prints the digest or the content, so the host log shows only the
+// result of the comparison.
+//
+// A path that is genuinely absent is reported absent. A path that exists but
+// cannot be read is an error, not an absence: treating it as absence would
+// turn a conflict with the project's own file into an overwrite.
+func (m *MicrosandboxRuntime) observeGuestSecretFile(ctx context.Context, guestPath, wantedDigest string) (GuestSecretPublishObservation, error) {
+	var obs GuestSecretPublishObservation
+	if err := validateManagedGuestPath(guestPath); err != nil {
+		return obs, err
 	}
-	return out, nil
+	// Exit 3 means "no such file"; 4 means "present but the digest could not
+	// be computed"; any other failure is reported. The paths come from
+	// just-code's own plan, never from user input, and are quoted regardless:
+	// the guest shell is not a place to rely on the absence of
+	// metacharacters.
+	script := "f=" + shellQuote(guestPath) + "; " +
+		"if [ ! -e \"$f\" ]; then exit 3; fi; " +
+		"if [ ! -f \"$f\" ]; then exit 4; fi; " +
+		"if [ \"$(head -n1 \"$f\" | tr -d '\\r')\" = " + shellQuote(guestSecretHeaderPrefix) + " ]; then echo managed=yes; else echo managed=no; fi; " +
+		"if [ \"$(sha256sum \"$f\")\" = " + shellQuote(wantedDigest+"  "+guestPath) + " ]; then echo " + guestSecretDigestToken + "; fi"
+	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), script)
+	if err != nil {
+		return obs, err
+	}
+	switch code {
+	case 0:
+		obs.Present = true
+		for _, line := range strings.Split(stdout, "\n") {
+			switch strings.TrimSpace(line) {
+			case "managed=yes":
+				obs.Managed = true
+			case guestSecretDigestToken:
+				obs.Match = true
+			}
+		}
+	case 3:
+	default:
+		return obs, fmt.Errorf("cannot inspect the existing guest file %s (exit %d): %s", guestPath, code, strings.TrimSpace(stderr))
+	}
+	return obs, nil
 }
 
 // guestSecretManagedPaths lists the guest paths a desired set would occupy.
@@ -488,30 +605,92 @@ func guestSecretManagedPaths(files []GuestSecretFile) ([]string, error) {
 
 // syncGuestSecretFiles is the runtime entry point: render the approved
 // deliveries, compare them with the guest, refuse on a conflict, and apply.
-// It returns the guest paths now managed, for the caller to persist.
-func (m *MicrosandboxRuntime) syncGuestSecretFiles(ctx context.Context, deliveries []ProjectSecretDelivery, previouslyManaged []string) ([]string, error) {
+// It returns the guest paths now managed and their digests, for the caller to
+// persist: the digests are what a later run compares against instead of
+// reading the files back (see observeGuestSecretFile).
+func (m *MicrosandboxRuntime) syncGuestSecretFiles(ctx context.Context, deliveries []ProjectSecretDelivery, previouslyManaged []string, recordedDigests map[string]string) ([]string, map[string]string, error) {
 	desired, err := BuildGuestSecretFiles(deliveries)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	desiredPaths, err := guestSecretManagedPaths(desired)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lookup := append([]string(nil), desiredPaths...)
 	lookup = append(lookup, previouslyManaged...)
-	existing, err := m.readGuestSecretFiles(ctx, dedupeStrings(lookup))
-	if err != nil {
-		return nil, err
+	// Each path is compared against the digest recorded when it was written.
+	// A path with no recorded digest has nothing to compare against, so it is
+	// observed with an empty digest, which can never match: the plan then
+	// rewrites it while still refusing a file that is not ours.
+	observed := map[string]GuestSecretPublishObservation{}
+	for _, guestPath := range dedupeStrings(lookup) {
+		obs, err := m.observeGuestSecretFile(ctx, guestPath, recordedDigests[guestPath])
+		if err != nil {
+			return nil, nil, err
+		}
+		observed[guestPath] = obs
 	}
-	plan, err := PlanGuestSecretPublish(desired, existing, previouslyManaged)
+	plan, err := PlanGuestSecretPublish(desired, observed, previouslyManaged)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := m.publishGuestSecretFiles(ctx, plan); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return desiredPaths, nil
+	// Only the files that are on disk now keep a digest: an unchanged file
+	// keeps the one recorded at publish time, a written one gets the digest of
+	// what was written, and a removed one drops out (its path is no longer
+	// managed, so WriteProjectSecretApplied prunes it too).
+	digests := map[string]string{}
+	written := map[string]bool{}
+	for _, file := range plan.Writes {
+		guestPath, err := file.GuestPath()
+		if err != nil {
+			return nil, nil, err
+		}
+		digests[guestPath] = digestOfGuestSecretContent(file.Content)
+		written[guestPath] = true
+	}
+	for _, guestPath := range desiredPaths {
+		if written[guestPath] {
+			continue
+		}
+		if digest := recordedDigests[guestPath]; digest != "" {
+			digests[guestPath] = digest
+		} else {
+			// The plan classified this path as unchanged, which requires a
+			// matching digest, so a missing one cannot happen; keep the
+			// invariant explicit rather than recording an empty digest that
+			// would silently force a rewrite on the next run.
+			return nil, nil, fmt.Errorf("the plan reports %s unchanged but no digest was recorded for it", guestPath)
+		}
+	}
+	return desiredPaths, digests, nil
+}
+
+// digestOfGuestSecretContent is the digest a managed file's content must have.
+// It matches what `sha256sum` prints for the same bytes in the guest, which is
+// what makes the in-guest comparison meaningful.
+func digestOfGuestSecretContent(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+// isDigestString reports whether value is a lowercase hex SHA256. Recorded
+// digests are host state; a corrupted one must be refused rather than compared
+// against, because comparing against garbage silently classifies every file as
+// changed (or, worse, allows an empty digest to match an empty comparison).
+func isDigestString(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func dedupeStrings(values []string) []string {

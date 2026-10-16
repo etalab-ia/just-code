@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strconv"
 	"strings"
@@ -171,6 +173,35 @@ func (c *guestFSClient) Exec(_ context.Context, name, command string) (int, stri
 
 func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (string, string, int, error) {
 	c.record("execcapture " + name + " " + command)
+	// The observation command is the one that must never print file content,
+	// so the fake answers it with exactly the lines the real guest would: a
+	// managed flag and, only on a digest match, the token. Anything else the
+	// fake returned here would hide whether the production command leaks.
+	if strings.Contains(command, "sha256sum") {
+		path, ok := guestFileFromCommand(command)
+		if !ok {
+			return "", "unsupported command", 1, nil
+		}
+		content, present := c.files[path]
+		if !present {
+			return "", "", 3, nil
+		}
+		first := content
+		if idx := strings.IndexByte(content, '\n'); idx >= 0 {
+			first = content[:idx]
+		}
+		out := "managed=no\n"
+		if strings.TrimRight(first, "\r") == guestSecretHeaderPrefix {
+			out = "managed=yes\n"
+		}
+		if wanted, ok := wantedDigestFromCommand(command); ok {
+			sum := sha256.Sum256([]byte(content))
+			if hex.EncodeToString(sum[:]) == wanted {
+				out += guestSecretDigestToken + "\n"
+			}
+		}
+		return out, "", 0, nil
+	}
 	path, ok := guestFileFromCommand(command)
 	if !ok {
 		return "", "unsupported command", 1, nil
@@ -180,6 +211,22 @@ func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (st
 		return "", "", 3, nil
 	}
 	return content, "", 0, nil
+}
+
+// wantedDigestFromCommand extracts the digest the observation command compares
+// against. The command builds it as a quoted "<digest>  <path>" string.
+func wantedDigestFromCommand(command string) (string, bool) {
+	const marker = "= '"
+	idx := strings.LastIndex(command, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := command[idx+len(marker):]
+	end := strings.Index(rest, "  ")
+	if end < 0 || end != sha256.Size*2 {
+		return "", false
+	}
+	return rest[:end], true
 }
 
 func unquoteGuest(value string) string {
@@ -291,27 +338,32 @@ func TestPlanGuestSecretPublish(t *testing.T) {
 	}
 	apiPath := msbGuestWorkspace + "/.env"
 	otherPath := msbGuestWorkspace + "/old/.env"
+	// The observations below carry no content, by construction: the plan
+	// decides on "is it ours" and "is it unchanged", never on the bytes.
+	ourUnchanged := GuestSecretPublishObservation{Present: true, Managed: true, Match: true}
+	ourChanged := GuestSecretPublishObservation{Present: true, Managed: true}
+	notOurs := GuestSecretPublishObservation{Present: true}
 
 	// Nothing in the guest yet: a fresh write.
-	plan, err := PlanGuestSecretPublish(desired, map[string]string{}, nil)
+	plan, err := PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{}, nil)
 	if err != nil || len(plan.Writes) != 1 || len(plan.Conflicts) != 0 || len(plan.Removes) != 0 {
 		t.Fatalf("fresh publish: %+v, %v", plan, err)
 	}
 
 	// Identical managed content: no write, so a restart is a true no-op.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: desired[0].Content}, []string{apiPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: ourUnchanged}, []string{apiPath})
 	if err != nil || len(plan.Writes) != 0 || len(plan.Unchanged) != 1 {
 		t.Fatalf("idempotent publish: %+v, %v", plan, err)
 	}
 
 	// Changed managed content: rewrite.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: guestSecretHeaderPrefix + "\nOLD=1\n"}, []string{apiPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: ourChanged}, []string{apiPath})
 	if err != nil || len(plan.Writes) != 1 {
 		t.Fatalf("managed update: %+v, %v", plan, err)
 	}
 
 	// A file the project ships is never overwritten.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: "API_KEY=the-projects-own-value\n"}, nil)
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: notOurs}, nil)
 	if err != nil || len(plan.Writes) != 0 || len(plan.Conflicts) != 1 {
 		t.Fatalf("conflict must be reported, not resolved: %+v, %v", plan, err)
 	}
@@ -322,21 +374,71 @@ func TestPlanGuestSecretPublish(t *testing.T) {
 	}
 
 	// A previously managed file that is no longer wanted is removed.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{apiPath: desired[0].Content, otherPath: guestSecretHeaderPrefix + "\nOLD=1\n"}, []string{apiPath, otherPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{apiPath: ourUnchanged, otherPath: ourChanged}, []string{apiPath, otherPath})
 	if err != nil || len(plan.Removes) != 1 || plan.Removes[0] != otherPath {
 		t.Fatalf("obsolete managed file: %+v, %v", plan, err)
 	}
 
 	// A file the user replaced with their own is theirs: never removed.
-	plan, err = PlanGuestSecretPublish(desired, map[string]string{otherPath: "MINE=1\n"}, []string{otherPath})
+	plan, err = PlanGuestSecretPublish(desired, map[string]GuestSecretPublishObservation{otherPath: notOurs}, []string{otherPath})
 	if err != nil || len(plan.Removes) != 0 || len(plan.Writes) != 1 {
 		t.Fatalf("a user-replaced file must survive: %+v, %v", plan, err)
 	}
 
 	// No desired files at all: everything previously managed goes away.
-	plan, err = PlanGuestSecretPublish(nil, map[string]string{apiPath: desired[0].Content}, []string{apiPath})
+	plan, err = PlanGuestSecretPublish(nil, map[string]GuestSecretPublishObservation{apiPath: ourUnchanged}, []string{apiPath})
 	if err != nil || len(plan.Removes) != 1 || len(plan.Writes) != 0 {
 		t.Fatalf("revoking every approval must clean up: %+v, %v", plan, err)
+	}
+}
+
+// TestInspectingAManagedFileNeverReadsItBack is the regression for the leak
+// issue #190 names: the runtime persists the stdout of guest executions in a
+// host log, so a command that prints a managed file copies its plaintext there.
+// This asserts on the command actually issued, not on its result, because a
+// `cat` that happens to return the right bytes is exactly the leak.
+func TestInspectingAManagedFileNeverReadsItBack(t *testing.T) {
+	const secret = "local-secret-value-that-must-not-be-printed"
+	guestPath := msbGuestWorkspace + "/.env"
+	deliveries := []ProjectSecretDelivery{guestDelivery(".env", "DB_PASSWORD", secret)}
+
+	first, firstClient := newGuestFSRuntime(t, nil)
+	_, digests, err := first.syncGuestSecretFiles(t.Context(), deliveries, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(digests) != 1 {
+		t.Fatalf("expected one recorded digest, got %v", digests)
+	}
+
+	// The second pass inspects an existing file, which is the path that used
+	// to read it back with cat.
+	second, client := newGuestFSRuntime(t, firstClient.files)
+	// The assertions below run whether or not the sync succeeds, and before
+	// any check on its error: a command that reads the file back is the leak
+	// even when the sync then refuses to publish.
+	_, _, syncErr := second.syncGuestSecretFiles(t.Context(), deliveries, []string{guestPath}, digests)
+	inspected := false
+	for _, call := range client.calls {
+		if !strings.HasPrefix(call, "execcapture ") {
+			continue
+		}
+		inspected = true
+		if strings.Contains(call, "cat ") || strings.Contains(call, `cat"`) || strings.Contains(call, "cat $") {
+			t.Fatalf("inspecting a managed file must not read it back through stdout: %v", call)
+		}
+		if !strings.Contains(call, "sha256sum") {
+			t.Fatalf("the inspect command must compare a digest computed in the guest: %v", call)
+		}
+		if strings.Contains(call, secret) {
+			t.Fatalf("the delivered value must never reach the command line: %v", call)
+		}
+	}
+	if !inspected {
+		t.Fatalf("the second pass did not inspect the existing file: %v", client.calls)
+	}
+	if syncErr != nil {
+		t.Fatalf("inspecting an unchanged managed file must not fail the sync: %v", syncErr)
 	}
 }
 
@@ -345,7 +447,7 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 	deliveries := []ProjectSecretDelivery{
 		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
 	}
-	managed, err := m.syncGuestSecretFiles(t.Context(), deliveries, nil)
+	managed, digests, err := m.syncGuestSecretFiles(t.Context(), deliveries, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +471,7 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 
 	// A second pass with identical content is a no-op.
 	before := len(client.calls)
-	if _, err := m.syncGuestSecretFiles(t.Context(), deliveries, managed); err != nil {
+	if _, _, err := m.syncGuestSecretFiles(t.Context(), deliveries, managed, digests); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range client.calls[before:] {
@@ -379,7 +481,7 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 	}
 
 	// Withdrawing every approval removes the managed file.
-	if _, err := m.syncGuestSecretFiles(t.Context(), nil, managed); err != nil {
+	if _, _, err := m.syncGuestSecretFiles(t.Context(), nil, managed, digests); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := client.files[guestPath]; ok {
@@ -391,9 +493,9 @@ func TestSyncGuestSecretFilesRefusesToClobberProjectFile(t *testing.T) {
 	guestPath := msbGuestWorkspace + "/.env"
 	own := "API_KEY=the-projects-own-value\n"
 	m, client := newGuestFSRuntime(t, map[string]string{guestPath: own})
-	_, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+	_, _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
-	}, nil)
+	}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "were not written by just-code") {
 		t.Fatalf("the publish must be refused: %v", err)
 	}
@@ -404,10 +506,10 @@ func TestSyncGuestSecretFilesRefusesToClobberProjectFile(t *testing.T) {
 
 func TestSyncGuestSecretFilesWritesEachComponentSeparately(t *testing.T) {
 	m, client := newGuestFSRuntime(t, nil)
-	managed, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+	managed, _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_bbb__", "api.example.com"),
 		testDelivery("apps/api/.env", "API_KEY", "JC_APPS_API_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -103,9 +103,9 @@ func TestBuildGuestSecretFilesRequiresAResolvedValue(t *testing.T) {
 
 func TestSecretFileIsRestrictedBeforeThePayloadExists(t *testing.T) {
 	m, client := newGuestFSRuntime(t, nil)
-	managed, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+	managed, _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		guestDelivery(".env", "DB_PASSWORD", "local-secret"),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,9 +152,9 @@ func TestAPublishedFileWithTheWrongModeIsRefused(t *testing.T) {
 	m, client := newGuestFSRuntime(t, nil)
 	wrong := os.FileMode(0o644)
 	client.tmpModeOverride = &wrong
-	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+	if _, _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		guestDelivery(".env", "DB_PASSWORD", "local-secret"),
-	}, nil); err == nil {
+	}, nil, nil); err == nil {
 		t.Fatal("a temporary file that is not 0600 must not be published under its final name")
 	}
 	if _, ok := client.files[msbGuestWorkspace+"/.env"]; ok {
@@ -164,9 +164,9 @@ func TestAPublishedFileWithTheWrongModeIsRefused(t *testing.T) {
 
 func TestMarkerOnlyFileIsNotChmodded(t *testing.T) {
 	m, client := newGuestFSRuntime(t, nil)
-	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+	if _, _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
 		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := client.modes[msbGuestWorkspace+"/.env"]; ok {
