@@ -35,6 +35,15 @@ them as controls: a value in a shell command is visible in the process table,
 and a value supplied inline in the runtime's secret configuration is persisted
 in the runtime database.
 
+That guarantee covers the **delivery**. It does not cover every later use of
+the value, and one such use is a real leak: the runtime persists the stdout of
+guest executions in its own log (`logs/exec.log` under `MSB_HOME`), so a
+command that *prints* a guest-readable value — a plain `cat .env` — copies it
+into a persisted host log. The property is therefore "delivery writes no log",
+not "the value can never reach a log", and just-code itself must not read a
+managed file back through guest stdout. Comparing content without exposing it
+means comparing a digest the guest computes, not reading the file.
+
 **Destination.** A guest-readable value is delivered to the path the
 application already reads — by default the component's own file in the guest
 workspace (`/workspace/.env`, `/workspace/apps/api/.env`), matching where the
@@ -106,6 +115,11 @@ the host process over the FFI boundary), and the macOS unified-log check is
 weaker than the others because `log show` may redact values as `<private>`.
 Absence is measured at the points listed above, before, during and after a
 snapshot and after teardown — not continuously.
+
+These measurements cover the runtime's **own** activity, not arbitrary later
+use of the value: the probe never runs a command that prints the value, so a
+clean result here does not contradict the stdout exposure described under
+Transport. The remaining digest-based fix is tracked separately.
 
 Values that an application must consume locally are, by construction, readable
 by the agent. That is accepted here with explicit consent, not mitigated.
