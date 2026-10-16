@@ -183,6 +183,9 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	if strings.Contains(preview, "do-not-print-this-value") || !strings.Contains(preview, "Preview only") || !strings.Contains(preview, "sealed guest clone") {
 		t.Fatalf("unsafe or incomplete preview: %s", preview)
 	}
+	if !strings.Contains(preview, "not approved at their current content") || !strings.Contains(preview, "opencode.json (unapproved)") || !strings.Contains(preview, "trust approve") {
+		t.Fatalf("preview must announce the trust approval the first run will require (#154): %s", preview)
+	}
 	manifestPath := justcode.ProjectManifestPath(root)
 	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
 		t.Fatalf("preview wrote the manifest: %v", err)
@@ -196,6 +199,12 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	})
 	if err != nil || code != 0 {
 		t.Fatalf("apply: code=%d err=%v, output=%s", code, err, out)
+	}
+	if strings.Contains(out, "Preview only") {
+		t.Fatalf("apply output must not claim to be a preview (#154): %s", out)
+	}
+	if !strings.Contains(out, "not approved at their current content") || !strings.Contains(out, "opencode.json (unapproved)") || !strings.Contains(out, "trust approve") {
+		t.Fatalf("apply must announce the trust approval the first run will require (#154): %s", out)
 	}
 	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, manifestPath)
 	if err != nil {
@@ -225,6 +234,9 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	})
 	if err != nil || code != 0 || !strings.Contains(second, "already been imported") {
 		t.Fatalf("second import was not an idempotent no-op: code=%d err=%v output=%s", code, err, second)
+	}
+	if !strings.Contains(second, "trust approve") {
+		t.Fatalf("idempotent re-import must keep announcing the pending trust approval (#154): %s", second)
 	}
 	if got, err := os.ReadFile(manifestPath); err != nil || string(got) != string(manifestBefore) {
 		t.Fatal("idempotent re-import changed manifest bytes")

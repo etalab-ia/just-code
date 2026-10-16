@@ -47,6 +47,31 @@ func huhRun(form *huh.Form) error {
 	return form.WithProgramOptions(tea.WithOutput(os.Stdout)).Run()
 }
 
+// The init wizard's MultiSelects carry their selection keys in the
+// description: huh toggles with space or x and Enter only confirms the list,
+// and nothing else on the screen says so. Testers completed init believing
+// Enter had selected the highlighted item, and the project was created with
+// nothing (#156).
+const multiSelectKeyHint = "Space or x toggles an item; Enter confirms the list; / filters."
+
+func newProjectSkillsMultiSelect(skillOptions []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
+	return huh.NewMultiSelect[string]().
+		Title("Project skills").
+		Description("Selected artifacts are pinned and installed inside the Microsandbox guest. " + multiSelectKeyHint).
+		Filterable(true).
+		Options(skillOptions...).
+		Value(value)
+}
+
+func newProjectMCPsMultiSelect(mcpOptions []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
+	return huh.NewMultiSelect[string]().
+		Title("MCPs").
+		Description("Curated remote services and optional guest-local browser tools. " + multiSelectKeyHint).
+		Filterable(true).
+		Options(mcpOptions...).
+		Value(value)
+}
+
 // stdoutIsTTY reports whether standard output is a terminal, using the same
 // character-device test as isTTY.
 func stdoutIsTTY() bool {
@@ -483,23 +508,13 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		var skillsGroup *huh.Group
 		if !opts.Set["skills"] && !skipSkills {
 			skillsGroup = huh.NewGroup(
-				huh.NewMultiSelect[string]().
-					Title("Project skills").
-					Description("Selected artifacts are pinned and installed inside the Microsandbox guest. Type / to filter.").
-					Filterable(true).
-					Options(skillOptionsPass...).
-					Value(&skills),
+				newProjectSkillsMultiSelect(skillOptionsPass, &skills),
 			).Title("Skills")
 		}
 
 		mcpFields := make([]huh.Field, 0, 2)
 		if !opts.Set["mcps"] {
-			mcpFields = append(mcpFields, huh.NewMultiSelect[string]().
-				Title("MCPs").
-				Description("Curated remote services and optional guest-local browser tools.").
-				Filterable(true).
-				Options(mcpOptions...).
-				Value(&mcps))
+			mcpFields = append(mcpFields, newProjectMCPsMultiSelect(mcpOptions, &mcps))
 		}
 		if !opts.Set["skills-storage"] {
 			mcpFields = append(mcpFields, huh.NewSelect[bool]().
