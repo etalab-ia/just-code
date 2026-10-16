@@ -56,23 +56,26 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
 `python-dotenv` 1.2.2, `godotenv` 1.5.1):
 
 - **Single quotes** carry newlines, whitespace, `#`, double quotes, the
-  apostrophe, the backtick, an interior backslash and the empty value exactly,
-  in all four configurations, so they are the default form.
+  backtick, an interior backslash and the empty value exactly, in all four
+  configurations, so they are the default form. They do *not* carry an
+  apostrophe: a single quote cannot be escaped inside a quoted value, so
+  `godotenv` refuses the whole file and `python-dotenv` misparses it.
 - A **raw** value containing a newline makes `godotenv` refuse the *whole file*,
   so one PEM-shaped secret would take down every other secret in that `.env`.
   A raw value is also trimmed of leading and trailing whitespace, cut short at
   a `#` that follows a space, and expanded on `$`. Raw is therefore restricted
   to a measured set (see below), never used as a general encoding.
-- Three shapes quoting cannot carry are written **unquoted** instead of refused:
+- Four shapes quoting cannot carry are written **unquoted** instead of refused:
   **two consecutive backslashes** (`python-dotenv` silently collapses them to
   one when quoted), a **trailing backslash** (it escapes the closing quote, so
   `python-dotenv` loses the value *and the following line* and `godotenv`
   refuses the whole file — the shape is the one a generated file always has, the
-  value followed by another quoted value), and a value holding a **single
-  quote** alongside one of those two, since a single quote cannot be escaped in
-  a quoted value. An unquoted value has no escape processing in any pinned
-  loader, so all three round-trip verbatim. This is what makes Windows paths,
-  UNC paths and paths such as `C:\Users\O'Brien\` deliverable.
+  value followed by another quoted value), an **apostrophe** (no position saves
+  it: a single quote cannot be escaped in a quoted value, so even `it's` is
+  written raw), and an apostrophe in a value that also holds a backslash pair
+  or a trailing backslash. An unquoted value has no escape processing in any
+  pinned loader, so all four round-trip verbatim. This is what makes Windows
+  paths, UNC paths and paths such as `C:\Users\O'Brien\` deliverable.
 - The **raw character set** was derived by measurement, not by guessing. A
   sweep over every assigned code point, placed at the **leading, trailing and
   interior** position of a value in a generated file (the raw value between
@@ -100,11 +103,11 @@ pins (Node `dotenv` 16.4.7 with and without `dotenv-expand` 12.0.2,
 - What remains, and cannot be carried by either form, is **refused** at
   approval time so the user is present, naming the variable and the character.
   A refused secret is a nuisance; a silently altered one fails far from here.
-  - A **single quote**, but only where neither form can carry it: inside a
-    quoted value `godotenv` refuses the whole file and `python-dotenv`
-    misparses, and the raw fallback is unavailable when the value also holds a
-    backslash pair or a trailing backslash. A lone apostrophe, or one in a value
-    the raw form can carry, is delivered raw instead of refused.
+  - An **apostrophe**, but only where neither form can carry it. Quoting never
+    carries one, so an apostrophe always forces the raw form; it is refused only
+    when the raw form cannot carry it either — the value opens with the quote,
+    or it also holds a backslash pair or a trailing backslash, or another raw
+    obstacle. A lone `it's` is therefore delivered raw, not refused.
   - A **quote in first position**: written raw a leading single or double quote
     opens a quoted value, so `godotenv` refuses the whole file and
     `python-dotenv` misparses it. Interior and trailing quotes are ordinary
@@ -134,10 +137,9 @@ sweep above replaced that guess. The same sweep showed quotes and backticks are
 **positional, not forbidden**: an earlier version refused every value holding
 one, though interior and trailing quotes round-trip raw in all three loaders,
 and only a leading quote or a wrapping backtick pair is undeliverable. The
-round-trip is now checked against real
-loaders rather than asserted: `godotenv` in
-`internal/justcode/project_secret_encoding_loaders_test.go`, and Node and
-Python in `tests/integration/project-secrets/`.
+round-trip is now checked against real loaders rather than asserted:
+`godotenv` in `internal/justcode/project_secret_encoding_loaders_test.go`, and
+Node and Python in `tests/integration/project-secrets/`.
 
 **Snapshot lifecycle.** A snapshot taken while a guest-readable value is
 delivered captures it, and deleting the file afterwards does not remove it from
