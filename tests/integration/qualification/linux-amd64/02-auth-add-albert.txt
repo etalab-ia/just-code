@@ -1,0 +1,18 @@
+META step=02-auth-add-albert date=2026-10-16T15:28:55Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ just-code auth add albert --stdin --fallback (key via stdin, not shown)
+Stored credential "albert" in the file store. It is referenced by name (credentialRef), never written to a project file.
+EXIT: 0
++ just-code auth status
+Native store: secret-service
+  state: reachable
+  albert: not stored
+  github: not stored
+  context7: not stored
+File fallback: present, stored: albert
+EXIT: 0
++ where did the value land? (listing store files, not contents)
+total 12
+drwx------ 2 root root 4096 Oct 16 15:28 .
+drwxr-xr-x 5 root root 4096 Oct 16 15:28 ..
+-rw------- 1 root root  264 Oct 16 15:28 credentials.json
++ secret-tool search (expect: no D-Bus session here)

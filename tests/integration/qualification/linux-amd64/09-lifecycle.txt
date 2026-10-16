@@ -1,0 +1,33 @@
+META step=09-lifecycle date=2026-10-16T15:34:37Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ status (running)
+just-code: Unknown argument: status
++ stop
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+Stopping jc-proj-a-8d2aa...
+STOP_EXIT: 0
++ status (stopped)
+just-code: Unknown argument: status
++ start (restart; toolchain already installed — expect fast)
+  gitleaks (excluded from transfer): /root/qualif/proj-a/gh-token.txt:1: REDACTED (github-pat)
+Starting jc-proj-a-8d2aa...
+jc-proj-a-8d2aa started (isolation full; the TUI runs inside the microVM).
+
+real	0m5.716s
+user	0m2.055s
+sys	0m0.148s
+RESTART_EXIT: 0
++ check after restart
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+jc-proj-a-8d2aa is running
+isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).
+CHECK_EXIT: 0
++ workspace still intact after restart:
+README.md
+guest-note.txt
+leaked-creds.txt

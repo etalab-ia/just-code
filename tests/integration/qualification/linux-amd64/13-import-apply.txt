@@ -1,0 +1,50 @@
+META step=qualification-linux-amd64 date=2026-10-16 source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ import albert-code --apply
+Albert Code import preview for /root/qualif/proj-b
+Sources detected: .albert-code/skills.txt, opencode.json, AGENTS.md
+Target: Microsandbox, isolation full (sealed guest clone)
+Skills: none
+MCPs: none
+Legacy skill names resolve to the current pinned official catalogue; old guest installations are not copied.
+AGENTS.md: recognized Albert Code managed zone; the source file will be preserved.
+Review: .albert-code/skills.txt contains an invalid skill name
+Review: OpenCode setting "theme" is preserved but not imported
+Review: legacy skill "search-docs" is absent from the current official catalogue
+Review: legacy skill "web" is absent from the current official catalogue
+Review: provider.albert contains custom settings; values withheld
+The old VM, sessions, untracked guest files, and installed tools do not transfer. The guest receives a clone filtered by the default-deny transfer rules; .env is not copied. Legacy config files and .git/info/exclude are not changed.
+Preview only. Pass --apply to write the just-code project manifest and lockfile.
+This Albert Code project has already been imported; no project files changed.
+APPLY_EXIT: 0
++ git diff after apply (what changed):
+?? .just-code/
++ opencode.json unchanged? (sha before/after)
++ manifest after apply:
+{
+  "schemaVersion": 5,
+  "runtime": "microsandbox",
+  "isolation": "full",
+  "dependencySetId": "702f1931547633163a401042c1947e08"
+}
++ repeat import (idempotence)
+Albert Code import preview for /root/qualif/proj-b
+Sources detected: .albert-code/skills.txt, opencode.json, AGENTS.md
+Target: Microsandbox, isolation full (sealed guest clone)
+Skills: none
+MCPs: none
+Legacy skill names resolve to the current pinned official catalogue; old guest installations are not copied.
+AGENTS.md: recognized Albert Code managed zone; the source file will be preserved.
+Review: .albert-code/skills.txt contains an invalid skill name
+Review: OpenCode setting "theme" is preserved but not imported
+Review: legacy skill "search-docs" is absent from the current official catalogue
+Review: legacy skill "web" is absent from the current official catalogue
+Review: provider.albert contains custom settings; values withheld
+The old VM, sessions, untracked guest files, and installed tools do not transfer. The guest receives a clone filtered by the default-deny transfer rules; .env is not copied. Legacy config files and .git/info/exclude are not changed.
+Preview only. Pass --apply to write the just-code project manifest and lockfile.
+This Albert Code project has already been imported; no project files changed.
+REPEAT_EXIT: 0
+?? .just-code/
++ unmanaged theme still in opencode.json:
+custom-user-theme
++ AGENTS.md managed block preserved:
+2

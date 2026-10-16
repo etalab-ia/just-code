@@ -1,0 +1,11 @@
+META step=agent-vm-linux-amd64 date=2026-10-16 source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ start --agent-vm with AGENT_VM_IMAGE=template://debian-12
+Warning: agent-vm has no secret injection, so the real ALBERT_API_KEY is readable inside the VM (isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate it. Prefer --microsandbox for untrusted work, and treat the guest as holding a live credential.
+Building the agent-vm-base base template (this takes several minutes)...
+Starting agent-vm-base...
+just-code: limactl start failed for agent-vm-base: limactl start agent-vm-base failed (exit 1)
+
+real	0m26.676s
+user	0m4.915s
+sys	0m4.636s
+START_AVM5_EXIT: 1
