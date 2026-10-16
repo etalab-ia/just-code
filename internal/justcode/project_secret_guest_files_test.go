@@ -214,7 +214,7 @@ func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (st
 }
 
 // wantedDigestFromCommand extracts the digest the observation command compares
-// against. The command builds it as a quoted "<digest>  <path>" string.
+// against, from its single-quoted shell argument.
 func wantedDigestFromCommand(command string) (string, bool) {
 	const marker = "= '"
 	idx := strings.LastIndex(command, marker)
@@ -222,8 +222,8 @@ func wantedDigestFromCommand(command string) (string, bool) {
 		return "", false
 	}
 	rest := command[idx+len(marker):]
-	end := strings.Index(rest, "  ")
-	if end < 0 || end != sha256.Size*2 {
+	end := strings.IndexByte(rest, '\'')
+	if end != sha256.Size*2 {
 		return "", false
 	}
 	return rest[:end], true

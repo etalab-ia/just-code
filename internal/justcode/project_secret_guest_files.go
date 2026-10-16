@@ -534,10 +534,10 @@ const guestSecretDigestToken = "just-code-digest-ok"
 //     at publish time.
 //
 // The comparison runs inside the guest: its `sha256sum` output is compared
-// against a string built from the digest just-code recorded, and the guest
-// prints `managed=yes` or `managed=no` plus the token when the two are equal.
-// It never prints the digest or the content, so the host log shows only the
-// result of the comparison.
+// against the digest just-code recorded, and the guest prints `managed=yes` or
+// `managed=no` plus the token when the two are equal. It never prints the
+// digest or the content, so the host log shows only the result of the
+// comparison.
 //
 // A path that is genuinely absent is reported absent. A path that exists but
 // cannot be read is an error, not an absence: treating it as absence would
@@ -547,16 +547,24 @@ func (m *MicrosandboxRuntime) observeGuestSecretFile(ctx context.Context, guestP
 	if err := validateManagedGuestPath(guestPath); err != nil {
 		return obs, err
 	}
-	// Exit 3 means "no such file"; 4 means "present but the digest could not
-	// be computed"; any other failure is reported. The paths come from
-	// just-code's own plan, never from user input, and are quoted regardless:
-	// the guest shell is not a place to rely on the absence of
-	// metacharacters.
+	// Exit 3 means "no such file"; 4 means "present but not a regular file";
+	// any other failure is reported. The paths come from just-code's own plan,
+	// never from user input, and are quoted regardless: the guest shell is not
+	// a place to rely on the absence of metacharacters.
+	//
+	// The digest is taken as the first field of `sha256sum` rather than from a
+	// whole-line match, so the comparison does not depend on the exact number
+	// of spaces a particular `sha256sum` puts between the digest and the file
+	// name. `set --` leaves the digest in $1 without printing anything, so the
+	// value never reaches stdout and the command stays a single quoted
+	// argument with no embedded quotes.
+	digestScript := "if [ -f \"$f\" ]; then set -- $(sha256sum \"$f\"); " +
+		"if [ \"$1\" = " + shellQuote(wantedDigest) + " ]; then echo " + guestSecretDigestToken + "; fi; fi"
 	script := "f=" + shellQuote(guestPath) + "; " +
 		"if [ ! -e \"$f\" ]; then exit 3; fi; " +
 		"if [ ! -f \"$f\" ]; then exit 4; fi; " +
 		"if [ \"$(head -n1 \"$f\" | tr -d '\\r')\" = " + shellQuote(guestSecretHeaderPrefix) + " ]; then echo managed=yes; else echo managed=no; fi; " +
-		"if [ \"$(sha256sum \"$f\")\" = " + shellQuote(wantedDigest+"  "+guestPath) + " ]; then echo " + guestSecretDigestToken + "; fi"
+		digestScript
 	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), script)
 	if err != nil {
 		return obs, err
