@@ -268,7 +268,7 @@ func projectSecretsSelectFiles(candidates []string) ([]string, error) {
 	}
 	var selected []string
 	err := huhRun(huh.NewForm(huh.NewGroup(
-		huh.NewMultiSelect[string]().Title("Dotenv files").Description("Choose project-local files to import; discovery does not read or import them automatically.").Options(options...).Value(&selected),
+		newDotenvFilesMultiSelect(options, &selected),
 	)))
 	if err != nil {
 		return nil, err
@@ -277,6 +277,17 @@ func projectSecretsSelectFiles(candidates []string) ([]string, error) {
 		return nil, fmt.Errorf("no dotenv files selected")
 	}
 	return selected, nil
+}
+
+// newDotenvFilesMultiSelect carries the selection keys in the description for
+// the same reason as the init wizard's MultiSelects (#156): Enter only
+// confirms the list.
+func newDotenvFilesMultiSelect(options []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
+	return huh.NewMultiSelect[string]().
+		Title("Dotenv files").
+		Description("Choose project-local files to import; discovery does not read or import them automatically. Space or x toggles an item; Enter confirms the list.").
+		Options(options...).
+		Value(value)
 }
 
 func discoverProjectDotenvFiles(root string) ([]string, error) {

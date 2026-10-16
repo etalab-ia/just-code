@@ -38,6 +38,32 @@ func TestShouldSkipSkillsField(t *testing.T) {
 	}
 }
 
+// TestInitMultiSelectsAnnounceSelectionKeys pins #156: the wizard's
+// MultiSelects must say how to toggle an item, because Enter only confirms
+// the list and testers completed init believing Enter had selected the
+// highlighted item. The assertion runs against the rendered group content —
+// the text the user sees — not the source constants.
+func TestInitMultiSelectsAnnounceSelectionKeys(t *testing.T) {
+	assertHint := func(name string, field huh.Field) {
+		t.Helper()
+		content := huh.NewGroup(field).Content()
+		for _, want := range []string{"Space or x toggles an item", "Enter confirms the list"} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s must announce %q in its description, got:\n%s", name, want, content)
+			}
+		}
+	}
+	skillsValue := []string{}
+	assertHint("Project skills", newProjectSkillsMultiSelect(
+		[]huh.Option[string]{huh.NewOption("pdf", "pdf")}, &skillsValue))
+	mcpValue := []string{}
+	assertHint("MCPs", newProjectMCPsMultiSelect(
+		[]huh.Option[string]{huh.NewOption("data-gouv", "data-gouv")}, &mcpValue))
+	dotenvValue := []string{}
+	assertHint("Dotenv files", newDotenvFilesMultiSelect(
+		[]huh.Option[string]{huh.NewOption(".env", ".env")}, &dotenvValue))
+}
+
 func TestHuhDiagnosticsPreservesLiteralPaths(t *testing.T) {
 	path := `C:\Users\Luis\project_with_under`
 	got := huhDiagnosticsDescription(justcode.DiagnosticsReport{
