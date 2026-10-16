@@ -726,16 +726,33 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 	if !opts.Set["github"] {
-		fmt.Println()
-		fmt.Println("GitHub guest workflow (optional): the Microsandbox guest can push branches and open draft PRs to this origin.")
-		fmt.Println("It uses the stored GitHub credential through the secret proxy; approval is local to this host and not shared with clones.")
-		fmt.Println("Existing approvals remain unchanged; 'just-code bindings revoke github' disables the grant.")
-		prompt := "Approve the GitHub workflow for this project? [y/N]: "
-		if answers.GitHubWorkflow {
-			prompt = "Approve the GitHub workflow for this project? [Y/n]: "
-		}
-		if answer, ok := promptLine(in, prompt); ok && strings.TrimSpace(answer) != "" {
-			answers.GitHubWorkflow = strings.EqualFold(strings.TrimSpace(answer), "y")
+		// Resolve the origin and stored credential before offering the
+		// choice: a project without a usable GitHub.com origin cannot approve
+		// the workflow, and refusing only after the last question threw away
+		// every answer (#155). The post-question preflight still gates the
+		// explicit --github flag path.
+		remote, preflightErr := githubInitPreflightFn(answers.Root)
+		if preflightErr != nil {
+			fmt.Println()
+			fmt.Println("GitHub guest workflow (optional) — unavailable for this project:")
+			fmt.Println("  " + preflightErr.Error())
+			fmt.Println("Existing approvals remain unchanged; fix the above and re-run 'just-code init' to enable it.")
+			answers.GitHubWorkflow = false
+			answers.GitHubRemote = justcode.GitHubRemote{}
+		} else {
+			answers.GitHubRemote = remote
+			fmt.Println()
+			fmt.Println("GitHub guest workflow (optional): the Microsandbox guest can push branches and open draft PRs to this origin.")
+			fmt.Printf("Origin: %s\n", remote.Repo)
+			fmt.Println("It uses the stored GitHub credential through the secret proxy; approval is local to this host and not shared with clones.")
+			fmt.Println("Existing approvals remain unchanged; 'just-code bindings revoke github' disables the grant.")
+			prompt := "Approve the GitHub workflow for this project? [y/N]: "
+			if answers.GitHubWorkflow {
+				prompt = "Approve the GitHub workflow for this project? [Y/n]: "
+			}
+			if answer, ok := promptLine(in, prompt); ok && strings.TrimSpace(answer) != "" {
+				answers.GitHubWorkflow = strings.EqualFold(strings.TrimSpace(answer), "y")
+			}
 		}
 	}
 	if !opts.Set["skills"] {
