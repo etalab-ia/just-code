@@ -121,10 +121,11 @@ test("Node reads the backslash shapes the encoder refuses", () => {
   assert.equal(parsed.K_AFTER, "after");
 });
 
-// The unquoted fallback, for the two shapes quoting cannot carry through every
-// loader: a backslash pair and a trailing backslash. The Go encoder writes
-// these unquoted and only these (see dotenvRawObstacle), so the raw literals
-// real values take are what is exercised here.
+// The unquoted fallback, exercised on the backslash shapes quoting cannot
+// carry through every loader: a backslash pair and a trailing backslash. The
+// Go encoder writes a value unquoted whenever quoting cannot carry it and the
+// raw form can (see dotenvRawObstacle), which also covers an apostrophe, so
+// what is exercised here is the raw literals these shapes take.
 const rawFallback = {
   PAIR: "a\\\\b",
   QUAD: "a\\\\\\\\b",

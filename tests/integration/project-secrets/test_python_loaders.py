@@ -96,14 +96,14 @@ class BackslashEncodingTests(unittest.TestCase):
 
 
 class RawFallbackEncodingTests(unittest.TestCase):
-    """The unquoted fallback, for the two shapes quoting cannot carry.
+    """The unquoted fallback, on the backslash shapes quoting cannot carry.
 
-    The Go encoder writes a value unquoted only when the single-quoted form
-    cannot represent it (see dotenvRawObstacle in
-    internal/justcode/project_secret_guest_files.go). These cases prove the
-    shapes Codex flagged, and the raw literals real values take, read back
-    exactly. The value sits between quoted values, which is the shape a
-    generated file actually has.
+    The Go encoder writes a value unquoted when the single-quoted form cannot
+    represent it and the raw form can (see dotenvRawObstacle in
+    internal/justcode/project_secret_guest_files.go); an apostrophe also forces
+    the raw form. These cases prove the backslash shapes, and the raw literals
+    real values take, read back exactly. The value sits between quoted values,
+    which is the shape a generated file actually has.
     """
 
     # Each value is written exactly as a loader must read it back. "quoted"
