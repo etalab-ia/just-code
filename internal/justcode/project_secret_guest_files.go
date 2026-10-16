@@ -266,10 +266,6 @@ type projectSecretAppliedRecord struct {
 	Namespace     string   `json:"namespace"`
 	Envs          []string `json:"envs"`
 	Files         []string `json:"files"`
-	// FileDigests maps each managed guest path to the digest of the content
-	// just-code wrote there, which is what a later start compares against
-	// instead of reading the file back — see GuestSecretPublishObservation.
-	FileDigests map[string]string `json:"fileDigests,omitempty"`
 }
 
 const projectSecretAppliedSchemaVersion = 1
@@ -285,16 +281,11 @@ func ProjectSecretAppliedPath(stateDir, namespace string) string {
 type ProjectSecretApplied struct {
 	Envs  []string
 	Files []string
-	// FileDigests maps each managed guest path to the digest of the content
-	// just-code wrote there, which is what a later run compares against
-	// instead of reading the file back.
-	FileDigests map[string]string
 }
 
-// GuestSecretPublishObservation is what a read-back of one managed guest file
-// may reveal: whether it is still just-code's own file, whether its content is
-// the one just-code wrote, and whether the sandbox is running the same
-// just-code process that wrote it.
+// GuestSecretPublishObservation is what an inspection of one managed guest file
+// may reveal: whether it is there, whether it is still just-code's own file, and
+// whether its content already equals the content just-code now wants there.
 //
 // No field carries file content, so nothing here can be persisted to a host
 // log by the runtime's record of guest executions.
@@ -302,16 +293,11 @@ type GuestSecretPublishObservation struct {
 	Present bool
 	// Managed reports that the first line is just-code's header.
 	Managed bool
-	// Match reports that the file has not changed since just-code last wrote
-	// it: the digest the guest computes now equals the one recorded at
-	// publish time.
+	// Match reports that the file's digest equals the digest of the content
+	// the plan wants to write, so the file is already right and needs no
+	// rewrite. It is compared against the *desired* content, not against what
+	// was written last time: a rotated value must not look unchanged.
 	Match bool
-	// Auth reports that the guest carries the digest key this host process
-	// drew when it published. Without it the file is treated as a conflict,
-	// because after a sandbox rebuild the same path may hold a stranger's
-	// file that merely looks like ours — "the bytes match" says nothing about
-	// who put them there.
-	Auth bool
 }
 
 // ReadProjectSecretApplied returns the applied inventory. A missing record is
@@ -342,24 +328,7 @@ func ReadProjectSecretApplied(fs FS, stateDir, namespace string) (ProjectSecretA
 			return ProjectSecretApplied{}, err
 		}
 	}
-	applied := ProjectSecretApplied{
-		Envs:        append([]string(nil), record.Envs...),
-		Files:       append([]string(nil), record.Files...),
-		FileDigests: map[string]string{},
-	}
-	for guestPath, digest := range record.FileDigests {
-		if err := validateManagedGuestPath(guestPath); err != nil {
-			return ProjectSecretApplied{}, err
-		}
-		if !isDigestString(digest) {
-			// A recorded digest that is not a digest cannot be compared
-			// against, and treating it as one would silently mark every
-			// managed file as changed (or unchanged) for the wrong reason.
-			return ProjectSecretApplied{}, fmt.Errorf("the applied project secret inventory records a digest for %s that is not a SHA256", guestPath)
-		}
-		applied.FileDigests[guestPath] = digest
-	}
-	return applied, nil
+	return ProjectSecretApplied{Envs: append([]string(nil), record.Envs...), Files: append([]string(nil), record.Files...)}, nil
 }
 
 // WriteProjectSecretApplied records the inventory after a successful apply.
@@ -378,36 +347,11 @@ func WriteProjectSecretApplied(fs FS, stateDir, namespace string, applied Projec
 	files := append([]string(nil), applied.Files...)
 	sort.Strings(envs)
 	sort.Strings(files)
-	digests := applied.FileDigests
-	if digests == nil {
-		digests = map[string]string{}
-	}
-	for guestPath, digest := range digests {
-		if err := validateManagedGuestPath(guestPath); err != nil {
-			return err
-		}
-		if !isDigestString(digest) {
-			return fmt.Errorf("refusing to record a digest for %s that is not a SHA256", guestPath)
-		}
-	}
-	// A digest for a path that is no longer managed would otherwise outlive
-	// the binding and be reused if the path is published again under a new
-	// key.
-	managed := map[string]bool{}
-	for _, guestPath := range files {
-		managed[guestPath] = true
-	}
-	for guestPath := range digests {
-		if !managed[guestPath] {
-			delete(digests, guestPath)
-		}
-	}
 	record := projectSecretAppliedRecord{
 		SchemaVersion: projectSecretAppliedSchemaVersion,
 		Namespace:     namespace,
 		Envs:          envs,
 		Files:         files,
-		FileDigests:   digests,
 	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -603,68 +547,46 @@ func guestSecretManagedPaths(files []GuestSecretFile) ([]string, error) {
 
 // syncGuestSecretFiles is the runtime entry point: render the approved
 // deliveries, compare them with the guest, refuse on a conflict, and apply.
-// It returns the guest paths now managed and their digests, for the caller to
-// persist: the digests are what a later run compares against instead of
-// reading the files back (see observeGuestSecretFile).
-func (m *MicrosandboxRuntime) syncGuestSecretFiles(ctx context.Context, deliveries []ProjectSecretDelivery, previouslyManaged []string, recordedDigests map[string]string) ([]string, map[string]string, error) {
+// It returns the guest paths now managed, for the caller to persist.
+func (m *MicrosandboxRuntime) syncGuestSecretFiles(ctx context.Context, deliveries []ProjectSecretDelivery, previouslyManaged []string) ([]string, error) {
 	desired, err := BuildGuestSecretFiles(deliveries)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	desiredPaths, err := guestSecretManagedPaths(desired)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
+	}
+	// Each path is compared against the digest of the content this run wants
+	// there, never against what was written last time: an approved value that
+	// has been rotated must read as changed and be rewritten, not as an
+	// unchanged file whose old value silently stays in the guest.
+	wanted := map[string]string{}
+	for _, file := range desired {
+		guestPath, err := file.GuestPath()
+		if err != nil {
+			return nil, err
+		}
+		wanted[guestPath] = digestOfGuestSecretContent(file.Content)
 	}
 	lookup := append([]string(nil), desiredPaths...)
 	lookup = append(lookup, previouslyManaged...)
-	// Each path is compared against the digest recorded when it was written.
-	// A path with no recorded digest has nothing to compare against, so it is
-	// observed with an empty digest, which can never match: the plan then
-	// rewrites it while still refusing a file that is not ours.
 	observed := map[string]GuestSecretPublishObservation{}
 	for _, guestPath := range dedupeStrings(lookup) {
-		obs, err := m.observeGuestSecretFile(ctx, guestPath, recordedDigests[guestPath])
+		obs, err := m.observeGuestSecretFile(ctx, guestPath, wanted[guestPath])
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		observed[guestPath] = obs
 	}
 	plan, err := PlanGuestSecretPublish(desired, observed, previouslyManaged)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := m.publishGuestSecretFiles(ctx, plan); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	// Only the files that are on disk now keep a digest: an unchanged file
-	// keeps the one recorded at publish time, a written one gets the digest of
-	// what was written, and a removed one drops out (its path is no longer
-	// managed, so WriteProjectSecretApplied prunes it too).
-	digests := map[string]string{}
-	written := map[string]bool{}
-	for _, file := range plan.Writes {
-		guestPath, err := file.GuestPath()
-		if err != nil {
-			return nil, nil, err
-		}
-		digests[guestPath] = digestOfGuestSecretContent(file.Content)
-		written[guestPath] = true
-	}
-	for _, guestPath := range desiredPaths {
-		if written[guestPath] {
-			continue
-		}
-		if digest := recordedDigests[guestPath]; digest != "" {
-			digests[guestPath] = digest
-		} else {
-			// The plan classified this path as unchanged, which requires a
-			// matching digest, so a missing one cannot happen; keep the
-			// invariant explicit rather than recording an empty digest that
-			// would silently force a rewrite on the next run.
-			return nil, nil, fmt.Errorf("the plan reports %s unchanged but no digest was recorded for it", guestPath)
-		}
-	}
-	return desiredPaths, digests, nil
+	return desiredPaths, nil
 }
 
 // digestOfGuestSecretContent is the digest a managed file's content must have.
@@ -673,22 +595,6 @@ func (m *MicrosandboxRuntime) syncGuestSecretFiles(ctx context.Context, deliveri
 func digestOfGuestSecretContent(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
-}
-
-// isDigestString reports whether value is a lowercase hex SHA256. Recorded
-// digests are host state; a corrupted one must be refused rather than compared
-// against, because comparing against garbage silently classifies every file as
-// changed (or, worse, allows an empty digest to match an empty comparison).
-func isDigestString(value string) bool {
-	if len(value) != sha256.Size*2 {
-		return false
-	}
-	for _, r := range value {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 func dedupeStrings(values []string) []string {
