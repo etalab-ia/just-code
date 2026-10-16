@@ -183,7 +183,7 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	if strings.Contains(preview, "do-not-print-this-value") || !strings.Contains(preview, "Preview only") || !strings.Contains(preview, "sealed guest clone") {
 		t.Fatalf("unsafe or incomplete preview: %s", preview)
 	}
-	if !strings.Contains(preview, "not approved at their current content") || !strings.Contains(preview, "opencode.json (unapproved)") || !strings.Contains(preview, "trust approve") {
+	if !strings.Contains(preview, "not approved at their current content") || !strings.Contains(preview, "opencode.json (unapproved)") || !strings.Contains(preview, "'just-code trust approve' from "+root) {
 		t.Fatalf("preview must announce the trust approval the first run will require (#154): %s", preview)
 	}
 	manifestPath := justcode.ProjectManifestPath(root)
@@ -203,7 +203,7 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	if strings.Contains(out, "Preview only") {
 		t.Fatalf("apply output must not claim to be a preview (#154): %s", out)
 	}
-	if !strings.Contains(out, "not approved at their current content") || !strings.Contains(out, "opencode.json (unapproved)") || !strings.Contains(out, "trust approve") {
+	if !strings.Contains(out, "not approved at their current content") || !strings.Contains(out, "opencode.json (unapproved)") || !strings.Contains(out, "'just-code trust approve' from "+root) {
 		t.Fatalf("apply must announce the trust approval the first run will require (#154): %s", out)
 	}
 	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, manifestPath)
