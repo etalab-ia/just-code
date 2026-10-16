@@ -30,7 +30,7 @@ func updateFixture(t *testing.T, ids ...string) (string, ProjectManifest, Lockfi
 	if err := WriteLockfile(DefaultFS, ProjectLockPath(root), lock); err != nil {
 		t.Fatal(err)
 	}
-	instructions, err := MergeManagedInstructions("User-authored policy.\n", ids, lock.Skills)
+	instructions, err := MergeManagedInstructions("User-authored policy.\n", ids, lock.Skills, RuntimeMicrosandbox)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -344,7 +344,9 @@ func (d *Dispatcher) Check(ctx context.Context, client *http.Client) error {
 		}
 		fmt.Println(state)
 		fmt.Println("isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).")
-		d.probePublishedPorts(ctx, client)
+		if rt == RuntimeMicrosandbox {
+			d.probePublishedPorts(ctx)
+		}
 		return nil
 	}
 	endpoint, err := d.backends[rt].Endpoint(ctx)
@@ -352,7 +354,9 @@ func (d *Dispatcher) Check(ctx context.Context, client *http.Client) error {
 		return err
 	}
 	checkErr := CheckBackend(ctx, client, endpoint, d.cfg.Username, d.cfg.Password)
-	d.probePublishedPorts(ctx, client)
+	if rt == RuntimeMicrosandbox {
+		d.probePublishedPorts(ctx)
+	}
 	return checkErr
 }
 
@@ -360,13 +364,22 @@ func (d *Dispatcher) Check(ctx context.Context, client *http.Client) error {
 // whether a request from this machine gets an answer through the host-side
 // forward. It is print-only: `check` reports preview reachability as
 // information and never fails because a dev server is down. The legacy
-// implicit 3000-3010 range is not probed; only configured mappings are.
-func (d *Dispatcher) probePublishedPorts(ctx context.Context, client *http.Client) {
+// implicit 3000-3010 range is not probed; only configured mappings are, and
+// only on Microsandbox: the mappings describe that runtime's host-loopback
+// forwards, which no other runtime creates.
+func (d *Dispatcher) probePublishedPorts(ctx context.Context) {
 	if !d.cfg.PortsConfigured || len(d.cfg.Ports) == 0 {
 		return
 	}
-	if client == nil {
-		client = &http.Client{Timeout: 2 * time.Second}
+	// The first response is the reachability answer: following a redirect
+	// would let a diagnostic probe make an unintended request outside
+	// loopback, and a failed redirect target would hide a forward that
+	// answered.
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	for _, pm := range d.cfg.Ports {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", pm.Host), nil)

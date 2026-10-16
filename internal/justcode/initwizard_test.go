@@ -621,7 +621,7 @@ func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.
 		t.Fatalf("empty schema-v2 selection must own the managed zone with standing instructions and no pins: %+v", plan)
 	}
 	pins := map[string]SkillLock{"official/rgaa": {Revision: projectSkillsRevision}}
-	stale, err := MergeManagedInstructions(userInstructions, []string{"official/rgaa"}, pins)
+	stale, err := MergeManagedInstructions(userInstructions, []string{"official/rgaa"}, pins, RuntimeMicrosandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,6 +637,42 @@ func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.
 		!bytes.Contains(got, []byte("## Managed just-code instructions")) ||
 		bytes.Contains(got, []byte("official/rgaa")) {
 		t.Fatalf("empty versioned selection must keep the standing zone without stale pins and preserve user text: %q", got)
+	}
+}
+
+func TestInitApplyLeavesTartSelectionWithoutPinsZoneless(t *testing.T) {
+	// The standing zone describes the Microsandbox port forward. A tart
+	// project without pinned skills has nothing runtime-neutral to say, so
+	// its AGENTS.md must stay untouched.
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	const userInstructions = "User policy.\n"
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(userInstructions), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{}
+	// The runtime comes from the invocation: a rerun without --runtime
+	// re-plans the project as Microsandbox, so a tart plan is explicit.
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsChanged || strings.Contains(plan.InstructionsAfter, "JUST-CODE MANAGED SKILLS") {
+		t.Fatalf("pin-less tart selection must leave instructions untouched: changed=%v after=%q", plan.InstructionsChanged, plan.InstructionsAfter)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileForTest(t, filepath.Join(root, "AGENTS.md")); string(got) != userInstructions {
+		t.Fatalf("tart AGENTS.md was modified: %q", got)
 	}
 }
 
@@ -713,7 +749,7 @@ func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
 	}
 	fs := newMapFS()
 	agentsPath := filepath.Join(root, "AGENTS.md")
-	agents, err := MergeManagedInstructions("User rules.\n", ids, pins)
+	agents, err := MergeManagedInstructions("User rules.\n", ids, pins, RuntimeMicrosandbox)
 	if err != nil {
 		t.Fatal(err)
 	}

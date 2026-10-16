@@ -187,7 +187,7 @@ func PlanProjectUpdate(ctx context.Context, fs FS, root string, selected []strin
 		} else if !os.IsNotExist(err) {
 			return ProjectUpdatePlan{}, fmt.Errorf("read managed instructions: %w", err)
 		}
-		updated, mergeErr := MergeManagedInstructions(string(plan.oldInstructions), manifest.Skills, lock.Skills)
+		updated, mergeErr := MergeManagedInstructions(string(plan.oldInstructions), manifest.Skills, lock.Skills, managedInstructionRuntime(manifest.Runtime))
 		if mergeErr != nil {
 			return ProjectUpdatePlan{}, mergeErr
 		}
@@ -414,7 +414,7 @@ func rollbackProjectUpdateLocked(fs FS, root string) (string, error) {
 	var mergedInstructions string
 	if journal.InstructionsExisted {
 		var mergeErr error
-		mergedInstructions, mergeErr = MergeManagedInstructions(string(current["AGENTS.md"]), oldManifest.Skills, oldLock.Skills)
+		mergedInstructions, mergeErr = MergeManagedInstructions(string(current["AGENTS.md"]), oldManifest.Skills, oldLock.Skills, managedInstructionRuntime(oldManifest.Runtime))
 		if mergeErr != nil {
 			return "", fmt.Errorf("prepare previous managed instructions: %w", mergeErr)
 		}
@@ -548,7 +548,7 @@ func recoverProjectUpdateLockedResult(fs FS, root string) (bool, error) {
 					return false, fmt.Errorf("restore managed instructions: %w", err)
 				}
 			} else if len(manifest.Skills) > 0 {
-				updated, mergeErr := MergeManagedInstructions(string(current), manifest.Skills, lock.Skills)
+				updated, mergeErr := MergeManagedInstructions(string(current), manifest.Skills, lock.Skills, managedInstructionRuntime(manifest.Runtime))
 				if mergeErr != nil {
 					return false, fmt.Errorf("recover managed instructions: %w", mergeErr)
 				}
@@ -564,7 +564,7 @@ func recoverProjectUpdateLockedResult(fs FS, root string) (bool, error) {
 			if os.IsNotExist(readErr) && journal.InstructionsExisted {
 				return false, errors.New("AGENTS.md disappeared during project update recovery; refusing to replace it")
 			}
-			updated, mergeErr := MergeManagedInstructions(string(current), manifest.Skills, lock.Skills)
+			updated, mergeErr := MergeManagedInstructions(string(current), manifest.Skills, lock.Skills, managedInstructionRuntime(manifest.Runtime))
 			if mergeErr != nil {
 				return false, fmt.Errorf("recover managed instructions: %w", mergeErr)
 			}

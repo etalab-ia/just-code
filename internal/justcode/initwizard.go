@@ -435,7 +435,7 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	if localOnly {
 		plan.InstructionsAfter, err = RemoveManagedInstructions(plan.InstructionsBefore)
 	} else {
-		plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, selected, plan.SkillLocks)
+		plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, selected, plan.SkillLocks, plan.Answers.Runtime)
 	}
 	if err != nil {
 		return plan, err
@@ -707,7 +707,7 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 		if plan.Answers.SkillsLocalOnly {
 			instructionsAfter, err = RemoveManagedInstructions(string(current))
 		} else {
-			instructionsAfter, err = MergeManagedInstructions(string(current), plan.Answers.Skills, plan.SkillLocks)
+			instructionsAfter, err = MergeManagedInstructions(string(current), plan.Answers.Skills, plan.SkillLocks, plan.Answers.Runtime)
 		}
 		if err != nil {
 			return err

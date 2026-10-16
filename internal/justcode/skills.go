@@ -381,15 +381,29 @@ func LoadLockedSkillPackages(ids []string, locks map[string]SkillLock) ([]SkillP
 	return packages, nil
 }
 
+// webPreviewGuidance states the port-forward facts agents get wrong: a
+// guest-side 127.0.0.1 bind is unreachable from the host, while the host side
+// of a Microsandbox forward binds loopback only, so a guest-side 0.0.0.0 bind
+// exposes nothing on the network.
+const webPreviewGuidance = "Web preview: a dev server must listen on 0.0.0.0 inside this workspace; " +
+	"binding 127.0.0.1 makes it unreachable through the host port forward. " +
+	"Only the host's 127.0.0.1 can reach the forwarded port, so a 0.0.0.0 bind here does not expose anything on the network. " +
+	"A request from inside this workspace proves nothing about host reachability; " +
+	"run `just-code check` to verify a published port from the host.\n"
+
 // MergeManagedInstructions replaces the bounded just-code section with the
 // current standing instructions and pinned-skill list. All bytes outside the
-// markers are preserved exactly. The section is always written, even with an
-// empty skill selection: the standing web-preview guidance must be present in
-// every versioned project.
-func MergeManagedInstructions(existing string, ids []string, locks map[string]SkillLock) (string, error) {
+// markers are preserved exactly. The standing web-preview guidance describes
+// the Microsandbox port forward, so it is rendered for that runtime only; on
+// other runtimes a selection without pins leaves no managed section at all.
+func MergeManagedInstructions(existing string, ids []string, locks map[string]SkillLock, runtime Runtime) (string, error) {
 	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
 	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
-	block, err := renderManagedInstructions(start, end, ids, locks)
+	standing := runtime == RuntimeMicrosandbox
+	if !standing && len(ids) == 0 {
+		return RemoveManagedInstructions(existing)
+	}
+	block, err := renderManagedInstructions(start, end, ids, locks, standing)
 	if err != nil {
 		return "", err
 	}
@@ -405,23 +419,33 @@ func RemoveManagedInstructions(existing string) (string, error) {
 	return replaceManagedZone(existing, start, end, "")
 }
 
+// managedInstructionRuntime resolves a manifest's runtime name for managed
+// instruction rendering. An unparsable name falls back to the wizard default
+// (Microsandbox): these paths run during rollback and recovery, where the
+// guidance text must not turn a broken manifest into a hard failure.
+func managedInstructionRuntime(name string) Runtime {
+	rt, err := parseRuntimeName(name)
+	if err != nil {
+		return RuntimeMicrosandbox
+	}
+	return rt
+}
+
 // renderManagedInstructions renders the managed section: standing guidance
-// that applies to every versioned project, plus the pinned-skill list when a
-// selection exists. The standing text explains the one preview mistake agents
-// make reflexively: a server bound to 127.0.0.1 inside the guest is
-// unreachable through the host port forward, while 0.0.0.0 inside the guest
-// is safe because the host side of the forward binds 127.0.0.1 only.
-func renderManagedInstructions(start, end string, ids []string, locks map[string]SkillLock) (string, error) {
+// for runtimes with a host-loopback port forward, plus the pinned-skill list
+// when a selection exists.
+func renderManagedInstructions(start, end string, ids []string, locks map[string]SkillLock, standing bool) (string, error) {
 	var b strings.Builder
 	b.WriteString(start + "\n")
-	b.WriteString("## Managed just-code instructions\n\n")
-	b.WriteString("Web preview: a dev server must listen on 0.0.0.0 inside this workspace; " +
-		"binding 127.0.0.1 makes it unreachable through the host port forward. " +
-		"Only the host's 127.0.0.1 can reach the forwarded port, so a 0.0.0.0 bind here does not expose anything on the network. " +
-		"A request from inside this workspace proves nothing about host reachability; " +
-		"run `just-code check` to verify a published port from the host.\n")
+	if standing {
+		b.WriteString("## Managed just-code instructions\n\n")
+		b.WriteString(webPreviewGuidance)
+	}
 	if len(ids) > 0 {
-		b.WriteString("\n## Managed project skills\n\n")
+		if standing {
+			b.WriteString("\n")
+		}
+		b.WriteString("## Managed project skills\n\n")
 		b.WriteString("These pinned skills provide agent instructions; they are not a security boundary.\n\n")
 		for _, id := range ids {
 			lock, ok := locks[id]

@@ -196,10 +196,12 @@ just-code init --root . --clear-skills --replace --yes
 
 La désélection se fait avec
 `--clear-skills`. Le mode versionné ajoute uniquement une zone bornée gérée
-dans `AGENTS.md`; tout le texte hors de cette zone est préservé. Cette zone
-existe même sans skill sélectionné : elle porte des instructions permanentes
-(notamment le bind `0.0.0.0` requis côté invité pour qu'un serveur de
-développement soit joignable via le forward de port hôte). Avec
+dans `AGENTS.md`; tout le texte hors de cette zone est préservé. Sur le
+runtime Microsandbox, cette zone existe même sans skill sélectionné : elle
+porte des instructions permanentes (notamment le bind `0.0.0.0` requis côté
+invité pour qu'un serveur de développement soit joignable via le forward de
+port hôte). Sur les autres runtimes, qui n'ont pas ce forward, la zone ne
+contient que les skills épinglés et n'est pas créée sans sélection. Avec
 `--local-only-skills`, IDs et pins sont stockés dans l'état hôte de l'instance,
 et aucun texte de skill n'est ajouté au checkout. Si le projet avait auparavant
 une zone gérée versionnée dans `AGENTS.md`, son retrait est montré avant Apply;

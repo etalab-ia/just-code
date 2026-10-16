@@ -276,6 +276,70 @@ func TestDispatcherCheckProbesPortsEvenWhenHealthFails(t *testing.T) {
 	}
 }
 
+func TestDispatcherCheckDoesNotProbePortsOnOtherRuntimes(t *testing.T) {
+	// The configured port mappings describe Microsandbox host-loopback
+	// forwards. On Tart the agent connects to the VM IP directly and on
+	// agent-vm forwarding is dynamic, so a localhost probe there would hit
+	// an unrelated service and report a forward that does not exist.
+	dead := freeLocalPort(t)
+	cfg := Config{
+		Isolation:       IsolationFull,
+		PortsConfigured: true,
+		Ports:           []PortMapping{{Host: dead, Guest: 8080}},
+	}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart, running: true},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatalf("tart check failed: %v", checkErr)
+	}
+	if strings.Contains(out, "host forward") || strings.Contains(out, "reachable (") {
+		t.Fatalf("port probe must not run on tart: %q", out)
+	}
+}
+
+func TestDispatcherCheckTreatsRedirectAnswerAsReachable(t *testing.T) {
+	// A forward that answers with a redirect is reachable; following the
+	// redirect would turn a diagnostic probe into a request to an arbitrary
+	// target, and a dead target would hide a forward that answered.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:1/unreachable", http.StatusFound)
+	}))
+	defer srv.Close()
+	live, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Isolation:       IsolationFull,
+		PortsConfigured: true,
+		Ports:           []PortMapping{{Host: uint16(live), Guest: 8080}},
+	}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeBackend{id: RuntimeMicrosandbox, running: true},
+		RuntimeTart:         &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM:      &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatalf("a redirecting preview port must not fail check: %v", checkErr)
+	}
+	if !strings.Contains(out, "port "+strconv.Itoa(live)+" (guest 8080): reachable (302 Found)") {
+		t.Fatalf("redirect answer was not reported as reachable: %q", out)
+	}
+}
+
 func TestDispatcherCheckDoesNotProbeLegacyPortRange(t *testing.T) {
 	// Without configured ports the implicit 3000-3010 forwards exist, but
 	// check must stay quiet about them: they are defaults, not choices.
