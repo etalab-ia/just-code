@@ -485,10 +485,12 @@ const guestSecretDigestToken = "just-code-digest-ok"
 // recorded digest would be enough to test guesses offline. Keeping it out of
 // argv costs nothing.
 //
-// The file's first line is compared directly, without normalising line
-// endings: a header produced by a different tool, or a line whose only
-// difference is an embedded CR, is not just-code's file, and stripping CRs
-// would let `# just-code mana\rged: do not edit` pass as the ownership marker.
+// The file's first line is compared as a **byte stream**, never through a shell
+// variable. Command substitution is not byte-transparent: both bash and dash
+// discard NUL bytes from it, so a file whose first line is
+// `# just-code mana\0ged: do not edit` would come back as just-code's marker
+// and be treated as ours. `grep -qxF` compares the bytes as they are, which
+// makes the check an equality test rather than an approximation of one.
 //
 // A path that is genuinely absent is reported absent. A path that exists but
 // cannot be read is an error, not an absence: treating it as absence would
@@ -503,18 +505,18 @@ func (m *MicrosandboxRuntime) observeGuestSecretFile(ctx context.Context, guestP
 	// never from user input, and are quoted regardless: the guest shell is not
 	// a place to rely on the absence of metacharacters.
 	//
-	// The digest is read from stdin into $1 and the header from the file into
-	// $2, keeping both out of argv and out of stdout. The digest is compared as
-	// the first field of `sha256sum` rather than as a whole line, so the
-	// comparison does not depend on how many spaces a particular `sha256sum`
-	// puts between the digest and the file name.
+	// The header is checked with grep rather than a variable because command
+	// substitution drops NUL bytes (see above). The digest is read from stdin
+	// into $1, keeping it out of argv, and compared as the first field of
+	// `sha256sum` rather than as a whole line, so the comparison does not
+	// depend on how many spaces a particular `sha256sum` puts between the
+	// digest and the file name.
 	digestScript := "read -r want || exit 5; if [ -f \"$f\" ]; then set -- $(sha256sum \"$f\"); " +
 		"if [ \"$1\" = \"$want\" ]; then echo " + guestSecretDigestToken + "; fi; fi"
 	script := "f=" + shellQuote(guestPath) + "; " +
 		"if [ ! -e \"$f\" ]; then exit 3; fi; " +
 		"if [ ! -f \"$f\" ]; then exit 4; fi; " +
-		"set -- \"$(head -n1 \"$f\")\"; " +
-		"if [ \"$1\" = " + shellQuote(guestSecretHeaderPrefix) + " ]; then echo managed=yes; else echo managed=no; fi; " +
+		"if head -n1 \"$f\" | grep -qxF " + shellQuote(guestSecretHeaderPrefix) + "; then echo managed=yes; else echo managed=no; fi; " +
 		digestScript
 	stdout, stderr, code, err := m.Client.ExecCaptureStdin(ctx, m.InstanceName(), script, []byte(wantedDigest+"\n"))
 	if err != nil {

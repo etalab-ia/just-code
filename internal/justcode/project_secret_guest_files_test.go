@@ -186,11 +186,12 @@ func (c *guestFSClient) ExecCapture(_ context.Context, name, command string) (st
 
 // ExecCaptureStdin answers the observation command the way the real guest
 // does: the expected digest arrives on stdin, the file's first line is
-// compared as-is (no CR stripping), and only a digest match prints the token.
-// The fake implements the contract the shell script relies on — `read -r`, then
-// `head -n1` into a positional parameter — because a fake that echoed the file
-// would hide exactly the leak the real command is built to avoid, and a fake
-// that normalised line endings would hide the header forgery.
+// compared byte for byte, and only a digest match prints the token. The fake
+// implements the contract the shell script relies on — `read -r` for the
+// digest, and a literal string comparison for the header — because a fake that
+// echoed the file would hide exactly the leak the real command is built to
+// avoid, and a fake that normalised the header (stripping CR or NUL, as a shell
+// variable would) would hide the forgeries the real command must reject.
 func (c *guestFSClient) ExecCaptureStdin(_ context.Context, name, command string, stdin []byte) (string, string, int, error) {
 	c.record("execcapturestdin " + name + " " + command)
 	if !strings.Contains(command, "sha256sum") {
@@ -528,6 +529,46 @@ func TestSyncGuestSecretFilesWritesOnceAndCleansUp(t *testing.T) {
 	}
 	if _, ok := client.files[guestPath]; ok {
 		t.Fatal("a withdrawn approval must remove the generated file")
+	}
+}
+
+// TestAForgeableHeaderIsNotTreatedAsOurs is the regression for the class of
+// bug two reviews found in the ownership check: anything that makes the guest
+// command normalise the first line turns a foreign file into just-code's own,
+// and the plan then overwrites it. An embedded carriage return survives a CR
+// strip; an embedded NUL is dropped by shell command substitution. The check
+// must compare bytes, so both are simply not our header.
+func TestAForgeableHeaderIsNotTreatedAsOurs(t *testing.T) {
+	guestPath := msbGuestWorkspace + "/.env"
+	for name, firstLine := range map[string]string{
+		"embedded cref":  "# just-code mana\rged: do not edit",
+		"embedded nul":   "# just-code mana\x00ged: do not edit",
+		"trailing space": guestSecretHeaderPrefix + " ",
+		"leading space":  " " + guestSecretHeaderPrefix,
+		"prefix only":    guestSecretHeaderPrefix[:10],
+	} {
+		content := firstLine + "\nAPI_KEY=the-projects-own-value\n"
+		m, client := newGuestFSRuntime(t, map[string]string{guestPath: content})
+		_, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+			testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
+		}, nil)
+		if err == nil || !strings.Contains(err.Error(), "were not written by just-code") {
+			t.Fatalf("%s: the publish must be refused, not treated as ours: %v", name, err)
+		}
+		if client.files[guestPath] != content {
+			t.Fatalf("%s: the file must be left untouched: %q", name, client.files[guestPath])
+		}
+	}
+
+	// The control: the exact header IS ours, so the same path is a no-op
+	// rather than a conflict, which proves the refusals above are about the
+	// forged bytes and not about a check that never matches.
+	content := guestSecretHeaderPrefix + "\nAPI_KEY=__JUST_CODE_SECRET_aaa__\n"
+	m, _ := newGuestFSRuntime(t, map[string]string{guestPath: content})
+	if _, err := m.syncGuestSecretFiles(t.Context(), []ProjectSecretDelivery{
+		testDelivery(".env", "API_KEY", "JC_API_KEY", "__JUST_CODE_SECRET_aaa__", "api.example.com"),
+	}, []string{guestPath}); err != nil {
+		t.Fatalf("an exact managed header must be recognised: %v", err)
 	}
 }
 
