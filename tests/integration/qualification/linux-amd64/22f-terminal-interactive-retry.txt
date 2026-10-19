@@ -4,9 +4,9 @@ Harness: each run executes inside dbus-run-session with the login keyring unlock
 
 Feeder (retained below and recorded in 22f-input.log): each script(1) run takes its stdin from a pipe whose writer is the feed() helper. feed() writes the exact key bytes to the PTY and appends a timestamped hex record of exactly those bytes to 22f-input.log, so the input stream is auditable independently of the typescript (a typescript records stdin as <not executed on terminal>, and once huh is in raw mode with ISIG off the fed byte is not echoed). The Ctrl-C runs feed one ETX byte (0x03) after 7s; the positive control feeds y CR (0x79 0x0d) after 6s.
     feed() { sleep "$2"; local hex ts; hex=$(printf "$3" | od -An -tx1 | tr -s ' ' | sed 's/^ //;s/ $//'); ts=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ); printf '%s\tts=%s\tdelay=%ss\tbytes=%s\n' "$1" "$ts" "$2" "$hex" >> "$INLOG"; printf "$3"; }
-    exact pipeline, 200 cols:  ( feed ctrlc-200 7 '\003' ) | script -qefc "stty cols 200 rows 24; stty size; just-code secrets import --apply --profile amd64chk-200 --file .env; echo INNER_EXIT:\$?" f200.typescript > /dev/null
-    exact pipeline,  40 cols:  ( feed ctrlc-40 7 '\003' ) | script -qefc "stty cols 40 rows 24; stty size; just-code secrets import --apply --profile amd64chk-40 --file .env; echo INNER_EXIT:\$?" f40.typescript > /dev/null
-    exact pipeline,  y ctrl:   ( feed positive-control-y 6 'y\r' ) | script -qefc "stty cols 80 rows 24; stty size; just-code secrets import --apply --profile amd64chk-y --file .env; echo INNER_EXIT:\$?" fy.typescript > /dev/null
+    exact pipeline, 200 cols:  ( feed ctrlc-200 7 '\003' ) | script -qefc "stty cols 200 rows 24; stty size; just-code secrets import --apply --profile amd64chk-200 --file .env; echo INNER_EXIT:\$?" f200.typescript > /dev/null   (f200.typescript retained as 22f-200ctrlc.typescript)
+    exact pipeline,  40 cols:  ( feed ctrlc-40 7 '\003' ) | script -qefc "stty cols 40 rows 24; stty size; just-code secrets import --apply --profile amd64chk-40 --file .env; echo INNER_EXIT:\$?" f40.typescript > /dev/null   (f40.typescript retained as 22f-40ctrlc.typescript)
+    exact pipeline,  y ctrl:   ( feed positive-control-y 6 'y\r' ) | script -qefc "stty cols 80 rows 24; stty size; just-code secrets import --apply --profile amd64chk-y --file .env; echo INNER_EXIT:\$?" fy.typescript > /dev/null   (fy.typescript retained as 22f-ycontrol.typescript)
 
 Binary under test: v0.10.0 commit db9b8fcd2d27 (linux/amd64)
 
