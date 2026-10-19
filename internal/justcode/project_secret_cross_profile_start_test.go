@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,63 @@ func TestTransientResolutionFailureStillStartsNoOp(t *testing.T) {
 
 	if err := m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("a transient resolution failure must not make a healthy instance unusable: %v", err)
+	}
+}
+
+// TestApprovedProjectSecretWithMissingValueFailsTheNoOpStart covers the second
+// gap an independent review found, after the classification was inverted. Both
+// a credential that was never stored and an approved value whose backing entry
+// disappeared report themselves as not-found, but only the first is
+// transient. The second is an inconsistent project state — the user imported
+// and approved the value, so only re-importing or removing the approval
+// repairs it — and tolerating it would let a no-op start exit 0 while the
+// guest kept serving the previously delivered secret.
+func TestApprovedProjectSecretWithMissingValueFailsTheNoOpStart(t *testing.T) {
+	isolateHostState(t)
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := newTestMicrosandbox(t, client)
+	store := newProjectSecretFakeStore()
+	m.ProjectSecrets = projectSecretFixture(t, m.cfg.WorkspaceDir, m.StateDir, store)
+	importProjectSecrets(t, m.ProjectSecrets, "development", ".env", map[string]string{"DUPE_KEY": "value"})
+	approveForTest(t, m, "DUPE_KEY", "JC_DUPE_KEY")
+
+	// The index still names the entry, but the store no longer holds it: the
+	// state a lost keychain entry or an out-of-band deletion leaves behind.
+	idx, err := m.ProjectSecrets.readIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Entries) == 0 {
+		t.Fatal("the fixture must have indexed the imported value, or this test proves nothing")
+	}
+	for _, e := range idx.Entries {
+		delete(store.values, CredentialKind(e.Reference))
+	}
+	// Sanity: the binding must still resolve through the index, so execution
+	// reaches the value read rather than an earlier refusal.
+	if _, _, err := m.ProjectSecrets.Deliveries(context.Background()); err != nil {
+		t.Fatalf("the binding must still resolve from the index for this test to reach the value read: %v", err)
+	}
+
+	m.cfg.Isolation = IsolationFull
+	m.Probe = func(context.Context, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	statePath := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := WriteInstanceState(DefaultFS, statePath, m.desiredState(true, testBindings(m.cfg.APIKey), nil).toState()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Remove(statePath)
+		_ = os.RemoveAll(filepath.Dir(statePath))
+	}()
+
+	err = m.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("an approved project secret with no imported value must fail the start, not warn and succeed")
+	}
+	if !errors.Is(err, ErrProjectSecretImportMissing) {
+		t.Fatalf("the refusal must be classified structural, not transient: %v", err)
 	}
 }
 

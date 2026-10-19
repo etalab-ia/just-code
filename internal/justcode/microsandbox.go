@@ -488,6 +488,18 @@ func (m *MicrosandboxRuntime) resolveProjectSecretBindings(ctx context.Context) 
 		seen[d.GuestEnv] = true
 		value, err := store.Get(ctx, d.Profile, d.Component, d.Name)
 		if err != nil {
+			// An APPROVED project secret whose backing entry is gone is not
+			// the tolerable "not stored yet" case, even though the store
+			// reports both as not-found: the user already imported and
+			// approved it, so only re-importing or removing the approval can
+			// restore a consistent project state. Treating it as transient
+			// would let a healthy no-op start exit 0 while the guest kept
+			// serving the previous value (#204). The sentinel is therefore
+			// unwrapped away: it is the store *fault* branch — a typed
+			// *StoreError — that stays tolerable, and that still matches.
+			if isNotFound(err) {
+				return nil, fmt.Errorf("cannot read the approved project secret %s (%s): %w", d.Name, d.Component, ErrProjectSecretImportMissing)
+			}
 			return nil, fmt.Errorf("cannot read the approved project secret %s (%s): %w", d.Name, d.Component, err)
 		}
 		ref := d.Reference

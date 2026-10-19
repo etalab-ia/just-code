@@ -143,6 +143,16 @@ var ErrProjectSecretCleanupPending = errors.New("project secret cleanup pending;
 // sandbox. Callers use errors.Is, so wrapping keeps the distinction.
 var ErrProjectSecretNoScope = errors.New("project secret bindings need a project workspace root")
 
+// ErrProjectSecretImportMissing is returned when a binding is approved but the
+// imported value it refers to is absent from the credential store. It is
+// deliberately NOT ErrCredentialNotFound: that sentinel means "this credential
+// has not been stored yet", which the no-op start path tolerates because the
+// user can still store it. Here the user already imported and approved the
+// value, so the inconsistency is structural — only re-importing the component
+// or removing the approval repairs it — and a start must fail rather than
+// silently keep serving the previously delivered secret (#204).
+var ErrProjectSecretImportMissing = errors.New("approved project secret has no imported value")
+
 var ErrProjectSecretSnapshotChanged = errors.New("project secret set changed since preview; review a fresh preview before applying")
 
 // Windows Credential Manager caps the blob at 2560 bytes. WinCredStore encodes
