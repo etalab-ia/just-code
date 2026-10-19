@@ -197,7 +197,10 @@ case ":${PATH:-}:" in
 			fi
 			case "$answer" in
 				''|o|O|y|Y)
-					if [ -f "$path_target" ] && grep -qF 'just-code' "$path_target" 2>/dev/null; then
+					# Comparer la ligne EXACTE, pas le mot « just-code » : un alias
+					# ou un commentaire qui le mentionne donnerait un faux positif
+					# et la ligne ne serait jamais ajoutée.
+					if [ -f "$path_target" ] && grep -qxF "$path_line" "$path_target" 2>/dev/null; then
 						# Déjà ajoutée par une installation précédente : réinstaller
 						# ne doit pas empiler la même ligne (chaque nouveau shell
 						# préfixerait alors le PATH une fois de plus).

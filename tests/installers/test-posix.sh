@@ -429,6 +429,76 @@ PY
 	count=$(grep -c 'local/bin' "$dup_home/.zshenv" || true)
 	[ "$count" -eq 1 ] || { printf 'installer appended the PATH line again (count=%s)\n' "$count" >&2; exit 1; }
 	grep -F 'La ligne est déjà présente dans ~/.zshenv.' "$temp_root/dup.out" >/dev/null || { printf 'installer did not report the already-present line\n' >&2; exit 1; }
+
+	# A profile that merely MENTIONS just-code (an alias, a comment) must not be
+	# mistaken for one that already exports the PATH: the exact line decides.
+	mention_home="$temp_root/mention home"
+	mkdir -p "$mention_home"
+	printf "alias jc='just-code'\n# just-code notes\n" > "$mention_home/.zshenv"
+	python3 - "$mention_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/mention.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/zsh", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+os.write(fd, b"\n")
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$mention_home/.zshenv" || { printf 'a mere mention of just-code must not suppress the PATH line\n' >&2; exit 1; }
+	grep -F 'La ligne a été ajoutée à ~/.zshenv.' "$temp_root/mention.out" >/dev/null || { printf 'installer did not report adding the line\n' >&2; exit 1; }
+
+	# Conversely, the exact export present WITHOUT the marker must not be
+	# duplicated either.
+	exact_home="$temp_root/exact home"
+	mkdir -p "$exact_home"
+	printf 'export PATH="$HOME/.local/bin:$PATH"\n' > "$exact_home/.zshenv"
+	python3 - "$exact_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/exact.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/zsh", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+os.write(fd, b"\n")
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	exact_count=$(grep -cxF 'export PATH="$HOME/.local/bin:$PATH"' "$exact_home/.zshenv" || true)
+	[ "$exact_count" -eq 1 ] || { printf 'an exact export line must not be duplicated (count=%s)\n' "$exact_count" >&2; exit 1; }
 # The resume command must name the installed binary by absolute path: the
 # invoking shell may not have ~/.local/bin on PATH (the very case handled
 # above), so a bare `just-code setup` would be a command not found.
