@@ -416,10 +416,25 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			}
 		}
 	}
-	wasVersionedWithSkills := plan.ExistingManifest != nil && !oldLocalOnly && len(plan.ExistingManifest.Skills) > 0
-	ownsVersionedSkillState := plan.ExistingManifest != nil && plan.ExistingManifest.SchemaVersion >= projectManifestSchemaVersion && (!oldLocalOnly || !localOnly)
-	if len(selected) > 0 || wasVersionedWithSkills || ownsVersionedSkillState {
-		plan.InstructionsPath = filepath.Join(pc.Root, "AGENTS.md")
+	// The managed zone is claimed only when this plan can change it: a
+	// selection with pins or the Microsandbox standing guidance rewrites
+	// the zone, and so does a stale zone left by an earlier versioned
+	// setup (a local-only strip removes it, a merge refreshes it). A
+	// local-only plan never merges, so it claims only for an actual stale
+	// zone. A pin-less Tart or agent-vm project without a zone renders
+	// nothing to change, so its AGENTS.md is neither validated nor
+	// claimed — a symlinked AGENTS.md must not block an init that touches
+	// nothing.
+	instructionsPath := filepath.Join(pc.Root, "AGENTS.md")
+	needsZone := !localOnly && (len(selected) > 0 || plan.Answers.Runtime == RuntimeMicrosandbox)
+	if !needsZone {
+		// No AGENTS.md at all reads as no zone; an unreadable or
+		// non-regular entry fails closed, same as a zone, and the
+		// validation below refuses it.
+		needsZone = managedZoneAt(instructionsPath)
+	}
+	if needsZone {
+		plan.InstructionsPath = instructionsPath
 		if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
 			if !info.Mode().IsRegular() {
 				return plan, fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
@@ -432,13 +447,11 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		} else if !os.IsNotExist(statErr) {
 			return plan, statErr
 		}
-		instructionsSkills := selected
-		instructionsLocks := plan.SkillLocks
 		if localOnly {
-			instructionsSkills = nil
-			instructionsLocks = nil
+			plan.InstructionsAfter, err = RemoveManagedInstructions(plan.InstructionsBefore)
+		} else {
+			plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, selected, plan.SkillLocks, plan.Answers.Runtime)
 		}
-		plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, instructionsSkills, instructionsLocks)
 		if err != nil {
 			return plan, err
 		}
@@ -697,21 +710,34 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	}
 	instructionsChanged := false
 	instructionsAfter := plan.InstructionsAfter
-	if plan.InstructionsPath != "" {
-		if info, err := os.Lstat(plan.InstructionsPath); err == nil && !info.Mode().IsRegular() {
-			return fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
+	instructionsPath := plan.InstructionsPath
+	if instructionsPath == "" {
+		// A managed zone can appear between Plan and Apply — the plan
+		// left the path unclaimed because none existed. Re-check at apply
+		// time so the committed manifest never contradicts the
+		// instructions on disk: a zone that appeared is stripped or
+		// refreshed on current content, and a non-regular AGENTS.md
+		// holding one is refused.
+		candidate := filepath.Join(plan.Answers.Root, "AGENTS.md")
+		if managedZoneAt(candidate) {
+			instructionsPath = candidate
+		}
+	}
+	if instructionsPath != "" {
+		if info, err := os.Lstat(instructionsPath); err == nil && !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file; refusing to change managed instructions", instructionsPath)
 		} else if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		current, err := fs.ReadFile(plan.InstructionsPath)
+		current, err := fs.ReadFile(instructionsPath)
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		ids, locks := plan.Answers.Skills, plan.SkillLocks
 		if plan.Answers.SkillsLocalOnly {
-			ids, locks = nil, nil
+			instructionsAfter, err = RemoveManagedInstructions(string(current))
+		} else {
+			instructionsAfter, err = MergeManagedInstructions(string(current), plan.Answers.Skills, plan.SkillLocks, plan.Answers.Runtime)
 		}
-		instructionsAfter, err = MergeManagedInstructions(string(current), ids, locks)
 		if err != nil {
 			return err
 		}
@@ -769,8 +795,8 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	)
 	if instructionsChanged {
 		mutations = append(mutations, managedFileMutation{
-			path: plan.InstructionsPath, mode: 0o644,
-			write: func() error { return atomicWrite(fs, plan.InstructionsPath, []byte(instructionsAfter), 0o644) },
+			path: instructionsPath, mode: 0o644,
+			write: func() error { return atomicWrite(fs, instructionsPath, []byte(instructionsAfter), 0o644) },
 		})
 	}
 	if err := applyManagedFileMutations(fs, mutations); err != nil {
@@ -778,7 +804,7 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	}
 	w.print(fmt.Sprintf("Wrote %s\nWrote %s\n", plan.ManifestPath, plan.LockPath))
 	if instructionsChanged {
-		w.print(fmt.Sprintf("Updated %s\n", plan.InstructionsPath))
+		w.print(fmt.Sprintf("Updated %s\n", instructionsPath))
 	}
 	if plan.Answers.SkillsLocalOnly && len(plan.Answers.Skills) > 0 {
 		w.print("Saved host-local project skills outside the checkout.\n")

@@ -109,7 +109,9 @@ func (m *MicrosandboxRuntime) preflightLocalOnlySkillInstructions(ctx context.Co
 	if err != nil {
 		return fmt.Errorf("inspect guest managed skill instructions: %w", err)
 	}
-	if zone != "" {
+	// The standing guidance alone is not a pin: only leftover pinned skills
+	// mean versioned instructions survived the switch to host-local skills.
+	if managedZoneHasSkillPins(zone) {
 		return fmt.Errorf("the guest workspace still contains versioned managed skill instructions, but this project now keeps skills host-local; " +
 			"export guest-local changes first with 'just-code workspace export', then run 'just-code workspace sync' while the guest is running. " +
 			"If the host AGENTS.md is missing or excluded from sync, recreate with 'just-code recreate'")

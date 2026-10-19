@@ -1,0 +1,41 @@
+META step=03-setup-doctor date=2026-10-16T15:29:12Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ just-code setup doctor
+Platform: linux/amd64
+Host capability:
+  Platform: linux/amd64 (info)
+  Virtualization: ok (ok)
+    /dev/kvm present and accessible
+  Disk free: unknown (ok)
+Runtime and VM state:
+  Managed Microsandbox runtime: failed (info)
+    not installed; run 'just-code start --microsandbox' or 'just-code setup'
+  Selected runtime: not installed (info)
+    doctor did not install or repair it
+  Project instance: jc-qualif-6c180 (info)
+  Recorded VM state: none (info)
+    no managed instance has been created for this project
+Toolchain:
+  git: 2.34.1 (ok)
+  go: unusable (info)
+    version probe failed (exit 2)
+  node: v22.23.3 (ok)
+  opencode: 1.19.3 (ok)
+  Microsandbox SDK: 0.7.6 (info)
+    embedded SDK version; the managed runtime must match it
+Provider verification:
+  Albert credential: present (ok)
+    credential store value is set; the value is never printed
+  Albert endpoint: verified (ok)
+    models catalogue accepted the credential
+Project skills and MCPs:
+  Project: qualif (info)
+    no .just-code manifest; run 'just-code init'
+Credentials and storage:
+  Credential store availability: secret-service (ok)
+    read-only probe succeeded
+  Stored credentials: none recorded in setup journal (info)
+Result: no blocking issue found. Run 'just-code setup' to change configuration or install the runtime.
+EXIT: 0
++ just-code setup doctor --json
+{"platform":"linux/amd64","fatal":false,"sections":[{"title":"Host capability","items":[{"name":"Platform","value":"linux/amd64","status":"info"},{"name":"Virtualization","value":"ok","detail":"/dev/kvm present and accessible","status":"ok"},{"name":"Disk free","value":"unknown","status":"ok"}]},{"title":"Runtime and VM state","items":[{"name":"Managed Microsandbox runtime","value":"failed","detail":"not installed; run 'just-code start --microsandbox' or 'just-code setup'","status":"info"},{"name":"Selected runtime","value":"not installed","detail":"doctor did not install or repair it","status":"info"},{"name":"Project instance","value":"jc-qualif-6c180","status":"info"},{"name":"Recorded VM state","value":"none","detail":"no managed instance has been created for this project","status":"info"}]},{"title":"Toolchain","items":[{"name":"git","value":"2.34.1","status":"ok"},{"name":"go","value":"unusable","detail":"version probe failed (exit 2)","status":"info"},{"name":"node","value":"v22.23.3","status":"ok"},{"name":"opencode","value":"1.19.3","status":"ok"},{"name":"Microsandbox SDK","value":"0.7.6","detail":"embedded SDK version; the managed runtime must match it","status":"info"}]},{"title":"Provider verification","items":[{"name":"Albert credential","value":"present","detail":"credential store value is set; the value is never printed","status":"ok"},{"name":"Albert endpoint","value":"verified","detail":"models catalogue accepted the credential","status":"ok"}]},{"title":"Project skills and MCPs","items":[{"name":"Project","value":"qualif","detail":"no .just-code manifest; run 'just-code init'","status":"info"}]},{"title":"Credentials and storage","items":[{"name":"Credential store availability","value":"secret-service","detail":"read-only probe succeeded","status":"ok"},{"name":"Stored credentials","value":"none recorded in setup journal","status":"info"}]}]}
+EXIT: 0

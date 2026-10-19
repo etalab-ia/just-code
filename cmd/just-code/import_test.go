@@ -183,8 +183,18 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	if strings.Contains(preview, "do-not-print-this-value") || !strings.Contains(preview, "Preview only") || !strings.Contains(preview, "sealed guest clone") {
 		t.Fatalf("unsafe or incomplete preview: %s", preview)
 	}
-	if !strings.Contains(preview, "not approved at their current content") || !strings.Contains(preview, "opencode.json (unapproved)") || !strings.Contains(preview, "trust approve") {
-		t.Fatalf("preview must announce the trust approval the first run will require (#154): %s", preview)
+	// The recommendation must name the imported project's directory as
+	// just-code itself resolves it. DiscoverProject resolves symlinks
+	// (macOS t.TempDir lives under /var, resolved to /private/var) and the
+	// git worktree root (GitHub's Windows runners expose TEMP with the 8.3
+	// short name RUNNER~1, which git normalizes away), so comparing against
+	// the raw t.TempDir value is not stable across platforms.
+	project, err := justcode.DiscoverProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preview, "not approved at their current content") || !strings.Contains(preview, "opencode.json (unapproved)") || !strings.Contains(preview, "'just-code trust approve' from "+project.Root) {
+		t.Fatalf("preview must announce the trust approval the first run will require (#154), naming %q: %s", project.Root, preview)
 	}
 	manifestPath := justcode.ProjectManifestPath(root)
 	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
@@ -203,8 +213,8 @@ func TestAlbertCodeImportPreviewAndApplyAreSafeAndIdempotent(t *testing.T) {
 	if strings.Contains(out, "Preview only") {
 		t.Fatalf("apply output must not claim to be a preview (#154): %s", out)
 	}
-	if !strings.Contains(out, "not approved at their current content") || !strings.Contains(out, "opencode.json (unapproved)") || !strings.Contains(out, "trust approve") {
-		t.Fatalf("apply must announce the trust approval the first run will require (#154): %s", out)
+	if !strings.Contains(out, "not approved at their current content") || !strings.Contains(out, "opencode.json (unapproved)") || !strings.Contains(out, "'just-code trust approve' from "+project.Root) {
+		t.Fatalf("apply must announce the trust approval the first run will require (#154), naming %q: %s", project.Root, out)
 	}
 	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, manifestPath)
 	if err != nil {

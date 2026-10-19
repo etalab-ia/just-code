@@ -517,6 +517,9 @@ func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T)
 	if !clear.InstructionsChanged || strings.Contains(clear.InstructionsAfter, "official/rgaa") {
 		t.Fatalf("clearing skills must remove the bounded block: before=%q after=%q", clear.InstructionsBefore, clear.InstructionsAfter)
 	}
+	if !strings.Contains(clear.InstructionsAfter, "## Managed just-code instructions") {
+		t.Fatalf("clearing skills must keep the standing managed instructions: after=%q", clear.InstructionsAfter)
+	}
 	if err := wizard.Apply(clear, true); err != nil {
 		t.Fatal(err)
 	}
@@ -611,11 +614,14 @@ func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.InstructionsPath == "" || plan.InstructionsChanged {
-		t.Fatalf("empty schema-v2 selection must own the managed zone without a preview diff: %+v", plan)
+	if plan.InstructionsPath == "" || !plan.InstructionsChanged ||
+		!strings.Contains(plan.InstructionsAfter, "BEGIN JUST-CODE MANAGED SKILLS") ||
+		!strings.Contains(plan.InstructionsAfter, "## Managed just-code instructions") ||
+		strings.Contains(plan.InstructionsAfter, "official/rgaa") {
+		t.Fatalf("empty schema-v2 selection must own the managed zone with standing instructions and no pins: %+v", plan)
 	}
 	pins := map[string]SkillLock{"official/rgaa": {Revision: projectSkillsRevision}}
-	stale, err := MergeManagedInstructions(userInstructions, []string{"official/rgaa"}, pins)
+	stale, err := MergeManagedInstructions(userInstructions, []string{"official/rgaa"}, pins, RuntimeMicrosandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,8 +632,52 @@ func TestInitApplyRemovesStaleInstructionsForEmptyVersionedSelection(t *testing.
 		t.Fatal(err)
 	}
 	got := readFileForTest(t, instructionsPath)
-	if !bytes.Contains(got, []byte(userInstructions)) || bytes.Contains(got, []byte("BEGIN JUST-CODE MANAGED SKILLS")) {
-		t.Fatalf("empty versioned selection left stale managed instructions or changed user text: %q", got)
+	if !bytes.Contains(got, []byte(userInstructions)) ||
+		!bytes.Contains(got, []byte("BEGIN JUST-CODE MANAGED SKILLS")) ||
+		!bytes.Contains(got, []byte("## Managed just-code instructions")) ||
+		bytes.Contains(got, []byte("official/rgaa")) {
+		t.Fatalf("empty versioned selection must keep the standing zone without stale pins and preserve user text: %q", got)
+	}
+}
+
+func TestInitApplyLeavesTartSelectionWithoutPinsZoneless(t *testing.T) {
+	// The standing zone describes the Microsandbox port forward. A tart
+	// project without pinned skills has nothing runtime-neutral to say, so
+	// its AGENTS.md must stay untouched.
+	// Tart is macOS-only, so this is skipped on Windows rather than
+	// asserting a choice the platform refuses (same as the mounting test).
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	const userInstructions = "User policy.\n"
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(userInstructions), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{}
+	// The runtime comes from the invocation: a rerun without --runtime
+	// re-plans the project as Microsandbox, so a tart plan is explicit.
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsChanged || strings.Contains(plan.InstructionsAfter, "JUST-CODE MANAGED SKILLS") {
+		t.Fatalf("pin-less tart selection must leave instructions untouched: changed=%v after=%q", plan.InstructionsChanged, plan.InstructionsAfter)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileForTest(t, filepath.Join(root, "AGENTS.md")); string(got) != userInstructions {
+		t.Fatalf("tart AGENTS.md was modified: %q", got)
 	}
 }
 
@@ -704,7 +754,7 @@ func TestInitLocalOnlyStateWriteFailurePreservesVersionedFiles(t *testing.T) {
 	}
 	fs := newMapFS()
 	agentsPath := filepath.Join(root, "AGENTS.md")
-	agents, err := MergeManagedInstructions("User rules.\n", ids, pins)
+	agents, err := MergeManagedInstructions("User rules.\n", ids, pins, RuntimeMicrosandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,6 +809,413 @@ func TestMergeManagedInstructionsRefusesSymlink(t *testing.T) {
 	}
 	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
 		t.Fatalf("external file changed: %q", got)
+	}
+}
+
+func TestInitZonelessPlanLeavesSymlinkedAgentsUntouched(t *testing.T) {
+	// A pin-less tart project has nothing to write into AGENTS.md, so a
+	// symlinked AGENTS.md must not block init: the plan claims the file
+	// only when pins, Microsandbox standing guidance, or a stale managed
+	// zone require changing it.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	wizard := InitWizard{}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+	if err != nil {
+		t.Fatalf("a zoneless plan must not validate an AGENTS.md it will not touch: %v", err)
+	}
+	if plan.InstructionsChanged || plan.InstructionsPath != "" {
+		t.Fatalf("zoneless plan must not claim AGENTS.md: changed=%v path=%q", plan.InstructionsChanged, plan.InstructionsPath)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+		t.Fatalf("external file changed: %q", got)
+	}
+}
+
+func TestInitLocalOnlyZonelessPlanLeavesSymlinkedAgentsUntouched(t *testing.T) {
+	// A local-only strip with no managed zone is a no-op: the plan must
+	// not claim (and refuse) a symlinked AGENTS.md it would not change.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	wizard := InitWizard{StateDir: t.TempDir()}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart, SkillsLocalOnly: true, SkillsLocalOnlySet: true})
+	if err != nil {
+		t.Fatalf("a zoneless local-only plan must not validate an AGENTS.md it will not touch: %v", err)
+	}
+	if plan.InstructionsChanged || plan.InstructionsPath != "" {
+		t.Fatalf("zoneless local-only plan must not claim AGENTS.md: changed=%v path=%q", plan.InstructionsChanged, plan.InstructionsPath)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+		t.Fatalf("external file changed: %q", got)
+	}
+}
+
+func TestInitLocalOnlyStripsStaleZoneOnOtherRuntimes(t *testing.T) {
+	// The zone-presence check must not swallow the strip it exists for: a
+	// stale managed zone on a pin-less tart project is still removed by a
+	// local-only init.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64)}
+	zoned, err := MergeManagedInstructions("User rules.\n", []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": lock}, RuntimeTart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(zoned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{StateDir: t.TempDir()}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart, SkillsLocalOnly: true, SkillsLocalOnlySet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.InstructionsChanged {
+		t.Fatal("a stale managed zone must be stripped by a local-only init")
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	got := string(readFileForTest(t, filepath.Join(root, "AGENTS.md")))
+	if strings.Contains(got, "BEGIN JUST-CODE MANAGED SKILLS") {
+		t.Fatalf("managed zone survived the local-only strip: %q", got)
+	}
+	if !strings.Contains(got, "User rules.") {
+		t.Fatalf("unmanaged bytes were lost: %q", got)
+	}
+}
+
+func TestInitLocalOnlyPlansClaimOnlyForAnActualZone(t *testing.T) {
+	// Local-only plans never merge, so pins and the Microsandbox runtime
+	// must not force the AGENTS.md claim: without a managed zone there is
+	// nothing to strip, and a symlinked AGENTS.md must not block them.
+	cases := []struct {
+		name    string
+		runtime Runtime
+		skills  []string
+		skip    func(t *testing.T)
+	}{
+		{
+			name:    "microsandbox without skills",
+			runtime: RuntimeMicrosandbox,
+		},
+		{
+			// Project skills validate only on the sealed Microsandbox
+			// runtime, so a nonempty local selection implies msb.
+			name:    "microsandbox with a local selection",
+			runtime: RuntimeMicrosandbox,
+			skills:  []string{"official/rgaa"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skip != nil {
+				tc.skip(t)
+			}
+			root := initTestRoot(t)
+			manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+			if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+				Runtime: string(tc.runtime), Isolation: string(IsolationFull),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "instructions.md")
+			if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "AGENTS.md")); err != nil {
+				t.Skipf("cannot create symlink: %v", err)
+			}
+			cache, state := t.TempDir(), t.TempDir()
+			oldCacheDir := userCacheDirFn
+			userCacheDirFn = func() (string, error) { return cache, nil }
+			t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+			wizard := InitWizard{StateDir: state, ResolveSkills: fixtureSkillResolver(t)}
+			answers := InitAnswers{
+				Root:               root,
+				Runtime:            tc.runtime,
+				Skills:             tc.skills,
+				SkillsSet:          len(tc.skills) > 0,
+				SkillsLocalOnly:    true,
+				SkillsLocalOnlySet: true,
+			}
+			plan, err := wizard.Plan(answers)
+			if err != nil {
+				t.Fatalf("a zoneless local-only plan must not validate an AGENTS.md it will not touch: %v", err)
+			}
+			if plan.InstructionsChanged || plan.InstructionsPath != "" {
+				t.Fatalf("zoneless local-only plan must not claim AGENTS.md: changed=%v path=%q", plan.InstructionsChanged, plan.InstructionsPath)
+			}
+			if err := wizard.Apply(plan, true); err != nil {
+				t.Fatal(err)
+			}
+			if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+				t.Fatalf("external file changed: %q", got)
+			}
+		})
+	}
+}
+
+func TestInitApplyStripsZoneAddedAfterPlanning(t *testing.T) {
+	// A managed zone can appear between Plan and Apply; the apply-time
+	// recheck must strip it so the committed manifest never contradicts
+	// the instructions on disk.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	cases := []struct {
+		name      string
+		localOnly bool
+	}{
+		{name: "local-only plan", localOnly: true},
+		{name: "pin-less plan"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initTestRoot(t)
+			manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+			if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+				Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("User rules.\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			wizard := InitWizard{StateDir: t.TempDir()}
+			answers := InitAnswers{Root: root, Runtime: RuntimeTart}
+			if tc.localOnly {
+				answers.SkillsLocalOnly = true
+				answers.SkillsLocalOnlySet = true
+			}
+			plan, err := wizard.Plan(answers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.InstructionsPath != "" {
+				t.Fatal("a zone-less plan must not claim AGENTS.md")
+			}
+			lock := SkillLock{Repository: projectSkillsRepository, Revision: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64)}
+			zoned, err := MergeManagedInstructions("User rules.\n", []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": lock}, RuntimeTart)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(zoned), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := wizard.Apply(plan, true); err != nil {
+				t.Fatal(err)
+			}
+			got := string(readFileForTest(t, filepath.Join(root, "AGENTS.md")))
+			if strings.Contains(got, "BEGIN JUST-CODE MANAGED SKILLS") {
+				t.Fatalf("zone added after planning survived the apply: %q", got)
+			}
+			if !strings.Contains(got, "User rules.") {
+				t.Fatalf("unmanaged bytes were lost: %q", got)
+			}
+		})
+	}
+}
+
+func TestInitApplyRefusesZoneAddedBehindSymlinkAfterPlanning(t *testing.T) {
+	// A zone appearing behind a symlinked AGENTS.md must abort the apply
+	// instead of writing through the link.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	wizard := InitWizard{StateDir: t.TempDir()}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart, SkillsLocalOnly: true, SkillsLocalOnlySet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsPath != "" {
+		t.Fatal("a zone-less plan must not claim AGENTS.md")
+	}
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64)}
+	zoned, err := MergeManagedInstructions("keep me\n", []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": lock}, RuntimeTart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte(zoned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, true); err == nil {
+		t.Fatal("apply must refuse a non-regular AGENTS.md holding a managed zone")
+	}
+	if got := readFileForTest(t, outside); !strings.Contains(string(got), "BEGIN JUST-CODE MANAGED SKILLS") {
+		t.Fatalf("the refused apply must leave the external file untouched: %q", got)
+	}
+}
+
+func TestHasManagedSkillZoneIn(t *testing.T) {
+	// The streaming scan must match hasManagedSkillZone's semantics:
+	// either marker line claims the file, a marker that is only part of
+	// a longer line does not, and overlong lines are skipped whole.
+	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
+	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "no markers", content: "User rules.\n", want: false},
+		{name: "balanced zone", content: "a\n" + start + "\nx\n" + end + "\n", want: true},
+		{name: "begin only", content: "a\n" + start + "\n", want: true},
+		{name: "end only", content: "a\n" + end + "\n", want: true},
+		{name: "marker as substring of a longer line", content: "see " + start + " inline\n", want: false},
+		{name: "indented marker", content: "  " + start + "  \n", want: true},
+		{name: "crlf line endings", content: "a\r\n" + start + "\r\n", want: true},
+		{name: "overlong line before marker", content: strings.Repeat("a", 200000) + "\n" + start + "\n", want: true},
+		{name: "marker before overlong line", content: start + "\n" + strings.Repeat("a", 200000) + "\n", want: true},
+		{name: "marker as tail of an overlong line", content: strings.Repeat("a", 64<<10) + start + "\n", want: false},
+		{name: "final unterminated marker line", content: "a\n" + start, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasManagedSkillZoneIn(strings.NewReader(tc.content)); got != tc.want {
+				t.Fatalf("hasManagedSkillZoneIn = %v, want %v", got, tc.want)
+			}
+			if got := hasManagedSkillZone(tc.content); got != tc.want {
+				t.Fatalf("scan disagrees with hasManagedSkillZone (%v, want %v)", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInitPlanScansOversizedAgentsWithoutClaiming(t *testing.T) {
+	// The zone probe scans for markers in bounded memory: an oversized
+	// zone-less AGENTS.md is not claimed (so a symlink to one stays
+	// untouched), while an oversized file carrying a marker is.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
+	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
+	cases := []struct {
+		name      string
+		symlink   bool
+		withZone  bool
+		wantClaim bool
+	}{
+		{name: "regular oversized zone-less"},
+		{name: "symlink to oversized zone-less", symlink: true},
+		{name: "oversized with a marker", withZone: true, wantClaim: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initTestRoot(t)
+			manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+			if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+				Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+				t.Fatal(err)
+			}
+			content := strings.Repeat("a", 1<<20+1)
+			if tc.withZone {
+				content += "\n" + start + "\n" + end + "\n"
+			}
+			agentsPath := filepath.Join(root, "AGENTS.md")
+			if tc.symlink {
+				outside := filepath.Join(t.TempDir(), "instructions.md")
+				if err := os.WriteFile(outside, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, agentsPath); err != nil {
+					t.Skipf("cannot create symlink: %v", err)
+				}
+			} else if err := os.WriteFile(agentsPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			wizard := InitWizard{StateDir: t.TempDir()}
+			plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantClaim && plan.InstructionsPath == "" {
+				t.Fatal("an oversized AGENTS.md carrying a marker must be claimed")
+			}
+			if !tc.wantClaim && plan.InstructionsPath != "" {
+				t.Fatal("an oversized zone-less AGENTS.md must not be claimed")
+			}
+		})
 	}
 }
 

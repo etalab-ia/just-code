@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Dispatcher wires the runtimes together and implements the cross-runtime
@@ -343,13 +344,134 @@ func (d *Dispatcher) Check(ctx context.Context, client *http.Client) error {
 		}
 		fmt.Println(state)
 		fmt.Println("isolation full: the OpenCode session runs interactively inside the guest (no health endpoint).")
+		if rt == RuntimeMicrosandbox {
+			d.probePublishedPorts(ctx)
+		}
 		return nil
 	}
 	endpoint, err := d.backends[rt].Endpoint(ctx)
 	if err != nil {
 		return err
 	}
-	return CheckBackend(ctx, client, endpoint, d.cfg.Username, d.cfg.Password)
+	checkErr := CheckBackend(ctx, client, endpoint, d.cfg.Username, d.cfg.Password)
+	if rt == RuntimeMicrosandbox {
+		d.probePublishedPorts(ctx)
+	}
+	return checkErr
+}
+
+// appliedPortMappingsBackend is implemented by backends whose running
+// instance can report the port mappings it was created with.
+type appliedPortMappingsBackend interface {
+	AppliedPortMappings(ctx context.Context) ([]PortMapping, error)
+}
+
+// probePublishedPorts reports, for every port the project explicitly mapped,
+// whether a request from this machine gets an answer through the host-side
+// forward. It is print-only: `check` reports preview reachability as
+// information and never fails because a dev server is down. The legacy
+// implicit 3000-3010 range is not probed; only configured mappings are, and
+// only on Microsandbox: the mappings describe that runtime's host-loopback
+// forwards, which no other runtime creates. An explicitly emptied mapping
+// list still counts as configured: the sandbox keeps forwarding the removed
+// mappings until recreate, and check reports them.
+//
+// Only mappings the running sandbox actually applied are probed: manifest
+// changes take effect on recreate, so a newly configured host port may belong
+// to an unrelated service and a removed mapping may still be forwarded.
+func (d *Dispatcher) probePublishedPorts(ctx context.Context) {
+	if !d.cfg.PortsConfigured {
+		return
+	}
+	ab, ok := d.backends[RuntimeMicrosandbox].(appliedPortMappingsBackend)
+	if !ok {
+		// Backends that cannot report instance state keep the manifest
+		// view; the production Microsandbox backend implements it.
+		d.probePortMappings(ctx, d.cfg.Ports)
+		return
+	}
+	applied, err := ab.AppliedPortMappings(ctx)
+	if err != nil {
+		fmt.Printf("port reachability: could not read the running sandbox's applied mappings (%v); not probing configured ports.\n", err)
+		return
+	}
+	appliedSet := make(map[PortMapping]bool, len(applied))
+	for _, pm := range applied {
+		appliedSet[pm] = true
+	}
+	desiredSet := make(map[PortMapping]bool, len(d.cfg.Ports))
+	for _, pm := range d.cfg.Ports {
+		desiredSet[pm] = true
+	}
+	var live []PortMapping
+	for _, pm := range d.cfg.Ports {
+		if appliedSet[pm] {
+			live = append(live, pm)
+			continue
+		}
+		fmt.Printf("port %d (guest %d): configured but not forwarded by the running sandbox; run 'just-code recreate --microsandbox' to apply.\n", pm.Host, pm.Guest)
+	}
+	for _, pm := range applied {
+		// The OpenCode backend's own server forward is not a user
+		// preview mapping; ValidatePortMappings keeps DefaultPort out
+		// of configured mappings entirely.
+		if pm.Host == DefaultPort && pm.Guest == DefaultPort {
+			continue
+		}
+		if !desiredSet[pm] {
+			fmt.Printf("port %d (guest %d): still forwarded until the sandbox is recreated (removed from the project's port mappings).\n", pm.Host, pm.Guest)
+		}
+	}
+	d.probePortMappings(ctx, live)
+}
+
+// portProbeBudget bounds the total time spent probing host forwards. It is
+// a package variable so tests can shrink it; each mapping's probe keeps its
+// own shorter timeout.
+var portProbeBudget = 10 * time.Second
+
+func (d *Dispatcher) probePortMappings(ctx context.Context, mappings []PortMapping) {
+	// The first response is the reachability answer: following a redirect
+	// would let a diagnostic probe make an unintended request outside
+	// loopback, and a failed redirect target would hide a forward that
+	// answered.
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	// Every dead forward costs its full probe timeout, so the loop runs
+	// under a shared budget: a project carrying many unavailable mappings
+	// cannot stall the check for minutes. Mappings beyond the budget are
+	// reported as not probed rather than silently skipped.
+	deadline := time.Now().Add(portProbeBudget)
+	for _, pm := range mappings {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			fmt.Printf("port %d (guest %d): not probed; the port-probe budget (%s) was spent on earlier mappings.\n", pm.Host, pm.Guest, portProbeBudget)
+			continue
+		}
+		timeout := 2 * time.Second
+		if remaining < timeout {
+			timeout = remaining
+		}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
+		req, err := http.NewRequestWithContext(pctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", pm.Host), nil)
+		if err != nil {
+			cancel()
+			fmt.Printf("port %d (guest %d): could not build the probe: %v\n", pm.Host, pm.Guest, err)
+			continue
+		}
+		resp, err := client.Do(req)
+		cancel()
+		if err != nil {
+			fmt.Printf("port %d (guest %d): no answer from the host forward. If a dev server should be listening, it must bind 0.0.0.0 inside the guest; a 127.0.0.1 bind there is unreachable through the forward.\n", pm.Host, pm.Guest)
+			continue
+		}
+		resp.Body.Close()
+		fmt.Printf("port %d (guest %d): reachable (%s)\n", pm.Host, pm.Guest, resp.Status)
+	}
 }
 
 func runtimeNames(rts []Runtime) []string {

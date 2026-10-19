@@ -192,6 +192,11 @@ func albertCodeImportCmd(args []string) (int, error) {
 // the launch trust gate will block on, so a successful import does not leave
 // the user surprised by the first run (#154). It mirrors the launch error's
 // wording on purpose. Read-only: it computes, never approves.
+// warnUnapprovedImportInputs announces execution inputs that still need trust
+// approval. The recommendation names the project directory because 'trust
+// approve' resolves its project from the current directory: an import into a
+// different --root must not suggest approving whatever project the caller
+// happens to stand in.
 func warnUnapprovedImportInputs(projectRoot string) {
 	unapproved, err := justcode.DiscoverUnapprovedInputs(justcode.DefaultFS, justcode.DefaultStateDir(), projectRoot)
 	if err != nil {
@@ -206,8 +211,8 @@ func warnUnapprovedImportInputs(projectRoot string) {
 		lines = append(lines, fmt.Sprintf("  %s (%s)", u.Path, u.Reason))
 	}
 	fmt.Printf("This project declares OpenCode inputs that execute code or launch processes, and they are not approved at their current content:\n%s\n"+
-		"The first 'just-code' run will stop for this. Review them, then run 'just-code trust approve' to record approval for the current content.\n",
-		strings.Join(lines, "\n"))
+		"The first 'just-code' run will stop for this. Review them, then run 'just-code trust approve' from %s to record approval for the current content.\n",
+		strings.Join(lines, "\n"), projectRoot)
 }
 
 func applyAlbertCodeImport(plan justcode.AlbertCodeImport, wizard justcode.InitWizard, setupPlan justcode.InitPlan, importKey, existingMatches bool) error {

@@ -43,7 +43,10 @@ var wizardNoColor bool
 // renderer writes to stderr; binding the renderer to stdout keeps the
 // check and the output on the same stream, so `2>file` cannot hide the
 // form while it waits for input.
-func huhRun(form *huh.Form) error {
+// It is a package variable so tests can capture the form instead of
+// rendering it: which fields a project gets is the testable part, and it
+// needs no terminal.
+var huhRun = func(form *huh.Form) error {
 	return form.WithProgramOptions(tea.WithOutput(os.Stdout)).Run()
 }
 
@@ -495,10 +498,25 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				Value(&credentialRef))
 		}
 		if !opts.Set["github"] {
-			credentialFields = append(credentialFields, huh.NewConfirm().
-				Title("Approve the GitHub workflow for this project?").
-				Description("The Microsandbox guest can push branches and open draft PRs to this origin. It uses the stored GitHub credential through the secret proxy; approval is local to this host. 'just-code bindings revoke github' disables the grant.").
-				Value(&githubWorkflow))
+			// Same rule as the line wizard: resolve the origin and stored
+			// credential before offering the choice. A project without a
+			// usable GitHub.com origin cannot approve the workflow, and the
+			// post-form preflight failing there would throw away every
+			// answer (#155). Each form pass re-resolves, so a root changed
+			// inside the form gets the correct question on the reseeded pass.
+			remote, preflightErr := githubInitPreflightFn(answers.Root)
+			if preflightErr != nil {
+				fmt.Fprintf(os.Stderr, "GitHub guest workflow (optional) — unavailable for this project: %v\n", preflightErr)
+				githubWorkflow = false
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+			} else {
+				answers.GitHubRemote = remote
+				credentialFields = append(credentialFields, huh.NewConfirm().
+					Title("Approve the GitHub workflow for this project?").
+					Description(fmt.Sprintf("The Microsandbox guest can push branches and open draft PRs to %s. It uses the stored GitHub credential through the secret proxy; approval is local to this host. 'just-code bindings revoke github' disables the grant.", remote.Repo)).
+					Value(&githubWorkflow))
+			}
 		}
 		var credentialGroup *huh.Group
 		if len(credentialFields) > 0 {

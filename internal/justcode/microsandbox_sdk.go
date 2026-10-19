@@ -767,6 +767,42 @@ func parseServerPortForwarded(configJSON string) (bool, error) {
 	return false, nil
 }
 
+// parseAppliedPortMappings returns the port mappings the sandbox was created
+// with, from the same persisted network port list parseServerPortForwarded
+// reads. Mappings changed in the project manifest only apply on recreate, so
+// this list is the authority for which host forwards exist right now.
+func parseAppliedPortMappings(configJSON string) ([]PortMapping, error) {
+	var raw struct {
+		Network *struct {
+			Ports *[]struct {
+				HostPort  uint16 `json:"host_port"`
+				GuestPort uint16 `json:"guest_port"`
+			} `json:"ports"`
+		} `json:"network"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &raw); err != nil {
+		return nil, fmt.Errorf("decode persisted sandbox config: %w", err)
+	}
+	if raw.Network == nil || raw.Network.Ports == nil {
+		return nil, fmt.Errorf("persisted sandbox config has no readable network port list")
+	}
+	mappings := make([]PortMapping, 0, len(*raw.Network.Ports))
+	for _, port := range *raw.Network.Ports {
+		mappings = append(mappings, PortMapping{Host: port.HostPort, Guest: port.GuestPort})
+	}
+	return mappings, nil
+}
+
+// AppliedPortMappings reports the port mappings the running sandbox was
+// created with, read from its persisted configuration.
+func (sdkMSBClient) AppliedPortMappings(ctx context.Context, name string) ([]PortMapping, error) {
+	h, err := msb.GetSandbox(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return parseAppliedPortMappings(h.ConfigJSON())
+}
+
 func (sdkMSBClient) WorkspaceMount(ctx context.Context, name string) (string, error) {
 	h, err := msb.GetSandbox(ctx, name)
 	if err != nil {

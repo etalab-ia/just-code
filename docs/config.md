@@ -196,7 +196,12 @@ just-code init --root . --clear-skills --replace --yes
 
 La désélection se fait avec
 `--clear-skills`. Le mode versionné ajoute uniquement une zone bornée gérée
-dans `AGENTS.md`; tout le texte hors de cette zone est préservé. Avec
+dans `AGENTS.md`; tout le texte hors de cette zone est préservé. Sur le
+runtime Microsandbox, cette zone existe même sans skill sélectionné : elle
+porte des instructions permanentes (notamment le bind `0.0.0.0` requis côté
+invité pour qu'un serveur de développement soit joignable via le forward de
+port hôte). Sur les autres runtimes, qui n'ont pas ce forward, la zone ne
+contient que les skills épinglés et n'est pas créée sans sélection. Avec
 `--local-only-skills`, IDs et pins sont stockés dans l'état hôte de l'instance,
 et aucun texte de skill n'est ajouté au checkout. Si le projet avait auparavant
 une zone gérée versionnée dans `AGENTS.md`, son retrait est montré avant Apply;
@@ -204,9 +209,10 @@ le texte utilisateur hors de cette zone reste intact. Pour changer la
 sélection ou les pins après création du guest, recrée explicitement
 l'environnement après avoir exporté les éventuels changements invités.
 Le passage du mode versionné au mode local-only ne rafraîchit pas la copie
-scellée d'`AGENTS.md` du guest. Si elle porte encore l'ancienne zone gérée,
+scellée d'`AGENTS.md` du guest. Si elle porte encore des épingles de skills,
 `start` et `attach` refusent de poursuivre : exporte les changements invités,
-puis lance `just-code workspace sync` ou recrée le guest.
+puis lance `just-code workspace sync` ou recrée le guest. La seule présence
+des instructions permanentes sans épingles ne bloque rien.
 
 Chaque fichier porte un `schemaVersion`. Un schéma plus récent que la version
 supportée par le binaire est une erreur explicite (mettre à jour just-code), pas

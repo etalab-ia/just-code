@@ -30,6 +30,8 @@ type fakeMSBClient struct {
 	doctorErr    error
 	mount        string
 	mountErr     error
+	appliedPorts []PortMapping
+	appliedErr   error
 	startScript  string
 	env          map[string]string
 	envErr       error
@@ -121,6 +123,10 @@ func (f *fakeMSBClient) Create(_ context.Context, spec msbSandboxSpec) error {
 		f.exists = true
 	}
 	return f.createErr
+}
+
+func (f *fakeMSBClient) AppliedPortMappings(_ context.Context, _ string) ([]PortMapping, error) {
+	return f.appliedPorts, f.appliedErr
 }
 
 func (f *fakeMSBClient) Start(_ context.Context, name string) error {
@@ -328,7 +334,7 @@ func TestGuestSkillPreflightFindsManagedDirectoriesOmittedFromInventory(t *testi
 func TestLocalOnlyInstructionPreflightRetriesAndExplainsRecovery(t *testing.T) {
 	client := &fakeMSBClient{execCaptureResults: []fakeMSBExecCaptureResult{
 		{err: errors.New("guest agent is not ready")},
-		{stdout: "before\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n- official/rgaa\n<!-- END JUST-CODE MANAGED SKILLS -->\nafter\n"},
+		{stdout: "before\n<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n- `official/rgaa` at `" + projectSkillsRevision + "`\n<!-- END JUST-CODE MANAGED SKILLS -->\nafter\n"},
 	}}
 	m := NewMicrosandboxRuntime(Config{ProjectSkillsManaged: true, ProjectSkillsLocalOnly: true})
 	m.Client = client

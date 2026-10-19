@@ -1,0 +1,23 @@
+META step=12b-import-without-init date=2026-10-16T15:38:01Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
+.albert-code
+.git
+AGENTS.md
+README.md
+opencode.json
++ import albert-code --apply (no prior init)
+Wrote /root/qualif/proj-c/.just-code/project.json
+Wrote /root/qualif/proj-c/.just-code/lock.json
+Imported the recognized settings into /root/qualif/proj-c/.just-code/project.json. Legacy configuration files were left untouched.
+APPLY_EXIT: 0
++ manifest written by import:
+{
+  "schemaVersion": 5,
+  "runtime": "microsandbox",
+  "isolation": "full",
+  "dependencySetId": "113191943e4c9e7934638104f59e4ac4"
+}
++ repeat --apply (true idempotence)
+This Albert Code project has already been imported; no project files changed.
+REPEAT_EXIT: 0
++ user files untouched:
+?? .just-code/

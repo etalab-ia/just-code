@@ -1,0 +1,12 @@
+META step=qualification-linux-amd64 date=2026-10-16 source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ secret-tool hidden: DefaultCredentialStore should now return nil -> file store
+Native store: secret-service
+  state: unavailable (exec: "secret-tool": executable file not found in $PATH)
+  albert: unreadable (credential store (secret-service) get: unavailable: exec: "secret-tool": executable file not found in $PATH)
+  github: unreadable (credential store (secret-service) get: unavailable: exec: "secret-tool": executable file not found in $PATH)
++ retry start
+  dotenv file (excluded from transfer): r_utf8.env
+  dotenv file (excluded from transfer): sub/app.env
+just-code: cannot apply the credential operations of jc-proj-d-6ca2d ([create]): the credential set could not be resolved (<nil>). Store or restore the credential, then retry; nothing was changed
+START_EXIT: 1
+instance: 

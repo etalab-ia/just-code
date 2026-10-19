@@ -1,0 +1,14 @@
+META step=24z-agent-vm-lifecycle date=2026-10-16T16:12:39Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ check --isolation backend
+just-code: Get "http://127.0.0.1:4096/global/health": dial tcp 127.0.0.1:4096: connect: connection refused
+CHECK_EXIT: 1
++ limactl list
+NAME                          STATUS     SSH                CPUS    MEMORY    DISK     DIR
+agent-vm-base                 Stopped    127.0.0.1:0        1       1GiB      20GiB    ~/.lima/agent-vm-base
+opencode-jc-proj-avm-4cbc7    Running    127.0.0.1:45891    1       1GiB      20GiB    ~/.lima/opencode-jc-proj-avm-4cbc7
++ stop --agent-vm
+Stopping opencode-jc-proj-avm-4cbc7...
+STOP_EXIT: 0
+NAME                          STATUS     SSH            CPUS    MEMORY    DISK     DIR
+agent-vm-base                 Stopped    127.0.0.1:0    1       1GiB      20GiB    ~/.lima/agent-vm-base
+opencode-jc-proj-avm-4cbc7    Stopped    127.0.0.1:0    1       1GiB      20GiB    ~/.lima/opencode-jc-proj-avm-4cbc7
