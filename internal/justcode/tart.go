@@ -373,8 +373,16 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 }
 
 // waitForAgent polls `tart exec <vm> true` until the guest agent responds, up
-// to 60 seconds.
-func (t *Tart) waitForAgent(ctx context.Context) error {
+// to 60 seconds. fromOffset is the log length captured *before* the VM was
+// launched: only bytes past it belong to this launch.
+//
+// The offset is a parameter rather than something read here on purpose. The
+// start failure this function diagnoses is emitted within seconds of the
+// detached `tart run` starting, and Start has already returned by the time the
+// first probe runs — so taking the mark here would seek past the very error it
+// is looking for and fall back to the generic timeout this fixes. It must be
+// captured before startVM.
+func (t *Tart) waitForAgent(ctx context.Context, fromOffset int64) error {
 	polls := t.AgentWaitPolls
 	if polls <= 0 {
 		// A zero value is a test-built Tart that did not set the seam; the
@@ -388,10 +396,10 @@ func (t *Tart) waitForAgent(ctx context.Context) error {
 	}
 	// The VM log is append-only: OSStarter opens it with O_APPEND and nothing
 	// rotates it. A previous failed run therefore still contains its VZ error,
-	// and scanning from byte 0 would report that stale failure immediately on
-	// a healthy retry — precisely when the user has just unlocked the keychain
-	// and tried again. Only bytes written from here on belong to this launch.
-	logOffset := logSize(t.LogPath())
+	// and scanning from byte 0 would report that stale failure on a healthy
+	// retry — precisely when the user has just unlocked the keychain and tried
+	// again. Only bytes written past the pre-launch mark belong to this run.
+	logOffset := fromOffset
 	for i := 0; i < polls; i++ {
 		res, err := t.Runner.Run(ctx, "tart", "exec", t.VMName(), "true")
 		if err == nil && res.ExitCode == 0 {
@@ -460,20 +468,28 @@ func tartStartupFailure(logPath string, fromOffset int64) string {
 	return ""
 }
 
-// isTartStartupFailure reports whether a log line describes a VM that failed
-// to boot. The markers are the ones Virtualization.framework and tart emit: a
-// VZErrorDomain code with its message (typically "The virtual machine
-// encountered a security error"), or a POSIX failure creating the host key.
-// Matching on the domains rather than a full sentence keeps this working
-// across macOS versions, whose wording varies.
+// isTartStartupFailure reports whether a log line describes the specific
+// startup failure a locked login keychain causes: the host key cannot be
+// created.
+//
+// The match is deliberately narrow. VZErrorDomain covers many distinct codes —
+// invalid configuration, invalid disk, VM limit, network failures — and only
+// one of them is the keychain case, so matching the domain alone would blame a
+// locked keychain for any Virtualization.framework error and send the user to
+// unlock something that is not the problem. Anything else is left to the
+// generic timeout, which reports the true cause without inventing one.
+//
+// Wording varies across macOS versions, so both the security-error message and
+// the host-key POSIX failure are accepted, in either the tart or the bare
+// framework form.
 func isTartStartupFailure(line string) bool {
 	if line == "" {
 		return false
 	}
-	if strings.Contains(line, "VZErrorDomain") {
+	if strings.Contains(line, "Failed to create new HostKey") {
 		return true
 	}
-	if strings.Contains(line, "Failed to create new HostKey") {
+	if strings.Contains(line, "VZErrorDomain") && strings.Contains(line, "security error") {
 		return true
 	}
 	return false
@@ -554,7 +570,9 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 	if running {
-		if err := t.waitForAgent(ctx); err != nil {
+		// No launch happened in this call, so the whole log may be read: there
+		// is no earlier run to confuse this VM's failure with.
+		if err := t.waitForAgent(ctx, 0); err != nil {
 			return err
 		}
 		if cfg.Isolation == IsolationFull {
@@ -593,10 +611,14 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 	fmt.Printf("Starting %s with Tart...\n", vm)
+	// Mark the log before launching: the detached process starts writing
+	// immediately, and the failure this diagnoses can be on disk by the time
+	// startVM returns. Taking the mark after the launch would skip it.
+	logOffset := logSize(t.LogPath())
 	if err := t.startVM(ctx); err != nil {
 		return err
 	}
-	if err := t.waitForAgent(ctx); err != nil {
+	if err := t.waitForAgent(ctx, logOffset); err != nil {
 		return err
 	}
 	if cfg.Isolation == IsolationFull {

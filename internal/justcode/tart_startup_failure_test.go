@@ -2,12 +2,28 @@ package justcode
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// writingStarter is a Starter that writes to the log as it launches the VM,
+// modelling `tart run` reporting a startup refusal immediately.
+type writingStarter struct {
+	onStart  func(logPath string)
+	launched bool
+}
+
+func (w *writingStarter) Start(_ io.Reader, logPath string, _ string, _ ...string) error {
+	w.launched = true
+	if w.onStart != nil {
+		w.onStart(logPath)
+	}
+	return nil
+}
 
 // TestTartStartupFailureRecognisesTheVZRefusal pins the parser against the
 // real log lines a headless Mac produces. The wording varies across macOS
@@ -21,6 +37,12 @@ func TestTartStartupFailureRecognisesTheVZRefusal(t *testing.T) {
 		{"vz domain with code", `VZErrorDomain Code=-9 "The virtual machine encountered a security error"`, true},
 		{"host key failure", `NSPOSIXErrorDomain Code=22 "Failed to create new HostKey"`, true},
 		{"tart prefix variant", `tart: VZErrorDomain Code=-9 "The virtual machine encountered a security error"`, true},
+		// VZErrorDomain covers many codes, and only the security-error one is
+		// the keychain case. Blaming a locked keychain for an unrelated
+		// Virtualization.framework failure would send the user to unlock
+		// something that is not the problem.
+		{"unrelated vz error", `VZErrorDomain Code=-5 "The virtual machine failed to start"`, false},
+		{"invalid disk", `VZErrorDomain Code=2 "The disk image is invalid"`, false},
 		// A normal boot must not be mistaken for a failure: reporting a false
 		// cause would be worse than the timeout it replaces.
 		{"ordinary boot line", "Booting opencode-tahoe-base-latest", false},
@@ -63,7 +85,7 @@ func TestWaitForAgentNamesTheVZFailureInsteadOfTimingOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := tt.waitForAgent(context.Background())
+	err := tt.waitForAgent(context.Background(), 0)
 	if err == nil {
 		t.Fatal("a VM that refused to boot must be an error")
 	}
@@ -95,13 +117,15 @@ func TestWaitForAgentSucceedsOnARetryAfterAFailedRun(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(tt.LogPath()), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The log left behind by the failed run.
+	// The log left behind by the failed run, and the mark taken before this
+	// launch — which is what keeps it out of this run's verdict.
 	if err := os.WriteFile(tt.LogPath(), []byte(
 		`VZErrorDomain Code=-9 "The virtual machine encountered a security error"`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	staleMark := logSize(tt.LogPath())
 
-	if err := tt.waitForAgent(context.Background()); err != nil {
+	if err := tt.waitForAgent(context.Background(), staleMark); err != nil {
 		t.Fatalf("a healthy retry must not inherit the previous run's failure: %v", err)
 	}
 }
@@ -126,8 +150,9 @@ func TestWaitForAgentDoesNotReportAPreviousRunsFailureOnTimeout(t *testing.T) {
 		`VZErrorDomain Code=-9 "The virtual machine encountered a security error"`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	staleMark := logSize(tt.LogPath())
 
-	err := tt.waitForAgent(context.Background())
+	err := tt.waitForAgent(context.Background(), staleMark)
 	if err == nil {
 		t.Fatal("a guest that never answers must time out")
 	}
@@ -161,7 +186,7 @@ func TestWaitForAgentKeepsThePlainTimeoutWithoutALogFailure(t *testing.T) {
 
 	// The poll must run its full course and keep the original wording: no
 	// failure may be invented from a healthy log.
-	err := tt.waitForAgent(context.Background())
+	err := tt.waitForAgent(context.Background(), 0)
 	if err == nil {
 		t.Fatal("a guest that never answers must time out")
 	}
@@ -185,6 +210,51 @@ func TestNewTartWiresTheAgentWaitSeam(t *testing.T) {
 	}
 	if tt.AgentWaitInterval != time.Second {
 		t.Fatalf("AgentWaitInterval = %v, want 1s", tt.AgentWaitInterval)
+	}
+}
+
+// TestStartMarksTheLogBeforeLaunchingTheVM pins the P1 ordering: the start
+// failure is emitted within seconds of the detached `tart run` starting, and
+// that call has already returned before the first agent probe. Capturing the
+// mark inside waitForAgent would therefore seek past the very error it looks
+// for and fall back to the generic timeout the change exists to replace.
+func TestStartMarksTheLogBeforeLaunchingTheVM(t *testing.T) {
+	// A starter that writes the failure as the VM is launched — the worst case
+	// for an offset taken after the call, and the realistic one: `tart run`
+	// reports the refusal immediately.
+	starter := &writingStarter{onStart: func(logPath string) {
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		_, _ = f.WriteString(`VZErrorDomain Code=-9 "The virtual machine encountered a security error"` + "\n")
+		_ = f.Close()
+	}}
+	tt := newTestTart(t, nil)
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if name == "tart" && len(args) > 0 && args[0] == "list" {
+			// `local <vm> - 50G stopped`: the VM exists, so clone is skipped,
+			// but it is not running, so Start takes the launch path.
+			return ExecResult{ExitCode: 0, Stdout: "local " + tt.VMName() + " - 50G stopped\n"}
+		}
+		return ExecResult{ExitCode: 1, Stderr: "no guest agent yet"}
+	}}
+	tt.Runner = r
+	tt.Starter = starter
+	tt.Config.Isolation = IsolationFull
+	tt.AgentWaitInterval = time.Millisecond
+	tt.AgentWaitPolls = 3
+
+	err := tt.Start(context.Background())
+	if err == nil {
+		t.Fatal("a VM that refused to boot must fail the start")
+	}
+	if !strings.Contains(err.Error(), "security error") {
+		t.Fatalf("the launch failure must be named, not masked by the timeout: %v", err)
+	}
+	// Guard against the harness silently not exercising the path.
+	if !starter.launched {
+		t.Fatal("the starter must have been invoked for this test to mean anything")
 	}
 }
 
