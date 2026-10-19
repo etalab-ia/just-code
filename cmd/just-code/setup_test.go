@@ -373,6 +373,48 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	}
 }
 
+// TestSetupUnreachableRetryThenAbandonStoresNothing is the regression test for
+// the review finding on #216: choosing R then giving up must not leave the
+// first, unvalidated key in the store — otherwise a later `setup` skips this
+// screen and uses a key the user explicitly chose not to accept.
+func TestSetupUnreachableRetryThenAbandonStoresNothing(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key -> unreachable -> R -> empty key (abandon).
+	input := "first-key\nr\n\n"
+	var negativeCalls int
+	_ = captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				negativeCalls++
+				return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code == 0 {
+			t.Errorf("abandoning after R must not report success: code=%d err=%v", code, err)
+		}
+	})
+	// The store must not exist: nothing was ever Put.
+	if store, err := justcode.ConsentFileStore(); err == nil {
+		if _, serr := os.Stat(store.Path); serr == nil {
+			t.Fatal("a retry that was abandoned must not leave the key in the store")
+		}
+	}
+	// And the journal must not claim the credential is stored.
+	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
+		t.Fatal("a retry that was abandoned must not journal albert as stored")
+	}
+	if negativeCalls == 0 {
+		t.Fatal("precondition: the endpoint was never probed")
+	}
+}
+
 func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)

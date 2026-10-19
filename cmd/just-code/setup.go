@@ -240,14 +240,14 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			if key == "" {
 				return 1, fmt.Errorf("%s", cancelMsg(stateDir))
 			}
-			probe, err := w.StoreCredential(ctx, justcode.CredentialAlbert, key)
+			// Validate BEFORE writing: an unreachable endpoint must not leave
+			// a key in the store that the user never accepted, or a later
+			// `setup` would skip this screen and use it.
+			probe, err := w.ValidateCredential(ctx, justcode.CredentialAlbert, key)
 			if err != nil {
 				return 1, err
 			}
 			if probe.Rejected {
-				// Stdout, like the rest of the wizard chrome: huh binds its
-				// renderer to stdout for the same reason (a `2>file` must not
-				// hide the flow while it waits for input).
 				fmt.Println(albertRejectedMessage(probe.Detail))
 				fmt.Println()
 				continue
@@ -258,7 +258,12 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 					fmt.Println()
 					continue
 				}
-				// "Continuer sans vérifier": the key stays stored, unvalidated.
+			}
+			if err := w.PutCredential(ctx, justcode.CredentialAlbert, key); err != nil {
+				return 1, err
+			}
+			if probe.Unreachable {
+				// "Continuer sans vérifier": stored, but unvalidated.
 				fmt.Println("Clé enregistrée sans vérification.")
 			} else {
 				fmt.Println("✅ Clé valide.")

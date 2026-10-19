@@ -131,11 +131,12 @@ func validateAlbertKeyAt(ctx context.Context, client *http.Client, key, url stri
 	}
 }
 
-// StoreCredential validates and stores one credential, journaling the kind
-// (never the value) on success. A rejected key returns an error inviting a
-// retry; an unreachable endpoint is returned as a distinct signal so the
-// caller can let the user decide (store anyway, or stop).
-func (w SetupWizard) StoreCredential(ctx context.Context, kind CredentialKind, value string) (CredentialProbe, error) {
+// ValidateCredential probes one candidate credential WITHOUT storing it, so a
+// caller can ask about an unreachable endpoint before anything is written. A
+// refusal is returned as a probe outcome (never an error); an unreachable
+// endpoint is a distinct signal. An unavailable or locked store still fails
+// here, before the user is asked anything.
+func (w SetupWizard) ValidateCredential(ctx context.Context, kind CredentialKind, value string) (CredentialProbe, error) {
 	store, err := w.store(ctx)
 	if err != nil {
 		return CredentialProbe{}, err
@@ -150,27 +151,73 @@ func (w SetupWizard) StoreCredential(ctx context.Context, kind CredentialKind, v
 			return CredentialProbe{}, err
 		}
 	}
-	probe := CredentialProbe{}
-	if kind == CredentialAlbert && w.ValidateAlbert != nil {
-		if verr := w.ValidateAlbert(ctx, value); verr != nil {
-			var rejected RejectedCredentialError
-			if errors.As(verr, &rejected) {
-				return CredentialProbe{Rejected: true, Detail: rejected.Detail}, nil
-			}
-			probe = CredentialProbe{Unreachable: true, Detail: verr.Error()}
+	return w.probeCredential(ctx, kind, value), nil
+}
+
+// probeCredential is the validation half of StoreCredential: it never writes.
+func (w SetupWizard) probeCredential(ctx context.Context, kind CredentialKind, value string) CredentialProbe {
+	if kind != CredentialAlbert || w.ValidateAlbert == nil {
+		return CredentialProbe{}
+	}
+	if verr := w.ValidateAlbert(ctx, value); verr != nil {
+		var rejected RejectedCredentialError
+		if errors.As(verr, &rejected) {
+			return CredentialProbe{Rejected: true, Detail: rejected.Detail}
+		}
+		return CredentialProbe{Unreachable: true, Detail: verr.Error()}
+	}
+	return CredentialProbe{}
+}
+
+// PutCredential stores one credential and journals its kind (never the value).
+// It performs no network validation: callers that want the key checked use
+// ValidateCredential first and only store once the outcome is acceptable — the
+// separation that keeps an unaccepted key out of the store.
+func (w SetupWizard) PutCredential(ctx context.Context, kind CredentialKind, value string) error {
+	store, err := w.store(ctx)
+	if err != nil {
+		return err
+	}
+	// Probe the store first: an unavailable or locked store fails BEFORE
+	// the user types anything (the auth add contract, kept here).
+	if err := store.Verify(ctx); err != nil {
+		// An absent file store is a normal first-run state for the
+		// consented fallback: the wizard's own Put creates it. Any other
+		// failure (locked, denied, unavailable) stays fatal.
+		if !errors.Is(err, ErrFileStoreAbsent) && !errors.Is(err, ErrFileStoreNotConsented) {
+			return err
 		}
 	}
 	if err := store.Put(ctx, kind, value); err != nil {
-		return probe, err
+		return err
 	}
 	j, err := ReadSetupJournal(w.FS, w.StateDir)
 	if err != nil {
-		return probe, err
+		return err
 	}
 	if !containsStr(j.CredentialKinds, string(kind)) {
 		j.CredentialKinds = append(j.CredentialKinds, string(kind))
 	}
-	return probe, WriteSetupJournal(w.FS, w.StateDir, j)
+	return WriteSetupJournal(w.FS, w.StateDir, j)
+}
+
+// StoreCredential validates and stores one credential. A rejected key yields a
+// Rejected probe and stores nothing; an unreachable endpoint yields an
+// Unreachable probe and stores the value unvalidated (the caller decides,
+// because for an existing credential that is the useful default). A caller
+// that must ask before writing uses ValidateCredential + PutCredential.
+func (w SetupWizard) StoreCredential(ctx context.Context, kind CredentialKind, value string) (CredentialProbe, error) {
+	probe, err := w.ValidateCredential(ctx, kind, value)
+	if err != nil {
+		return CredentialProbe{}, err
+	}
+	if probe.Rejected {
+		return probe, nil
+	}
+	if err := w.PutCredential(ctx, kind, value); err != nil {
+		return probe, err
+	}
+	return probe, nil
 }
 
 // RejectedCredentialError marks a key the endpoint refused: retryable by
