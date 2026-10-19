@@ -1,14 +1,59 @@
-META step=46c-mac-terminal-interactive source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T07:33:37Z (supersedes 46/46b: 46 lacked `timeout` on macOS so nothing ran — exit 127; 46b recorded macOS script(1)'s outer exit 1, which does not propagate the child status and proved neither the cancel path nor persistence)
+META step=46c-mac-terminal-interactive source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T11:04:50Z (retained feeder + input log; supersedes the feeder provenance of the earlier 46c run: the typescripts show only PTY output, and once huh enters raw mode the injected ETX byte is not echoed, so the feeder pipeline and the exact input stream were not auditable. 46c-input.log records the exact bytes written to each PTY stdin.)
 
-Harness: `just-code secrets import --apply --profile tty46c<case> --file .env` inside `script -q` (PTY), width set via `stty cols N rows 24` and verified in-transcript (`stty size` first line), key bytes sent by a feeder pipe at t+6/7s. The inner command records its own exit (`INNER_EXIT`) inside the typescript because macOS script(1) does not propagate it.
+Harness: each run is a macOS script(1) PTY; width set by stty cols and verified in-transcript (stty size is the first line), and the app's own status recorded as INNER_EXIT inside the typescript because macOS script(1) does not propagate the child status. Key events are sent at t+7s (Ctrl-C, 0x03) and t+6s (positive control, y CR), after the terminal negotiation settles.
 
-INTERACTIVE_CTRLC_40: INNER_EXIT: 1 — `just-code: user aborted` (46c-40ctrlc.typescript)
-INTERACTIVE_CTRLC_200: INNER_EXIT: 1 — `just-code: user aborted` (46c-200ctrlc.typescript)
-On macOS huh turns Ctrl-C into its abort path ("user aborted", inner exit 1). Linux behaves the same: re-measured with a raw transcript on both Linux arches (linux-arm64/62b, linux-amd64/22f), the post-handshake cancel is the same huh abort path — "just-code: user aborted", inner exit 1, nothing stored — at 40 and 200 cols. The 130 recorded by the older linux files (22e/62) was the outer script(1)/timeout status, not the app's cancel path; 130 is what a pty in cooked mode produces when Ctrl-C arrives as SIGINT before huh takes the terminal (demonstrated in linux-arm64/62b-cookedctrlc.typescript). Same observable outcome on all three: the prompt cancels immediately at both widths, the process exits, nothing is stored.
+Feeder (retained below and recorded in 46c-input.log): each script(1) run takes its stdin from a pipe whose writer is the feed() helper. feed() writes the exact key bytes to the PTY and appends a timestamped hex record of exactly those bytes to 46c-input.log, so the input stream is auditable independently of the typescript.
+    feed() { sleep "$2"; local hex ts; hex=$(printf "$3" | od -An -tx1 | tr -s ' ' | sed 's/^ //;s/ $//'); ts=$(date -u +%Y-%m-%dT%H:%M:%SZ); printf '%s\tts=%s\tdelay=%ss\tbytes=%s\n' "$1" "$ts" "$2" "$hex" >> "$INLOG"; printf "$3"; }
+    exact pipeline,  40 cols:  ( feed ctrlc-40 7 '\003' ) | script -q 46c-40ctrlc.typescript bash -c "stty cols 40 rows 24; stty size; just-code secrets import --apply --profile tty46c40ctrlc --file .env; echo INNER_EXIT:\$?" > /dev/null
+    exact pipeline, 200 cols:  ( feed ctrlc-200 7 '\003' ) | script -q 46c-200ctrlc.typescript bash -c "stty cols 200 rows 24; stty size; just-code secrets import --apply --profile tty46c200ctrlc --file .env; echo INNER_EXIT:\$?" > /dev/null
+    exact pipeline,  n ctrl:   ( feed n-cancel 6 'n\r' ) | script -q 46c-ncancel.typescript bash -c "stty cols 80 rows 24; stty size; just-code secrets import --apply --profile tty46cncancel --file .env; echo INNER_EXIT:\$?" > /dev/null
+    exact pipeline,  y ctrl:   ( feed positive-control-y 6 'y\r' ) | script -q 46c-ycontrol.typescript bash -c "stty cols 80 rows 24; stty size; just-code secrets import --apply --profile tty46cycontrol --file .env; echo INNER_EXIT:\$?" > /dev/null
 
-CONTROL_N (80 cols): "Cancelled. No credentials stored.", INNER_EXIT: 0 (46c-ncancel.typescript)
-POSITIVE_CONTROL_Y (80 cols): "Stored .env (1 added...)", INNER_EXIT: 0 (46c-ycontrol.typescript)
+Binary under test: v0.10.0 commit db9b8fcd2d27 (darwin/arm64)
+Project: /private/tmp/qualif-46c
 
-Persistence check: after all four runs the project-secret index (state dir, keychain store) contained exactly ONE entry — profile tty46cycontrol. Neither Ctrl-C run nor the n-cancel persisted anything; the positive control proves the check discriminates. Keychain item and namespace directory deleted after the run.
++ index BEFORE (no tty46c* profile may exist under any namespace)
+    c10b67141cd3  (no entries)
+    f99661669900  9 development
 
-+ approval flow: no interactive prompt in v0.10.0 (#209); failed approve leaves partial state (#210) — see issue bodies
++ interactive huh Ctrl-C at 40 cols, Ctrl-C (0x03) at t+7s
+    transcript dimensions: 24 40
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ interactive huh Ctrl-C at 200 cols, Ctrl-C (0x03) at t+7s
+    transcript dimensions: 24 200
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ index AFTER the two Ctrl-C runs (no tty46c* profile may exist)
+    c10b67141cd3  (no entries)
+    f99661669900  9 development
+
++ n-cancel at 80 cols: answer n (0x6e 0x0d) at t+6s
+    transcript dimensions: 24 80
+    result line:           Cancelled.
+    inner status:          INNER_EXIT:0
+
++ positive control: answer y (0x79 0x0d) at 80 cols (proves the persistence check discriminates)
+    transcript dimensions: 24 80
+    result line:           Stored .env (1 added, 0 changed, 0 unchanged, 0 removed).
+    inner status:          INNER_EXIT:0
+
++ index AFTER the positive control (only tty46cycontrol may hold the .env variable)
+    c10b67141cd3  1 tty46cycontrol
+    f99661669900  9 development
+
++ cleanup: remove the control's keychain items and its namespace index
+    namespace cleared: c10b67141cd35f60f2a68d2ed0b0accbbf3808386dfb3014969252842d8a00f6
+
++ index FINAL (tty46c* profiles gone; the pre-existing development entries untouched)
+    c10b67141cd3  (no entries)
+    f99661669900  9 development
+
++ retained input log (46c-input.log) — exact bytes written to each PTY stdin
+    ctrlc-40	ts=2026-10-19T11:04:58Z	delay=7s	bytes=03
+    ctrlc-200	ts=2026-10-19T11:05:05Z	delay=7s	bytes=03
+    n-cancel	ts=2026-10-19T11:05:11Z	delay=6s	bytes=6e 0d
+    positive-control-y	ts=2026-10-19T11:05:17Z	delay=6s	bytes=79 0d
+MAC46C_DONE

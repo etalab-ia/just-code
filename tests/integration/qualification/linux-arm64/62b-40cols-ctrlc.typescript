@@ -1,5 +1,5 @@
-META step=62b-asahi-terminal-200-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:28:29Z case=ctrlc-40cols
-Script started on 2026-10-19 06:28:36-04:00 [COMMAND="stty cols 40 rows 24; stty size; just-code secrets import --apply --profile tty62-40c --file .env; echo INNER_EXIT:$?" <not executed on terminal>]
+META step=62b-asahi-terminal-200-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:52:35Z case=ctrlc-40cols
+Script started on 2026-10-19 06:52:42-04:00 [COMMAND="stty cols 40 rows 24; stty size; just-code secrets import --apply --profile tty62-40c --file .env; echo INNER_EXIT:$?" <not executed on terminal>]
 24 40
 Project ~/qualif/proj-d | profile tty62-40c | .env
   Variables: API_TOKEN, DUPE_KEY
@@ -13,4 +13,4 @@ Project ~/qualif/proj-d | profile tty62-40c | .env
 ←/→ toggle • enter submit • y Yes • n No[>4m[=0;1u[J[?25h[?2004l[?1004ljust-code: user aborted
 INNER_EXIT:1
 
-Script done on 2026-10-19 06:28:43-04:00 [COMMAND_EXIT_CODE="0"]
+Script done on 2026-10-19 06:52:49-04:00 [COMMAND_EXIT_CODE="0"]

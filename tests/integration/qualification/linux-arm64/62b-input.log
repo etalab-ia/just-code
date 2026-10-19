@@ -1,0 +1,6 @@
+ctrlc-200	ts=2026-10-19T10:52:42.664Z	delay=7s	bytes=03
+ctrlc-40	ts=2026-10-19T10:52:49.698Z	delay=7s	bytes=03
+positive-control-y	ts=2026-10-19T10:52:55.740Z	delay=6s	bytes=79 0d
+mechanism-cooked	ts=2026-10-19T10:52:57.825Z	delay=2s	bytes=03
+mechanism-isig-off	ts=2026-10-19T10:52:59.851Z	delay=2s	bytes=03
+mechanism-cooked-window	ts=2026-10-19T10:53:06.170Z	delay=0.3s	bytes=03

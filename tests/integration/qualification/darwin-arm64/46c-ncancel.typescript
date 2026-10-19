@@ -1,4 +1,4 @@
-META step=46c-mac-terminal-interactive case=n-cancel-80cols source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T07:33:37Z
+META step=46c-mac-terminal-interactive source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T11:04:50Z case=n-cancel
 24 80
 Project /private/tmp/qualif-46c | profile tty46cncancel | .env
   Variables: QUALIF46_KEY
@@ -9,4 +9,4 @@ Project /private/tmp/qualif-46c | profile tty46cncancel | .env
 ┃                               Yes     No  
 
 ←/→ toggle • enter submit • y Yes • n No[5A[J[>4m[=0;1u[J[?25h[?2004l[?1004lCancelled. No credentials stored.
-INNER_EXIT: 0
+INNER_EXIT:0
