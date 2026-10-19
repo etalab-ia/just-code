@@ -1,0 +1,10 @@
+META step=24-agent-vm date=2026-10-16T15:53:12Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ doctor --agent-vm
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+limactl version 1.2.1
+just-code: limactl list failed (exit 1): time="2026-10-16T15:53:13Z" level=fatal msg="must not run as the root user"
+
+DOCTOR_AVM_EXIT: 1

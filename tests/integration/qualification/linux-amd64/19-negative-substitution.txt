@@ -1,0 +1,16 @@
+META step=19-negative-substitution date=2026-10-16T15:46:30Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ listener on host:8080 (not an approved destination)
++ what the listener received (expect: marker intact, NOT the real value):
+no-auth-header
+0
+no-real-value-sent
++ negative control: marker toward postman-echo.com (NOT approved)
++ postman-echo WITHOUT marker (connectivity control):
+{"args":{},"headers":{"host":"postman-echo.com","accept":"*/*","user-agent":"curl/8.22.0","x-forwarded-proto":"https","accept-encoding":"gzip, br"},"url":"https://postman-echo.com/get"}
+HTTP 200 exit 0
++ postman-echo WITH marker again (denial reproducible?):
+curl: (56) OpenSSL SSL_read: OpenSSL/3.5.8: error:0A000126:SSL routines::unexpected eof while reading, errno 0
+
+HTTP 000 exit 56
++ httpbin WITH marker to a non-approved PATH? (destination is host-scoped — control)
+Bearer dev-fake-token-0001

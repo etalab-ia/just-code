@@ -1,0 +1,10 @@
+Script started on 2026-10-16 15:36:27+00:00 [<not executed on terminal>]
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+Note: /root/qualif/proj-a carries files that look like secrets in the host checkout. They are NOT mounted into the guest and the transfer filter excludes them (re-include a specific file with 'just-code workspace allow <path>' if the guest genuinely needs it).
+  dotenv file (excluded from transfer): .env
+  dotenv file (excluded from transfer): .env.local
+^@
+Script done on 2026-10-16 15:36:47+00:00 [COMMAND_EXIT_CODE="0"]
