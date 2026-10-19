@@ -145,32 +145,25 @@ case ":${PATH:-}:" in
 				# type dépend de la plateforme : un Terminal macOS ouvre un
 				# shell de connexion (~/.bash_profile, avec repli sur
 				# ~/.profile), un terminal Linux ouvre un shell interactif non
-				# connecté (~/.bashrc). On vise le fichier que les nouveaux
-				# terminaux de cette plateforme lisent vraiment.
-				# ~/.bash_profile n'est jamais créé de zéro : il masquerait un
-				# ~/.profile existant, que bash de connexion ne lirait plus.
+				# connecté (~/.bashrc). On ne vise que le fichier que les
+				# nouveaux terminaux de cette plateforme lisent vraiment.
 				if [ "$system" = 'Darwin' ]; then
+					# macOS : fichier de connexion, par ordre de préférence le
+					# premier déjà présent. Un ~/.bash_profile créé de zéro
+					# masquerait un ~/.profile existant, que bash de connexion
+					# ne lirait plus — d'où .profile avant la création.
 					if [ -f "$HOME/.bash_profile" ]; then
 						path_file='~/.bash_profile'
-					elif [ -f "$HOME/.bashrc" ]; then
-						path_file='~/.bashrc'
 					elif [ -f "$HOME/.profile" ]; then
 						path_file='~/.profile'
 					else
 						path_file='~/.bash_profile'
 					fi
 				else
-					if [ -f "$HOME/.bashrc" ]; then
-						path_file='~/.bashrc'
-					elif [ -f "$HOME/.bash_profile" ]; then
-						path_file='~/.bash_profile'
-					elif [ -f "$HOME/.profile" ]; then
-						path_file='~/.profile'
-					else
-						# Rien à masquer : ~/.bashrc est le fichier lu par un
-						# terminal Linux ordinaire.
-						path_file='~/.bashrc'
-					fi
+					# Linux : un nouveau terminal est un shell non connecté, qui
+					# ne lit QUE ~/.bashrc. Les fichiers de connexion n'y
+					# changeraient rien, et ~/.bashrc ne masque rien.
+					path_file='~/.bashrc'
 				fi
 				;;
 			*) path_file='~/.profile' ;;
@@ -189,11 +182,18 @@ case ":${PATH:-}:" in
 			printf 'ne serait pas trouvée dans un nouveau terminal.\n'
 			printf 'Ajouter la ligne suivante à %s ? (O/n)\n' "$path_file"
 			printf '  %s\n\n' "$path_line"
+			# Une lecture qui échoue (Ctrl-D, /dev/tty devenu illisible) ne
+			# vaut pas acceptation : c'est un refus, jamais un « oui » implicite.
 			answer=''
+			read_ok=0
 			if [ -t 0 ]; then
-				read -r answer || answer=''
+				read -r answer && read_ok=1
 			else
-				read -r answer < /dev/tty || answer=''
+				read -r answer < /dev/tty && read_ok=1
+			fi
+			if [ "$read_ok" -eq 0 ]; then
+				printf 'Réponse non lue : le profil %s n'"'"'a pas été modifié.\n\n' "$path_file"
+				answer='n'
 			fi
 			case "$answer" in
 				''|o|O|y|Y)

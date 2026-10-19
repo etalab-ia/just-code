@@ -206,9 +206,9 @@ if command -v setsid >/dev/null 2>&1; then
 	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$temp_root/detached.out" >/dev/null || { printf 'headless install did not print the PATH line\n' >&2; exit 1; }
 fi
 
-	# Bash with no existing ~/.bash_profile: writing one would shadow an
-	# existing ~/.profile (login bash stops falling back to it). The installer
-	# must target ~/.profile instead.
+	# Linux never targets a login file: a new terminal there is a non-login
+	# bash, which reads only ~/.bashrc. A ~/.profile present alongside must be
+	# left alone (and no ~/.bash_profile may be created to shadow it).
 	bash_home="$temp_root/bash home"
 	mkdir -p "$bash_home"
 	printf 'export EDITOR=vi\n' > "$bash_home/.profile"
@@ -241,9 +241,9 @@ while time.time() < deadline:
     if b"configuration" in out: break
 sys.stdout.write(out.decode("utf-8", "replace"))
 PY
-	grep -F 'Ajouter la ligne suivante à ~/.profile ?' "$temp_root/bash-profile.out" >/dev/null || { printf 'bash without .bash_profile must target ~/.profile\n' >&2; exit 1; }
+	grep -F 'Ajouter la ligne suivante à ~/.bashrc ?' "$temp_root/bash-profile.out" >/dev/null || { printf 'linux bash must target ~/.bashrc even when ~/.profile exists\n' >&2; exit 1; }
 	[ ! -e "$bash_home/.bash_profile" ] || { printf 'installer created a shadowing ~/.bash_profile\n' >&2; exit 1; }
-	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$bash_home/.profile" >/dev/null || { printf 'PATH line not written to ~/.profile\n' >&2; exit 1; }
+	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$bash_home/.bashrc" >/dev/null || { printf 'PATH line not written to ~/.bashrc\n' >&2; exit 1; }
 	grep -F 'export EDITOR=vi' "$bash_home/.profile" >/dev/null || { printf 'existing ~/.profile content was destroyed\n' >&2; exit 1; }
 
 	# Empty SHELL: unknown, must fall back to ~/.profile, not ~/.zshenv.
@@ -317,6 +317,81 @@ PY
 	[ ! -e "$rc_home/.bash_profile" ] || { printf 'installer created a shadowing ~/.bash_profile on linux\n' >&2; exit 1; }
 	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$rc_home/.bashrc" >/dev/null || { printf 'PATH line not written to ~/.bashrc\n' >&2; exit 1; }
 	grep -F 'export EDITOR=vi' "$rc_home/.bashrc" >/dev/null || { printf 'existing ~/.bashrc content was destroyed\n' >&2; exit 1; }
+
+	# macOS bash with no ~/.bash_profile: a login shell falls back to
+	# ~/.profile, so that existing file is the one to extend. Creating a
+	# ~/.bash_profile would shadow it and hide whatever it initialises.
+	mac_home="$temp_root/mac home"
+	mkdir -p "$mac_home"
+	printf 'export EDITOR=vi\n' > "$mac_home/.profile"
+	# The darwin leg downloads the darwin asset, so the fake curl must be
+	# offered that name rather than the linux one.
+	python3 - "$mac_home" "$installer" "$fake_bin" 'just-code-darwin-arm64' "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/mac-bash.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/bash", "TERM": "xterm",
+    "FAKE_OS": "Darwin", "FAKE_ARCH": "arm64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+os.write(fd, b"\n")
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	grep -F 'Ajouter la ligne suivante à ~/.profile ?' "$temp_root/mac-bash.out" >/dev/null || { printf 'macos bash must extend an existing ~/.profile\n' >&2; exit 1; }
+	[ ! -e "$mac_home/.bash_profile" ] || { printf 'installer shadowed ~/.profile with a new ~/.bash_profile\n' >&2; exit 1; }
+	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$mac_home/.profile" >/dev/null || { printf 'PATH line not written to ~/.profile on macos\n' >&2; exit 1; }
+
+	# A read that fails at the PATH prompt (Ctrl-D) is a refusal, never an
+	# implicit "yes": closing stdin without answering must not edit a profile.
+	ctrl_home="$temp_root/ctrl-d home"
+	mkdir -p "$ctrl_home"
+	printf 'export EDITOR=vi\n' > "$ctrl_home/.profile"
+	python3 - "$ctrl_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/ctrl-d.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/zsh", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+# Ctrl-D on an empty line: the pending read returns EOF, not an empty answer.
+os.write(fd, b"\x04")
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	[ ! -e "$ctrl_home/.zshenv" ] || { printf 'a failed prompt read must not edit the profile\n' >&2; exit 1; }
+	grep -F "Réponse non lue" "$temp_root/ctrl-d.out" >/dev/null || { printf 'a failed prompt read must be reported as a refusal\n' >&2; exit 1; }
 # The resume command must name the installed binary by absolute path: the
 # invoking shell may not have ~/.local/bin on PATH (the very case handled
 # above), so a bare `just-code setup` would be a command not found.
