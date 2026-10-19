@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.11.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.10.0...just-code-v0.11.0) (2026-10-19)
+
+
+### Features
+
+* **check:** report reachability of configured preview ports ([9357fc3](https://github.com/etalab-ia/just-code/commit/9357fc37f82ecc15e1557d08f342619e670cab0d))
+
+
+### Bug Fixes
+
+* **check:** probe the port mappings applied to the running sandbox ([d61f498](https://github.com/etalab-ia/just-code/commit/d61f498b0d8916d0c8329fb36812cd65c01c7b8a))
+* **check:** report stale forwards and zone strips in emptied states ([a365020](https://github.com/etalab-ia/just-code/commit/a365020c6a85d477c19ac168afc820bccfb38b77))
+* **import:** annoncer l'approbation de confiance requise au premier lancement ([8467335](https://github.com/etalab-ia/just-code/commit/846733576e94c56adc10896b19d77ceb6c6127b3))
+* **import:** announce the trust approval the first run will require ([713c954](https://github.com/etalab-ia/just-code/commit/713c95468f1991a87a6d1c4a2f52895203db9664))
+* **import:** harden reads of untrusted project OpenCode configs ([6368a02](https://github.com/etalab-ia/just-code/commit/6368a02bcddaf176292b6748685d593c3c855da5))
+* **import:** name the project directory in the trust approval hint ([efdeb1d](https://github.com/etalab-ia/just-code/commit/efdeb1dbbc3d55e8a7ba702db9e76f99ca7f7ef0))
+* **init:** annoncer les touches de sélection des MultiSelect du wizard ([6fde5b7](https://github.com/etalab-ia/just-code/commit/6fde5b754c34554e056acf7ec03e25348bdc3128))
+* **init:** announce MultiSelect selection keys in the wizard ([96ea5c5](https://github.com/etalab-ia/just-code/commit/96ea5c5f163e6c26a71ba899853f91233a681905))
+* **init:** base local-only AGENTS.md ownership on actual zone presence ([f5d0655](https://github.com/etalab-ia/just-code/commit/f5d06556a05b1649ea3c9ebf000d9f89329c2462))
+* **init:** check AGENTS.md entry type before reading for a zone ([f8aa563](https://github.com/etalab-ia/just-code/commit/f8aa5630dd840f52207ef65404b46457ef438fb1))
+* **init:** recheck AGENTS.md at apply time for zones added after planning ([51665d2](https://github.com/etalab-ia/just-code/commit/51665d259e9f74f376bf84004c4131a19ab02fd7))
+* **init:** resolve the GitHub origin before the approval question ([3d5618a](https://github.com/etalab-ia/just-code/commit/3d5618a7db35cd4bef67a063e31e34efae2706d9))
+* **init:** résoudre l'origine GitHub avant la question d'approbation ([3467324](https://github.com/etalab-ia/just-code/commit/3467324fe25e0ca060d2ad79124c1c5f54dbea87))
+* **init:** scan AGENTS.md for zone markers in bounded memory ([56cae38](https://github.com/etalab-ia/just-code/commit/56cae38b459b278d4afa98f72284049b1072ef75))
+* probe AGENTS.md and host ports without unbounded reads or waits ([e85152c](https://github.com/etalab-ia/just-code/commit/e85152c5e9a76274d022fc17f4d739a874ea10f8))
+* scope managed guidance and port probes to the microsandbox runtime ([d238885](https://github.com/etalab-ia/just-code/commit/d23888513a1744ba1c4022c5761d78e0123bbe2e))
+* **skills:** address review on runtime parsing and AGENTS.md claim ([18c559d](https://github.com/etalab-ia/just-code/commit/18c559dbd054fd6c8e615b18d9d85c55d557e93a))
+* **skills:** keep standing managed instructions in every versioned project ([7cb93c5](https://github.com/etalab-ia/just-code/commit/7cb93c575118b4202129d5bc7336247570e6c73f))
+* **trust:** refuse symlinks in project path components ([294863b](https://github.com/etalab-ia/just-code/commit/294863b21f9caae7342b1e47f6d67dff03c93764))
+* web preview reachable through the host port forward ([1ff037e](https://github.com/etalab-ia/just-code/commit/1ff037eb2fa69d37ceff32b1046676187cb8bf70))
+
 ## [0.10.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.9.0...just-code-v0.10.0) (2026-10-16)
 
 
