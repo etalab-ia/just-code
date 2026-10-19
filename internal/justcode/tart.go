@@ -39,17 +39,23 @@ type Tart struct {
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
+	// AgentWaitInterval and AgentWaitPolls bound the guest-agent wait, so a
+	// test can exercise the timeout path without waiting a real minute.
+	AgentWaitInterval time.Duration
+	AgentWaitPolls    int
 }
 
 // NewTart builds a Tart orchestrator with production defaults.
 func NewTart(cfg Config) *Tart {
 	return &Tart{
-		Config:           cfg,
-		Runner:           OSRunner{},
-		Starter:          OSStarter{},
-		StateDir:         DefaultStateDir(),
-		KillPollInterval: time.Second,
-		KillMaxPolls:     10,
+		Config:            cfg,
+		Runner:            OSRunner{},
+		Starter:           OSStarter{},
+		StateDir:          DefaultStateDir(),
+		KillPollInterval:  time.Second,
+		KillMaxPolls:      10,
+		AgentWaitInterval: time.Second,
+		AgentWaitPolls:    60,
 	}
 }
 
@@ -369,14 +375,79 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 // waitForAgent polls `tart exec <vm> true` until the guest agent responds, up
 // to 60 seconds.
 func (t *Tart) waitForAgent(ctx context.Context) error {
-	for i := 0; i < 60; i++ {
+	polls := t.AgentWaitPolls
+	if polls <= 0 {
+		// A zero value is a test-built Tart that did not set the seam; the
+		// production default is what a real orchestrator carries, but a struct
+		// literal must not silently disable the wait entirely.
+		polls = 60
+	}
+	interval := t.AgentWaitInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	for i := 0; i < polls; i++ {
 		res, err := t.Runner.Run(ctx, "tart", "exec", t.VMName(), "true")
 		if err == nil && res.ExitCode == 0 {
 			return nil
 		}
-		time.Sleep(time.Second)
+		// A guest that never answers is usually a guest that never booted: on
+		// a headless Mac, Virtualization.framework refuses to create the VM's
+		// host key when the login keychain is locked, and the run dies within
+		// seconds. Polling for the full timeout and then reporting a generic
+		// "guest agent" timeout hides the real cause, which is only visible in
+		// the VM log. Stop as soon as the log names a startup failure.
+		if reason := tartStartupFailure(t.LogPath()); reason != "" {
+			return fmt.Errorf("tart could not start %s: %s\n"+
+				"The VM never booted, so no guest agent could answer. On a machine with no GUI session "+
+				"(SSH, a rented Mac), Virtualization.framework cannot create the VM host key when the login "+
+				"keychain is locked. Unlock that keychain or open a GUI session, then retry. Full log: %s",
+				t.VMName(), reason, t.LogPath())
+		}
+		time.Sleep(interval)
+	}
+	if reason := tartStartupFailure(t.LogPath()); reason != "" {
+		return fmt.Errorf("timed out waiting for %s guest agent; the VM log reports a startup failure: %s (full log: %s)",
+			t.VMName(), reason, t.LogPath())
 	}
 	return fmt.Errorf("timed out waiting for %s guest agent", t.VMName())
+}
+
+// tartStartupFailure extracts the first Virtualization.framework startup error
+// from a tart log, or "" when the log shows no such failure. The log is a live
+// file: the run may still be appending to it, so an unreadable or absent log
+// must stay silent rather than turn a slow boot into a false error.
+func tartStartupFailure(logPath string) string {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if isTartStartupFailure(line) {
+			return line
+		}
+	}
+	return ""
+}
+
+// isTartStartupFailure reports whether a log line describes a VM that failed
+// to boot. The markers are the ones Virtualization.framework and tart emit: a
+// VZErrorDomain code with its message (typically "The virtual machine
+// encountered a security error"), or a POSIX failure creating the host key.
+// Matching on the domains rather than a full sentence keeps this working
+// across macOS versions, whose wording varies.
+func isTartStartupFailure(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.Contains(line, "VZErrorDomain") {
+		return true
+	}
+	if strings.Contains(line, "Failed to create new HostKey") {
+		return true
+	}
+	return false
 }
 
 func (t *Tart) clone(ctx context.Context) error {
@@ -551,8 +622,39 @@ func (t *Tart) Doctor(ctx context.Context) error {
 		return fmt.Errorf("tart is not installed")
 	}
 	fmt.Print(res.Stdout)
+	// A locked login keychain is not fatal to `tart` itself but makes every VM
+	// fail to boot, and the failure surfaces much later as an unhelpful guest
+	// agent timeout. Name it here, where the user is looking, rather than
+	// letting it be discovered after a five-minute wait. This is advisory: a
+	// keychain can be unlocked, and doctor stays read-only.
+	if locked, detail := loginKeychainLocked(ctx, t.Runner); locked {
+		fmt.Printf("Warning: the login keychain appears locked (%s). Virtualization.framework stores each VM's host key there, so a Tart VM cannot boot until it is unlocked — `start --tart` would fail with a guest agent timeout. Unlock it (or open a GUI session) before starting.\n", detail)
+	}
 	fmt.Println("Tart runtime is ready.")
 	return nil
+}
+
+// loginKeychainLocked reports whether `security show-keychain-info` says the
+// login keychain is locked. It is best-effort and read-only: anything it cannot
+// determine is reported as "not locked", so a probe that does not work never
+// blocks a doctor run or invents a warning. Only darwin has the `security`
+// tool, and only a Mac can run Tart at all.
+func loginKeychainLocked(ctx context.Context, r Runner) (bool, string) {
+	res, err := r.Run(ctx, "security", "show-keychain-info")
+	if err != nil || res.ExitCode == 0 {
+		// Not installed, or the keychain is unlocked and usable.
+		return false, ""
+	}
+	detail := strings.TrimSpace(res.Stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(res.Stdout)
+	}
+	// `security` exits nonzero for a locked keychain and for other problems;
+	// only the locked wording is a warning we can act on.
+	if strings.Contains(strings.ToLower(detail), "locked") {
+		return true, detail
+	}
+	return false, ""
 }
 
 func (t *Tart) ID() Runtime { return RuntimeTart }
