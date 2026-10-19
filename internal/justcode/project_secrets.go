@@ -67,11 +67,18 @@ func projectSecretScope(root string) (canonical, namespace string, err error) {
 	}
 	canonical, err = filepath.EvalSymlinks(abs)
 	if err != nil {
+		// A root that does not exist yet is not a store-selection failure: the
+		// default ./workspace is created during Start, and a project that is
+		// not on disk has no project secrets. Every other resolution failure
+		// (permissions, a broken link) stays a real error.
+		if os.IsNotExist(err) {
+			return "", "", fmt.Errorf("%w: %v", ErrProjectSecretNoScope, err)
+		}
 		return "", "", fmt.Errorf("resolve project secret scope: %w", err)
 	}
 	info, err := os.Stat(canonical)
 	if err != nil || !info.IsDir() {
-		return "", "", fmt.Errorf("project secret root must be an existing directory")
+		return "", "", fmt.Errorf("%w: project secret root must be an existing directory", ErrProjectSecretNoScope)
 	}
 	digest := sha256.Sum256([]byte(filepath.ToSlash(canonical)))
 	return canonical, hex.EncodeToString(digest[:]), nil
@@ -128,6 +135,13 @@ type ProjectSecretImportResult struct {
 }
 
 var ErrProjectSecretCleanupPending = errors.New("project secret cleanup pending; retry with the same credential store")
+
+// ErrProjectSecretNoScope is returned when a runtime has no project scope at
+// all, so it cannot have project secrets. It exists to be told apart from a
+// store that is configured but cannot be resolved: the first is a legitimate
+// empty result, the second must stop a start before it touches a running
+// sandbox. Callers use errors.Is, so wrapping keeps the distinction.
+var ErrProjectSecretNoScope = errors.New("project secret bindings need a project workspace root")
 var ErrProjectSecretSnapshotChanged = errors.New("project secret set changed since preview; review a fresh preview before applying")
 
 // Windows Credential Manager caps the blob at 2560 bytes. WinCredStore encodes

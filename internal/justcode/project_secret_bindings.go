@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -371,7 +372,7 @@ func (m *MicrosandboxRuntime) projectSecretStore() (*ProjectSecretStore, error) 
 	}
 	root := m.cfg.WorkspaceDir
 	if root == "" {
-		return nil, fmt.Errorf("project secret bindings need a project workspace root")
+		return nil, ErrProjectSecretNoScope
 	}
 	return projectSecretStoreFor(root, m.stateDirOrDefault())
 }
@@ -382,10 +383,16 @@ func (m *MicrosandboxRuntime) projectSecretStore() (*ProjectSecretStore, error) 
 func (m *MicrosandboxRuntime) projectSecretDeliveries(ctx context.Context) (projectSecretResolution, error) {
 	store, err := m.projectSecretStore()
 	if err != nil {
-		// A workspace root that is not a resolvable directory means this
-		// runtime has no project scope (tests, legacy singletons); that is
-		// not a reason to fail a start that has no project secrets.
-		return projectSecretResolution{}, nil
+		// A runtime with no project scope at all (tests, legacy singletons)
+		// legitimately has no project secrets. Any other selection failure —
+		// an unresolvable root, a recorded store this host cannot build —
+		// must propagate: swallowing it would let Start and Restart pass the
+		// credential preflight with an empty binding set, and Restart would
+		// stop a usable sandbox before the failure surfaced later.
+		if errors.Is(err, ErrProjectSecretNoScope) {
+			return projectSecretResolution{}, nil
+		}
+		return projectSecretResolution{}, err
 	}
 	set, err := ReadProjectSecretBindings(DefaultFS, ProjectSecretBindingsPath(m.stateDirOrDefault(), store.Namespace()), store.Namespace())
 	if err != nil {

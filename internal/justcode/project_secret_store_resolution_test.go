@@ -3,6 +3,7 @@ package justcode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -213,5 +214,53 @@ func TestNativeImportStaysResolvable(t *testing.T) {
 	}
 	if store.Kind() != native {
 		t.Fatalf("kind = %q, want %q", store.Kind(), native)
+	}
+}
+
+// TestProjectSecretDeliveriesPropagatesSelectionFailure pins the P2: a store
+// this host cannot build must surface from the preflight rather than read as
+// "no project secrets". Swallowing it let Start and Restart pass the credential
+// preflight with an empty binding set, and Restart could stop a usable sandbox
+// before the same error appeared later in the start.
+func TestProjectSecretDeliveriesPropagatesSelectionFailure(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	root, state := t.TempDir(), t.TempDir()
+	m.cfg.WorkspaceDir = root
+	m.StateDir = state
+	// Record a store kind this host does not provide, so selection fails.
+	foreign := "gpg-agent"
+	if storeAvailability() == foreign {
+		t.Skipf("test needs a kind this host does not provide")
+	}
+	writeRecordedStoreKind(t, root, state, foreign)
+
+	if _, err := m.projectSecretDeliveries(context.Background()); err == nil {
+		t.Fatal("a store-selection failure must propagate, not read as no secrets")
+	}
+}
+
+// TestProjectSecretDeliveriesToleratesAnAbsentProjectScope pins the one case
+// that must stay silent: a runtime with no project scope has no project
+// secrets, so a default workspace that does not exist yet must not fail the
+// preflight (Restart creates it).
+func TestProjectSecretDeliveriesToleratesAnAbsentProjectScope(t *testing.T) {
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	m.cfg.WorkspaceDir = ""
+	if _, err := m.projectSecretDeliveries(context.Background()); err != nil {
+		t.Fatalf("no project scope must not be an error: %v", err)
+	}
+}
+
+// TestProjectSecretScopeMarksAnAbsentRootAsNoScope is the unit-level half:
+// the sentinel must be wrapped, not returned raw, so callers can use errors.Is
+// while the message still names the underlying cause.
+func TestProjectSecretScopeMarksAnAbsentRootAsNoScope(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing", "workspace")
+	_, _, err := projectSecretScope(missing)
+	if err == nil {
+		t.Fatal("an absent root must not resolve a scope")
+	}
+	if !errors.Is(err, ErrProjectSecretNoScope) {
+		t.Fatalf("error must wrap ErrProjectSecretNoScope, got: %v", err)
 	}
 }
