@@ -17,7 +17,9 @@ func TestGuestReadableApprovalRefusesAnUndeliverableValue(t *testing.T) {
 	}
 	// The user is present now: refusing here is better than failing every
 	// start later.
-	code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "DB_PASSWORD", "--delivery", "guest", "--root", root})
+	// --yes so the failure under test is the undeliverable value, not the
+	// non-interactive confirmation gate.
+	code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "DB_PASSWORD", "--delivery", "guest", "--yes", "--root", root})
 	if code != 1 || err == nil {
 		t.Fatalf("an undeliverable value must be refused at approval: code=%d err=%v", code, err)
 	}
