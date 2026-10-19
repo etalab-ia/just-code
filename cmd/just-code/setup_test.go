@@ -50,6 +50,27 @@ func forceNonTTY(t *testing.T) {
 	t.Cleanup(func() { stdinIsTTYFn = orig })
 }
 
+// forceIntro pins the intro gate for the test. Pass true to simulate a run
+// that can show and answer the intro, false for a run without a terminal.
+func forceIntro(t *testing.T, show bool) {
+	t.Helper()
+	orig := setupIntroFn
+	setupIntroFn = func() bool { return show }
+	t.Cleanup(func() { setupIntroFn = orig })
+}
+
+// forcePreflightPass stubs the host preflight to a non-fatal result, so tests
+// can exercise the fresh-start branch (intro, then the first prompt) on a host
+// whose real preflight would stop the wizard before any prompt.
+func forcePreflightPass(t *testing.T) {
+	t.Helper()
+	orig := setupPreflightFn
+	setupPreflightFn = func(context.Context) justcode.SetupPreflight {
+		return justcode.SetupPreflight{Platform: "test/arch", VirtualizationOK: true}
+	}
+	t.Cleanup(func() { setupPreflightFn = orig })
+}
+
 // journalPastPreflight writes a journal whose preflight already passed, so
 // the flow starts at the credential stage even on a KVM-less host.
 func journalPastPreflight(t *testing.T, stateDir string) {
@@ -194,6 +215,114 @@ func readUserSettingsFile(t *testing.T) map[string]any {
 		t.Fatal(err)
 	}
 	return m
+}
+
+// TestSetupIntroScreenContent pins the screen shown before any prompt: the
+// README banner, the "3 étapes" announcement the [n/3] counter later follows,
+// the duration/disk figures, and the Ctrl+C hint.
+func TestSetupIntroScreenContent(t *testing.T) {
+	for _, want := range []string{
+		"(_)_  _______/ /_",
+		"just code : coder avec l'IA souveraine",
+		"Cette configuration se fait une seule fois sur ce poste.",
+		"Durée : environ 3 minutes. Espace disque : environ 2 Go.",
+		"3 étapes :",
+		"1. Clé Albert API (obligatoire)",
+		"2. Sélection des modèles à utiliser.",
+		"3. GitHub (facultatif)",
+		"Rien n'est enregistré avant le récapitulatif final.",
+		"Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.",
+	} {
+		if !strings.Contains(setupIntroScreen, want) {
+			t.Errorf("intro screen is missing %q", want)
+		}
+	}
+}
+
+// TestSetupWizardShowsIntroBeforeAnyPrompt pins that on a fresh run the intro
+// is printed before the first question, that Enter (the leading empty line of
+// the piped answers) starts the wizard, and that the screen precedes the key
+// prompt.
+func TestSetupWizardShowsIntroBeforeAnyPrompt(t *testing.T) {
+	setupTestEnv(t)
+	forceNonTTY(t)
+	forceIntro(t, true)
+	// Fresh run (no journal past preflight), so the intro is reached through
+	// the real preflight branch; the preflight itself is stubbed to pass so a
+	// KVM-less runner still gets there.
+	forcePreflightPass(t)
+	// Leading empty line = Enter on the intro; then key, no GitHub, defaults.
+	input := "\ntest-key\nn\n\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run after intro: code=%d err=%v", code, err)
+		}
+	})
+	introAt := strings.Index(out, "3 étapes :")
+	if introAt < 0 {
+		t.Fatalf("fresh run did not print the intro screen; output:\n%s", out)
+	}
+	keyAt := strings.Index(out, "Albert API key")
+	if keyAt < 0 {
+		t.Fatalf("the Albert prompt never appeared; output:\n%s", out)
+	}
+	if introAt > keyAt {
+		t.Errorf("intro must precede the first prompt (intro at %d, prompt at %d)", introAt, keyAt)
+	}
+}
+
+// TestSetupWizardResumeSkipsIntro pins that only a first launch shows the
+// intro: a resumed run (journal already past preflight) goes straight to the
+// resume notice and the first prompt.
+func TestSetupWizardResumeSkipsIntro(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	forceIntro(t, true) // a terminal is available; the intro must still be skipped
+	journalPastPreflight(t, stateDir)
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\nn\n\n\n\n\ny\n")),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("resume run: code=%d err=%v", code, err)
+		}
+	})
+	if strings.Contains(out, "3 étapes :") {
+		t.Errorf("a resumed run must not re-print the intro screen; output:\n%s", out)
+	}
+	if !strings.Contains(out, "Resuming setup") {
+		t.Errorf("resume notice missing; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardNoIntroWithoutTerminal pins the guard: a run that cannot show
+// and answer the intro (piped input) must not print it, because the program
+// would otherwise wait for a keypress nobody can send.
+func TestSetupWizardNoIntroWithoutTerminal(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	forceIntro(t, false)
+	journalPastPreflight(t, stateDir)
+	// No leading Enter: the first line is the key. If the wizard waited for an
+	// intro keypress, the key would be swallowed and validation would fail.
+	input := "test-key\nn\n\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run without intro: code=%d err=%v", code, err)
+		}
+	})
+	if strings.Contains(out, "3 étapes :") {
+		t.Errorf("a run without a terminal must not print the intro screen; output:\n%s", out)
+	}
 }
 
 func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
