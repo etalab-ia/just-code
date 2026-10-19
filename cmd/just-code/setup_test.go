@@ -230,9 +230,9 @@ func TestSetupIntroScreenContent(t *testing.T) {
 		"1. Clé Albert API (obligatoire)",
 		"2. Sélection des modèles à utiliser.",
 		"3. GitHub (facultatif)",
-		"Vos identifiants sont enregistrés dès leur validation, pour que la",
-		"configuration puisse reprendre si elle est interrompue.",
-		"Les réglages sont confirmés au récapitulatif final.",
+		"Vos identifiants et votre identité git sont enregistrés au fil des questions,",
+		"pour que la configuration puisse reprendre si elle est interrompue.",
+		"Le modèle est confirmé au récapitulatif final.",
 		"Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.",
 	} {
 		if !strings.Contains(setupIntroScreen, want) {
