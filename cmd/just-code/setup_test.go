@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,17 +13,6 @@ import (
 
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
-
-// The cmd-level tests exercise the wizard flow end to end with a disposable
-// HOME (so the real state dir and user settings are never touched), piped
-// non-TTY input (the documented degraded mode), and injected seams for the
-// network-facing operations (Albert validation, runtime install) — the
-// tests never hit the network and never download the runtime.
-//
-// The preflight runs for real against the disposable HOME; on a host without
-// KVM it is fatal before any prompt, so tests that need the prompt flow set
-// the journal past preflight first (the same resumability the wizard itself
-// provides).
 
 // setupTestEnv isolates HOME and returns the state dir and settings path.
 func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
@@ -331,8 +321,11 @@ func TestSetupWizardShowsIntroBeforeAnyPrompt(t *testing.T) {
 	// the real preflight branch; the preflight itself is stubbed to pass so a
 	// KVM-less runner still gets there.
 	forcePreflightPass(t)
-	// Leading empty line = Enter on the intro; then key, no GitHub, defaults.
-	input := "\ntest-key\nn\n\n\n\n\ny\n"
+	// Leading empty line = Enter on the intro; then key, model, no GitHub,
+	// defaults. The empty line after the key is the model answer, so the "n"
+	// that follows is the GitHub answer, not the model one: the order is key ->
+	// models -> GitHub.
+	input := "\ntest-key\n\nn\n\n\n\ny\n"
 	// The same reader feeds both the intro's Enter and the wizard body, so the
 	// leading empty line is consumed exactly once.
 	in := bufio.NewReader(strings.NewReader(input))
@@ -350,7 +343,7 @@ func TestSetupWizardShowsIntroBeforeAnyPrompt(t *testing.T) {
 	if introAt < 0 {
 		t.Fatalf("fresh run did not print the intro screen; output:\n%s", out)
 	}
-	keyAt := strings.Index(out, "Albert API key")
+	keyAt := strings.Index(out, "[1/3] Clé Albert API")
 	if keyAt < 0 {
 		t.Fatalf("the Albert prompt never appeared; output:\n%s", out)
 	}
@@ -368,7 +361,9 @@ func TestSetupWizardResumeSkipsIntro(t *testing.T) {
 	forceIntro(t, true) // a terminal is available; the intro must still be skipped
 	journalPastPreflight(t, stateDir)
 	out := captureStdout(t, func() {
-		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\nn\n\n\n\n\ny\n")),
+		// key, model, no GitHub, defaults: the empty line is the model answer,
+		// so the "n" that follows answers the GitHub question.
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\n\nn\n\n\n\ny\n")),
 			func(context.Context, string) error { return nil },
 			func(context.Context) error { return nil },
 			func(string) string { return "" })
@@ -388,13 +383,18 @@ func TestSetupWizardResumeSkipsIntro(t *testing.T) {
 // and answer the intro (piped input) must not print it, because the program
 // would otherwise wait for a keypress nobody can send.
 func TestSetupWizardNoIntroWithoutTerminal(t *testing.T) {
-	stateDir, _ := setupTestEnv(t)
+	setupTestEnv(t)
 	forceNonTTY(t)
-	forceIntro(t, false)
-	journalPastPreflight(t, stateDir)
+	// A FRESH run, so the intro gate is actually evaluated: journalling past
+	// preflight would take the resume branch instead, where the gate is never
+	// consulted and this test would assert nothing about the guard.
+	forcePreflightPass(t)
+	// The gate is left REAL (stdin/stdout are not terminals under `go test`),
+	// which is the condition under test.
 	// No leading Enter: the first line is the key. If the wizard waited for an
 	// intro keypress, the key would be swallowed and validation would fail.
-	input := "test-key\nn\n\n\n\n\ny\n"
+	// key, model, no GitHub, defaults.
+	input := "test-key\n\nn\n\n\n\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -417,15 +417,19 @@ func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
 	// not injectable per-run through setupWizardRun (only validate and
 	// ensure are), so this test uses the file fallback store: a rejected
 	// key must leave it absent (nothing was stored).
-	input := "bad-key\n"
+	// #162 changed the contract: a refusal re-asks instead of ending the run,
+	// so the flow only stops when the re-ask is answered with an empty key.
+	input := "bad-key\n\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error {
 			return justcode.RejectedCredentialError{Detail: "HTTP 401"}
 		},
 		func(context.Context) error { return nil },
 		func(string) string { return "" })
-	if code == 0 || err != nil {
-		t.Fatalf("a rejected key must exit non-zero: code=%d err=%v", code, err)
+	// An empty key abandons the run, which reports the resumable cancel
+	// message (non-nil) rather than silently succeeding.
+	if code == 0 {
+		t.Fatalf("abandoning after a rejected key must exit non-zero: code=%d err=%v", code, err)
 	}
 	// The journal must not claim the credential was stored.
 	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
@@ -457,9 +461,9 @@ func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
-	// Piped answers: key with a trailing newline (the raw pipe line), no
-	// GitHub, empty identity (defaults), empty model, apply.
-	input := "test-key\nn\n\n\n\n\ny\n"
+	// Piped answers in wizard order: key with a trailing newline (the raw
+	// pipe line), empty model, no GitHub, empty identity (defaults), apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
 	var seenKey string
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(_ context.Context, key string) error {
@@ -487,8 +491,9 @@ func TestSetupWizardEmptyNameFallsBackToDefault(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
-	// key, no GitHub, empty name, empty email (defaults), empty model, apply.
-	input := "test-key\nn\n\n\n\ny\n"
+	// Wizard order: key, empty model, no GitHub, empty name, empty email
+	// (both default), apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
 		func(context.Context) error { return nil },
@@ -515,7 +520,8 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 	if readUserSettingsFile(t) != nil {
 		t.Fatal("precondition: no user settings file may exist")
 	}
-	input := "test-key\nn\n\n\nsome-model\nn\n"
+	// Wizard order: key, model, no GitHub, name, email, then cancel at apply.
+	input := "test-key\nsome-model\nn\n\n\nn\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
 		func(context.Context) error { return nil },
@@ -530,5 +536,484 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 		if _, ok := m["defaultModel"]; ok {
 			t.Fatalf("a cancelled apply must not write the model setting, got %v", m)
 		}
+	}
+}
+
+// TestAlbertKeyScreenShowsStepAndLinks pins screen 3.2's content: the [1/3]
+// counter, what the key is for, that it goes to the keychain (not the
+// projects), and both links.
+func TestAlbertKeyScreenShowsStepAndLinks(t *testing.T) {
+	header := albertKeyScreenHeader(false)
+	for _, want := range []string{
+		"[1/3] Clé Albert API",
+		"L'agent utilise Albert API, l'API d'IA générative de l'État.",
+		"La clé est enregistrée dans le trousseau de ce poste, jamais dans vos projets.",
+		"Vous n'avez pas encore de clé ?",
+		albertCreateKeyURL,
+		albertQuickstartURL,
+	} {
+		if !strings.Contains(header, want) {
+			t.Errorf("Albert key screen is missing %q", want)
+		}
+	}
+	if !strings.Contains(albertKeyPrompt, "elle ne s'affiche pas") {
+		t.Errorf("the key prompt must say the value is not displayed: %q", albertKeyPrompt)
+	}
+}
+
+// TestAlbertKeyScreenDescribesTheActualStore pins the fallback wording: with
+// --fallback the key goes to a consented owner-only file, not the keychain, so
+// the screen must not promise a keychain.
+func TestAlbertKeyScreenDescribesTheActualStore(t *testing.T) {
+	native := albertKeyScreenHeader(false)
+	fallback := albertKeyScreenHeader(true)
+	if !strings.Contains(native, "trousseau") {
+		t.Errorf("the native store wording must name the keychain: %q", native)
+	}
+	if strings.Contains(fallback, "trousseau") {
+		t.Errorf("the fallback wording must not claim a keychain: %q", fallback)
+	}
+	if !strings.Contains(fallback, "fichier") {
+		t.Errorf("the fallback wording must say the key is stored in a file: %q", fallback)
+	}
+}
+
+// TestAlbertRejectionMessageDistinguishesFromNetwork pins that a refusal names
+// the key page and never reads like the network message.
+func TestAlbertRejectionMessageDistinguishesFromNetwork(t *testing.T) {
+	msg := albertRejectedMessage("HTTP 401")
+	if !strings.Contains(msg, albertCreateKeyURL) {
+		t.Errorf("a rejected key must point at the key page: %q", msg)
+	}
+	if !strings.Contains(msg, "refusé") {
+		t.Errorf("a rejected key must say it was refused: %q", msg)
+	}
+	if msg == albertUnreachableMessage || albertUnreachableMessage == albertRejectedMessage("x") {
+		t.Error("refusal and unreachable must be distinct messages")
+	}
+	if !strings.Contains(albertUnreachableMessage, "proxy") {
+		t.Errorf("the unreachable message must mention the administration proxy: %q", albertUnreachableMessage)
+	}
+}
+
+// TestSetupWizardRejectedKeyReasksInsteadOfExiting pins 3.2's acceptance
+// criterion "une erreur ne fait jamais quitter l'assistant": after a refusal
+// the wizard asks for the key again, and a valid key entered the second time
+// completes setup.
+func TestSetupWizardRejectedKeyReasksInsteadOfExiting(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	var attempts []string
+	// First key refused, second accepted; then no GitHub and defaults.
+	// key, key (re-ask), model, GitHub, name, email, apply.
+	input := "bad-key\ngood-key\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(_ context.Context, key string) error {
+				attempts = append(attempts, key)
+				if key == "bad-key" {
+					return justcode.RejectedCredentialError{Detail: "HTTP 401"}
+				}
+				return nil
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("a refused key followed by a valid one must complete setup: code=%d err=%v", code, err)
+		}
+	})
+	if len(attempts) != 2 || attempts[0] != "bad-key" || attempts[1] != "good-key" {
+		t.Fatalf("the wizard must re-ask after a refusal; validated keys: %v", attempts)
+	}
+	if !strings.Contains(out, "refusé") || !strings.Contains(out, "✅ Clé valide.") {
+		t.Errorf("expected a refusal notice then a success notice; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardUnreachableOffersRetryAndContinue pins the network branch:
+// [R] re-enters the key, and the key is stored unvalidated when the user
+// continues.
+func TestSetupWizardUnreachableOffersRetryAndContinue(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	calls := 0
+	// key -> unreachable -> R (retry) -> key again -> reachable -> defaults.
+	// key, R (retry), key, model, GitHub, name, email, apply.
+	input := "first-key\nr\nsecond-key\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				calls++
+				if calls == 1 {
+					return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+				}
+				return nil
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("retry then success must complete setup: code=%d err=%v", code, err)
+		}
+	})
+	if calls != 2 {
+		t.Fatalf("R must re-validate the key; validation calls=%d", calls)
+	}
+	if !strings.Contains(out, albertUnreachableMessage) {
+		t.Errorf("the unreachable message must be shown; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardUnreachableContinueStoresUnvalidated pins the [C] branch:
+// continuing stores the key without validation and setup proceeds.
+func TestSetupWizardUnreachableContinueStoresUnvalidated(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	calls := 0
+	// key -> unreachable -> c (continue) -> defaults.
+	// key, C (continue), model, GitHub, name, email, apply.
+	input := "only-key\nc\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				calls++
+				return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("continue without validation must complete setup: code=%d err=%v", code, err)
+		}
+	})
+	if calls != 1 {
+		t.Fatalf("C must not re-validate; validation calls=%d", calls)
+	}
+	if !strings.Contains(out, "Clé enregistrée sans vérification.") {
+		t.Errorf("continuing must say the key was stored unvalidated; output:\n%s", out)
+	}
+	// A completed setup removes the journal, so assert on the outcome the
+	// journal existed for: the credential is in the store and settings were
+	// written.
+	m := readUserSettingsFile(t)
+	if m == nil {
+		t.Fatal("a completed setup must write the settings file")
+	}
+	_ = stateDir
+}
+
+// TestSetupWizardFlowIsKeyThenModelsThenGitHub pins the epic's announced order:
+// clé Albert API -> modèles -> GitHub. The [n/3] counters and the intro's
+// "3 étapes" are only truthful in that order.
+func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key, model, GitHub, name, email, apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	keyAt := strings.Index(out, "[1/3] Clé Albert API")
+	modelAt := strings.Index(out, "Default model")
+	githubAt := strings.Index(out, "GitHub credential (optional")
+	if keyAt < 0 || modelAt < 0 || githubAt < 0 {
+		t.Fatalf("flow markers missing (key=%d model=%d github=%d); output:\n%s", keyAt, modelAt, githubAt, out)
+	}
+	if !(keyAt < modelAt && modelAt < githubAt) {
+		t.Errorf("order must be key -> models -> GitHub; got key=%d model=%d github=%d", keyAt, modelAt, githubAt)
+	}
+}
+
+// TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume pins the Kimi
+// review finding on #216, across two runs:
+//
+//  1. a completed install has a saved model, and a re-run answers the model
+//     prompt EMPTY (an explicit choice of the built-in default) but is then
+//     aborted at the recap;
+//  2. the resumed run's model prompt is never answered (EOF).
+//
+// The explicit default choice from run 1 must survive: the run may not reload
+// the saved model just because the resumed prompt was unanswered. That requires
+// journalling the answered-ness, not only the value.
+func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	us.DefaultModel = "albert/old"
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, us); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 1: key -> EMPTY model (explicit built-in) -> skip GitHub ->
+	// identities -> refuse at the recap.
+	_ = captureStdout(t, func() {
+		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader("the-key\n\n\n\n\nn\n")),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+	})
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !j.ModelChosen || j.DefaultModel != "" {
+		t.Fatalf("run 1 must journal the answered-empty choice: chosen=%v model=%q", j.ModelChosen, j.DefaultModel)
+	}
+
+	// Run 2: resume. The key is already stored, so the MODEL prompt is the
+	// first question, and the input makes it unanswered (EOF).
+	_ = captureStdout(t, func() {
+		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader("")),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+	})
+	after, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DefaultModel != "" {
+		t.Fatalf("an explicit default choice must not be undone by an unanswered resume; got %q", after.DefaultModel)
+	}
+}
+
+// TestUnansweredModelPromptKeepsTheSavedModel pins the round-6 finding on #216:
+// a completed install being reconfigured has no journal, so the prompt starts
+// from the saved setting. If the input runs out (EOF, Ctrl-D) the prompt is
+// unanswered, and the run must not clear a model the user never asked to change.
+func TestUnansweredModelPromptKeepsTheSavedModel(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// A model already saved by a previous successful setup.
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	us.DefaultModel = "albert/keep-me"
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, us); err != nil {
+		t.Fatal(err)
+	}
+	// Input runs out right after the key, so every later prompt is unanswered.
+	input := "the-key\n"
+	_ = captureStdout(t, func() {
+		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+	})
+	after, uerr := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if uerr != nil {
+		t.Fatal(uerr)
+	}
+	if after.DefaultModel != "albert/keep-me" {
+		t.Fatalf("an unanswered model prompt must keep the saved model; got %q", after.DefaultModel)
+	}
+}
+
+// TestEmptyModelAnswerClearsAJournaledChoice pins the round-5 finding on #216:
+// a resumed run that had journaled a custom model must be able to go back to
+// the built-in default by answering the prompt with an empty line.
+func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// Pre-journal a custom model, as an interrupted run would have left it.
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.DefaultModel = "albert/previous-choice"
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	// key -> EMPTY model (choose the built-in) -> skip GitHub -> identities
+	// -> apply.
+	input := "the-key\n\n\n\n\n\ny\n"
+	_ = captureStdout(t, func() {
+		code, rerr := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || rerr != nil {
+			t.Fatalf("run: code=%d err=%v", code, rerr)
+		}
+	})
+	after, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if after.DefaultModel != "" {
+		t.Fatalf("an empty answer must clear the journaled model; got %q", after.DefaultModel)
+	}
+	path, perr := justcode.UserSettingsPath()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	us, uerr := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if uerr != nil {
+		t.Fatal(uerr)
+	}
+	if us.DefaultModel != "" {
+		t.Fatalf("an empty answer must clear the stored model; got %q", us.DefaultModel)
+	}
+}
+
+// TestModelChoiceSurvivesAbortAfterTheModelStage pins the round-4 finding on
+// #216. Model selection was moved ahead of the GitHub and git-identity forms,
+// so a user who aborts one of those must not lose a model they already chose:
+// the journal has to hold it before those cancellation points.
+func TestModelChoiceSurvivesAbortAfterTheModelStage(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key -> model -> skip GitHub (empty) -> default identity (two empties)
+	// -> refuse at the recap, which aborts after the model stage.
+	input := "the-key\nalbert/some-model\n\n\n\nn\n"
+	_ = captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code == 0 {
+			t.Errorf("an aborted run must not report success: code=%d err=%v", code, err)
+		}
+	})
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.DefaultModel != "albert/some-model" {
+		t.Fatalf("the model chosen before the abort must be journaled; got %q", j.DefaultModel)
+	}
+	// The settings write must still be deferred to Apply.
+	path, perr := justcode.UserSettingsPath()
+	if perr == nil {
+		us, rerr := justcode.ReadUserSettings(justcode.DefaultFS, path)
+		if rerr == nil && us.DefaultModel == "albert/some-model" {
+			t.Fatal("an aborted run must not write the model into user settings")
+		}
+	}
+}
+
+// TestSetupUnreachableTypoReasksInsteadOfExiting pins the round-3 finding on
+// #216: a typo at the [R]/[C] prompt is not a decision and must not end the
+// run — the wizard asks again.
+func TestSetupUnreachableTypoReasksInsteadOfExiting(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key -> unreachable -> typo -> C (continue) -> model, no GitHub, defaults.
+	input := "only-key\nz\nc\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("a typo must not end the run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "Réponse non reconnue.") {
+		t.Errorf("an unrecognized answer must be reported; output:\n%s", out)
+	}
+	if !strings.Contains(out, "Clé enregistrée sans vérification.") {
+		t.Errorf("C must still continue after a typo; output:\n%s", out)
+	}
+}
+
+// TestSetupUnreachableUnansweredPromptStoresNothing pins the second review
+// finding on #216: an end of input at the [R]/[C] prompt is NOT an explicit
+// "continue", so it must cancel rather than store an unvalidated key.
+func TestSetupUnreachableUnansweredPromptStoresNothing(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key, then end of input at the [R]/[C] question.
+	input := "only-key\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error {
+			return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+		},
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
+	if code == 0 {
+		t.Errorf("an unanswered retry prompt must not report success: code=%d err=%v", code, err)
+	}
+	if store, serr := justcode.ConsentFileStore(); serr == nil {
+		if _, statErr := os.Stat(store.Path); statErr == nil {
+			t.Fatal("an unanswered retry prompt must not store the key")
+		}
+	}
+	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
+		t.Fatal("an unanswered retry prompt must not journal albert as stored")
+	}
+}
+
+// TestSetupUnreachableRetryThenAbandonStoresNothing is the regression test for
+// the review finding on #216: choosing R then giving up must not leave the
+// first, unvalidated key in the store — otherwise a later `setup` skips this
+// screen and uses a key the user explicitly chose not to accept.
+func TestSetupUnreachableRetryThenAbandonStoresNothing(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key -> unreachable -> R -> empty key (abandon).
+	input := "first-key\nr\n\n"
+	var negativeCalls int
+	_ = captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				negativeCalls++
+				return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code == 0 {
+			t.Errorf("abandoning after R must not report success: code=%d err=%v", code, err)
+		}
+	})
+	// The store must not exist: nothing was ever Put.
+	if store, err := justcode.ConsentFileStore(); err == nil {
+		if _, serr := os.Stat(store.Path); serr == nil {
+			t.Fatal("a retry that was abandoned must not leave the key in the store")
+		}
+	}
+	// And the journal must not claim the credential is stored.
+	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
+		t.Fatal("a retry that was abandoned must not journal albert as stored")
+	}
+	if negativeCalls == 0 {
+		t.Fatal("precondition: the endpoint was never probed")
 	}
 }

@@ -70,10 +70,15 @@ l'invité ; confirmer la perte avant de l'exécuter.
 
 `just-code setup` prépare la machine en une passe guidée : diagnostic
 (plateforme, virtualisation, disque — lecture seule) → écran d'introduction
-(parcours annoncé, Entrée pour commencer) → identifiant Albert (masqué,
-validé contre le catalogue ; rejet et indisponibilité réseau distincts) →
-identifiant GitHub optionnel → identité git → modèle par défaut → revue →
-application (réglages globaux + runtime managé).
+(parcours annoncé, Entrée pour commencer) → clé Albert API (masquée, validée
+contre Albert API ; rejet et indisponibilité réseau distincts) → modèle par
+défaut → identifiant GitHub optionnel → identité git → revue → application
+(réglages globaux + runtime managé).
+
+L'ordre suit celui annoncé par l'écran d'introduction : clé, puis modèles,
+puis GitHub. L'écran de la clé porte le compteur `[1/3]` ; les compteurs des
+deux écrans suivants seront ajoutés avec l'écran de sélection des modèles,
+qui n'existe pas encore.
 
 ```bash
 just-code setup            # assistant interactif
@@ -103,10 +108,12 @@ Règles du flux :
   qui ne viendra pas.
 - **Reprise.** Un setup interrompu reprend là où il s'est arrêté (journal
   d'état hôte) — les identifiants déjà stockés ne sont pas redemandés.
-- **Rejet ≠ réseau.** Une clé refusée (401/403) propose de la ressaisir ;
-  un endpoint injoignable stocke la clé avec un avertissement (la
-  validation se rattrapera avec `just-code models`). Aucun appel
-  d'inférence n'est effectué pour valider.
+- **Rejet ≠ réseau.** Une clé refusée (401/403) est signalée et **redemandée
+  sur place**, avec le lien de création de clé : un refus ne fait jamais
+  quitter l'assistant. Un endpoint injoignable laisse le choix entre réessayer
+  (`R`) et continuer sans vérifier (`C`) ; en continuant, la clé est stockée
+  avec un avertissement et la validation se rattrapera avec
+  `just-code models`. Aucun appel d'inférence n'est effectué pour valider.
 - **GitHub sans pénalité.** Ignorer l'identifiant GitHub ne bloque rien ;
   un identifiant stocké reste inactif jusqu'à l'activation explicite du
   workflow GitHub pour un projet Microsandbox.

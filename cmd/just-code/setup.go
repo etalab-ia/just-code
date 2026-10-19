@@ -315,8 +315,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 	// Stage: Albert credential (skipped when already stored this run).
 	if !justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
-		fmt.Println("just-code setup — global configuration")
-		fmt.Println()
+		fmt.Println(albertKeyScreenHeader(fallback))
 		// Resolve and verify the store BEFORE prompting: a locked or
 		// unavailable store must fail before the user types anything (the
 		// auth add contract). A consented-but-absent file store is the
@@ -324,37 +323,61 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		if _, err := w.ResolveStore(ctx); err != nil {
 			return 1, err
 		}
-		var key string
-		if wizardHuhFn() {
-			value, err := huhSecret("Albert API key", "Input hidden. Leave empty to cancel.")
-			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-				return 1, err
+		// A refused key re-asks instead of ending the run: losing the whole
+		// wizard to one mistyped key is the failure this loop removes.
+		for {
+			var key string
+			if wizardHuhFn() {
+				value, err := huhSecret("Clé Albert API", "L'entrée est masquée. Laissez vide pour annuler.")
+				if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+					return 1, err
+				}
+				key = value
+			} else {
+				value, ok := promptSecret(in, albertKeyPrompt)
+				if !ok {
+					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+				}
+				key = value
 			}
-			key = value
-		} else {
-			value, ok := promptSecret(in, "Enter your Albert API key (input hidden where the terminal supports it; empty to cancel): ")
-			if !ok || value == "" {
+			if key == "" {
 				return 1, fmt.Errorf("%s", cancelMsg(stateDir))
 			}
-			key = value
-		}
-		if key == "" {
-			return 1, fmt.Errorf("%s", cancelMsg(stateDir))
-		}
-		probe, err := w.StoreCredential(ctx, justcode.CredentialAlbert, key)
-		if err != nil {
-			return 1, err
-		}
-		// Rejection is a probe outcome, not an error: handle it on the
-		// success path (the engine returns nil error for a rejection).
-		if probe.Rejected {
-			fmt.Fprintf(os.Stderr, "The key was rejected (%s). Re-run 'just-code setup' and re-enter it.\n", probe.Detail)
-			return 1, nil
-		}
-		if probe.Unreachable {
-			fmt.Fprintf(os.Stderr, "Warning: the Albert endpoint could not be reached (%s); the key was stored without validation. 'just-code models' will confirm it when the network recovers.\n", probe.Detail)
-		} else {
-			fmt.Println("Albert credential validated and stored.")
+			// Validate BEFORE writing: an unreachable endpoint must not leave
+			// a key in the store that the user never accepted, or a later
+			// `setup` would skip this screen and use it.
+			probe, err := w.ValidateCredential(ctx, justcode.CredentialAlbert, key)
+			if err != nil {
+				return 1, err
+			}
+			if probe.Rejected {
+				fmt.Println(albertRejectedMessage(probe.Detail))
+				fmt.Println()
+				continue
+			}
+			if probe.Unreachable {
+				fmt.Printf("%s (%s)\n", albertUnreachableMessage, probe.Detail)
+				retry, abort := albertRetryChoice(in)
+				if abort {
+					// Aborted or unanswerable: cancel rather than store a key
+					// the user never agreed to continue with.
+					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+				}
+				if retry {
+					fmt.Println()
+					continue
+				}
+			}
+			if err := w.PutCredential(ctx, justcode.CredentialAlbert, key); err != nil {
+				return 1, err
+			}
+			if probe.Unreachable {
+				// "Continuer sans vérifier": stored, but unvalidated.
+				fmt.Println("Clé enregistrée sans vérification.")
+			} else {
+				fmt.Println("✅ Clé valide.")
+			}
+			break
 		}
 		j.CredentialKinds = append(j.CredentialKinds, "albert")
 		if j.StoreKind == "" {
@@ -367,6 +390,85 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		}
 	} else {
 		fmt.Println("Albert credential: already stored.")
+	}
+
+	// Stage: model selection (catalogue-validated when reachable). It runs
+	// right after the Albert key because the catalogue check needs that key,
+	// and because the announced flow is key -> models -> GitHub -> recap.
+	// A journal has the run's own working value; without one (a completed
+	// install being reconfigured) the saved user setting is the current value,
+	// so an unanswered prompt must not look like "clear the model".
+	model := j.DefaultModel
+	modelAnswered := j.ModelChosen
+	if !modelAnswered {
+		if saved := currentUserModel(); saved != "" {
+			model = saved
+		}
+	}
+	{
+		fmt.Println()
+		fmt.Println("Default model (leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue):")
+		if wizardHuhFn() {
+			var chosen string
+			err := huhRun(huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().Title("Default model").Description("Leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue.").Value(&chosen),
+				),
+			))
+			if errors.Is(err, huh.ErrUserAborted) {
+				fmt.Println("Setup cancelled.")
+				return 1, nil
+			}
+			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+				return 1, err
+			}
+			chosen = strings.TrimSpace(chosen)
+			// An answered empty value is an explicit choice of the built-in
+			// default, so it must CLEAR a journaled model: otherwise a resumed
+			// run keeps the interrupted choice and there is no way back to the
+			// default through setup.
+			model = chosen
+			modelAnswered = true
+		} else {
+			chosen, answered := promptLine(in, "Model: ")
+			chosen = strings.TrimSpace(chosen)
+			if answered {
+				model = chosen
+				modelAnswered = true
+			}
+		}
+	}
+	// Validate against the P10 catalogue when it is reachable; an
+	// unreachable catalogue (first run offline, or the endpoint down) is a
+	// warning, not a blocker — the key itself was already validated above.
+	if model != "" {
+		validateModel := validateModelAgainstCatalogue
+		if catalogue != nil {
+			validateModel = catalogue
+		}
+		if warn := validateModel(model); warn != "" {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
+		}
+	}
+	// Record the choice immediately. The GitHub and git-identity stages come
+	// next and can be aborted; without this, resuming would reload the stale
+	// journal value and lose a model the user had already picked.
+	//
+	// The in-memory j must be updated too: later stages write the whole journal
+	// back, so a journal-only write here would be overwritten by the stale copy.
+	//
+	// Only an ANSWERED choice is journaled. An unanswered prompt (EOF, Ctrl-D)
+	// leaves the saved setting alone: resetting it would silently undo a
+	// configuration the user never asked to change.
+	// Record answered-ness, not just the value: an answered EMPTY choice leaves
+	// the value unchanged ("" equals ""), and without the flag a resumed run
+	// could not tell that choice from an interruption.
+	if modelAnswered && (j.DefaultModel != model || !j.ModelChosen) {
+		j.DefaultModel = model
+		j.ModelChosen = true
+		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+			return 1, err
+		}
 	}
 
 	// Stage: optional GitHub credential. Skipping is penalty-free.
@@ -466,50 +568,6 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		j.GitName, j.GitEmail = name, email
 	}
 
-	// Stage: model selection (catalogue-validated when reachable).
-	model := j.DefaultModel
-	{
-		fmt.Println()
-		fmt.Println("Default model (leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue):")
-		if wizardHuhFn() {
-			var chosen string
-			err := huhRun(huh.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Default model").Description("Leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue.").Value(&chosen),
-				),
-			))
-			if errors.Is(err, huh.ErrUserAborted) {
-				fmt.Println("Setup cancelled.")
-				return 1, nil
-			}
-			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-				return 1, err
-			}
-			chosen = strings.TrimSpace(chosen)
-			if chosen != "" && chosen != model {
-				model = chosen
-			}
-		} else {
-			chosen, _ := promptLine(in, "Model: ")
-			chosen = strings.TrimSpace(chosen)
-			if chosen != "" && chosen != model {
-				model = chosen
-			}
-		}
-	}
-	// Validate against the P10 catalogue when it is reachable; an
-	// unreachable catalogue (first run offline, or the endpoint down) is a
-	// warning, not a blocker — the key itself was already validated above.
-	if model != "" {
-		validateModel := validateModelAgainstCatalogue
-		if catalogue != nil {
-			validateModel = catalogue
-		}
-		if warn := validateModel(model); warn != "" {
-			fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
-		}
-	}
-
 	// Review.
 	fmt.Println()
 	fmt.Println("Review:")
@@ -522,6 +580,10 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	fmt.Printf("  Git identity: %s <%s>\n", strings.TrimSpace(j.GitName), strings.TrimSpace(j.GitEmail))
 	if model != "" {
 		fmt.Printf("  Default model: %s\n", model)
+	} else if !modelAnswered {
+		// The prompt was never answered: the saved setting is untouched, so the
+		// recap must not announce a change the run will not make.
+		fmt.Println("  Default model: unchanged")
 	} else {
 		fmt.Println("  Default model: albert/deepseek-v4-flash (built-in)")
 	}
@@ -543,7 +605,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 	// Apply: write the settings (only now — a cancelled apply must leave
 	// the settings untouched), then install the runtime.
-	if err := w.SaveSettings(model); err != nil {
+	if err := w.SaveSettings(model, modelAnswered); err != nil {
 		return 1, err
 	}
 	fmt.Println()
@@ -566,6 +628,22 @@ func storeLabel(fallback bool) string {
 		return "file"
 	}
 	return "native"
+}
+
+// currentUserModel reads the model saved in the user settings, if any. It is
+// the wizard's starting value when there is no journal (a completed install
+// being reconfigured), so that an unanswered prompt is distinguishable from a
+// deliberate "go back to the built-in default".
+func currentUserModel() string {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return ""
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return ""
+	}
+	return us.DefaultModel
 }
 
 // validateModelAgainstCatalogue checks the chosen model against the P10
@@ -596,6 +674,100 @@ func validateModelAgainstCatalogue(model string) string {
 
 func cancelMsg(stateDir string) string {
 	return fmt.Sprintf("setup cancelled; run 'just-code setup' to resume from where it stopped (journal: %s)", justcode.SetupJournalPath(stateDir))
+}
+
+// Albert API links shown on the key screen: where to create a key, and the
+// getting-started guide. The tests pin both.
+const (
+	albertCreateKeyURL  = "https://albert.playground.etalab.gouv.fr/"
+	albertQuickstartURL = "https://guides.ia.numerique.gouv.fr/albert-api/prise-en-main/quickstart"
+)
+
+// albertKeyScreenHeader introduces the first of the three steps and says where
+// a key comes from. fallback selects the file-store wording: the native
+// keychain and the consented file store are not the same guarantee, so the
+// screen must not promise a keychain when --fallback is in use.
+func albertKeyScreenHeader(fallback bool) string {
+	storeLine := "La clé est enregistrée dans le trousseau de ce poste, jamais dans vos projets."
+	if fallback {
+		storeLine = "La clé est enregistrée dans un fichier de ce poste, lisible par votre seul compte, jamais dans vos projets."
+	}
+	return fmt.Sprintf(`[1/3] Clé Albert API
+
+L'agent utilise Albert API, l'API d'IA générative de l'État.
+%s
+Vous n'avez pas encore de clé ?
+  Créez-la ici : %s
+  Guide de prise en main : %s
+`, storeLine, albertCreateKeyURL, albertQuickstartURL)
+}
+
+// albertKeyPrompt is the input label; the typed value is never echoed.
+const albertKeyPrompt = "Collez votre clé (elle ne s'affiche pas) : "
+
+// albertRejectedMessage explains a refused key and points at the key page
+// again, so the user can fix or replace it without leaving the wizard.
+func albertRejectedMessage(detail string) string {
+	return fmt.Sprintf("Albert API a refusé cette clé (%s). Vérifiez qu'elle est complète, sans espace, ou créez-en une nouvelle : %s",
+		detail, albertCreateKeyURL)
+}
+
+// albertUnreachableMessage distinguishes a network or proxy failure from a
+// refusal: the key may well be valid, so the user chooses whether to continue.
+const albertUnreachableMessage = "Albert API ne répond pas. Vérifiez votre connexion ou le proxy de votre administration."
+
+// albertRetryPrompt offers the two answers to an unreachable endpoint. The key
+// is NOT stored yet at this point: [R] re-enters it, [C] stores it unvalidated,
+// and any other outcome (abort, end of input) stores nothing.
+const albertRetryPrompt = "[R] Réessayer  [C] Continuer sans vérifier"
+
+// albertRetryChoice asks whether to retry validation. It returns retry=true to
+// re-enter the key, abort=true to stop the wizard, and neither for a
+// continue-without-verifying decision.
+//
+// A typo must not end the run: an answer that is neither R nor C asks again. A
+// missing answer (EOF) or an aborted form does stop the run, because only an
+// explicit choice may authorize storing an unvalidated key.
+func albertRetryChoice(in *bufio.Reader) (retry, abort bool) {
+	if wizardHuhFn() {
+		// huh only returns one of the two options (it re-asks on its own for
+		// anything else), so an error here is an abort, never a "continue".
+		choice := ""
+		err := huhRun(huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title(albertUnreachableMessage).
+					Options(
+						huh.NewOption("Réessayer", "retry"),
+						huh.NewOption("Continuer sans vérifier", "continue"),
+					).
+					Value(&choice),
+			),
+		))
+		switch {
+		case err != nil:
+			return false, true
+		case choice == "retry":
+			return true, false
+		default:
+			return false, false
+		}
+	}
+	fmt.Println(albertRetryPrompt)
+	for {
+		answer, ok := promptLine(in, "> ")
+		if !ok {
+			// End of input: nothing was chosen, so stop rather than store.
+			return false, true
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "r", "réessayer", "reessayer":
+			return true, false
+		case "c", "continuer":
+			return false, false
+		}
+		fmt.Printf("Réponse non reconnue. %s\n", albertRetryPrompt)
+	}
 }
 
 func printPreflight(res justcode.SetupPreflight) {

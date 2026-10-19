@@ -51,6 +51,12 @@ type SetupJournal struct {
 	GitEmail string `json:"gitEmail,omitempty"`
 	// DefaultModel is the resolved model selection, when one was chosen.
 	DefaultModel string `json:"defaultModel,omitempty"`
+	// ModelChosen records that the model prompt was ANSWERED, which is a
+	// different fact from the value it produced: an answered empty value means
+	// "use the built-in default" and must stay distinguishable from "never
+	// asked". Without it, a resume could not tell an explicit default choice
+	// from an interruption, and would resurrect a previously saved model.
+	ModelChosen bool `json:"modelChosen,omitempty"`
 }
 
 const setupJournalSchemaVersion = 1
