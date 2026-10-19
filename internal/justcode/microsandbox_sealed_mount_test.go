@@ -288,6 +288,52 @@ func TestParseServerPortForwardedReadsPersistedNetworkConfig(t *testing.T) {
 	}
 }
 
+func TestParseAppliedPortMappingsReadsPersistedNetworkConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		doc     string
+		want    []PortMapping
+		wantErr bool
+	}{
+		{
+			name: "server forward and preview mappings",
+			doc:  `{"network":{"ports":[{"host_port":4096,"guest_port":4096,"protocol":"tcp","host_bind":"127.0.0.1"},{"host_port":8080,"guest_port":80}]}}`,
+			want: []PortMapping{{Host: 4096, Guest: 4096}, {Host: 8080, Guest: 80}},
+		},
+		{
+			name: "empty port list",
+			doc:  `{"network":{"ports":[]}}`,
+			want: []PortMapping{},
+		},
+		{
+			name:    "missing network data",
+			doc:     `{"name":"jc-project"}`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid json",
+			doc:     `{not json`,
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseAppliedPortMappings(tc.doc)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected persisted port inspection error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !equalPortMappings(got, tc.want) {
+				t.Fatalf("applied mappings = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMSBSandboxEnvCarriesGitIdentity pins the P11 identity reaching the
 // guest through the environment the prep script reads, so commits made inside
 // the sandbox carry the configured identity rather than the script default.

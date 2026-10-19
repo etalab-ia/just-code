@@ -360,6 +360,12 @@ func (d *Dispatcher) Check(ctx context.Context, client *http.Client) error {
 	return checkErr
 }
 
+// appliedPortMappingsBackend is implemented by backends whose running
+// instance can report the port mappings it was created with.
+type appliedPortMappingsBackend interface {
+	AppliedPortMappings(ctx context.Context) ([]PortMapping, error)
+}
+
 // probePublishedPorts reports, for every port the project explicitly mapped,
 // whether a request from this machine gets an answer through the host-side
 // forward. It is print-only: `check` reports preview reachability as
@@ -367,10 +373,57 @@ func (d *Dispatcher) Check(ctx context.Context, client *http.Client) error {
 // implicit 3000-3010 range is not probed; only configured mappings are, and
 // only on Microsandbox: the mappings describe that runtime's host-loopback
 // forwards, which no other runtime creates.
+//
+// Only mappings the running sandbox actually applied are probed: manifest
+// changes take effect on recreate, so a newly configured host port may belong
+// to an unrelated service and a removed mapping may still be forwarded.
 func (d *Dispatcher) probePublishedPorts(ctx context.Context) {
 	if !d.cfg.PortsConfigured || len(d.cfg.Ports) == 0 {
 		return
 	}
+	ab, ok := d.backends[RuntimeMicrosandbox].(appliedPortMappingsBackend)
+	if !ok {
+		// Backends that cannot report instance state keep the manifest
+		// view; the production Microsandbox backend implements it.
+		d.probePortMappings(ctx, d.cfg.Ports)
+		return
+	}
+	applied, err := ab.AppliedPortMappings(ctx)
+	if err != nil {
+		fmt.Printf("port reachability: could not read the running sandbox's applied mappings (%v); not probing configured ports.\n", err)
+		return
+	}
+	appliedSet := make(map[PortMapping]bool, len(applied))
+	for _, pm := range applied {
+		appliedSet[pm] = true
+	}
+	desiredSet := make(map[PortMapping]bool, len(d.cfg.Ports))
+	for _, pm := range d.cfg.Ports {
+		desiredSet[pm] = true
+	}
+	var live []PortMapping
+	for _, pm := range d.cfg.Ports {
+		if appliedSet[pm] {
+			live = append(live, pm)
+			continue
+		}
+		fmt.Printf("port %d (guest %d): configured but not forwarded by the running sandbox; run 'just-code recreate --microsandbox' to apply.\n", pm.Host, pm.Guest)
+	}
+	for _, pm := range applied {
+		// The OpenCode backend's own server forward is not a user
+		// preview mapping; ValidatePortMappings keeps DefaultPort out
+		// of configured mappings entirely.
+		if pm.Host == DefaultPort && pm.Guest == DefaultPort {
+			continue
+		}
+		if !desiredSet[pm] {
+			fmt.Printf("port %d (guest %d): still forwarded until the sandbox is recreated (removed from the project's port mappings).\n", pm.Host, pm.Guest)
+		}
+	}
+	d.probePortMappings(ctx, live)
+}
+
+func (d *Dispatcher) probePortMappings(ctx context.Context, mappings []PortMapping) {
 	// The first response is the reachability answer: following a redirect
 	// would let a diagnostic probe make an unintended request outside
 	// loopback, and a failed redirect target would hide a forward that
@@ -381,7 +434,7 @@ func (d *Dispatcher) probePublishedPorts(ctx context.Context) {
 			return http.ErrUseLastResponse
 		},
 	}
-	for _, pm := range d.cfg.Ports {
+	for _, pm := range mappings {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", pm.Host), nil)
 		if err != nil {
 			fmt.Printf("port %d (guest %d): could not build the probe: %v\n", pm.Host, pm.Guest, err)

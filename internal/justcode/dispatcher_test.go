@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -305,6 +306,121 @@ func TestDispatcherCheckDoesNotProbePortsOnOtherRuntimes(t *testing.T) {
 	}
 	if strings.Contains(out, "host forward") || strings.Contains(out, "reachable (") {
 		t.Fatalf("port probe must not run on tart: %q", out)
+	}
+}
+
+type fakeAppliedPortsBackend struct {
+	fakeBackend
+	applied    []PortMapping
+	appliedErr error
+}
+
+func (f *fakeAppliedPortsBackend) AppliedPortMappings(context.Context) ([]PortMapping, error) {
+	return f.applied, f.appliedErr
+}
+
+func TestDispatcherCheckProbesOnlyAppliedPortMappings(t *testing.T) {
+	// Manifest changes apply on recreate: a mapping configured after the
+	// sandbox was created has no forward, so an unrelated listener on that
+	// host port must not be reported as a reachable preview.
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer live.Close()
+	livePort, err := strconv.Atoi(strings.TrimPrefix(live.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer unrelated.Close()
+	unrelatedPort, err := strconv.Atoi(strings.TrimPrefix(unrelated.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := freeLocalPort(t)
+	stale := freeLocalPort(t)
+	cfg := Config{
+		Isolation:       IsolationFull,
+		PortsConfigured: true,
+		Ports: []PortMapping{
+			{Host: uint16(livePort), Guest: 8080},
+			{Host: uint16(unrelatedPort), Guest: 8081},
+			{Host: dead, Guest: 8082},
+		},
+	}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeAppliedPortsBackend{
+			fakeBackend: fakeBackend{id: RuntimeMicrosandbox, running: true},
+			applied: []PortMapping{
+				{Host: uint16(livePort), Guest: 8080},
+				{Host: dead, Guest: 8082},
+				{Host: stale, Guest: 3000},
+				{Host: uint16(DefaultPort), Guest: uint16(DefaultPort)},
+			},
+		},
+		RuntimeTart:    &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM: &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatal(checkErr)
+	}
+	if got := "port " + strconv.Itoa(livePort) + " (guest 8080): reachable (200 OK)"; !strings.Contains(out, got) {
+		t.Fatalf("applied mapping was not probed: %q", out)
+	}
+	if got := "port " + strconv.Itoa(int(dead)) + " (guest 8082): no answer from the host forward"; !strings.Contains(out, got) {
+		t.Fatalf("applied dead mapping was not probed: %q", out)
+	}
+	if got := "port " + strconv.Itoa(unrelatedPort) + " (guest 8081): configured but not forwarded by the running sandbox; run 'just-code recreate --microsandbox' to apply."; !strings.Contains(out, got) {
+		t.Fatalf("pending mapping was not reported as pending: %q", out)
+	}
+	if strings.Contains(out, "port "+strconv.Itoa(unrelatedPort)+" (guest 8081): reachable") {
+		t.Fatalf("a mapping without a forward must not be reported reachable: %q", out)
+	}
+	if got := "port " + strconv.Itoa(int(stale)) + " (guest 3000): still forwarded until the sandbox is recreated"; !strings.Contains(out, got) {
+		t.Fatalf("stale applied mapping was not reported: %q", out)
+	}
+	if strings.Contains(out, strconv.Itoa(int(DefaultPort))) {
+		t.Fatalf("the OpenCode server forward must not be reported as a preview mapping: %q", out)
+	}
+}
+
+func TestDispatcherCheckSkipsPortProbesWhenAppliedMappingsUnreadable(t *testing.T) {
+	// When the applied mappings cannot be read, probing the manifest view
+	// would report services the sandbox does not forward: fail closed.
+	dead := freeLocalPort(t)
+	cfg := Config{
+		Isolation:       IsolationFull,
+		PortsConfigured: true,
+		Ports:           []PortMapping{{Host: dead, Guest: 3000}},
+	}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeAppliedPortsBackend{
+			fakeBackend: fakeBackend{id: RuntimeMicrosandbox, running: true},
+			appliedErr:  errors.New("sandbox api unavailable"),
+		},
+		RuntimeTart:    &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM: &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatal(checkErr)
+	}
+	if !strings.Contains(out, "could not read the running sandbox's applied mappings") {
+		t.Fatalf("missing applied-mappings failure note: %q", out)
+	}
+	if strings.Contains(out, "no answer from the host forward") {
+		t.Fatalf("ports must not be probed while applied mappings are unreadable: %q", out)
 	}
 }
 

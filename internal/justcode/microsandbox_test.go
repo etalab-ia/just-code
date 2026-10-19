@@ -30,6 +30,8 @@ type fakeMSBClient struct {
 	doctorErr    error
 	mount        string
 	mountErr     error
+	appliedPorts []PortMapping
+	appliedErr   error
 	startScript  string
 	env          map[string]string
 	envErr       error
@@ -121,6 +123,10 @@ func (f *fakeMSBClient) Create(_ context.Context, spec msbSandboxSpec) error {
 		f.exists = true
 	}
 	return f.createErr
+}
+
+func (f *fakeMSBClient) AppliedPortMappings(_ context.Context, _ string) ([]PortMapping, error) {
+	return f.appliedPorts, f.appliedErr
 }
 
 func (f *fakeMSBClient) Start(_ context.Context, name string) error {

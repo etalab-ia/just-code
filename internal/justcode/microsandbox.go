@@ -203,6 +203,13 @@ func (m *MicrosandboxRuntime) InstanceName() string {
 	return msbSandbox
 }
 
+// AppliedPortMappings reports the port mappings the running sandbox instance
+// was created with. Mappings changed in the project manifest only apply on
+// recreate, so this is the authority for which host forwards exist right now.
+func (m *MicrosandboxRuntime) AppliedPortMappings(ctx context.Context) ([]PortMapping, error) {
+	return m.Client.AppliedPortMappings(ctx, m.InstanceName())
+}
+
 func (m *MicrosandboxRuntime) ID() Runtime { return RuntimeMicrosandbox }
 
 // msbClient is the Microsandbox surface just-code uses, narrowed from the SDK
@@ -234,6 +241,11 @@ type msbClient interface {
 	// the sandbox is running (the placeholder dangles in the guest
 	// environment until restart), persisted for the next boot when stopped.
 	RemoveSecrets(ctx context.Context, name string, guestEnvs []string, live bool) error
+	// AppliedPortMappings reports the port mappings the sandbox was created
+	// with, from its persisted configuration. Mappings changed in the
+	// project manifest only apply on recreate, so this list is the
+	// authority for which host forwards exist right now.
+	AppliedPortMappings(ctx context.Context, name string) ([]PortMapping, error)
 	// Exec runs a shell command in the sandbox, returning its exit code and stderr.
 	Exec(ctx context.Context, name, command string) (int, string, error)
 	// ExecCapture is Exec with stdout captured too. Change delivery (P22)
