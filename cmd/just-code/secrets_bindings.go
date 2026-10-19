@@ -106,7 +106,10 @@ func parseProjectSecretBindingsArgs(args []string) (projectSecretBindingsOptions
 
 // projectSecretStoreForCLI resolves the store for the current project, using
 // the same credential backend the import wrote to. The fallback store is
-// selected only with the explicit --fallback flag, exactly like `auth`.
+// selected only with the explicit --fallback flag, exactly like `auth` — but a
+// store kind the project record already names wins over both, so `bindings
+// list` reports what was actually imported instead of what a fresh probe would
+// have chosen.
 func projectSecretStoreForCLI(root string, fallback bool) (*justcode.ProjectSecretStore, error) {
 	project, err := justcode.DiscoverProject(root)
 	if err != nil {
@@ -114,6 +117,21 @@ func projectSecretStoreForCLI(root string, fallback bool) (*justcode.ProjectSecr
 	}
 	store, err := projectSecretsCredentialStoreFn(fallback)
 	if err != nil {
+		// The requested store could not be built — for instance --fallback on a
+		// host with no usable config directory. Proceed only when the project
+		// record names a store this host can actually resolve; otherwise the
+		// original failure must survive, or the command would silently run
+		// against a store the user did not ask for, and could mutate metadata
+		// there.
+		recorded, recErr := justcode.RecordedCredentialStore(project.Root, projectSecretsStateDirFn())
+		if recErr != nil || recorded == nil {
+			return nil, err
+		}
+		store = recorded
+	} else if store, err = justcode.PreferRecordedCredentialStore(store, project.Root, projectSecretsStateDirFn()); err != nil {
+		// The recorded kind wins. On a headless host the native adapter
+		// resolves without error but never held the imported values, so
+		// consulting the flag alone is exactly the mismatch this fixes.
 		return nil, err
 	}
 	return projectSecretsStoreFactoryFn(project.Root, projectSecretsStateDirFn(), store)

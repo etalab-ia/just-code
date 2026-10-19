@@ -1214,6 +1214,20 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 		return err
 	}
 	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
+	// Re-run the credential preflight now that the directory exists. A
+	// workspace deleted while its sandbox and project-secret state survived is
+	// not "no project scope": recreating the same path yields the same
+	// namespace, and the store recorded for it must still resolve. The earlier
+	// resolution saw a missing root and skipped that check, so without this
+	// Stop would take a usable sandbox down before Start reported the same
+	// failure.
+	bindings, err = m.resolveBindings(ctx)
+	if err != nil {
+		return err
+	}
+	if err := m.validateStoredGitHubOrigin(bindings); err != nil {
+		return err
+	}
 	// Detect recreation-only states before stopping: a creation-fixed
 	// isolation mismatch cannot be fixed by restart, and stopping first
 	// would leave a previously usable sandbox down with a looping error.

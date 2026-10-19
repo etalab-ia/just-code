@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -371,17 +372,9 @@ func (m *MicrosandboxRuntime) projectSecretStore() (*ProjectSecretStore, error) 
 	}
 	root := m.cfg.WorkspaceDir
 	if root == "" {
-		return nil, fmt.Errorf("project secret bindings need a project workspace root")
+		return nil, ErrProjectSecretNoScope
 	}
-	store := DefaultCredentialStore()
-	if store == nil {
-		fileStore, err := NewFileCredentialStore()
-		if err != nil {
-			return nil, err
-		}
-		store = fileStore
-	}
-	return NewProjectSecretStore(root, m.stateDirOrDefault(), store)
+	return projectSecretStoreFor(root, m.stateDirOrDefault())
 }
 
 // projectSecretDeliveries returns the approved bindings for the current
@@ -390,10 +383,16 @@ func (m *MicrosandboxRuntime) projectSecretStore() (*ProjectSecretStore, error) 
 func (m *MicrosandboxRuntime) projectSecretDeliveries(ctx context.Context) (projectSecretResolution, error) {
 	store, err := m.projectSecretStore()
 	if err != nil {
-		// A workspace root that is not a resolvable directory means this
-		// runtime has no project scope (tests, legacy singletons); that is
-		// not a reason to fail a start that has no project secrets.
-		return projectSecretResolution{}, nil
+		// A runtime with no project scope at all (tests, legacy singletons)
+		// legitimately has no project secrets. Any other selection failure —
+		// an unresolvable root, a recorded store this host cannot build —
+		// must propagate: swallowing it would let Start and Restart pass the
+		// credential preflight with an empty binding set, and Restart would
+		// stop a usable sandbox before the failure surfaced later.
+		if errors.Is(err, ErrProjectSecretNoScope) {
+			return projectSecretResolution{}, nil
+		}
+		return projectSecretResolution{}, err
 	}
 	set, err := ReadProjectSecretBindings(DefaultFS, ProjectSecretBindingsPath(m.stateDirOrDefault(), store.Namespace()), store.Namespace())
 	if err != nil {
@@ -437,15 +436,99 @@ func ProjectSecretDeliveries(root, stateDir string) ([]ProjectSecretDelivery, []
 }
 
 func projectSecretStoreFor(root, stateDir string) (*ProjectSecretStore, error) {
-	store := DefaultCredentialStore()
-	if store == nil {
-		fileStore, err := NewFileCredentialStore()
-		if err != nil {
-			return nil, err
-		}
-		store = fileStore
+	_, namespace, err := projectSecretScope(root)
+	if err != nil {
+		return nil, err
+	}
+	store, err := credentialStoreForKind(RecordedProjectSecretStoreKind(stateDir, namespace))
+	if err != nil {
+		return nil, err
 	}
 	return NewProjectSecretStore(root, stateDir, store)
+}
+
+// credentialStoreForKind maps a store kind to an adapter. "" selects the
+// platform default; "file" is the owner-only fallback, chosen only because an
+// import already recorded that it stored the values there. A recorded kind is
+// a decision the user already made (the fallback requires explicit consent at
+// import), so honoring it on a later read is not a silent downgrade: the
+// alternative is failing against a store that never held the values.
+func credentialStoreForKind(kind string) (CredentialStore, error) {
+	switch kind {
+	case "file":
+		return NewFileCredentialStore()
+	case "", "native":
+		return defaultCredentialStoreOrError()
+	default:
+		// An import records the adapter's own Kind(), so a native-backed
+		// import writes "secret-service", "keychain" or "credential-manager"
+		// — never the "native" alias, which is only an input convention.
+		if kind == storeAvailability() {
+			return defaultCredentialStoreOrError()
+		}
+		return nil, fmt.Errorf("project secret index names credential store %q, which this host does not provide (it provides %q): re-import the component on this host, or move the state from the host that created it", kind, storeAvailability())
+	}
+}
+
+// defaultCredentialStoreOrError resolves the platform's native store, naming
+// the recovery when the platform has no adapter at all.
+func defaultCredentialStoreOrError() (CredentialStore, error) {
+	if store := DefaultCredentialStore(); store != nil {
+		return store, nil
+	}
+	return nil, fmt.Errorf("no native credential store is available on this platform; store and import with --fallback to use the owner-only file store after consenting")
+}
+
+// PreferRecordedCredentialStore reconciles an already-resolved store with the
+// store kind an import recorded for this project scope. When they disagree,
+// the recorded kind wins: the imported values are in that store, so reading
+// anywhere else can only produce a spurious mismatch. active may be nil, in
+// which case the recorded kind alone is resolved (a platform with no native
+// adapter can still have consented file-store values).
+func PreferRecordedCredentialStore(active CredentialStore, root, stateDir string) (CredentialStore, error) {
+	kind, err := RecordedCredentialStoreKind(root, stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if kind == "" {
+		if active == nil {
+			return credentialStoreForKind("")
+		}
+		return active, nil
+	}
+	// Compare kinds before building anything: an active store that already
+	// matches the record is returned as-is, which keeps the flag/seam
+	// authoritative and avoids constructing an adapter just to discard it.
+	if active != nil && active.Kind() == kind {
+		return active, nil
+	}
+	return credentialStoreForKind(kind)
+}
+
+// RecordedCredentialStore resolves the credential store an import recorded for
+// this project scope, or (nil, nil) when nothing is recorded. It exists so a
+// caller that must not invent a default — a command whose explicitly requested
+// store could not be built — can tell "no record" from "a store to use". Every
+// other caller wants PreferRecordedCredentialStore.
+func RecordedCredentialStore(root, stateDir string) (CredentialStore, error) {
+	kind, err := RecordedCredentialStoreKind(root, stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if kind == "" {
+		return nil, nil
+	}
+	return credentialStoreForKind(kind)
+}
+
+// RecordedCredentialStoreKind returns only the store kind an import recorded
+// for this project scope, or "" when none is recorded.
+func RecordedCredentialStoreKind(root, stateDir string) (string, error) {
+	_, namespace, err := projectSecretScope(root)
+	if err != nil {
+		return "", err
+	}
+	return RecordedProjectSecretStoreKind(stateDir, namespace), nil
 }
 
 // ProjectSecretBindingsRecord is the CLI-facing view of the host-local
