@@ -1,0 +1,45 @@
+META step=07-workspace-filter date=2026-10-16T15:32:22Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ host files:
+.env
+.env.local
+.git
+.gitignore
+.just-code
+README.md
+bin
+leaked-creds.txt
++ just-code workspace status
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+Sealed guest workspace for jc-proj-a-8d2aa
+
+Transfer into the sealed guest: 5 file(s), 336 B
+Source set: the Git working tree (tracked, untracked, and ignored files; .git metadata is not transferred).
+
+Excluded by the default-deny filter:
+  .env (dotenv file (default-deny))
+  .env.local (dotenv file (default-deny))
+  bin/payload.bin (git-ignored (local or derived state); re-include explicitly if the guest needs it)
+
+Will cross into the guest:
+  .gitignore (5 B)
+  .just-code/lock.json (82 B)
+  .just-code/project.json (134 B)
+  README.md (9 B)
+  leaked-creds.txt (106 B)
+
+The host checkout is not mounted into the guest; files cross only through this filtered transfer.
+STATUS_EXIT: 0
++ just-code workspace export /tmp/proj-a-export
+Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /root/qualif/proj-a/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+just-code: Unknown workspace export option: /tmp/proj-a-export (expected --out <file>)
+EXPORT_EXIT: 2
++ exported tree:
+find: ‘/tmp/proj-a-export’: No such file or directory
++ canary in export? (expect none)
+NONE (pass)

@@ -1,0 +1,6 @@
+META step=11-tui-in-guest date=2026-10-16T15:36:45Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ processes inside the guest while the TUI is attached:
+root      519 98.7 16.7 74050076 250400 pts/0 Rsl+ 15:36   0:03 opencode
++ host-side just-code/attached process:
+root        9409  0.0  0.0   3228  1056 ?        S    15:36   0:00 script -qec /root/bin/just-code /root/qualif/evidence/11-tui-launch.typescript
+root        9411  0.8  4.7 2583756 95748 pts/0   Ssl+ 15:36   0:00 /root/bin/just-code

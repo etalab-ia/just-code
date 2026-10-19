@@ -1,0 +1,17 @@
+META step=05-first-start date=2026-10-16T15:30:56Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ just-code start --microsandbox --isolation full (first boot: runtime fetch + microVM boot + guest package install ~384MB)
+Downloading the verified Microsandbox runtime v0.7.6...
+Creating jc-proj-a-8d2aa microVM...
+First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.
+Launching the start script inside jc-proj-a-8d2aa...
+Waiting for the guest toolchain to finish installing...
+Transfer into the sealed guest: 2 file(s), 216 B
+Source set: the Git working tree (tracked, untracked, and ignored files; .git metadata is not transferred).
+Warning: gitleaks is not installed, so secret detection did not run; the dotenv name filter still applied.
+Provisioning the sealed guest workspace: writing 281 B to the guest...
+Guest workspace ready: 2 file(s) in /workspace.
+
+real	0m33.831s
+user	0m3.015s
+sys	0m1.473s
+START_EXIT: 0

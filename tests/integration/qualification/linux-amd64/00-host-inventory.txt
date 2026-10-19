@@ -1,0 +1,29 @@
+META step=00-host-inventory date=2026-10-16T15:28:33Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d cli="dev build db9b8fc (v0.10.0 tag)" go=go1.27.2 host="Scaleway DEV1-S fr-par-1 x86_64, nested KVM"
++ uname -a
+Linux jc-qualif-lx1 5.15.0-190-generic #200-Ubuntu SMP Fri Aug 7 15:06:04 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
++ cat /etc/os-release (head)
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+NAME="Ubuntu"
++ ls -la /dev/kvm
+crw-rw---- 1 root kvm 10, 232 Oct 16 15:22 /dev/kvm
++ test -r /dev/kvm -a -w /dev/kvm
+RESULT: /dev/kvm readable+writable (uid 0)
++ grep -c svm /proc/cpuinfo
+2
++ nproc
+2
++ free -h
+               total        used        free      shared  buff/cache   available
+Mem:           1.9Gi       198Mi       516Mi       0.0Ki       1.2Gi       1.5Gi
+Swap:             0B          0B          0B
++ df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        18G  4.2G   14G  24% /
++ just-code version
+just-code (Go)
+  version:  v0.2.1-0.20261016152331-db9b8fcd2d27
+  commit:   db9b8fcd2d27
+  built:    2026-10-16T15:23:31Z
+  go:       go1.27.2
+  platform: linux/amd64
+EXIT: 0

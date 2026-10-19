@@ -1,0 +1,113 @@
+META step=16b-bindings-redo date=2026-10-16T15:42:45Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ bindings list --fallback
+Project secret bindings for /root/qualif/proj-d (profile: development)
+  No approved binding.
+  Imported but not delivered: .env#API_TOKEN, .env#DUPE_KEY, sub/app.env#APP_SECRET
+  Approve one with: just-code secrets bindings approve <profile> <component> <NAME> --destination <host>
+Values are never shown here, and approving a binding does not display or copy any value.
+LIST_EXIT: 0
++ approve proxy binding: bare DNS destination
+Approving .env#API_TOKEN for development -> guest JC_API_TOKEN, destinations: httpbin.org
+The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.
+Approved. It takes effect at the next start of this project's sandbox.
+APPROVE_PROXY_EXIT: 0
++ delivered classes file (parseable)
+Warning: --fallback stores values in a local plaintext-equivalent JSON file; just-code does not encrypt that file.
+Project ~/qualif/proj-d | profile development | classes.env
+  Variables: APOS_VALUE, DBL_BACKSLASH, TRAILING_BACKSLASH, WIN_PATH
+  Plan: 4 added, 0 changed, 0 unchanged, 0 removed
+Stored classes.env (4 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+CLASSES_APPLY_EXIT: 0
++ approve delivered classes --delivery guest (no --destination; warning expected)
+-- APOS_VALUE
+Approving classes.env#APOS_VALUE for development as GUEST-READABLE (written to classes.env)
+This is not the protected mode. The real value is written into the sandbox so an application can read it locally, which means:
+  - everything running in that sandbox, including the agent, can read the value;
+  - it stays readable for as long as the sandbox holds it;
+  - a snapshot taken while it is delivered captures it, and deleting it later does not clean that snapshot.
+Use this only for values an application must consume locally (a database password, a signing key). Protect anything reached over the network with the default delivery instead.
+Approved. It takes effect at the next start of this project's sandbox.
+APPROVE_APOS_VALUE: 0
+-- DBL_BACKSLASH
+Approving classes.env#DBL_BACKSLASH for development as GUEST-READABLE (written to classes.env)
+This is not the protected mode. The real value is written into the sandbox so an application can read it locally, which means:
+  - everything running in that sandbox, including the agent, can read the value;
+  - it stays readable for as long as the sandbox holds it;
+  - a snapshot taken while it is delivered captures it, and deleting it later does not clean that snapshot.
+Use this only for values an application must consume locally (a database password, a signing key). Protect anything reached over the network with the default delivery instead.
+Approved. It takes effect at the next start of this project's sandbox.
+APPROVE_DBL_BACKSLASH: 0
+-- TRAILING_BACKSLASH
+Approving classes.env#TRAILING_BACKSLASH for development as GUEST-READABLE (written to classes.env)
+This is not the protected mode. The real value is written into the sandbox so an application can read it locally, which means:
+  - everything running in that sandbox, including the agent, can read the value;
+  - it stays readable for as long as the sandbox holds it;
+  - a snapshot taken while it is delivered captures it, and deleting it later does not clean that snapshot.
+Use this only for values an application must consume locally (a database password, a signing key). Protect anything reached over the network with the default delivery instead.
+Approved. It takes effect at the next start of this project's sandbox.
+APPROVE_TRAILING_BACKSLASH: 0
+-- WIN_PATH
+Approving classes.env#WIN_PATH for development as GUEST-READABLE (written to classes.env)
+This is not the protected mode. The real value is written into the sandbox so an application can read it locally, which means:
+  - everything running in that sandbox, including the agent, can read the value;
+  - it stays readable for as long as the sandbox holds it;
+  - a snapshot taken while it is delivered captures it, and deleting it later does not clean that snapshot.
+Use this only for values an application must consume locally (a database password, a signing key). Protect anything reached over the network with the default delivery instead.
+Approved. It takes effect at the next start of this project's sandbox.
+APPROVE_WIN_PATH: 0
++ refused classes: each in its own file; record where the refusal fires
+-- import r_dollar.env
+Warning: --fallback stores values in a local plaintext-equivalent JSON file; just-code does not encrypt that file.
+Project ~/qualif/proj-d | profile development | r_dollar.env
+  Variables: DOLLAR_VALUE
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+Stored r_dollar.env (1 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+IMPORT_r_dollar.env: 0
+-- import r_cr.env
+Warning: --fallback stores values in a local plaintext-equivalent JSON file; just-code does not encrypt that file.
+just-code: parse r_cr.env: dotenv syntax is invalid or unsupported
+IMPORT_r_cr.env: 1
+-- import r_utf8.env
+Warning: --fallback stores values in a local plaintext-equivalent JSON file; just-code does not encrypt that file.
+just-code: parse r_utf8.env: dotenv file is too large or contains invalid text
+IMPORT_r_utf8.env: 1
+-- import r_apos.env
+Warning: --fallback stores values in a local plaintext-equivalent JSON file; just-code does not encrypt that file.
+Project ~/qualif/proj-d | profile development | r_apos.env
+  Variables: LEADING_APOS
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+Stored r_apos.env (1 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+IMPORT_r_apos.env: 0
+-- approve DOLLAR_VALUE --delivery guest
+just-code: DOLLAR_VALUE (r_dollar.env) cannot be delivered as a guest-readable dotenv value: quoted: contains "$", which dotenv-expand and godotenv expand but plain Node dotenv and python-dotenv do not: no single encoding is exact for every loader; unquoted: contains "$", which dotenv-expand and godotenv expand in an unquoted value but plain Node dotenv and python-dotenv leave alone
+Use the default proxy delivery if the application reaches the service over the network, or wait for standalone file delivery for this one.
+APPROVE_DOLLAR_VALUE: 1
+-- approve CR_VALUE --delivery guest
+just-code: cannot read CR_VALUE (r_cr.env) to check that it can be delivered: credential not found
+APPROVE_CR_VALUE: 1
+-- approve INVALID_UTF8 --delivery guest
+just-code: cannot read INVALID_UTF8 (r_utf8.env) to check that it can be delivered: credential not found
+APPROVE_INVALID_UTF8: 1
+-- approve LEADING_APOS --delivery guest
+just-code: LEADING_APOS (r_apos.env) cannot be delivered as a guest-readable dotenv value: quoted: contains a single quote, which dotenv cannot escape: godotenv refuses the whole file and python-dotenv misparses it; unquoted: starts with '\'', which opens a quoted value: godotenv refuses the whole file and python-dotenv misparses it
+Use the default proxy delivery if the application reaches the service over the network, or wait for standalone file delivery for this one.
+APPROVE_LEADING_APOS: 1
++ final bindings list
+Project secret bindings for /root/qualif/proj-d (profile: development)
+  .env#API_TOKEN -> JC_API_TOKEN (proxy-protected)
+      destinations: httpbin.org (host-local approval, never versioned)
+  classes.env#APOS_VALUE -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#DBL_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#TRAILING_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#WIN_PATH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  4 binding(s) deliver a real value inside the sandbox; a snapshot taken while they are delivered captures them.
+  Imported but not delivered: .env#DUPE_KEY, r_apos.env#LEADING_APOS, r_dollar.env#DOLLAR_VALUE, sub/app.env#APP_SECRET
+  Approve one with: just-code secrets bindings approve <profile> <component> <NAME> --destination <host>
+Values are never shown here, and approving a binding does not display or copy any value.

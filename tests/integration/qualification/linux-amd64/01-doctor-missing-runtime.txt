@@ -1,0 +1,9 @@
+META step=01-doctor-missing-runtime date=2026-10-16T15:28:40Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ env: MSB_HOME=/tmp/msb-empty-qualif (nonexistent), MSB_PATH and MSB_LIBKRUNFW_PATH unset
++ ls /tmp/msb-empty-qualif (before)
+ls: cannot access '/tmp/msb-empty-qualif': No such file or directory
++ just-code doctor --microsandbox
+just-code: managed Microsandbox runtime is missing or failed integrity checks; run 'just-code start --microsandbox' to install or repair it
+EXIT: 1 (expect non-zero: runtime missing)
++ ls /tmp/msb-empty-qualif (after — must still not exist)
+ls: cannot access '/tmp/msb-empty-qualif': No such file or directory
