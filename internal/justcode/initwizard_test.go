@@ -644,6 +644,11 @@ func TestInitApplyLeavesTartSelectionWithoutPinsZoneless(t *testing.T) {
 	// The standing zone describes the Microsandbox port forward. A tart
 	// project without pinned skills has nothing runtime-neutral to say, so
 	// its AGENTS.md must stay untouched.
+	// Tart is macOS-only, so this is skipped on Windows rather than
+	// asserting a choice the platform refuses (same as the mounting test).
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
 	root := initTestRoot(t)
 	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
 	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
@@ -801,6 +806,47 @@ func TestMergeManagedInstructionsRefusesSymlink(t *testing.T) {
 	wizard := InitWizard{ResolveSkills: fixtureSkillResolver(t)}
 	if _, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("symlinked AGENTS.md error = %v", err)
+	}
+	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+		t.Fatalf("external file changed: %q", got)
+	}
+}
+
+func TestInitZonelessPlanLeavesSymlinkedAgentsUntouched(t *testing.T) {
+	// A pin-less tart project has nothing to write into AGENTS.md, so a
+	// symlinked AGENTS.md must not block init: the plan claims the file
+	// only when pins, Microsandbox standing guidance, or a stale managed
+	// zone require changing it.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	wizard := InitWizard{}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+	if err != nil {
+		t.Fatalf("a zoneless plan must not validate an AGENTS.md it will not touch: %v", err)
+	}
+	if plan.InstructionsChanged || plan.InstructionsPath != "" {
+		t.Fatalf("zoneless plan must not claim AGENTS.md: changed=%v path=%q", plan.InstructionsChanged, plan.InstructionsPath)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
 	}
 	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
 		t.Fatalf("external file changed: %q", got)

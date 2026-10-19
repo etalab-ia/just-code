@@ -281,6 +281,9 @@ func TestDispatcherCheckDoesNotProbePortsOnOtherRuntimes(t *testing.T) {
 	// forwards. On Tart the agent connects to the VM IP directly and on
 	// agent-vm forwarding is dynamic, so a localhost probe there would hit
 	// an unrelated service and report a forward that does not exist.
+	// Tart is macOS-only, so the sweep is pointed at darwin to keep the
+	// tart path under test on every host (including the Windows CI leg).
+	withGOOS(t, "darwin")
 	dead := freeLocalPort(t)
 	cfg := Config{
 		Isolation:       IsolationFull,

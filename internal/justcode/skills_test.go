@@ -181,6 +181,26 @@ func TestManagedInstructionsScopeStandingGuidanceToMicrosandbox(t *testing.T) {
 	}
 }
 
+func TestManagedInstructionRuntimeIgnoresHostOS(t *testing.T) {
+	// A manifest stores the runtime chosen where the project was created;
+	// regenerating instructions elsewhere (skill update, rollback, recovery)
+	// must not reinterpret that choice through the current host's runtime
+	// support. On a Windows host the old parseRuntimeName-based lookup
+	// rewrote tart and agent-vm manifests into Microsandbox guidance.
+	if got := managedInstructionRuntime(string(RuntimeTart)); got != RuntimeTart {
+		t.Fatalf("stored tart manifest must render as tart on every host, got %s", got)
+	}
+	if got := managedInstructionRuntime(string(RuntimeAgentVM)); got != RuntimeAgentVM {
+		t.Fatalf("stored agent-vm manifest must render as agent-vm on every host, got %s", got)
+	}
+	if got := managedInstructionRuntime(string(RuntimeMicrosandbox)); got != RuntimeMicrosandbox {
+		t.Fatalf("stored microsandbox manifest must render as microsandbox, got %s", got)
+	}
+	if got := managedInstructionRuntime("not-a-runtime"); got != RuntimeMicrosandbox {
+		t.Fatalf("an unparsable stored runtime must fall back to microsandbox, got %s", got)
+	}
+}
+
 func TestLocalSkillSelectionsAreHostScopedAndValidated(t *testing.T) {
 	root := t.TempDir()
 	path, err := LocalSkillSelectionsPath(root, "jc-project-1234")

@@ -416,31 +416,52 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			}
 		}
 	}
-	// The managed zone is always owned: versioned projects carry the standing
-	// web-preview guidance even with no pinned skills, and local-only
-	// selections strip any zone a previous versioned setup left behind.
-	plan.InstructionsPath = filepath.Join(pc.Root, "AGENTS.md")
-	if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
-		if !info.Mode().IsRegular() {
-			return plan, fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
+	// The managed zone is claimed only when this plan can change it: a
+	// selection with pins, the Microsandbox standing guidance, a local-only
+	// strip, or a stale zone left by an earlier versioned setup all rewrite
+	// the zone. A pin-less Tart or agent-vm project without a zone renders
+	// nothing to change, so its AGENTS.md is neither validated nor claimed —
+	// a symlinked AGENTS.md must not block an init that touches nothing.
+	instructionsPath := filepath.Join(pc.Root, "AGENTS.md")
+	needsZone := localOnly || len(selected) > 0 || plan.Answers.Runtime == RuntimeMicrosandbox
+	if !needsZone {
+		data, readErr := fs.ReadFile(instructionsPath)
+		switch {
+		case readErr == nil:
+			needsZone = hasManagedSkillZone(string(data))
+		case os.IsNotExist(readErr):
+			// No AGENTS.md at all: nothing to claim until a merge adds one.
+		default:
+			// Unreadable entry (a directory, a permissions problem): the
+			// zone state is unknown, so claim the path and let the
+			// validation below fail closed.
+			needsZone = true
 		}
-		data, readErr := fs.ReadFile(plan.InstructionsPath)
-		if readErr != nil {
-			return plan, readErr
+	}
+	if needsZone {
+		plan.InstructionsPath = instructionsPath
+		if info, statErr := os.Lstat(plan.InstructionsPath); statErr == nil {
+			if !info.Mode().IsRegular() {
+				return plan, fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
+			}
+			data, readErr := fs.ReadFile(plan.InstructionsPath)
+			if readErr != nil {
+				return plan, readErr
+			}
+			plan.InstructionsBefore = string(data)
+		} else if !os.IsNotExist(statErr) {
+			return plan, statErr
 		}
-		plan.InstructionsBefore = string(data)
-	} else if !os.IsNotExist(statErr) {
-		return plan, statErr
+		if localOnly {
+			plan.InstructionsAfter, err = RemoveManagedInstructions(plan.InstructionsBefore)
+		} else {
+			plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, selected, plan.SkillLocks, plan.Answers.Runtime)
+		}
+		if err != nil {
+			return plan, err
+		}
+		plan.InstructionsChanged = plan.InstructionsBefore != plan.InstructionsAfter
 	}
-	if localOnly {
-		plan.InstructionsAfter, err = RemoveManagedInstructions(plan.InstructionsBefore)
-	} else {
-		plan.InstructionsAfter, err = MergeManagedInstructions(plan.InstructionsBefore, selected, plan.SkillLocks, plan.Answers.Runtime)
-	}
-	if err != nil {
-		return plan, err
-	}
-	plan.InstructionsChanged = plan.InstructionsBefore != plan.InstructionsAfter
 	if !pc.IsGit {
 		plan.Warnings = append(plan.Warnings, "this directory is not a Git repository: the manifest in .just-code/ will not be versioned with the project")
 	}

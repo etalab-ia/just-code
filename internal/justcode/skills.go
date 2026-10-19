@@ -420,15 +420,31 @@ func RemoveManagedInstructions(existing string) (string, error) {
 }
 
 // managedInstructionRuntime resolves a manifest's runtime name for managed
-// instruction rendering. An unparsable name falls back to the wizard default
-// (Microsandbox): these paths run during rollback and recovery, where the
-// guidance text must not turn a broken manifest into a hard failure.
+// instruction rendering. The stored name is parsed without host compatibility
+// checks: a manifest written on macOS (tart) or Linux (agent-vm) must keep
+// its runtime-specific rendering when its instructions are regenerated on a
+// host where that runtime cannot execute — those checks belong to runtime
+// execution, not instruction rendering. An unparsable name falls back to the
+// wizard default (Microsandbox): these paths run during rollback and
+// recovery, where the guidance text must not turn a broken manifest into a
+// hard failure.
 func managedInstructionRuntime(name string) Runtime {
-	rt, err := parseRuntimeName(name)
-	if err != nil {
+	switch name {
+	case string(RuntimeTart):
+		return RuntimeTart
+	case string(RuntimeAgentVM):
+		return RuntimeAgentVM
+	default:
 		return RuntimeMicrosandbox
 	}
-	return rt
+}
+
+// hasManagedSkillZone reports whether AGENTS.md content carries a managed
+// skill zone, including a malformed one: both must be cleaned up by a plan
+// that rewrites the zone, so both make the plan claim the file.
+func hasManagedSkillZone(text string) bool {
+	zone, err := managedSkillZone(text)
+	return err != nil || zone != ""
 }
 
 // renderManagedInstructions renders the managed section: standing guidance
