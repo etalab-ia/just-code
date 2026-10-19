@@ -197,11 +197,18 @@ case ":${PATH:-}:" in
 			fi
 			case "$answer" in
 				''|o|O|y|Y)
-					{
-						printf '\n# just-code\n'
-						printf '%s\n' "$path_line"
-					} >> "$path_target" || die "impossible de modifier $path_file"
-					printf 'La ligne a été ajoutée à %s.\n\n' "$path_file"
+					if [ -f "$path_target" ] && grep -qF 'just-code' "$path_target" 2>/dev/null; then
+						# Déjà ajoutée par une installation précédente : réinstaller
+						# ne doit pas empiler la même ligne (chaque nouveau shell
+						# préfixerait alors le PATH une fois de plus).
+						printf 'La ligne est déjà présente dans %s.\n\n' "$path_file"
+					else
+						{
+							printf '\n# just-code\n'
+							printf '%s\n' "$path_line"
+						} >> "$path_target" || die "impossible de modifier $path_file"
+						printf 'La ligne a été ajoutée à %s.\n\n' "$path_file"
+					fi
 					;;
 				*)
 					printf 'Ligne non ajoutée. Pour ce terminal, lancez :\n  %s\n\n' "$path_line"

@@ -32,7 +32,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-just-code.ps1
 
 La forme Windows en deux étapes passe `-ExecutionPolicy Bypass` uniquement pour le processus PowerShell lancé par cette commande, car la stratégie `Restricted` par défaut bloque les scripts fichiers ; aucune stratégie permanente n'est changée. La forme pipe (`irm ... | iex`) évalue le script en mémoire et n'est pas soumise à la stratégie d'exécution.
 
-Si le répertoire d'installation n'est pas déjà dans `PATH`, l'installateur prévient que la commande ne serait pas trouvée dans un nouveau terminal, puis demande l'autorisation d'ajouter la ligne correspondante au fichier du shell détecté (`~/.zshenv` pour zsh, `~/.bash_profile` pour bash, `~/.profile` sinon). Il attend une réponse ; appuyer sur Entrée accepte, répondre `n` refuse. La modification n'est jamais faite d'office. Lorsque aucun terminal n'est disponible (script non interactif, `curl … | sh` sans terminal de contrôle), l'installateur ne modifie aucun fichier de profil et se contente d'afficher la ligne à exécuter dans la session courante. Le résultat de l'installation est annoncé avant le lancement de l'assistant, et un assistant interrompu ou en échec indique la commande de reprise (`just-code setup`).
+Si le répertoire d'installation n'est pas déjà dans `PATH`, l'installateur prévient que la commande ne serait pas trouvée dans un nouveau terminal, puis demande l'autorisation d'ajouter la ligne correspondante au fichier réellement lu par ce terminal :
+
+- zsh : `~/.zshenv` ;
+- bash sous macOS : `~/.bash_profile` s'il existe, sinon `~/.profile` (un `~/.bash_profile` n'est jamais créé de zéro, car il masquerait un `~/.profile` existant) ;
+- bash sous Linux : `~/.bashrc`, le seul fichier lu par un terminal qui ouvre un shell non connecté ;
+- autre shell : `~/.profile`.
+
+Il attend une réponse ; appuyer sur Entrée accepte, répondre `n` refuse. La modification n'est jamais faite d'office, et une ligne déjà présente n'est pas ajoutée une seconde fois. Une lecture impossible (Ctrl-D) est traitée comme un refus, pas comme une acceptation. Lorsque aucun terminal n'est disponible (script non interactif, `curl … | sh` sans terminal de contrôle), l'installateur ne modifie aucun fichier de profil et se contente d'afficher la ligne à exécuter dans la session courante. Le résultat de l'installation est annoncé avant le lancement de l'assistant, et un assistant interrompu ou en échec indique la commande de reprise, donnée en chemin absolu (`"$HOME/.local/bin/just-code" setup`) car le terminal courant n'a pas encore le nouveau `PATH`.
 
 La somme SHA-256 détecte une altération ou un mélange d'assets, mais elle est téléchargée depuis la même release GitHub que le binaire. Les releases des binaires `just-code` ne publient pas d'attestation vérifiée de provenance : cette vérification ne prouve donc pas l'identité de l'éditeur. Les scripts d'installation ne sont pas signés ni attestés non plus ; leur provenance doit être évaluée séparément, par exemple avec la variante téléchargeable ci-dessus.
 
