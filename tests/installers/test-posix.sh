@@ -125,6 +125,18 @@ cmp -s "$home/.local/bin/just-code" "$fake_binary" || { printf 'new binary was n
 [ -f "$temp_root/setup-called" ] || { printf 'setup was not invoked\n' >&2; exit 1; }
 grep -F "$release_tag" "$temp_root/urls" >/dev/null || { printf 'downloads were not pinned to one release\n' >&2; exit 1; }
 
+# The install result must be announced before the setup wizard runs, in French,
+# with the resolved version and platform.
+success_out="$temp_root/success.out"
+grep -F 'Installation de just-code' "$success_out" >/dev/null || { printf 'installer header is not in French\n' >&2; exit 1; }
+grep -F '✓ Version 9.8.7 téléchargée (Linux x64)' "$success_out" >/dev/null || { printf 'version/platform line missing or wrong\n' >&2; exit 1; }
+grep -F '✓ Intégrité vérifiée' "$success_out" >/dev/null || { printf 'integrity line missing\n' >&2; exit 1; }
+grep -F '✓ Installé dans ~/.local/bin/just-code' "$success_out" >/dev/null || { printf 'installed-path line missing\n' >&2; exit 1; }
+grep -F 'Lancement de la configuration' "$success_out" >/dev/null || { printf 'setup launch line missing\n' >&2; exit 1; }
+install_line=$(grep -n 'Installé dans ~/.local/bin/just-code' "$success_out" | cut -d: -f1)
+launch_line=$(grep -n 'Lancement de la configuration' "$success_out" | cut -d: -f1)
+[ "$install_line" -lt "$launch_line" ] || { printf 'install result did not appear before setup\n' >&2; exit 1; }
+
 mac_home="$temp_root/mac home"
 mkdir -p "$mac_home"
 run_installer "$mac_home" "$good_sums" 0 0 0 Darwin arm64 just-code-darwin-arm64 > "$temp_root/mac.out"
@@ -163,7 +175,34 @@ if run_installer "$home" "$good_sums" 0 0 9 > "$temp_root/setup-failure.out" 2>&
 fi
 cmp -s "$target" "$fake_binary" || { printf 'setup failure rolled back the new binary unexpectedly\n' >&2; exit 1; }
 [ "$(cat "$home/.local/bin/just-code.previous")" = 'keep me' ] || { printf 'setup failure did not retain the previous binary\n' >&2; exit 1; }
-grep -F 'To roll back:' "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted rollback guidance\n' >&2; exit 1; }
+grep -F 'Pour revenir à la version précédente :' "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted rollback guidance\n' >&2; exit 1; }
+
+# No interactive terminal: the installer must NOT edit a shell profile file on
+# its own, must say how to get PATH in the current shell, and must still launch
+# the setup wizard (with its stdin reattached to the terminal).
+if command -v setsid >/dev/null 2>&1; then
+	detached_home="$temp_root/detached home"
+	mkdir -p "$detached_home"
+	: > "$temp_root/detached-urls"
+	set +e
+	setsid env FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_ASSET=$asset FAKE_BINARY="$fake_binary" \
+		FAKE_SUMS="$good_sums" FAKE_URL_LOG="$temp_root/detached-urls" \
+		FAKE_RELEASE_URL="$release_url" FAKE_SETUP_LOG="$temp_root/detached-setup-called" \
+		FAKE_TARGET="$detached_home/.local/bin/just-code" REAL_MV="$real_mv" \
+		SHELL=/bin/zsh HOME="$detached_home" PATH="$fake_bin:$PATH" \
+		"$installer" > "$temp_root/detached.out" 2>&1 < /dev/null
+	detached_status=$?
+	set -e
+	[ "$detached_status" -eq 0 ] || { printf 'headless install did not complete (exit %s)\n' "$detached_status" >&2; exit 1; }
+	[ -f "$temp_root/detached-setup-called" ] || { printf 'headless install did not launch setup\n' >&2; exit 1; }
+	for profile in .zshenv .bash_profile .profile .zprofile .bashrc; do
+		[ ! -e "$detached_home/$profile" ] || { printf 'headless install edited ~/%s without asking\n' "$profile" >&2; exit 1; }
+	done
+	grep -F 'ne serait pas trouvée dans un nouveau terminal' "$temp_root/detached.out" >/dev/null || { printf 'headless install did not warn about PATH\n' >&2; exit 1; }
+	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$temp_root/detached.out" >/dev/null || { printf 'headless install did not print the PATH line\n' >&2; exit 1; }
+fi
+grep -F "Reprenez-la quand vous voulez : just-code setup" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted the resume command\n' >&2; exit 1; }
+grep -F "just-code est installé, mais la configuration n'est pas terminée." "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure message is not in French\n' >&2; exit 1; }
 
 unsupported_home="$temp_root/unsupported"
 mkdir -p "$unsupported_home"
