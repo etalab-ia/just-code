@@ -1,0 +1,16 @@
+META step=22f-terminal-interactive-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:54:03Z case=positive-control-y
+Script started on 2026-10-19 10:54:17+00:00 [<not executed on terminal>]
+24 80
+Project ~/qualif/proj-d | profile amd64chk-y | .env
+  Variables: API_TOKEN, DUPE_KEY
+  Plan: 2 added, 0 changed, 0 unchanged, 0 removed
+[?2026$p[?2027$p[?25l[?2004h[?1004h[>4;2m[=1;1u[?u[J┃ Store these values?
+┃ The source files stay unchanged. This does not approve runtime delivery.
+┃
+┃                               Yes     No  
+
+←/→ toggle • enter submit • y Yes • n No[5A[J[>4m[=0;1u[J[?25h[?2004l[?1004lStored .env (2 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+INNER_EXIT:0
+
+Script done on 2026-10-19 10:54:23+00:00 [COMMAND_EXIT_CODE="0"]

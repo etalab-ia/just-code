@@ -1,0 +1,16 @@
+META step=32c-mac-msb-doctor source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T07:55:59Z
++ just-code doctor --microsandbox (post-install)
+Note: /Users/m1/qualif/proj-d/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /Users/m1/qualif/proj-d/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+info Platform: macOS aarch64
+info Version: v0.7.6
+info MSB_HOME: /Users/m1/.microsandbox
+   ✓ msb          /Users/m1/.microsandbox/bin/msb
+   ✓ libkrunfw    /Users/m1/.microsandbox/bin/../lib/libkrunfw.5.dylib
+   ✓ Root clone   reflink supported
+   ✓ Architecture Apple silicon (arm64)
+done Host setup is ready.
+Microsandbox runtime is ready.
+DOCTOR_EXIT: 0

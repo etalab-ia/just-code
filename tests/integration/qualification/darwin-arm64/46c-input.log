@@ -1,0 +1,4 @@
+ctrlc-40	ts=2026-10-19T11:04:58Z	delay=7s	bytes=03
+ctrlc-200	ts=2026-10-19T11:05:05Z	delay=7s	bytes=03
+n-cancel	ts=2026-10-19T11:05:11Z	delay=6s	bytes=6e 0d
+positive-control-y	ts=2026-10-19T11:05:17Z	delay=6s	bytes=79 0d

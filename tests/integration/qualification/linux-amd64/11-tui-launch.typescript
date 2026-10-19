@@ -1,3 +1,4 @@
+META step=11-tui-launch source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T15:36:47Z
 Script started on 2026-10-16 15:36:27+00:00 [<not executed on terminal>]
 Note: /root/qualif/proj-a/.env was NOT read: just-code no longer loads a .env implicitly.
       Exported variables are still honoured. To see what the file holds and where each

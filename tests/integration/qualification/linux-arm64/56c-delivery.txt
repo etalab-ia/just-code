@@ -1,0 +1,24 @@
+META step=56c-asahi-delivery source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:48:48Z
+Published 1 managed project secret file(s) into the guest workspace.
+instance: jc-proj-d-1d5d7
++ .env (marker):
+ls: /workspace/.env: No such file or directory
+cat: can't open '/workspace/.env': No such file or directory
++ classes.env (0600):
+-rw-------    1 root     root           429 Oct 16 16:48 /workspace/classes.env
+# just-code managed: do not edit
+# source: classes.env
+# WARNING: this file contains real secret values. Everything running in
+# this sandbox, including the agent, can read them.
+# Values marked as placeholders are not secrets: the proxy substitutes
+# those toward the hosts this project approved.
+APOS_VALUE='fake-OBrien-03'
+DBL_BACKSLASH=fakepath\\with\\pairs
+TRAILING_BACKSLASH=endswithfake\
+WIN_PATH='C:\Users\fake\file.txt'
++ substitution (API_TOKEN was rotated to dev-fake-token-ROTATED):
++ denial:
+grep: /workspace/.env: No such file or directory
+200 exit 0
+control 200
+old-value-gone

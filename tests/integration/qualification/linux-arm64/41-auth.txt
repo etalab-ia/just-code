@@ -1,0 +1,8 @@
+META step=41-asahi-auth source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:41:36Z
+Stored credential "albert" in the file store. It is referenced by name (credentialRef), never written to a project file.
+AUTH_EXIT: 0
+key-shredded
+Native store: secret-service
+  state: reachable
+  albert: not stored
+  github: not stored

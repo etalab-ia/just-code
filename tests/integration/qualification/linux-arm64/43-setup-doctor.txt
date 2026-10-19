@@ -1,0 +1,57 @@
+META step=43-asahi-setup-doctor source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T08:02:47Z
++ just-code setup doctor
+Platform: linux/arm64
+Host capability:
+  Platform: linux/arm64 (info)
+  Virtualization: ok (ok)
+    info Platform: Linux aarch64
+info Version: v0.7.6
+info MSB_HOME: ~/.microsandbox
+   ✓ msb          ~/.microsandbox/bin/msb
+   ✓ libkrunfw    ~/.microsandbox/bin/../lib/libkrunfw.so.5.6.1
+   ✓ Root clone   reflink supported
+   ✓ KVM device   /dev/kvm
+   ✓ KVM access   read/write
+done Host setup is ready.
+  Disk free: 368.1 GiB (ok)
+Runtime and VM state:
+  Managed Microsandbox runtime: ok (ok)
+    provenance marker and required files present
+  Managed runtime integrity: validated (ok)
+    provenance marker and required files verified
+  Project instance: jc-proj-d-1d5d7 (info)
+  Recorded VM state: configured (ok)
+    creation-fixed settings are recorded for this instance
+Toolchain:
+  git: 2.54.0 (ok)
+  go: unusable (info)
+    version probe failed (exit 2)
+  node: v22.22.0 (ok)
+  opencode: 1.19.3 (ok)
+  Microsandbox SDK: 0.7.6 (info)
+    embedded SDK version; the managed runtime must match it
+Provider verification:
+  Albert credential: present (ok)
+    credential store value is set; the value is never printed
+  Albert endpoint: verified (ok)
+    models catalogue accepted the credential
+Project skills and MCPs:
+  Project: proj-d (info)
+    current project
+  Runtime intent: microsandbox (info)
+  Isolation intent: full (info)
+  Skills: none selected (info)
+  MCPs: none selected (info)
+Credentials and storage:
+  Credential store availability: secret-service (ok)
+    read-only probe succeeded
+  Stored credentials: none recorded in setup journal (info)
+Result: no blocking issue found. Run 'just-code setup' to change configuration or install the runtime.
+EXIT: 0
++ just-code setup doctor --json
+{"platform":"linux/arm64","fatal":false,"sections":[{"title":"Host capability","items":[{"name":"Platform","value":"linux/arm64","status":"info"},{"name":"Virtualization","value":"ok","detail":"info Platform: Linux aarch64\ninfo Version: v0.7.6\ninfo MSB_HOME: ~/.microsandbox\n   ✓ msb          ~/.microsandbox/bin/msb\n   ✓ libkrunfw    ~/.microsandbox/bin/../lib/libkrunfw.so.5.6.1\n   ✓ Root clone   reflink supported\n   ✓ KVM device   /dev/kvm\n   ✓ KVM access   read/write\ndone Host setup is ready.","status":"ok"},{"name":"Disk free","value":"368.1 GiB","status":"ok"}]},{"title":"Runtime and VM state","items":[{"name":"Managed Microsandbox runtime","value":"ok","detail":"provenance marker and required files present","status":"ok"},{"name":"Managed runtime integrity","value":"validated","detail":"provenance marker and required files verified","status":"ok"},{"name":"Project instance","value":"jc-proj-d-1d5d7","status":"info"},{"name":"Recorded VM state","value":"configured","detail":"creation-fixed settings are recorded for this instance","status":"ok"}]},{"title":"Toolchain","items":[{"name":"git","value":"2.54.0","status":"ok"},{"name":"go","value":"unusable","detail":"version probe failed (exit 2)","status":"info"},{"name":"node","value":"v22.22.0","status":"ok"},{"name":"opencode","value":"1.19.3","status":"ok"},{"name":"Microsandbox SDK","value":"0.7.6","detail":"embedded SDK version; the managed runtime must match it","status":"info"}]},{"title":"Provider verification","items":[{"name":"Albert credential","value":"present","detail":"credential store value is set; the value is never printed","status":"ok"},{"name":"Albert endpoint","value":"verified","detail":"models catalogue accepted the credential","status":"ok"}]},{"title":"Project skills and MCPs","items":[{"name":"Project","value":"proj-d","detail":"current project","status":"info"},{"name":"Runtime intent","value":"microsandbox","status":"info"},{"name":"Isolation intent","value":"full","status":"info"},{"name":"Skills","value":"none selected","status":"info"},{"name":"MCPs","value":"none selected","status":"info"}]},{"title":"Credentials and storage","items":[{"name":"Credential store availability","value":"secret-service","detail":"read-only probe succeeded","status":"ok"},{"name":"Stored credentials","value":"none recorded in setup journal","status":"info"}]}]}
+EXIT: 0
++ no-secret-leak check: every dotenv value of the project tested by exact match against the two reports above
+method: cut -d= -f2- .env classes.env sub/app.env r_apos.env r_cr.env r_dollar.env r_utf8.env t.env | sed strip-quotes | sort -u | while read v; do grep -qF "$v" <reports>; done | wc -l
+VALUES_TESTED: 11
+LEAK_COUNT: 0

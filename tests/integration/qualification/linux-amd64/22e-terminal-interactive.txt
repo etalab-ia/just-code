@@ -1,4 +1,5 @@
 META step=22e-terminal-interactive source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T17:34:32Z (supersedes 22c/22d: those drove a broken harness — 22c a nonexistent binary, 22d a python pty whose input never reaches huh)
+SUPERSEDED for the Ctrl-C result by 22f-terminal-interactive-retry.txt (2026-10-19): the `exit=130` lines below are the outer script/timeout status with no transcript and no verified dimensions. Re-measured with a raw transcript on linux-amd64, the post-handshake cancel is huh's abort path — `just-code: user aborted`, inner exit 1, nothing persisted — at 40 and 200 cols, identical to darwin-arm64/46c and linux-arm64/62b. 130 is what a pty in cooked mode produces when Ctrl-C arrives as SIGINT before huh takes the terminal. The n-cancel control below remains valid.
 INTERACTIVE_CTRLC_40: exit=130 (130=SIGINT exit, 124=timeout)
 INTERACTIVE_CTRLC_200: exit=130 (130=SIGINT exit, 124=timeout)
 [?2026$p[?2027$p[?25l[?2004h[?1004h[>4;2m[=1;1u[?u[J[J[>4m[=0;1u[A[J[?25h[?2004l[?1004lCancelled. No credentials stored.

@@ -1,0 +1,45 @@
+META step=56b-asahi-delivery source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:48:31Z
+just-code: jc-proj-a-d23e7 is already running. Run `just-code stop` before starting microsandbox.
+instance: 
++ .env (marker):
+error: the following required arguments were not provided:
+  <NAME>
+
+Usage: msb exec <NAME> -- <COMMAND>...
+
+For more information, try '--help'.
++ classes.env (0600):
+error: the following required arguments were not provided:
+  <NAME>
+
+Usage: msb exec <NAME> -- <COMMAND>...
+
+For more information, try '--help'.
++ substitution:
++ denial:
+error: the following required arguments were not provided:
+  <NAME>
+
+Usage: msb exec <NAME> -- <COMMAND>...
+
+For more information, try '--help'.
+error: the following required arguments were not provided:
+  <NAME>
+
+Usage: msb exec <NAME> -- <COMMAND>...
+
+For more information, try '--help'.
++ rotation state (API_TOKEN was rotated):
+error: the following required arguments were not provided:
+  <NAME>
+
+Usage: msb exec <NAME> -- <COMMAND>...
+
+For more information, try '--help'.
++ revocation state (API_TOKEN was revoked):
+error: the following required arguments were not provided:
+  <NAME>
+
+Usage: msb exec <NAME> -- <COMMAND>...
+
+For more information, try '--help'.

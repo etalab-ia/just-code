@@ -1,0 +1,35 @@
+META step=34b-mac-delivery source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T16:36:49Z
++ start
+Warning: 4 project secret(s) are delivered readable inside jc-proj-d-05d90. Everything running in that sandbox, including the agent, can read them; they are readable for as long as the sandbox holds them, and a snapshot taken now captures them. Run 'just-code secrets bindings list' to review.
+Published 1 managed project secret file(s) into the guest workspace.
+instance: jc-proj-d-05d90
++ /workspace/.env (marker only):
+ls: /workspace/.env: No such file or directory
+cat: can't open '/workspace/.env': No such file or directory
++ /workspace/classes.env (real values, 0600):
+-rw-------    1 root     root           429 Oct 16 16:36 /workspace/classes.env
+# just-code managed: do not edit
+# source: classes.env
+# WARNING: this file contains real secret values. Everything running in
+# this sandbox, including the agent, can read them.
+# Values marked as placeholders are not secrets: the proxy substitutes
+# those toward the hosts this project approved.
+APOS_VALUE='fake-OBrien-03'
+DBL_BACKSLASH=fakepath\\with\\pairs
+TRAILING_BACKSLASH=endswithfake\
+WIN_PATH='C:\Users\fake\file.txt'
++ live substitution to httpbin.org:
++ cross-host denial (postman-echo, not approved):
+grep: /workspace/.env: No such file or directory
+200 exit 0
++ connectivity control (no marker):
+200
++ rotation check (API_TOKEN was rotated to dev-fake-token-ROTATED in the previous run)
+old-value-gone
++ re-approve proxy for revocation test
+Approved. It takes effect at the next start of this project's sandbox.
+Published 2 managed project secret file(s) into the guest workspace.
++ revoke and restart
+Revoked the .env#API_TOKEN project secret binding. The imported value stays in the credential store.
+Published 1 managed project secret file(s) into the guest workspace.
+api-token-gone

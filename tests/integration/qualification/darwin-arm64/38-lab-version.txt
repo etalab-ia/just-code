@@ -1,0 +1,6 @@
+META step=38-lab-version date=2026-10-16T16:54:10Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
+FAIL  CLI msb épinglée (attendu: 0.7.3, obtenu: 0.7.6)
+cas réseau ignorés (MSB_CREDENTIAL_INTEGRATION_NETWORK=1 pour les activer)
+
+réussites: 0, échecs: 1
+VERSION_RUN_EXIT: 

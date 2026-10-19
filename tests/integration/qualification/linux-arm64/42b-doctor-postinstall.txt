@@ -1,0 +1,17 @@
+META step=42b-asahi-doctor-postinstall source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T07:48:35Z
++ just-code doctor --microsandbox (post-install, runtimes already installed)
+Note: /home/m1/qualif/proj-d/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /home/m1/qualif/proj-d/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+info Platform: Linux aarch64
+info Version: v0.7.6
+info MSB_HOME: /home/m1/.microsandbox
+   ✓ msb          /home/m1/.microsandbox/bin/msb
+   ✓ libkrunfw    /home/m1/.microsandbox/bin/../lib/libkrunfw.so.5.6.1
+   ✓ Root clone   reflink supported
+   ✓ KVM device   /dev/kvm
+   ✓ KVM access   read/write
+done Host setup is ready.
+Microsandbox runtime is ready.
+DOCTOR_EXIT: 0

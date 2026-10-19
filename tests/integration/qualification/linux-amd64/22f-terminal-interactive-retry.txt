@@ -1,0 +1,65 @@
+META step=22f-terminal-interactive-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:54:03Z (retained feeder + input log; supersedes the Ctrl-C result of 22e: 22e recorded only exit=130, the outer script(1)/timeout status with no transcript and no verified dimensions; measured with a raw transcript, the post-handshake cancel is huh's abort path -- the message 'just-code: user aborted', inner exit 1, nothing persisted -- at both widths, identical to darwin-arm64/46c and linux-arm64/62b. 130 is the pre-handshake cooked-mode SIGINT, demonstrated in linux-arm64/62b-cookedctrlc.typescript; the n-cancel control of 22e remains valid)
+
+Harness: each run executes inside dbus-run-session with the login keyring unlocked first, so the positive control can store. script(1) PTY, width set by stty cols and verified in-transcript (stty size is the first line), app status recorded as INNER_EXIT inside the typescript because the trailing echo masks script(1)'s outer status.
+
+Feeder (retained below and recorded in 22f-input.log): each script(1) run takes its stdin from a pipe whose writer is the feed() helper. feed() writes the exact key bytes to the PTY and appends a timestamped hex record of exactly those bytes to 22f-input.log, so the input stream is auditable independently of the typescript (a typescript records stdin as <not executed on terminal>, and once huh is in raw mode with ISIG off the fed byte is not echoed). The Ctrl-C runs feed one ETX byte (0x03) after 7s; the positive control feeds y CR (0x79 0x0d) after 6s.
+    feed() { sleep "$2"; local hex ts; hex=$(printf "$3" | od -An -tx1 | tr -s ' ' | sed 's/^ //;s/ $//'); ts=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ); printf '%s\tts=%s\tdelay=%ss\tbytes=%s\n' "$1" "$ts" "$2" "$hex" >> "$INLOG"; printf "$3"; }
+    exact pipeline, 200 cols:  ( feed ctrlc-200 7 '\003' ) | script -qefc "stty cols 200 rows 24; stty size; just-code secrets import --apply --profile amd64chk-200 --file .env; echo INNER_EXIT:\$?" f200.typescript > /dev/null   (f200.typescript retained as 22f-200ctrlc.typescript)
+    exact pipeline,  40 cols:  ( feed ctrlc-40 7 '\003' ) | script -qefc "stty cols 40 rows 24; stty size; just-code secrets import --apply --profile amd64chk-40 --file .env; echo INNER_EXIT:\$?" f40.typescript > /dev/null   (f40.typescript retained as 22f-40ctrlc.typescript)
+    exact pipeline,  y ctrl:   ( feed positive-control-y 6 'y\r' ) | script -qefc "stty cols 80 rows 24; stty size; just-code secrets import --apply --profile amd64chk-y --file .env; echo INNER_EXIT:\$?" fy.typescript > /dev/null   (fy.typescript retained as 22f-ycontrol.typescript)
+
+Binary under test: v0.10.0 commit db9b8fcd2d27 (linux/amd64)
+
++ index BEFORE (profiles amd64chk-* must be absent)
+7 development
+1 staging
+1 tty40
+1 ttytest
+
++ interactive huh Ctrl-C at 200 cols, Ctrl-C (0x03) at t+7s
+    transcript dimensions: 24 200
+    prompt rendered:       1 time(s)
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ interactive huh Ctrl-C at 40 cols, Ctrl-C (0x03) at t+7s
+    transcript dimensions: 24 40
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ index AFTER the two Ctrl-C runs (both profiles must still be absent)
+7 development
+1 staging
+1 tty40
+1 ttytest
+CTRLC_STORED_200: 0
+CTRLC_STORED_40:  0
+
++ positive control: answer y (0x79 0x0d) at 80 cols (proves the persistence check discriminates)
+    transcript dimensions: 24 80
+    result line:           Stored .env (2 added, 0 changed, 0 unchanged, 0 removed).
+    inner status:          INNER_EXIT:0
+
++ index AFTER the positive control (amd64chk-y must hold the 2 variables of .env)
+2 amd64chk-y
+7 development
+1 staging
+1 tty40
+1 ttytest
+YCTRL_STORED: 2
+
++ cleanup: remove the control's keyring items and index entries, then re-list
+    keyring item removed: project-env-06af713a9405bd77c7b16c685c34649553122a232c5382de1eff1f414486ff9a-b3a0448fe046a91ba8b6fbe1f57dc755
+    keyring item removed: project-env-06af713a9405bd77c7b16c685c34649553122a232c5382de1eff1f414486ff9a-2a3f354de7ba2f4df61a7862252f81de
+
++ index FINAL (must equal the baseline: 7 development / 1 staging / 1 tty40 / 1 ttytest)
+7 development
+1 staging
+1 tty40
+1 ttytest
+
++ retained input log (22f-input.log) — exact bytes written to each PTY stdin
+    ctrlc-200	ts=2026-10-19T10:54:10.393Z	delay=7s	bytes=03
+    ctrlc-40	ts=2026-10-19T10:54:17.442Z	delay=7s	bytes=03
+    positive-control-y	ts=2026-10-19T10:54:23.620Z	delay=6s	bytes=79 0d
+RETRY_DONE

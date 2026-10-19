@@ -9,7 +9,7 @@ Ce document distingue deux choses qu'il est tentant de confondre :
   preuve exécutée et conservée dans le dépôt.
 
 Une plateforme peut être prise en charge sans être qualifiée. C'est le cas de
-toutes sauf macOS arm64 et Linux amd64 aujourd'hui. Aucun résultat de compilation ne remplace
+toutes sauf macOS arm64, Linux amd64 et Linux arm64 aujourd'hui. Aucun résultat de compilation ne remplace
 un démarrage réel : les runners hébergés n'ont pas de virtualisation imbriquée,
 et le fichier `.github/workflows/ci.yml` le dit à l'endroit où il définit ces
 tâches.
@@ -20,7 +20,7 @@ tâches.
 | --- | --- | --- | --- |
 | macOS arm64 (`darwin/arm64`) | oui | oui | **oui** |
 | Linux x86-64 (`linux/amd64`) | oui | oui | **oui** |
-| Linux arm64 (`linux/arm64`) | oui | oui | non |
+| Linux arm64 (`linux/arm64`) | oui | oui | **oui** |
 | Windows x86-64 (`windows/amd64`) | oui | oui | non |
 | Windows arm64 (`windows/arm64`) | oui | oui | non |
 | macOS Intel (`darwin/amd64`) | **non** | — | — |
@@ -44,28 +44,38 @@ séparément.
 
 | Plateforme | Adaptateur | Contrat de l'adaptateur testé | Magasin réel exercé |
 | --- | --- | --- | --- |
-| macOS | Trousseau (`security`) | oui | non (preuve non conservée) |
+| macOS | Trousseau (`security`) | oui | **oui** |
 | Linux | Secret Service (`secret-tool`) | oui | **oui** |
 | Windows | Credential Manager (PowerShell, P/Invoke `advapi32`) | oui | non |
 
-Le Trousseau a bien été exercé sur macOS arm64 : `put` / `get` / `remove`,
-rotation, et absence d'erreur sur un retrait d'élément absent. Mais le
-transcript de cette exécution n'a pas été conservé dans le dépôt, et ce document
-ne reconnaît comme qualifié que ce qui est adossé à une preuve conservée. La
-colonne reste donc à « non » jusqu'à ce qu'une exécution produise un fichier
-dans `tests/integration/credentials/evidence/`. La commande qui la produit est
-`go test ./internal/justcode/ -run TestRealStore -v` sur une machine où le
-service répond. Le magasin Linux est qualifié depuis 2026-10-16 : deux
-transcripts `--- PASS` conservés (`linux-amd64-run-1.txt`,
-`linux-amd64-run-2.txt`), obtenus dans une session D-Bus avec
-`gnome-keyring-daemon` déverrouillé. Hors session, le test
+Le Trousseau a été qualifié sur macOS arm64 le 2026-10-16 (hôte Scaleway
+Mac mini M4, trousseau dédiée déverrouillée — sur un hôte headless, le
+trousseau `login` n'est pas déverrouillable) : les transcripts
+`darwin-arm64-run-1.txt` et `darwin-arm64-run-2.txt` sous
+`tests/integration/credentials/evidence/` montrent `put` / `get` / `remove`,
+rotation et retrait d'élément absent, exécutés deux fois de suite contre la
+révision qualifiée. Le magasin Linux est qualifié depuis le même jour, sur
+amd64 comme sur arm64 : transcripts `--- PASS` conservés
+(`linux-amd64-run-1.txt`, `linux-amd64-run-2.txt`,
+`linux-arm64-run-1.txt`, `linux-arm64-run-2.txt`), obtenus dans une session
+D-Bus avec `gnome-keyring-daemon` déverrouillé. Hors session, le test
 `TestRealStorePutGetRemoveRoundTrip` ne s'ignore pas : il **échoue** sur un
 hôte Linux sans tête où la collection est verrouillée
-(`linux-amd64-nosession.txt`), parce que la sonde de disponibilité est en
-lecture seule et déclare le magasin « accessible » alors que les écritures
-échouent. Un transcript qui échoue ainsi n'est pas une régression du produit
-mais il n'est pas une preuve non plus : seule une exécution passante sur un
-magasin réellement utilisable qualifie la ligne.
+(`linux-amd64-nosession.txt`, `linux-arm64-nosession.txt`), parce que la
+sonde de disponibilité est en lecture seule et déclare le magasin
+« accessible » alors que les écritures échouent. Un transcript qui échoue
+ainsi n'est pas une régression du produit mais il n'est pas une preuve non
+plus : seule une exécution passante sur un magasin réellement utilisable
+qualifie la ligne. Sur un poste avec une session ouverte, la commande de
+preuve reste `go test ./internal/justcode/ -run TestRealStore -v` ; un test
+ignoré n'est pas une preuve.
+
+La qualification microVM de Linux arm64 a été obtenue sur un hôte KVM réel
+(Scaleway Mac mini M2 sous Asahi Fedora 42, noyau arm64 à pages de 16 K) ;
+les preuves sont sous `tests/integration/qualification/linux-arm64/`. Les
+Instances Scaleway arm64 classiques n'exposent pas de virtualisation
+emboîtée et ne peuvent donc pas servir d'hôtes de qualification pour la
+microVM.
 
 Le contrat testé partout est celui qui compte pour la confidentialité : la
 valeur ne passe jamais par argv — elle est écrite sur l'entrée standard de
@@ -89,6 +99,8 @@ et son état est rappelé à chaque affichage.
 | Preuve | Emplacement |
 | --- | --- |
 | Qualification complète Linux amd64 (parcours commun, secrets, terminal, installateur) | `tests/integration/qualification/linux-amd64/` |
+| Qualification complète macOS arm64 (parcours commun, secrets, terminal, agent-vm, laboratoire d'identifiants) | `tests/integration/qualification/darwin-arm64/` |
+| Qualification complète Linux arm64 sur hôte KVM (parcours commun, secrets, terminal, installateur) | `tests/integration/qualification/linux-arm64/` |
 | Qualification native du transport proxy et des marqueurs (phase 0) | `tests/integration/project-secrets/native/evidence/` |
 | Qualification native de bout en bout des fichiers dotenv gérés (phase 3) | `tests/integration/project-secrets/native-phase3/evidence/` |
 | Magasin d'identifiants natif exercé (macOS, Linux, Windows) | `tests/integration/credentials/evidence/` |

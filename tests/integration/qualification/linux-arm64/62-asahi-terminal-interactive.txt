@@ -1,0 +1,12 @@
+META step=62-asahi-terminal-interactive source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T17:32:28Z
+SUPERSEDED for the Ctrl-C result by 62b-asahi-terminal-200-retry.txt (2026-10-19): the delayed-Ctrl-C line below was a bare annotation (no command, no verified dimensions, no prompt output, no post-run state check) and its `exit=130` was the outer script/timeout status, not the app's cancel path. Measured with a raw transcript, the post-handshake cancel is huh's abort path: `just-code: user aborted`, inner exit 1, at 40 and 200 cols. The `exit=124` (200 cols, t+4s) below is also a timeout artifact of the busy Fedora run, not a hang — 62b sends Ctrl-C after the handshake and exits immediately. The n-cancel control below remains valid.
++ interactive huh Ctrl-C at 40 cols (script pty, Ctrl-C at t+4s):
+INTERACTIVE_CTRLC_40: exit=130 (124 = timeout = prompt did not exit)
++ interactive huh Ctrl-C at 200 cols (script pty, Ctrl-C at t+4s):
+INTERACTIVE_CTRLC_200: exit=124 (124 = timeout = prompt did not exit)
++ interactive n-cancel at 80 cols (control):
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[A[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+CONTROL_N: exit=0
+      9 development
+      1 tty40
+INTERACTIVE_CTRLC_200_DELAYED (t+7s): exit=130 — Ctrl-C works at 200 cols once the terminal handshake has settled; bytes sent during negotiation are swallowed (terminal caveat, not a product defect)

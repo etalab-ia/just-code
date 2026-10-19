@@ -1,0 +1,70 @@
+META step=62b-asahi-terminal-200-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:52:35Z (retained feeder + input log; supersedes the delayed-Ctrl-C line of 62: that line was a bare annotation — no command, no verified dimensions, no prompt output, no post-run state check — and it recorded exit 130; measured here, the post-handshake cancel is huh's abort path, exit 1, at both widths, and 130 is the pre-handshake cooked-mode SIGINT, demonstrated in the mechanism section below)
+
+Harness: each run executes inside dbus-run-session (a dedicated D-Bus session, as in the 2026-10-16 scenario) with the login keyring unlocked by gnome-keyring-daemon --unlock first, so the positive control can actually store. Each run is a script(1) PTY: width set by stty cols and verified in-transcript (stty size is the first line), and the app's own status recorded as INNER_EXIT inside the typescript because the trailing echo makes script(1)'s outer status 0 by construction (util-linux script -e does propagate the child status; the echo masks it). Ctrl-C is sent at t+7s, after the terminal negotiation settles: bytes sent during negotiation are swallowed (the 2026-10-16 caveat, a harness property, not a product defect).
+
+Feeder (retained below and recorded in 62b-input.log): each script(1) run takes its stdin from a pipe whose writer is the feed() helper. feed() writes the exact key bytes to the PTY and appends a timestamped hex record of exactly those bytes to 62b-input.log, so the input stream is auditable independently of the typescript (a typescript records stdin as <not executed on terminal>, and once huh is in raw mode with ISIG off the fed byte is not echoed). The Ctrl-C runs feed one ETX byte (0x03) after 7s; the positive control feeds y CR (0x79 0x0d) after 6s.
+    feed() { sleep "$2"; local hex ts; hex=$(printf "$3" | od -An -tx1 | tr -s ' ' | sed 's/^ //;s/ $//'); ts=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ); printf '%s\tts=%s\tdelay=%ss\tbytes=%s\n' "$1" "$ts" "$2" "$hex" >> "$INLOG"; printf "$3"; }
+    exact pipeline, 200 cols:  ( feed ctrlc-200 7 '\003' ) | script -qefc "stty cols 200 rows 24; stty size; just-code secrets import --apply --profile tty62wide --file .env; echo INNER_EXIT:\$?" 62b-200retry.typescript > /dev/null
+    exact pipeline,  40 cols:  ( feed ctrlc-40 7 '\003' ) | script -qefc "stty cols 40 rows 24; stty size; just-code secrets import --apply --profile tty62-40c --file .env; echo INNER_EXIT:\$?" 62b-40cols-ctrlc.typescript > /dev/null
+    exact pipeline,  y ctrl:   ( feed positive-control-y 6 'y\r' ) | script -qefc "stty cols 80 rows 24; stty size; just-code secrets import --apply --profile tty62yctrl --file .env; echo INNER_EXIT:\$?" 62b-ycontrol.typescript > /dev/null
+
++ store precondition: login keyring present and unlocked in this session
+    collection/login items visible: 10
+
++ index BEFORE (profiles tty62wide / tty62-40c / tty62yctrl must be absent)
+9 development
+1 tty40
+
++ retry: interactive huh Ctrl-C at 200 cols, Ctrl-C (0x03) at t+7s
+    transcript dimensions: 24 200
+    prompt rendered:       1 time(s)
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ width 40 cols, same Ctrl-C (0x03) at t+7s (the cancel does not depend on the width)
+    transcript dimensions: 24 40
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ index AFTER the two Ctrl-C runs (both profiles must still be absent)
+9 development
+1 tty40
+CTRLC_STORED_200: 0
+CTRLC_STORED_40:  0
+
++ positive control: answer y (0x79 0x0d) at 80 cols (proves the persistence check discriminates)
+    transcript dimensions: 24 80
+    result line:           Stored .env (2 added, 0 changed, 0 unchanged, 0 removed).
+    inner status:          INNER_EXIT:0
+
++ index AFTER the positive control (tty62yctrl must hold the 2 variables of .env)
+9 development
+1 tty40
+2 tty62yctrl
+YCTRL_STORED: 2
+
++ mechanism: why the older annotation said 130 and what actually produces it
+    A cooked-mode pty (no raw-mode app) turns Ctrl-C into SIGINT for the foreground process group, so the shell reports 128+2=130. A raw-mode TUI (huh) disables ISIG, so the byte is delivered as data and the process exits through its own abort path (1). Reproduced with script(1) at 200 cols, Ctrl-C at t+2s; each feed is recorded in 62b-input.log:
+    # 1. cooked pty (plain sleep, no raw-mode app): SIGINT kills the process group
+      cooked sleep pty:  OUTER_EXIT=130   (130 = killed by SIGINT; the inner echo never ran)
+    # 2. pty with ISIG off (what a raw-mode TUI does): no signal is generated
+      isig-off pty:      OUTER_EXIT=0   (INNER_EXIT:0; the Ctrl-C was harmless data)
+    # 3. just-code with Ctrl-C delivered before it switches the terminal to raw mode (the cooked window), 200 cols, a fallback 'n' answers the prompt if it survives the early byte so the run cannot hang
+      just-code cooked window: OUTER_EXIT=1   abort line present: 1   stored: 0
+
++ cleanup: remove the control's keyring items and index entries, then re-list
+    keyring item removed: project-env-387acdf8c1a830642b32e5e4dbf81a31fe815e0ac3ff88e138b59a45b1cb38ea-6ed5311c1229c9d402596c097858acf4
+    keyring item removed: project-env-387acdf8c1a830642b32e5e4dbf81a31fe815e0ac3ff88e138b59a45b1cb38ea-dba811013c42955b60aee4a9db5cf0fc
+
++ index FINAL (must equal the baseline: 9 development / 1 tty40)
+9 development
+1 tty40
+
++ retained input log (62b-input.log) — exact bytes written to each PTY stdin
+    ctrlc-200	ts=2026-10-19T10:52:42.664Z	delay=7s	bytes=03
+    ctrlc-40	ts=2026-10-19T10:52:49.698Z	delay=7s	bytes=03
+    positive-control-y	ts=2026-10-19T10:52:55.740Z	delay=6s	bytes=79 0d
+    mechanism-cooked	ts=2026-10-19T10:52:57.825Z	delay=2s	bytes=03
+    mechanism-isig-off	ts=2026-10-19T10:52:59.851Z	delay=2s	bytes=03
+    mechanism-cooked-window	ts=2026-10-19T10:53:06.170Z	delay=0.3s	bytes=03
+RETRY_DONE

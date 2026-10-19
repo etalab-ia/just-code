@@ -1,0 +1,45 @@
+META step=42f-mac-agentvm-lifecycle source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T08:35:15Z
+UNLOCK_OK
++ doctor --agent-vm (template must already be ready: built at the 2026-10-16 first start)
+limactl version 2.2.1
+agent-vm runtime is ready (template agent-vm-base).
+DOCTOR_AVM_EXIT: 0
++ limactl list: base template present exactly once
+NAME                          STATUS     SSH                VMTYPE    ARCH       CPUS    MEMORY    DISK     DIR
+agent-vm-base                 Stopped    127.0.0.1:49375    vz        aarch64    2       4GiB      20GiB    ~/.lima/agent-vm-base
+opencode-jc-proj-avm-f27e4    Running    127.0.0.1:50004    vz        aarch64    2       4GiB      20GiB    ~/.lima/opencode-jc-proj-avm-f27e4
+BASE_TEMPLATE_COUNT: 1
++ first start (log must NOT rebuild the base template)
+Warning: agent-vm has no secret injection, so the real ALBERT_API_KEY is readable inside the VM (isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate it. Prefer --microsandbox for untrusted work, and treat the guest as holding a live credential.
+opencode-jc-proj-avm-f27e4 is running with a healthy OpenCode backend.
+AVM_START1_EXIT: 0
+START1_DURATION_S: 0
++ wait for health via just-code check (up to ~6 min)
+CHECK1_HEALTHY: 1
+{"healthy":true,"version":"1.19.3"}
+albert provider: registered, default deepseek-v4-flash
++ write state marker into the guest home (/home/m1.guest, on the persistent guest disk)
+qualif-state-2026-10-19T08:35:15Z
++ stop
+Stopping opencode-jc-proj-avm-f27e4...
+AVM_STOP_EXIT: 0
++ second start (restart must preserve guest disk; no template rebuild)
+Warning: agent-vm has no secret injection, so the real ALBERT_API_KEY is readable inside the VM (isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate it. Prefer --microsandbox for untrusted work, and treat the guest as holding a live credential.
+Starting opencode-jc-proj-avm-f27e4 with Lima...
+Launching OpenCode server inside opencode-jc-proj-avm-f27e4...
+AVM_START2_EXIT: 0
+START2_DURATION_S: 7
+CHECK2_HEALTHY: 1
+{"healthy":true,"version":"1.19.3"}
+albert provider: registered, default deepseek-v4-flash
++ read marker back after restart
+MARKER_EXPECTED: qualif-state-2026-10-19T08:35:15Z
+MARKER_READ_BACK: qualif-state-2026-10-19T08:35:15Z
+STATE_PERSISTENCE: MATCH
++ cross-check: independent guest file listing
+-rw-r--r-- 1 m1 m1 34 Oct 19 10:35 /home/m1.guest/agentvm-state-marker
+BASE_TEMPLATE_COUNT_AFTER: 1
++ cleanup stop
+Stopping opencode-jc-proj-avm-f27e4...
+FINAL_STOP_EXIT: 0
+SCENARIO_DONE

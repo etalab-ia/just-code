@@ -1,0 +1,72 @@
+META step=58b-asahi-locked-store source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T07:48:35Z
++ baseline: approved bindings for proj-d (store unlocked)
+Project secret bindings for /home/m1/qualif/proj-d (profile: development)
+  classes.env#APOS_VALUE -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#DBL_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#TRAILING_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#WIN_PATH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  4 binding(s) deliver a real value inside the sandbox; a snapshot taken while they are delivered captures them.
+  Imported but not delivered: .env#API_TOKEN, .env#DUPE_KEY, r_apos.env#LEADING_APOS, r_dollar.env#DOLLAR_VALUE, sub/app.env#APP_SECRET, t.env#TT_VAR
+  Approve one with: just-code secrets bindings approve <profile> <component> <NAME> --destination <host>
+Values are never shown here, and approving a binding does not display or copy any value.
+BINDINGS_BEFORE_EXIT: 0
++ lock the default Secret Service collection (gnome-keyring)
+aoo 1 "/org/freedesktop/secrets/collection/login" "/"
+LOCK_CALL_EXIT: 0
++ start attempt with the store locked
+Note: /home/m1/qualif/proj-d/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /home/m1/qualif/proj-d/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+Note: /home/m1/qualif/proj-d carries files that look like secrets in the host checkout. They are NOT mounted into the guest and the transfer filter excludes them (re-include a specific file with 'just-code workspace allow <path>' if the guest genuinely needs it).
+  dotenv file (excluded from transfer): .env
+  dotenv file (excluded from transfer): classes.env
+  dotenv file (excluded from transfer): r_apos.env
+  dotenv file (excluded from transfer): r_cr.env
+  dotenv file (excluded from transfer): r_dollar.env
+  dotenv file (excluded from transfer): r_utf8.env
+  dotenv file (excluded from transfer): sub/app.env
+  dotenv file (excluded from transfer): t.env
+Resuming interrupted apply for jc-proj-d-1d5d7 at: [start-vm]
+Note: /home/m1/qualif/proj-d carries files that look like secrets in the host checkout. They are NOT mounted into the guest and the transfer filter excludes them (re-include a specific file with 'just-code workspace allow <path>' if the guest genuinely needs it).
+  dotenv file (excluded from transfer): .env
+  dotenv file (excluded from transfer): classes.env
+  dotenv file (excluded from transfer): r_apos.env
+  dotenv file (excluded from transfer): r_cr.env
+  dotenv file (excluded from transfer): r_dollar.env
+  dotenv file (excluded from transfer): r_utf8.env
+  dotenv file (excluded from transfer): sub/app.env
+  dotenv file (excluded from transfer): t.env
+Starting jc-proj-d-1d5d7...
+jc-proj-d-1d5d7 started (isolation full; the TUI runs inside the microVM).
+just-code: reconcile jc-proj-d-1d5d7 failed at start-vm (will resume there): cannot read the guest-readable project secret APOS_VALUE (classes.env): credential not found
+LOCKED_START_EXIT: 1
++ unlock
+aoo 0 "/org/freedesktop/secrets/prompt/u4"
+UNLOCK_CALL_EXIT: 0
++ bindings after unlock: must equal the baseline (no binding silently removed)
+Project secret bindings for /home/m1/qualif/proj-d (profile: development)
+  classes.env#APOS_VALUE -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#DBL_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#TRAILING_BACKSLASH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  classes.env#WIN_PATH -> READABLE INSIDE THE SANDBOX (written to classes.env)
+      the real value is delivered as a file; the agent and anything it runs can read it
+  4 binding(s) deliver a real value inside the sandbox; a snapshot taken while they are delivered captures them.
+  Imported but not delivered: .env#API_TOKEN, .env#DUPE_KEY, r_apos.env#LEADING_APOS, r_dollar.env#DOLLAR_VALUE, sub/app.env#APP_SECRET, t.env#TT_VAR
+  Approve one with: just-code secrets bindings approve <profile> <component> <NAME> --destination <host>
+Values are never shown here, and approving a binding does not display or copy any value.
+BINDINGS_AFTER_EXIT: 0
++ cleanup: stop the sandbox left mid-reconcile
+Note: /home/m1/qualif/proj-d/.env was NOT read: just-code no longer loads a .env implicitly.
+      Exported variables are still honoured. To see what the file holds and where each
+      value belongs, run 'just-code config import-env /home/m1/qualif/proj-d/.env' (preview only; the Albert key
+      belongs in the credential store: 'just-code auth add albert').
+Stopping jc-proj-d-1d5d7...
+FINAL_STOP_EXIT: 0
