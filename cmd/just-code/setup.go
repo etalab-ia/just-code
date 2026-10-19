@@ -177,7 +177,9 @@ Durée : environ 3 minutes. Espace disque : environ 2 Go.
   2. Sélection des modèles à utiliser.
   3. GitHub (facultatif) : pour pousser les modifications sur GitHub en pull request.
 
-Rien n'est enregistré avant le récapitulatif final.
+Vos identifiants sont enregistrés dès leur validation, pour que la
+configuration puisse reprendre si elle est interrompue.
+Les réglages sont confirmés au récapitulatif final.
 Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.
 `
 
