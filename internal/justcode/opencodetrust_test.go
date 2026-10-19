@@ -150,7 +150,7 @@ func TestHashFileContentStreamsLargeFiles(t *testing.T) {
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := hashFileContent(path)
+	got, err := hashFileContent(dir, "big-input.js")
 	if err != nil {
 		t.Fatal(err)
 	}

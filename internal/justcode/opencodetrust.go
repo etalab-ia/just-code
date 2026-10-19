@@ -83,13 +83,19 @@ func WriteTrustRecord(fs FS, stateDir, projectRoot string, r TrustRecord) error 
 	return atomicWrite(fs, opencodeTrustPath(stateDir, projectRoot), append(data, '\n'), 0o600)
 }
 
-// hashFileContent returns the sha256 of the file's content, hex-encoded.
-// Symlinks and non-regular files are refused: an approval record must pin
-// actual content, not a path that can be repointed after approval, and a
-// non-regular file (FIFO, device) could hang or stream unbounded data into
-// the hash. The content is hashed by streaming so a large regular file never
-// loads into memory.
-func hashFileContent(path string) (string, error) {
+// hashFileContent returns the sha256 of the file at rel under root,
+// hex-encoded. Every path component below root must be symlink-free
+// (confinedProjectPath), and the final file must be a regular file: an
+// approval record must pin actual content, not a path that can be repointed
+// after approval — including via a symlinked parent directory repointed at
+// the outside world — and a non-regular file (FIFO, device) could hang or
+// stream unbounded data into the hash. The content is hashed by streaming so
+// a large regular file never loads into memory.
+func hashFileContent(root, rel string) (string, error) {
+	path, err := confinedProjectPath(root, rel)
+	if err != nil {
+		return "", err
+	}
 	fi, err := os.Lstat(path)
 	if err != nil {
 		return "", err
@@ -151,7 +157,7 @@ func DiscoverUnapprovedInputs(fs FS, stateDir, projectRoot string) ([]Unapproved
 	}
 	var out []UnapprovedInput
 	check := func(rel string) {
-		hash, err := hashFileContent(filepath.Join(projectRoot, rel))
+		hash, err := hashFileContent(projectRoot, rel)
 		if err != nil {
 			out = append(out, UnapprovedInput{Path: rel, Reason: "unreadable: " + err.Error()})
 			return
@@ -212,7 +218,7 @@ func ApproveExecutionInputs(fs FS, stateDir, projectRoot string) error {
 		}
 	}
 	add := func(rel string) error {
-		hash, err := hashFileContent(filepath.Join(projectRoot, rel))
+		hash, err := hashFileContent(projectRoot, rel)
 		if err != nil {
 			return fmt.Errorf("approve %s: %w", rel, err)
 		}
