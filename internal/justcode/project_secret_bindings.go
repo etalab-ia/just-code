@@ -373,15 +373,7 @@ func (m *MicrosandboxRuntime) projectSecretStore() (*ProjectSecretStore, error) 
 	if root == "" {
 		return nil, fmt.Errorf("project secret bindings need a project workspace root")
 	}
-	store := DefaultCredentialStore()
-	if store == nil {
-		fileStore, err := NewFileCredentialStore()
-		if err != nil {
-			return nil, err
-		}
-		store = fileStore
-	}
-	return NewProjectSecretStore(root, m.stateDirOrDefault(), store)
+	return projectSecretStoreFor(root, m.stateDirOrDefault())
 }
 
 // projectSecretDeliveries returns the approved bindings for the current
@@ -437,15 +429,59 @@ func ProjectSecretDeliveries(root, stateDir string) ([]ProjectSecretDelivery, []
 }
 
 func projectSecretStoreFor(root, stateDir string) (*ProjectSecretStore, error) {
-	store := DefaultCredentialStore()
-	if store == nil {
-		fileStore, err := NewFileCredentialStore()
-		if err != nil {
-			return nil, err
-		}
-		store = fileStore
+	_, namespace, err := projectSecretScope(root)
+	if err != nil {
+		return nil, err
+	}
+	store, err := credentialStoreForKind(RecordedProjectSecretStoreKind(stateDir, namespace))
+	if err != nil {
+		return nil, err
 	}
 	return NewProjectSecretStore(root, stateDir, store)
+}
+
+// credentialStoreForKind maps a store kind to an adapter. "" selects the
+// platform default; "file" is the owner-only fallback, chosen only because an
+// import already recorded that it stored the values there. A recorded kind is
+// a decision the user already made (the fallback requires explicit consent at
+// import), so honoring it on a later read is not a silent downgrade: the
+// alternative is failing against a store that never held the values.
+func credentialStoreForKind(kind string) (CredentialStore, error) {
+	switch kind {
+	case "file":
+		return NewFileCredentialStore()
+	case "", "native":
+		if store := DefaultCredentialStore(); store != nil {
+			return store, nil
+		}
+		return nil, fmt.Errorf("no native credential store is available on this platform; store and import with --fallback to use the owner-only file store after consenting")
+	default:
+		return nil, fmt.Errorf("project secret index names an unknown credential store %q", kind)
+	}
+}
+
+// PreferRecordedCredentialStore reconciles an already-resolved store with the
+// store kind an import recorded for this project scope. When they disagree,
+// the recorded kind wins: the imported values are in that store, so reading
+// anywhere else can only produce a spurious mismatch. active may be nil, in
+// which case the recorded kind alone is resolved (a platform with no native
+// adapter can still have consented file-store values).
+func PreferRecordedCredentialStore(active CredentialStore, root, stateDir string) (CredentialStore, error) {
+	_, namespace, err := projectSecretScope(root)
+	if err != nil {
+		return nil, err
+	}
+	recorded := RecordedProjectSecretStoreKind(stateDir, namespace)
+	if recorded == "" {
+		if active == nil {
+			return credentialStoreForKind("")
+		}
+		return active, nil
+	}
+	if active != nil && active.Kind() == recorded {
+		return active, nil
+	}
+	return credentialStoreForKind(recorded)
 }
 
 // ProjectSecretBindingsRecord is the CLI-facing view of the host-local
