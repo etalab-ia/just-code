@@ -45,26 +45,43 @@ func NewProjectSecretStore(root, stateDir string, store CredentialStore) (*Proje
 	if store == nil || root == "" || stateDir == "" {
 		return nil, fmt.Errorf("project secret storage requires a root, state directory and credential store")
 	}
-	abs, err := filepath.Abs(root)
+	canonical, namespace, err := projectSecretScope(root)
 	if err != nil {
 		return nil, err
 	}
-	canonical, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return nil, fmt.Errorf("resolve project secret scope: %w", err)
-	}
-	info, err := os.Stat(canonical)
-	if err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("project secret root must be an existing directory")
-	}
-	digest := sha256.Sum256([]byte(filepath.ToSlash(canonical)))
-	namespace := hex.EncodeToString(digest[:])
 	return &ProjectSecretStore{
 		root: canonical, namespace: namespace,
 		stateDir: stateDir,
 		dir:      filepath.Join(stateDir, "project-secrets", namespace),
 		store:    store, fs: projectSecretsRealFS{},
 	}, nil
+}
+
+// projectSecretScope canonicalizes a project root and derives its namespace.
+// It is the single place the scope digest is computed, so the namespace can be
+// derived without constructing a store (recordedProjectSecretStoreKind).
+func projectSecretScope(root string) (canonical, namespace string, err error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", err
+	}
+	canonical, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		// A root that does not exist yet is not a store-selection failure: the
+		// default ./workspace is created during Start, and a project that is
+		// not on disk has no project secrets. Every other resolution failure
+		// (permissions, a broken link) stays a real error.
+		if os.IsNotExist(err) {
+			return "", "", fmt.Errorf("%w: %v", ErrProjectSecretNoScope, err)
+		}
+		return "", "", fmt.Errorf("resolve project secret scope: %w", err)
+	}
+	info, err := os.Stat(canonical)
+	if err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("%w: project secret root must be an existing directory", ErrProjectSecretNoScope)
+	}
+	digest := sha256.Sum256([]byte(filepath.ToSlash(canonical)))
+	return canonical, hex.EncodeToString(digest[:]), nil
 }
 
 func (s *ProjectSecretStore) Namespace() string { return s.namespace }
@@ -118,6 +135,13 @@ type ProjectSecretImportResult struct {
 }
 
 var ErrProjectSecretCleanupPending = errors.New("project secret cleanup pending; retry with the same credential store")
+
+// ErrProjectSecretNoScope is returned when a runtime has no project scope at
+// all, so it cannot have project secrets. It exists to be told apart from a
+// store that is configured but cannot be resolved: the first is a legitimate
+// empty result, the second must stop a start before it touches a running
+// sandbox. Callers use errors.Is, so wrapping keeps the distinction.
+var ErrProjectSecretNoScope = errors.New("project secret bindings need a project workspace root")
 var ErrProjectSecretSnapshotChanged = errors.New("project secret set changed since preview; review a fresh preview before applying")
 
 // Windows Credential Manager caps the blob at 2560 bytes. WinCredStore encodes
@@ -186,6 +210,29 @@ func validSecretComponent(v string) bool {
 func (s *ProjectSecretStore) indexPath() string       { return filepath.Join(s.dir, "index.json") }
 func (s *ProjectSecretStore) journalPath() string     { return filepath.Join(s.dir, "pending.json") }
 func (s *ProjectSecretStore) referencePrefix() string { return "project-env-" + s.namespace + "-" }
+
+// ProjectSecretIndexPath exposes the index path for a project scope, so a
+// caller can inspect what an import recorded before choosing a store.
+func ProjectSecretIndexPath(stateDir, namespace string) string {
+	return filepath.Join(stateDir, "project-secrets", namespace, "index.json")
+}
+
+// RecordedProjectSecretStoreKind returns the credential store kind an import
+// recorded for this project scope, or "" when nothing is recorded (no index,
+// or an index that does not name a store). The imported values live in that
+// store, so it — not a fresh native probe — must answer a later read. Only the
+// store kind is returned; the index never contains a value.
+func RecordedProjectSecretStoreKind(stateDir, namespace string) string {
+	raw, err := (projectSecretsRealFS{}).ReadFile(ProjectSecretIndexPath(stateDir, namespace))
+	if err != nil {
+		return ""
+	}
+	var idx projectSecretIndex
+	if json.Unmarshal(raw, &idx) != nil {
+		return ""
+	}
+	return idx.Store
+}
 
 func secretRandomID() (string, error) {
 	var id [16]byte
@@ -282,8 +329,24 @@ func (s *ProjectSecretStore) readIndex() (projectSecretIndex, error) {
 	if err != nil {
 		return idx, err
 	}
-	if json.Unmarshal(raw, &idx) != nil || idx.SchemaVersion != 1 || idx.Namespace != s.namespace || idx.Store != s.store.Kind() || !validSecretID(idx.Generation) {
-		return idx, fmt.Errorf("project secret index has an invalid schema, scope or credential store")
+	// Each rejection names its own cause. A single "invalid schema, scope or
+	// credential store" left the user to guess which of the five checks fired,
+	// and in the store case it hid the one actionable fact: which store the
+	// values actually went into.
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return idx, fmt.Errorf("project secret index %s is corrupt (%w): remove it and re-import the component", s.indexPath(), err)
+	}
+	if idx.SchemaVersion != 1 {
+		return idx, fmt.Errorf("project secret index %s has schema version %d, this build understands version 1: re-import the component with this version", s.indexPath(), idx.SchemaVersion)
+	}
+	if idx.Namespace != s.namespace {
+		return idx, fmt.Errorf("project secret index %s belongs to another project scope: it was imported from a different checkout root", s.indexPath())
+	}
+	if idx.Store != s.store.Kind() {
+		return idx, fmt.Errorf("the project secrets were imported into the %q credential store, but this command opened the %q store; re-run with the matching store (for example --fallback for the owner-only file store)", idx.Store, s.store.Kind())
+	}
+	if !validSecretID(idx.Generation) {
+		return idx, fmt.Errorf("project secret index %s has an invalid generation marker: remove it and re-import the component", s.indexPath())
 	}
 	seen, refs := map[string]bool{}, map[string]bool{}
 	for _, e := range idx.Entries {

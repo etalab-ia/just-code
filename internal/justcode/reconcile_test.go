@@ -697,6 +697,15 @@ func TestReconcileRefusesCredentialOpsWhenUnresolved(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "credential set could not be resolved") {
 		t.Fatalf("an unresolved credential set must refuse the credential ops: %v", err)
 	}
+	// The message must name the cause. A reused `err` variable printed
+	// `(<nil>)` here, leaving the actionable part only in the warning above
+	// (#202): the refusal is supposed to be self-explanatory.
+	if strings.Contains(err.Error(), "(<nil>)") {
+		t.Fatalf("the refusal must name the resolution cause, not <nil>: %v", err)
+	}
+	if !strings.Contains(err.Error(), "missing-ref") && !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("the refusal must name what could not be resolved: %v", err)
+	}
 	for _, call := range client.calls {
 		switch {
 		case strings.HasPrefix(call, "modify "), strings.HasPrefix(call, "start "), strings.HasPrefix(call, "create"):

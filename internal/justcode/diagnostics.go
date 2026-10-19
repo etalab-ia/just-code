@@ -261,7 +261,7 @@ func (d Diagnostics) toolItem(ctx context.Context, tool string) DiagnosticItem {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	res, runErr := run(probeCtx, path, "--version")
+	res, runErr := run(probeCtx, path, versionProbeArgs(tool)...)
 	value := "found"
 	status := DiagnosticOK
 	detail := ""
@@ -281,6 +281,20 @@ func (d Diagnostics) toolItem(ctx context.Context, tool string) DiagnosticItem {
 		detail = "version output was not recognized"
 	}
 	return DiagnosticItem{Name: tool, Value: value, Detail: detail, Status: status}
+}
+
+// versionProbeArgs returns the arguments that make a tool print its version.
+// Almost every tool accepts --version, but Go does not: `go --version` exits 2
+// with a usage message, so a machine with a working Go was reported as
+// "unusable". The per-tool spelling lives here so the probe stays one call.
+func versionProbeArgs(tool string) []string {
+	switch tool {
+	case "go":
+		// `go version` is the documented form; --version is not a Go flag.
+		return []string{"version"}
+	default:
+		return []string{"--version"}
+	}
 }
 
 func firstVersionToken(output string) string {
@@ -448,7 +462,8 @@ func (d Diagnostics) credentialSection(ctx context.Context, fs FS, stateDir stri
 	storeKind, storeErr := verifyStore(storeCtx)
 	cancel()
 	if storeErr == nil {
-		section.Items = append(section.Items, DiagnosticItem{Name: "Credential store availability", Value: storeKind, Detail: "read-only probe succeeded", Status: DiagnosticOK})
+		// The probe does not write, so it cannot promise a write will land.
+		section.Items = append(section.Items, DiagnosticItem{Name: "Credential store availability", Value: storeKind, Detail: "read-only probe succeeded; a locked collection can still refuse writes", Status: DiagnosticOK})
 	} else {
 		var typed *StoreError
 		if errors.As(storeErr, &typed) {
