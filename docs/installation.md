@@ -32,7 +32,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-just-code.ps1
 
 La forme Windows en deux étapes passe `-ExecutionPolicy Bypass` uniquement pour le processus PowerShell lancé par cette commande, car la stratégie `Restricted` par défaut bloque les scripts fichiers ; aucune stratégie permanente n'est changée. La forme pipe (`irm ... | iex`) évalue le script en mémoire et n'est pas soumise à la stratégie d'exécution.
 
-Si le répertoire d'installation n'est pas déjà dans `PATH`, l'installateur affiche la commande à exécuter dans la session courante. Il ne modifie pas les profils de shell ni les variables d'environnement persistantes.
+Si le répertoire d'installation n'est pas déjà dans `PATH`, l'installateur prévient que la commande ne serait pas trouvée dans un nouveau terminal, puis demande l'autorisation d'ajouter la ligne correspondante au fichier réellement lu par ce terminal :
+
+- zsh : `~/.zshenv` ;
+- bash sous macOS : `~/.bash_profile` s'il existe, sinon `~/.profile` (un `~/.bash_profile` n'est jamais créé de zéro, car il masquerait un `~/.profile` existant) ;
+- bash sous Linux : `~/.bashrc`, le seul fichier lu par un terminal qui ouvre un shell non connecté ;
+- `sh`, `dash`, `ksh`, `ash` : `~/.profile` ;
+- fish, nushell et shells inconnus : aucune modification n'est proposée, car un `export` POSIX n'y aurait pas d'effet ; l'installateur affiche la ligne à ajouter au fichier de démarrage de ce shell.
+
+Il attend une réponse ; appuyer sur Entrée accepte, répondre `n` refuse. La modification n'est jamais faite d'office, et une ligne déjà présente n'est pas ajoutée une seconde fois. Une lecture impossible (Ctrl-D) est traitée comme un refus, pas comme une acceptation. Lorsque aucun terminal n'est disponible (script non interactif, `curl … | sh` sans terminal de contrôle), l'installateur ne modifie aucun fichier de profil et se contente d'afficher la ligne à exécuter dans la session courante. Le résultat de l'installation est annoncé avant le lancement de l'assistant, et un assistant interrompu ou en échec indique la commande de reprise, donnée en chemin absolu (`"$HOME/.local/bin/just-code" setup`) car le terminal courant n'a pas encore le nouveau `PATH`.
 
 La somme SHA-256 détecte une altération ou un mélange d'assets, mais elle est téléchargée depuis la même release GitHub que le binaire. Les releases des binaires `just-code` ne publient pas d'attestation vérifiée de provenance : cette vérification ne prouve donc pas l'identité de l'éditeur. Les scripts d'installation ne sont pas signés ni attestés non plus ; leur provenance doit être évaluée séparément, par exemple avec la variante téléchargeable ci-dessus.
 
@@ -40,8 +48,8 @@ Les binaires macOS ne sont ni signés ni notariés, et portent une signature ad-
 
 ## Dépendances de l'hôte
 
-- OpenCode CLI sur l'hôte (`npm install -g opencode-ai`)
 - Une **clé Albert API** dans l'environnement (ou dans le magasin d'identifiants, voir [Identifiants et secrets](credentials.md))
+- OpenCode CLI sur l'hôte (`npm install -g opencode-ai`) **uniquement en isolation partielle** : en isolation complète (le défaut), just-code installe OpenCode dans l'invité et ne le vérifie pas sur l'hôte.
 - L'un des runtimes disponibles :
   - [Microsandbox](https://github.com/superradcompany/microsandbox) sur un Mac Apple Silicon, Linux (KVM) ou Windows arm64/x64 (Windows Hypervisor Platform / WHP) — **rien à installer** : just-code télécharge et vérifie l'exécutable `msb` automatiquement au premier démarrage ;
   - [Tart](https://github.com/openai/tart) (`brew install openai/tools/tart`) sur un Mac Apple Silicon pour les environnements de dev macOS (notamment Xcode / iOS) ;
