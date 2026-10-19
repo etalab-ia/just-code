@@ -69,10 +69,11 @@ l'invité ; confirmer la perte avant de l'exécuter.
 ## Configurer la machine (`setup`)
 
 `just-code setup` prépare la machine en une passe guidée : diagnostic
-(plateforme, virtualisation, disque — lecture seule) → identifiant Albert
-(masqué, validé contre le catalogue ; rejet et indisponibilité réseau
-distincts) → identifiant GitHub optionnel → identité git → modèle par
-défaut → revue → application (réglages globaux + runtime managé).
+(plateforme, virtualisation, disque — lecture seule) → écran d'introduction
+(parcours annoncé, Entrée pour commencer) → identifiant Albert (masqué,
+validé contre le catalogue ; rejet et indisponibilité réseau distincts) →
+identifiant GitHub optionnel → identité git → modèle par défaut → revue →
+application (réglages globaux + runtime managé).
 
 ```bash
 just-code setup            # assistant interactif
@@ -94,6 +95,12 @@ Règles du flux :
 - **Aucune saisie avant un bloqueur fatal.** La virtualisation et le disque
   sont vérifiés avant toute invite : la clé n'est jamais demandée sur une
   machine qui ne peut pas exécuter le runtime.
+- **Introduction sur un premier lancement.** Un setup neuf affiche l'écran
+  d'introduction (bannière, durée estimée, les trois étapes) et attend Entrée
+  avant la première question. Un setup repris ne le réaffiche pas. L'écran
+  n'est montré que si l'entrée et la sortie sont toutes deux un terminal : sur
+  une exécution non interactive, il est omis plutôt que d'attendre une touche
+  qui ne viendra pas.
 - **Reprise.** Un setup interrompu reprend là où il s'est arrêté (journal
   d'état hôte) — les identifiants déjà stockés ne sont pas redemandés.
 - **Rejet ≠ réseau.** Une clé refusée (401/403) propose de la ressaisir ;
