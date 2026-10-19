@@ -29,10 +29,12 @@ noyau arm64 à pages de 16 K (point de vigilance initial, levé).
 | Fichier | Étape du protocole | Résultat |
 |---|---|---|
 | `40-inventory.txt` | Inventaire hôte + doctor runtime absent | KVM rw OK ; échec propre sans effet de bord |
+| `42b-doctor-postinstall.txt` | `doctor --microsandbox` **après** installation du runtime | toutes les vérifications au vert (msb, libkrunfw, reflink, KVM), `DOCTOR_EXIT: 0` |
 | `41-auth.txt` | `auth add` (file fallback) + `auth status` | identifiant stocké, statut correct |
 | `50-54-common.txt` | Porte microVM, filtre, export/sync, cycle vie, TUI, import, dépôt d'équipe | premier boot **12,3 s** ; redémarrage 2,2 s ; toutes les lignes OK |
 | `51b-tui.txt`, `51b-tui.typescript` | TUI dans l'invité (preuve processus) | opencode visible dans l'invité |
 | `55-58-secrets.txt` | Secrets : import, classes, refus, profils, verrou | comportement identique à amd64 |
+| `58b-locked-store.txt` | Magasin verrouillé : diagnostic explicite + état des liaisons | collection gnome-keyring verrouillée par `busctl` : le démarrage **échoue** avec `cannot read the guest-readable project secret APOS_VALUE (classes.env): credential not found` (étape `start-vm`, reprise possible) au lieu de poursuivre ; après déverrouillage, les 4 liaisons approuvées sont **identiques** à la ligne de base — aucune désinscription silencieuse |
 | `56b-delivery.txt`, `56c-delivery.txt`, `56d-substitution.txt` | Livraison, substitution live, refus inter-hôte, rotation, révocation | marqueur seul dans l'invité, valeur réelle à httpbin, coupure SSL vers hôte non approuvé |
 | `59-terminal.txt` | Matrice terminal mode ligne (40/200 cols vérifiées) ; le Ctrl-C de ce fichier est terminé par `timeout -k` et **ne vaut pas preuve** | confirmations correctes |
 | `62-asahi-terminal-interactive.txt` | Matrice terminal **mode interactif huh** (pty `script`, Ctrl-C à 40/200 cols, annulation « n », Ctrl-C tardif à 200 cols) | Ctrl-C sort proprement (130) aux deux largeurs une fois la négociation terminal terminée ; « n » annule ; rien de persisté. Pas d'invite d'approbation en v0.10.0 (#209) ; un `approve` en échec laisse un état partiel (#210) |
