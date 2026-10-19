@@ -24,7 +24,7 @@ func TestParseProjectOpenCodeConfigJSONC(t *testing.T) {
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := ParseProjectOpenCodeConfig(path)
+	parsed, err := ParseProjectOpenCodeConfig(dir, path)
 	if err != nil {
 		t.Fatalf("JSONC must parse: %v", err)
 	}
@@ -64,13 +64,13 @@ func TestParseProjectOpenCodeConfigRejectsMalformed(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"model": broken`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParseProjectOpenCodeConfig(path); err == nil {
+	if _, err := ParseProjectOpenCodeConfig(dir, path); err == nil {
 		t.Fatal("a malformed project config must be an error, never 'no conflicts'")
 	} else if !strings.Contains(err.Error(), path) {
 		t.Fatalf("parse error omitted source path %q: %v", path, err)
 	}
 	// Empty path is a normal state.
-	if m, err := ParseProjectOpenCodeConfig(""); err != nil || m == nil {
+	if m, err := ParseProjectOpenCodeConfig(dir, ""); err != nil || m == nil {
 		t.Fatalf("empty path: %v, %v", m, err)
 	}
 }
@@ -112,5 +112,77 @@ func TestDiscoverProjectExecutionInputs(t *testing.T) {
 	}
 	if len(inputs.AutoDiscoveredPlugins) != 2 {
 		t.Fatalf("auto-discovered = %v (mjs must be excluded)", inputs.AutoDiscoveredPlugins)
+	}
+}
+
+func TestConfinedProjectPathRejectsTraversalAndAbsolute(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"../escape.js", "sub/../../escape.js", string(filepath.Separator) + "abs.js"} {
+		if _, err := confinedProjectPath(root, rel); err == nil {
+			t.Fatalf("project path %q must be refused", rel)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".opencode", "plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".opencode", "plugin", "a.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, ".opencode", "plugin", "a.js")
+	if got, err := confinedProjectPath(root, filepath.Join(".opencode", "plugin", "a.js")); err != nil || got != want {
+		t.Fatalf("clean relative path: got %s, %v; want %s", got, err, want)
+	}
+}
+
+func TestDiscoverProjectExecutionInputsEmptyRoot(t *testing.T) {
+	inputs, err := DiscoverProjectExecutionInputs(t.TempDir())
+	if err != nil {
+		t.Fatalf("a checkout without .opencode must discover cleanly: %v", err)
+	}
+	if inputs.ConfigPath != "" || len(inputs.AutoDiscoveredPlugins) != 0 {
+		t.Fatalf("unexpected inputs: %+v", inputs)
+	}
+}
+
+func TestParseProjectOpenCodeConfigRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "real.json")
+	if err := os.WriteFile(target, []byte(`{"plugin": ["./p.ts"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "opencode.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// Discovery keeps reporting the entry so the trust flow can block on it;
+	// only the read refuses.
+	if got := FindProjectOpenCodeConfig(dir); got != link {
+		t.Fatalf("discovery must keep reporting the symlinked config, got %q", got)
+	}
+	if _, err := ParseProjectOpenCodeConfig(dir, link); err == nil {
+		t.Fatal("parse must refuse a symlinked config instead of reading its target")
+	}
+	if _, err := DiscoverProjectExecutionInputs(dir); err == nil {
+		t.Fatal("input discovery must fail closed on a symlinked config")
+	}
+}
+
+func TestParseProjectOpenCodeConfigSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.json")
+	oversized := `{"x": "` + strings.Repeat("a", maxOpenCodeConfigSize) + `"}`
+	if err := os.WriteFile(path, []byte(oversized), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseProjectOpenCodeConfig(dir, path); err == nil || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("expected size-limit refusal, got %v", err)
+	}
+	atLimit := `{"x": "` + strings.Repeat("a", maxOpenCodeConfigSize-len(`{"x": ""}`)) + `"}`
+	if err := os.WriteFile(path, []byte(atLimit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseProjectOpenCodeConfig(dir, path); err != nil {
+		t.Fatalf("a config at exactly the limit must parse: %v", err)
 	}
 }

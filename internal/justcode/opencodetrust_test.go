@@ -1,6 +1,9 @@
 package justcode
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,6 +138,25 @@ func TestTrustRecordRefusesSymlink(t *testing.T) {
 	err := ApproveExecutionInputs(fs, stateDir, root)
 	if err == nil {
 		t.Fatal("a symlinked plugin must not be approvable: the path could be repointed after approval")
+	}
+}
+
+func TestHashFileContentStreamsLargeFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big-input.js")
+	// ~3 MiB forces the streaming hash through multiple io.Copy chunks; the
+	// digest must match a whole-buffer sha256 of the same content.
+	content := bytes.Repeat([]byte("just-code"), (3<<20)/len("just-code")+1)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := hashFileContent(dir, "big-input.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	if want := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("streaming hash mismatch: got %s want %s", got, want)
 	}
 }
 

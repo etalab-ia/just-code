@@ -404,7 +404,6 @@ func (p AlbertCodeImport) Format() string {
 		fmt.Fprintf(&b, "Review: %s\n", item)
 	}
 	b.WriteString("The old VM, sessions, untracked guest files, and installed tools do not transfer. The guest receives a clone filtered by the default-deny transfer rules; .env is not copied. Legacy config files and .git/info/exclude are not changed.\n")
-	b.WriteString("Preview only. Pass --apply to write the just-code project manifest and lockfile.\n")
 	return b.String()
 }
 

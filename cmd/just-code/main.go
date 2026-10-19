@@ -700,7 +700,7 @@ func opencodeConfigReview(projectRoot string, overlay justcode.ManagedOverlay) (
 	if cfgPath == "" {
 		return "", nil
 	}
-	project, err := justcode.ParseProjectOpenCodeConfig(cfgPath)
+	project, err := justcode.ParseProjectOpenCodeConfig(projectRoot, cfgPath)
 	if err != nil {
 		return "", err
 	}
