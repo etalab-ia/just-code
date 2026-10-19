@@ -1122,34 +1122,100 @@ func TestInitApplyRefusesZoneAddedBehindSymlinkAfterPlanning(t *testing.T) {
 	}
 }
 
-func TestInitPlanFailsClosedOnOversizedAgents(t *testing.T) {
-	// The zone probe reads at most maxAgentsProbeBytes; a larger file has
-	// an unknown zone state, so the plan claims the path (fail closed)
-	// instead of deciding from a truncated read.
+func TestHasManagedSkillZoneIn(t *testing.T) {
+	// The streaming scan must match hasManagedSkillZone's semantics:
+	// either marker line claims the file, a marker that is only part of
+	// a longer line does not, and overlong lines are skipped whole.
+	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
+	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "no markers", content: "User rules.\n", want: false},
+		{name: "balanced zone", content: "a\n" + start + "\nx\n" + end + "\n", want: true},
+		{name: "begin only", content: "a\n" + start + "\n", want: true},
+		{name: "end only", content: "a\n" + end + "\n", want: true},
+		{name: "marker as substring of a longer line", content: "see " + start + " inline\n", want: false},
+		{name: "indented marker", content: "  " + start + "  \n", want: true},
+		{name: "crlf line endings", content: "a\r\n" + start + "\r\n", want: true},
+		{name: "overlong line before marker", content: strings.Repeat("a", 200000) + "\n" + start + "\n", want: true},
+		{name: "marker before overlong line", content: start + "\n" + strings.Repeat("a", 200000) + "\n", want: true},
+		{name: "marker as tail of an overlong line", content: strings.Repeat("a", 64<<10) + start + "\n", want: false},
+		{name: "final unterminated marker line", content: "a\n" + start, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasManagedSkillZoneIn(strings.NewReader(tc.content)); got != tc.want {
+				t.Fatalf("hasManagedSkillZoneIn = %v, want %v", got, tc.want)
+			}
+			if got := hasManagedSkillZone(tc.content); got != tc.want {
+				t.Fatalf("scan disagrees with hasManagedSkillZone (%v, want %v)", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInitPlanScansOversizedAgentsWithoutClaiming(t *testing.T) {
+	// The zone probe scans for markers in bounded memory: an oversized
+	// zone-less AGENTS.md is not claimed (so a symlink to one stays
+	// untouched), while an oversized file carrying a marker is.
 	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
 		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
 	}
-	root := initTestRoot(t)
-	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
-	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
-		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
-	}); err != nil {
-		t.Fatal(err)
+	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
+	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
+	cases := []struct {
+		name      string
+		symlink   bool
+		withZone  bool
+		wantClaim bool
+	}{
+		{name: "regular oversized zone-less"},
+		{name: "symlink to oversized zone-less", symlink: true},
+		{name: "oversized with a marker", withZone: true, wantClaim: true},
 	}
-	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
-		t.Fatal(err)
-	}
-	big := bytes.Repeat([]byte("a"), maxAgentsProbeBytes+1)
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), big, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	wizard := InitWizard{StateDir: t.TempDir()}
-	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.InstructionsPath == "" {
-		t.Fatal("an oversized AGENTS.md must fail closed into a claim, not read as zone-less")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initTestRoot(t)
+			manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+			if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+				Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+				t.Fatal(err)
+			}
+			content := strings.Repeat("a", 1<<20+1)
+			if tc.withZone {
+				content += "\n" + start + "\n" + end + "\n"
+			}
+			agentsPath := filepath.Join(root, "AGENTS.md")
+			if tc.symlink {
+				outside := filepath.Join(t.TempDir(), "instructions.md")
+				if err := os.WriteFile(outside, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, agentsPath); err != nil {
+					t.Skipf("cannot create symlink: %v", err)
+				}
+			} else if err := os.WriteFile(agentsPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			wizard := InitWizard{StateDir: t.TempDir()}
+			plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantClaim && plan.InstructionsPath == "" {
+				t.Fatal("an oversized AGENTS.md carrying a marker must be claimed")
+			}
+			if !tc.wantClaim && plan.InstructionsPath != "" {
+				t.Fatal("an oversized zone-less AGENTS.md must not be claimed")
+			}
+		})
 	}
 }
 

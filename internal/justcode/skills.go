@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -448,17 +449,13 @@ func hasManagedSkillZone(text string) bool {
 	return err != nil || zone != ""
 }
 
-// maxAgentsProbeBytes bounds the zone-presence probe: AGENTS.md is a small
-// instructions file, and a pathological entry must not balloon the probe's
-// memory. The claim path still reads the full file it may rewrite.
-const maxAgentsProbeBytes = 1 << 20
-
 // managedZoneAt reports whether the AGENTS.md at path carries a managed
 // zone. It opens the path once with O_NONBLOCK — opening a FIFO for
 // reading blocks until a writer appears — inspects the opened handle
-// rather than re-resolving the path, and reads only a bounded regular
-// file, so an entry swapped in after validation cannot stall or bloat
-// the probe. A missing or dangling path reads as no zone; any other
+// rather than re-resolving the path, and scans the opened regular file
+// for markers in bounded memory, so an entry swapped in after
+// validation cannot stall the probe and a huge or sparse file cannot
+// balloon it. A missing or dangling path reads as no zone; any other
 // non-regular or unreadable entry fails closed, same as a zone, so the
 // caller claims the path and its own validation refuses it.
 func managedZoneAt(path string) bool {
@@ -471,14 +468,48 @@ func managedZoneAt(path string) bool {
 	if err != nil || !info.Mode().IsRegular() {
 		return true
 	}
-	if info.Size() > maxAgentsProbeBytes {
-		return true
+	return hasManagedSkillZoneIn(f)
+}
+
+// hasManagedSkillZoneIn reports whether r contains a just-code managed
+// skill marker line, matching hasManagedSkillZone: a balanced pair is a
+// zone, and any other marker combination is malformed and fails closed
+// there, so either marker's presence means the file must be claimed. It
+// reads in bounded chunks — a line longer than the buffer cannot be a
+// marker and is skipped — so file size does not bound memory.
+func hasManagedSkillZoneIn(r io.Reader) bool {
+	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
+	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
+	br := bufio.NewReaderSize(r, 64<<10)
+	for {
+		line, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			// A line longer than the buffer cannot be a marker
+			// line; discard it entirely, including its final
+			// chunk, and keep scanning.
+			line, err = br.ReadSlice('\n')
+			for err == bufio.ErrBufferFull {
+				line, err = br.ReadSlice('\n')
+			}
+			if err == io.EOF {
+				return false
+			}
+			if err != nil {
+				return true
+			}
+			continue
+		}
+		trimmed := strings.TrimSpace(string(line))
+		if trimmed == start || trimmed == end {
+			return true
+		}
+		if err == io.EOF {
+			return false
+		}
+		if err != nil {
+			return true
+		}
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxAgentsProbeBytes+1))
-	if err != nil {
-		return true
-	}
-	return hasManagedSkillZone(string(data))
 }
 
 // renderManagedInstructions renders the managed section: standing guidance
