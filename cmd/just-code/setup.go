@@ -212,7 +212,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 	// Stage: Albert credential (skipped when already stored this run).
 	if !justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
-		fmt.Println(albertKeyScreenHeader())
+		fmt.Println(albertKeyScreenHeader(fallback))
 		// Resolve and verify the store BEFORE prompting: a locked or
 		// unavailable store must fail before the user types anything (the
 		// auth add contract). A consented-but-absent file store is the
@@ -254,8 +254,8 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			}
 			if probe.Unreachable {
 				fmt.Printf("%s (%s)\n", albertUnreachableMessage, probe.Detail)
-				retry, answered := albertRetryChoice(in)
-				if !answered {
+				retry, abort := albertRetryChoice(in)
+				if abort {
 					// Aborted or unanswerable: cancel rather than store a key
 					// the user never agreed to continue with.
 					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
@@ -528,16 +528,22 @@ const (
 )
 
 // albertKeyScreenHeader introduces the first of the three steps and says where
-// a key comes from.
-func albertKeyScreenHeader() string {
+// a key comes from. fallback selects the file-store wording: the native
+// keychain and the consented file store are not the same guarantee, so the
+// screen must not promise a keychain when --fallback is in use.
+func albertKeyScreenHeader(fallback bool) string {
+	storeLine := "La clé est enregistrée dans le trousseau de ce poste, jamais dans vos projets."
+	if fallback {
+		storeLine = "La clé est enregistrée dans un fichier de ce poste, lisible par votre seul compte, jamais dans vos projets."
+	}
 	return fmt.Sprintf(`[1/3] Clé Albert API
 
 L'agent utilise Albert API, l'API d'IA générative de l'État.
-La clé est enregistrée dans le trousseau de ce poste, jamais dans vos projets.
+%s
 Vous n'avez pas encore de clé ?
   Créez-la ici : %s
   Guide de prise en main : %s
-`, albertCreateKeyURL, albertQuickstartURL)
+`, storeLine, albertCreateKeyURL, albertQuickstartURL)
 }
 
 // albertKeyPrompt is the input label; the typed value is never echoed.
@@ -560,12 +566,17 @@ const albertUnreachableMessage = "Albert API ne répond pas. Vérifiez votre con
 const albertRetryPrompt = "[R] Réessayer  [C] Continuer sans vérifier"
 
 // albertRetryChoice asks whether to retry validation. It returns retry=true to
-// re-enter the key, retry=false to continue without validating, and ok=false
-// when the question was never answered (abort, end of input). ok=false must
-// cancel: only an explicit "continue" may authorize storing an unvalidated key.
-func albertRetryChoice(in *bufio.Reader) (retry bool, ok bool) {
+// re-enter the key, abort=true to stop the wizard, and neither for a
+// continue-without-verifying decision.
+//
+// A typo must not end the run: an answer that is neither R nor C asks again. A
+// missing answer (EOF) or an aborted form does stop the run, because only an
+// explicit choice may authorize storing an unvalidated key.
+func albertRetryChoice(in *bufio.Reader) (retry, abort bool) {
 	if wizardHuhFn() {
-		choice := "continue"
+		// huh only returns one of the two options (it re-asks on its own for
+		// anything else), so an error here is an abort, never a "continue".
+		choice := ""
 		err := huhRun(huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
@@ -577,25 +588,30 @@ func albertRetryChoice(in *bufio.Reader) (retry bool, ok bool) {
 					Value(&choice),
 			),
 		))
-		if err != nil {
-			// ErrUserAborted (Ctrl+C) or a render error: unanswered, so this
-			// is a cancellation, not a silent "continue".
+		switch {
+		case err != nil:
+			return false, true
+		case choice == "retry":
+			return true, false
+		default:
 			return false, false
 		}
-		return choice == "retry", true
 	}
-	answer, ok := promptLine(in, albertRetryPrompt+" : ")
-	if !ok {
-		return false, false
+	fmt.Println(albertRetryPrompt)
+	for {
+		answer, ok := promptLine(in, "> ")
+		if !ok {
+			// End of input: nothing was chosen, so stop rather than store.
+			return false, true
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "r", "réessayer", "reessayer":
+			return true, false
+		case "c", "continuer":
+			return false, false
+		}
+		fmt.Printf("Réponse non reconnue. %s\n", albertRetryPrompt)
 	}
-	switch strings.ToLower(strings.TrimSpace(answer)) {
-	case "r", "réessayer", "reessayer":
-		return true, true
-	case "c", "continuer":
-		return false, true
-	}
-	// An unrecognized answer is not a decision; ask again on the next pass.
-	return false, false
 }
 
 func printPreflight(res justcode.SetupPreflight) {

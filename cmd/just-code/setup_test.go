@@ -201,7 +201,7 @@ func readUserSettingsFile(t *testing.T) map[string]any {
 // counter, what the key is for, that it goes to the keychain (not the
 // projects), and both links.
 func TestAlbertKeyScreenShowsStepAndLinks(t *testing.T) {
-	header := albertKeyScreenHeader()
+	header := albertKeyScreenHeader(false)
 	for _, want := range []string{
 		"[1/3] Clé Albert API",
 		"L'agent utilise Albert API, l'API d'IA générative de l'État.",
@@ -216,6 +216,23 @@ func TestAlbertKeyScreenShowsStepAndLinks(t *testing.T) {
 	}
 	if !strings.Contains(albertKeyPrompt, "elle ne s'affiche pas") {
 		t.Errorf("the key prompt must say the value is not displayed: %q", albertKeyPrompt)
+	}
+}
+
+// TestAlbertKeyScreenDescribesTheActualStore pins the fallback wording: with
+// --fallback the key goes to a consented owner-only file, not the keychain, so
+// the screen must not promise a keychain.
+func TestAlbertKeyScreenDescribesTheActualStore(t *testing.T) {
+	native := albertKeyScreenHeader(false)
+	fallback := albertKeyScreenHeader(true)
+	if !strings.Contains(native, "trousseau") {
+		t.Errorf("the native store wording must name the keychain: %q", native)
+	}
+	if strings.Contains(fallback, "trousseau") {
+		t.Errorf("the fallback wording must not claim a keychain: %q", fallback)
+	}
+	if !strings.Contains(fallback, "fichier") {
+		t.Errorf("the fallback wording must say the key is stored in a file: %q", fallback)
 	}
 }
 
@@ -370,6 +387,34 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	}
 	if !(keyAt < modelAt && modelAt < githubAt) {
 		t.Errorf("order must be key -> models -> GitHub; got key=%d model=%d github=%d", keyAt, modelAt, githubAt)
+	}
+}
+
+// TestSetupUnreachableTypoReasksInsteadOfExiting pins the round-3 finding on
+// #216: a typo at the [R]/[C] prompt is not a decision and must not end the
+// run — the wizard asks again.
+func TestSetupUnreachableTypoReasksInsteadOfExiting(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key -> unreachable -> typo -> C (continue) -> model, no GitHub, defaults.
+	input := "only-key\nz\nc\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("a typo must not end the run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "Réponse non reconnue.") {
+		t.Errorf("an unrecognized answer must be reported; output:\n%s", out)
+	}
+	if !strings.Contains(out, "Clé enregistrée sans vérification.") {
+		t.Errorf("C must still continue after a typo; output:\n%s", out)
 	}
 }
 
