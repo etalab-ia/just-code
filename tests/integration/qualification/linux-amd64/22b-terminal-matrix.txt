@@ -1,0 +1,38 @@
+META step=22b-terminal-matrix-redo date=2026-10-16T16:23:54Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
+=== 40-column pty (width verified), answer n ===
+n
+PTY_SIZE: 24 40
+Project ~/qualif/proj-d | profile tty40 | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+NARROW_N_EXIT: 0
+=== 40-column pty, answer y (interactive write path) ===
+y
+PTY_SIZE: 24 40
+Project ~/qualif/proj-d | profile tty40 | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[J[?25h[?2004l[?1004l[?2026$p[?2027$pStored t.env (1 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+NARROW_Y_EXIT: 0
+=== 200-column pty (width verified), answer n ===
+n
+PTY_SIZE: 24 200
+Project ~/qualif/proj-d | profile tty200 | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?25l[?2004h[?1004h[>4;2m[=1;1u[J[>4m[=0;1u[J[?25h[?2004l[?1004l[?2026$p[?2027$pCancelled. No credentials stored.
+WIDE_N_EXIT: 0
+=== Ctrl-C at the confirm prompt ===
+Project ~/qualif/proj-d | profile ttycc | t.env
+  Variables: TT_VAR
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?2026$p[?2027$p[?25l[?2004h[?1004h[>4;2m[=1;1u[?u[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J[J
+Session terminated, killing shell...bash: line 19: 21903 Killed                  timeout -s INT -k 2 3 script -qec "stty cols 80; /root/bin/just-code secrets import --profile ttycc --file t.env --apply" /dev/null
+CTRLC_EXIT: 137
+=== persistence check: tty40 stored once, tty200/ttycc absent ===
+      7 development
+      1 staging
+      1 tty40
+      1 ttytest

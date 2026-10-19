@@ -5,15 +5,27 @@ credential store on each platform. It is the evidence half of the store
 matrix in `docs/plateformes.md`; a platform is qualified there only when a
 file here backs it.
 
-## Why this directory is empty
+## What is retained here
 
-The macOS Keychain store was exercised on macOS arm64 (`put` / `get` /
-`remove`, rotation, and removal of an absent element), and that is what the
-first version of `docs/plateformes.md` recorded as qualified. The transcript
-was not kept, so the claim could not be checked by anyone reading the
-repository, and the matrix now records the store as not qualified until a
-run writes a file here. The Linux Secret Service and Windows Credential
-Manager stores have never been exercised against a live service.
+Three platform stores are qualified by transcripts in this directory, all
+produced on 2026-10-16 against the qualified revision:
+
+- macOS arm64, Keychain: `darwin-arm64-run-1.txt`, `darwin-arm64-run-2.txt`
+  (dedicated keychain, unlocked for the run — a headless host cannot unlock
+  the `login` keychain),
+- Linux amd64, Secret Service: `linux-amd64-run-1.txt`,
+  `linux-amd64-run-2.txt`,
+- Linux arm64, Secret Service: `linux-arm64-run-1.txt`,
+  `linux-arm64-run-2.txt` (real KVM host, Asahi Fedora 42).
+
+Each pair shows `put` / `get` / `remove`, rotation, and removal of an
+absent element, executed twice in a row. The `*-nosession.txt` transcripts
+are the counter-experiments: on a headless Linux host with a locked
+collection the round-trip test does not skip, it **fails**, because the
+availability probe is read-only and reports the store "reachable" while
+writes fail. Only a passing run on a genuinely usable store qualifies a
+row. The Windows Credential Manager store has never been exercised against
+a live service.
 
 An unretained run is indistinguishable from a run that never happened, which
 is the same failure the phase-3 native kit guards against by binding every

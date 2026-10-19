@@ -1,0 +1,40 @@
+META step=04-init-and-boot-gate date=2026-10-16T15:30:37Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ git init (throwaway project proj-a)
++ just-code init --runtime microsandbox --isolation full --yes (non-TTY)
+just-code: no terminal available: name the project explicitly, e.g. 'just-code init --root <dir> --yes'.
+Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --skill, --clear-skills, --mcp, --clear-mcps, --local-only-skills, --versioned-skills, --replace, --yes
++ retry: just-code init --root /root/qualif/proj-a --runtime microsandbox --isolation full --yes
+Review the project setup:
+  project      /root/qualif/proj-a
+  sharing      microsandbox runtime, isolation full
+               the agent, its TUI and its credentials run inside the guest
+  model        the built-in default
+  resources    1 CPUs, 1468 MiB (fixed when the guest is created)
+  credential   the global Albert credential
+               (the manifest records the reference, never a value)
+  GitHub       no new approval; existing host-local approvals remain unchanged
+  MCPs         none selected
+  skills       no managed project skills selected
+  state        versioned in .just-code/ (shared with whoever clones the repository)
+  manifest     /root/qualif/proj-a/.just-code/project.json
+  lockfile     /root/qualif/proj-a/.just-code/lock.json
+
+Downloads and activation:
+  No project skill archives are selected.
+  Init does not boot or restart a VM. Clearing Context7 also revokes its host approval and guest binding before project files change.
+  Managed MCP changes apply on the next launch, which may restart a running guest non-destructively.
+
+The guest receives a filtered copy of the project: .env files, ignored files,
+symlinks and anything gitleaks flags are excluded by default ('just-code workspace status').
+Wrote /root/qualif/proj-a/.just-code/project.json
+Wrote /root/qualif/proj-a/.just-code/lock.json
+
+Next: run 'just-code' in this directory to start the agent in its sealed workspace.
+INIT_EXIT: 0
++ cat .just-code/project.json 2>/dev/null || ls /root/qualif/proj-a/.just-code/
+{
+  "schemaVersion": 5,
+  "runtime": "microsandbox",
+  "isolation": "full",
+  "dependencySetId": "99643008b2a824c7931b22f986f12e8f"
+}

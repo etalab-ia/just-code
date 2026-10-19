@@ -1,0 +1,7 @@
+META step=20b-cross-profile-create date=2026-10-16T15:48:44Z source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d
++ create-path start with staging active, development bindings present (expect failure)
+just-code: cannot apply the credential operations of jc-proj-d-6ca2d ([start-vm]): the credential set could not be resolved (<nil>). Store or restore the credential, then retry; nothing was changed
+CROSS_PROFILE_CREATE_EXIT: 1
++ back to development: start succeeds
+Published 2 managed project secret file(s) into the guest workspace.
+RECOVERY_START_EXIT: 0

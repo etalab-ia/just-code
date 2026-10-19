@@ -19,7 +19,8 @@ fonctionne avec l'initialisation lente documentée.
 | Fichier | Étape du protocole | Résultat |
 |---|---|---|
 | `30-mac-installer.txt` | Installation officielle (`scripts/install.sh` pipe) | v0.10.0 installé |
-| `31-mac-auth-doctor.txt` | `auth add` + `setup doctor` | trousseau dédiée OK ; doctor structurel OK |
+| `31-mac-auth-doctor.txt` | `auth add` + `setup doctor` | **première tentative refusée** (`AUTH_EXIT: 1`, -25308 : trousseau verrouillée, interaction impossible en headless) ; doctor structurel OK |
+| `31b-mac-auth-after-unlock.txt` | `auth status` après `security unlock-keychain` | trousseau dédiée déverrouillée : `albert: stored`, sortie 0 |
 | `32-mac-init-start.txt`, `32b-mac-start.txt` | Porte microVM (init, premier `start`, `check`) | microVM démarrée (~9 s), `check` OK |
 | `33-mac-common.txt` | Filtre transfert, export→review→apply→sync, cycle stop/start, état | filtres dotenv/gitignore/gitleaks OK ; round trip OK ; redémarrage ~1,4 s |
 | `34-mac-secrets.txt`, `34b-mac-delivery.txt`, `34c-mac-substitution.txt` | Secrets : import, classes, livraison, substitution, rotation, révocation, verrou | matrice complète sur trousseau native |

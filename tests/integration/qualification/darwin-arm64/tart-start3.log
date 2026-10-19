@@ -1,0 +1,9 @@
+META step=36c-tart-retry date=2026-10-16T16:49:52Z
+Warning: Tart has no secret injection, so the real ALBERT_API_KEY is readable inside the VM (isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate it. Prefer --microsandbox for untrusted work, and treat the guest as holding a live credential.
+Starting opencode-jc-proj-tart-d4add with Tart...
+just-code: timed out waiting for opencode-jc-proj-tart-d4add guest agent
+
+real	1m2.537s
+user	0m1.259s
+sys	0m0.931s
+TART_START3_EXIT: 1
