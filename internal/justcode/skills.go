@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -18,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -381,16 +383,149 @@ func LoadLockedSkillPackages(ids []string, locks map[string]SkillLock) ([]SkillP
 	return packages, nil
 }
 
-// MergeManagedInstructions updates only the bounded just-code section.
-// All bytes outside the markers are preserved exactly. An empty selection
-// removes an existing managed section without touching user-authored text.
-func MergeManagedInstructions(existing string, ids []string, locks map[string]SkillLock) (string, error) {
+// webPreviewGuidance states the port-forward facts agents get wrong: a
+// guest-side 127.0.0.1 bind is unreachable from the host, while the host side
+// of a Microsandbox forward binds loopback only, so a guest-side 0.0.0.0 bind
+// exposes nothing on the network.
+const webPreviewGuidance = "Web preview: a dev server must listen on 0.0.0.0 inside this workspace; " +
+	"binding 127.0.0.1 makes it unreachable through the host port forward. " +
+	"Only the host's 127.0.0.1 can reach the forwarded port, so a 0.0.0.0 bind here does not expose anything on the network. " +
+	"A request from inside this workspace proves nothing about host reachability; " +
+	"run `just-code check` to verify a published port from the host.\n"
+
+// MergeManagedInstructions replaces the bounded just-code section with the
+// current standing instructions and pinned-skill list. All bytes outside the
+// markers are preserved exactly. The standing web-preview guidance describes
+// the Microsandbox port forward, so it is rendered for that runtime only; on
+// other runtimes a selection without pins leaves no managed section at all.
+func MergeManagedInstructions(existing string, ids []string, locks map[string]SkillLock, runtime Runtime) (string, error) {
 	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
 	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
-	block := ""
+	standing := runtime == RuntimeMicrosandbox
+	if !standing && len(ids) == 0 {
+		return RemoveManagedInstructions(existing)
+	}
+	block, err := renderManagedInstructions(start, end, ids, locks, standing)
+	if err != nil {
+		return "", err
+	}
+	return replaceManagedZone(existing, start, end, block)
+}
+
+// RemoveManagedInstructions removes the managed section entirely, preserving
+// all bytes outside the markers. It is the transition for projects that keep
+// skills host-local: no managed content remains in the file.
+func RemoveManagedInstructions(existing string) (string, error) {
+	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
+	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
+	return replaceManagedZone(existing, start, end, "")
+}
+
+// managedInstructionRuntime resolves a manifest's runtime name for managed
+// instruction rendering. The stored name is parsed without host compatibility
+// checks: a manifest written on macOS (tart) or Linux (agent-vm) must keep
+// its runtime-specific rendering when its instructions are regenerated on a
+// host where that runtime cannot execute — those checks belong to runtime
+// execution, not instruction rendering. An unparsable name falls back to the
+// wizard default (Microsandbox): these paths run during rollback and
+// recovery, where the guidance text must not turn a broken manifest into a
+// hard failure.
+func managedInstructionRuntime(name string) Runtime {
+	switch name {
+	case string(RuntimeTart):
+		return RuntimeTart
+	case string(RuntimeAgentVM):
+		return RuntimeAgentVM
+	default:
+		return RuntimeMicrosandbox
+	}
+}
+
+// hasManagedSkillZone reports whether AGENTS.md content carries a managed
+// skill zone, including a malformed one: both must be cleaned up by a plan
+// that rewrites the zone, so both make the plan claim the file.
+func hasManagedSkillZone(text string) bool {
+	zone, err := managedSkillZone(text)
+	return err != nil || zone != ""
+}
+
+// managedZoneAt reports whether the AGENTS.md at path carries a managed
+// zone. It opens the path once with O_NONBLOCK — opening a FIFO for
+// reading blocks until a writer appears — inspects the opened handle
+// rather than re-resolving the path, and scans the opened regular file
+// for markers in bounded memory, so an entry swapped in after
+// validation cannot stall the probe and a huge or sparse file cannot
+// balloon it. A missing or dangling path reads as no zone; any other
+// non-regular or unreadable entry fails closed, same as a zone, so the
+// caller claims the path and its own validation refuses it.
+func managedZoneAt(path string) bool {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
+	return hasManagedSkillZoneIn(f)
+}
+
+// hasManagedSkillZoneIn reports whether r contains a just-code managed
+// skill marker line, matching hasManagedSkillZone: a balanced pair is a
+// zone, and any other marker combination is malformed and fails closed
+// there, so either marker's presence means the file must be claimed. It
+// reads in bounded chunks — a line longer than the buffer cannot be a
+// marker and is skipped — so file size does not bound memory.
+func hasManagedSkillZoneIn(r io.Reader) bool {
+	const start = "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"
+	const end = "<!-- END JUST-CODE MANAGED SKILLS -->"
+	br := bufio.NewReaderSize(r, 64<<10)
+	for {
+		line, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			// A line longer than the buffer cannot be a marker
+			// line; discard it entirely, including its final
+			// chunk, and keep scanning.
+			line, err = br.ReadSlice('\n')
+			for err == bufio.ErrBufferFull {
+				line, err = br.ReadSlice('\n')
+			}
+			if err == io.EOF {
+				return false
+			}
+			if err != nil {
+				return true
+			}
+			continue
+		}
+		trimmed := strings.TrimSpace(string(line))
+		if trimmed == start || trimmed == end {
+			return true
+		}
+		if err == io.EOF {
+			return false
+		}
+		if err != nil {
+			return true
+		}
+	}
+}
+
+// renderManagedInstructions renders the managed section: standing guidance
+// for runtimes with a host-loopback port forward, plus the pinned-skill list
+// when a selection exists.
+func renderManagedInstructions(start, end string, ids []string, locks map[string]SkillLock, standing bool) (string, error) {
+	var b strings.Builder
+	b.WriteString(start + "\n")
+	if standing {
+		b.WriteString("## Managed just-code instructions\n\n")
+		b.WriteString(webPreviewGuidance)
+	}
 	if len(ids) > 0 {
-		var b strings.Builder
-		b.WriteString(start + "\n")
+		if standing {
+			b.WriteString("\n")
+		}
 		b.WriteString("## Managed project skills\n\n")
 		b.WriteString("These pinned skills provide agent instructions; they are not a security boundary.\n\n")
 		for _, id := range ids {
@@ -400,10 +535,15 @@ func MergeManagedInstructions(existing string, ids []string, locks map[string]Sk
 			}
 			fmt.Fprintf(&b, "- `%s` at `%s`\n", id, lock.Revision)
 		}
-		b.WriteString(end + "\n")
-		block = b.String()
 	}
+	b.WriteString(end + "\n")
+	return b.String(), nil
+}
 
+// replaceManagedZone splices block between the managed markers in existing,
+// preserving every byte outside them. An empty block removes the section; an
+// absent section is appended after the existing content.
+func replaceManagedZone(existing, start, end, block string) (string, error) {
 	startAt, endAt, err := managedSkillMarkers(existing, start, end)
 	if err != nil {
 		return "", err
@@ -426,6 +566,19 @@ func MergeManagedInstructions(existing string, ids []string, locks map[string]Sk
 		return before + after, nil
 	}
 	return before + block + after, nil
+}
+
+// managedZoneHasSkillPins reports whether the managed zone lists pinned
+// skills (lines of the form "- `id` at `rev`"). The standing guidance is not
+// a pin: a zone with only standing text is not evidence that versioned
+// skills remain.
+func managedZoneHasSkillPins(zone string) bool {
+	for _, line := range strings.Split(zone, "\n") {
+		if strings.HasPrefix(line, "- `") {
+			return true
+		}
+	}
+	return false
 }
 
 func managedSkillZone(text string) (string, error) {
