@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -415,6 +416,15 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	bindings, resolveErr := m.resolveBindings(ctx)
 	resolved := resolveErr == nil
 	if resolveErr != nil {
+		// Tolerate only a TRANSIENT failure. A structural mismatch — an
+		// approval naming a profile other than the active one, or one whose
+		// imported value is gone — never repairs itself, so warning and
+		// continuing would report success while the guest keeps serving the
+		// previous profile's secrets (#204). "Reusing the persisted
+		// references" is precisely the claim that is false in that case.
+		if errors.Is(resolveErr, ErrProjectSecretStructural) {
+			return fmt.Errorf("cannot start %s with the active profile: %w", m.InstanceName(), resolveErr)
+		}
 		fmt.Fprintf(os.Stderr, "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.\n", m.InstanceName(), resolveErr)
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {

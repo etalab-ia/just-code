@@ -693,14 +693,14 @@ func resolveBindingDeliveries(set projectSecretBindingSet, index projectSecretIn
 	var deliveries []ProjectSecretDelivery
 	for _, b := range set.Bindings {
 		if set.Profile == "" {
-			return nil, fmt.Errorf("project secret bindings exist for %s but no active profile is selected", namespace)
+			return nil, fmt.Errorf("%w: bindings exist for %s but no active profile is selected", ErrProjectSecretStructural, namespace)
 		}
 		if b.Profile != set.Profile {
-			return nil, fmt.Errorf("project secret binding %s belongs to profile %q while the active profile is %q", b.Name, b.Profile, set.Profile)
+			return nil, fmt.Errorf("%w: binding %s belongs to profile %q while the active profile is %q", ErrProjectSecretStructural, b.Name, b.Profile, set.Profile)
 		}
 		entry, ok := byIdentity[b.identity()]
 		if !ok {
-			return nil, fmt.Errorf("project secret binding %s is approved but no imported value matches it; re-import the component or remove the approval", b.Name)
+			return nil, fmt.Errorf("%w: binding %s is approved but no imported value matches it; re-import the component or remove the approval", ErrProjectSecretStructural, b.Name)
 		}
 		deliveries = append(deliveries, ProjectSecretDelivery{
 			ProjectSecretBinding: b,

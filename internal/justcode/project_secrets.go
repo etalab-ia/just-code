@@ -142,6 +142,17 @@ var ErrProjectSecretCleanupPending = errors.New("project secret cleanup pending;
 // empty result, the second must stop a start before it touches a running
 // sandbox. Callers use errors.Is, so wrapping keeps the distinction.
 var ErrProjectSecretNoScope = errors.New("project secret bindings need a project workspace root")
+
+// ErrProjectSecretStructural marks a resolution failure that no retry can
+// repair: an approval that names a different profile than the active one, or
+// one whose imported value is gone. The distinction matters on the no-op start
+// path (reconcile.go): a TRANSIENT failure (a locked store, a credential not
+// stored yet) may fall back to the persisted references, because the instance
+// only needs a restart and must not become unusable meanwhile. A structural
+// one must fail loudly instead — the guest would otherwise keep serving the
+// previous profile's secrets behind an exit-0 "success" (#204).
+var ErrProjectSecretStructural = errors.New("project secret bindings do not match the active profile")
+
 var ErrProjectSecretSnapshotChanged = errors.New("project secret set changed since preview; review a fresh preview before applying")
 
 // Windows Credential Manager caps the blob at 2560 bytes. WinCredStore encodes
