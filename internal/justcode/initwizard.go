@@ -420,11 +420,13 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	// selection with pins or the Microsandbox standing guidance rewrites
 	// the zone, and so does a stale zone left by an earlier versioned
 	// setup (a local-only strip removes it, a merge refreshes it). A
-	// pin-less Tart or agent-vm project without a zone renders nothing to
-	// change, so its AGENTS.md is neither validated nor claimed — a
-	// symlinked AGENTS.md must not block an init that touches nothing.
+	// local-only plan never merges, so it claims only for an actual stale
+	// zone. A pin-less Tart or agent-vm project without a zone renders
+	// nothing to change, so its AGENTS.md is neither validated nor
+	// claimed — a symlinked AGENTS.md must not block an init that touches
+	// nothing.
 	instructionsPath := filepath.Join(pc.Root, "AGENTS.md")
-	needsZone := len(selected) > 0 || plan.Answers.Runtime == RuntimeMicrosandbox
+	needsZone := !localOnly && (len(selected) > 0 || plan.Answers.Runtime == RuntimeMicrosandbox)
 	if !needsZone {
 		data, readErr := fs.ReadFile(instructionsPath)
 		switch {

@@ -937,6 +937,80 @@ func TestInitLocalOnlyStripsStaleZoneOnOtherRuntimes(t *testing.T) {
 	}
 }
 
+func TestInitLocalOnlyPlansClaimOnlyForAnActualZone(t *testing.T) {
+	// Local-only plans never merge, so pins and the Microsandbox runtime
+	// must not force the AGENTS.md claim: without a managed zone there is
+	// nothing to strip, and a symlinked AGENTS.md must not block them.
+	cases := []struct {
+		name    string
+		runtime Runtime
+		skills  []string
+		skip    func(t *testing.T)
+	}{
+		{
+			name:    "microsandbox without skills",
+			runtime: RuntimeMicrosandbox,
+		},
+		{
+			// Project skills validate only on the sealed Microsandbox
+			// runtime, so a nonempty local selection implies msb.
+			name:    "microsandbox with a local selection",
+			runtime: RuntimeMicrosandbox,
+			skills:  []string{"official/rgaa"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skip != nil {
+				tc.skip(t)
+			}
+			root := initTestRoot(t)
+			manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+			if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+				Runtime: string(tc.runtime), Isolation: string(IsolationFull),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "instructions.md")
+			if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "AGENTS.md")); err != nil {
+				t.Skipf("cannot create symlink: %v", err)
+			}
+			cache, state := t.TempDir(), t.TempDir()
+			oldCacheDir := userCacheDirFn
+			userCacheDirFn = func() (string, error) { return cache, nil }
+			t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+			wizard := InitWizard{StateDir: state, ResolveSkills: fixtureSkillResolver(t)}
+			answers := InitAnswers{
+				Root:               root,
+				Runtime:            tc.runtime,
+				Skills:             tc.skills,
+				SkillsSet:          len(tc.skills) > 0,
+				SkillsLocalOnly:    true,
+				SkillsLocalOnlySet: true,
+			}
+			plan, err := wizard.Plan(answers)
+			if err != nil {
+				t.Fatalf("a zoneless local-only plan must not validate an AGENTS.md it will not touch: %v", err)
+			}
+			if plan.InstructionsChanged || plan.InstructionsPath != "" {
+				t.Fatalf("zoneless local-only plan must not claim AGENTS.md: changed=%v path=%q", plan.InstructionsChanged, plan.InstructionsPath)
+			}
+			if err := wizard.Apply(plan, true); err != nil {
+				t.Fatal(err)
+			}
+			if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+				t.Fatalf("external file changed: %q", got)
+			}
+		})
+	}
+}
+
 func readFileForTest(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
