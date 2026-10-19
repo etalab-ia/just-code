@@ -30,7 +30,7 @@ noyau arm64 à pages de 16 K (point de vigilance initial, levé).
 |---|---|---|
 | `40-inventory.txt` | Inventaire hôte + doctor runtime absent | KVM rw OK ; échec propre sans effet de bord |
 | `42b-doctor-postinstall.txt` | `doctor --microsandbox` **après** installation du runtime | toutes les vérifications au vert (msb, libkrunfw, reflink, KVM), `DOCTOR_EXIT: 0` |
-| `43-setup-doctor.txt` | `setup doctor` texte + `--json` (cohérence, absence de valeur secrète) | les deux rapports cohérents, `EXIT: 0` ; aucune valeur des fichiers dotenv du projet n'apparaît dans la sortie (contrôle par correspondance exacte, 0 occurrence) |
+| `43-setup-doctor.txt` | `setup doctor` texte + `--json` (cohérence, absence de valeur secrète) | les deux rapports cohérents, `EXIT: 0` ; contrôle de fuite consigné dans le fichier (méthode, `VALUES_TESTED: 11`, `LEAK_COUNT: 0`) : aucune valeur dotenv du projet n'apparaît dans la sortie |
 | `41-auth.txt` | `auth add` (file fallback) + `auth status` | identifiant stocké, statut correct |
 | `50-54-common.txt` | Porte microVM, filtre, export/sync, cycle vie, TUI, import, dépôt d'équipe | premier boot **12,3 s** ; redémarrage 2,2 s ; toutes les lignes OK |
 | `51b-tui.txt`, `51b-tui.typescript` | TUI dans l'invité (preuve processus) | opencode visible dans l'invité |
