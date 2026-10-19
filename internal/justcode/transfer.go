@@ -484,6 +484,19 @@ func NormalizeTransferPath(p string) string {
 	return cleaned
 }
 
+// exactTimeFormat picks the tar header format that preserves a modification
+// time exactly. A USTAR header has one-second resolution, so Go rounds a
+// sub-second mtime to the nearest second when writing one. PAX carries the
+// value verbatim. Whole-second times have nothing to lose, so they keep the
+// smaller USTAR form, and a zero time (a directory whose mtime could not be
+// read) has no value worth preserving at all.
+func exactTimeFormat(t time.Time) tar.Format {
+	if !t.IsZero() && t.Nanosecond() != 0 {
+		return tar.FormatPAX
+	}
+	return tar.FormatUnknown
+}
+
 // BuildTransferArchive builds the deterministic tar.gz payload for a manifest.
 // Only included entries are added: the archive is built from the resolved
 // set, so a path the filter refused cannot appear in the payload.
@@ -495,6 +508,16 @@ func NormalizeTransferPath(p string) string {
 // epoch. The payload stays reproducible for a given input, because the same
 // files carry the same mtimes: what changed is that the archive now reflects
 // the input rather than erasing part of it.
+//
+// An entry whose mtime carries a sub-second part is written as PAX, because a
+// USTAR header stores whole seconds and Go rounds to the nearest one: two files
+// created within the same second can then come out with equal timestamps, and a
+// tool comparing them has no ordering to act on, exactly for the files a build
+// regenerates together. Rounding is monotone, so it can only collapse a tie —
+// never invert one — but a tie is enough to make such a tool repeat or skip
+// work. Whole-second mtimes stay USTAR, which is smaller, so the exact form is
+// paid for only where it can matter. PAX degrades safely: GNU tar restores the
+// nanoseconds, and busybox tar ignores them and falls back to the second.
 func BuildTransferArchive(man TransferManifest) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -524,6 +547,7 @@ func BuildTransferArchive(man TransferManifest) ([]byte, error) {
 				Name:     dir + "/",
 				Mode:     0o755,
 				ModTime:  dirTime,
+				Format:   exactTimeFormat(dirTime),
 			}); err != nil {
 				return nil, err
 			}
@@ -565,6 +589,7 @@ func BuildTransferArchive(man TransferManifest) ([]byte, error) {
 			Mode:     mode,
 			Size:     int64(len(data)),
 			ModTime:  info.ModTime(),
+			Format:   exactTimeFormat(info.ModTime()),
 		}); err != nil {
 			return nil, err
 		}
