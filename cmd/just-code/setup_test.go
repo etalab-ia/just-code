@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,6 +197,182 @@ func readUserSettingsFile(t *testing.T) map[string]any {
 	return m
 }
 
+// TestAlbertKeyScreenShowsStepAndLinks pins screen 3.2's content: the [1/3]
+// counter, what the key is for, that it goes to the keychain (not the
+// projects), and both links.
+func TestAlbertKeyScreenShowsStepAndLinks(t *testing.T) {
+	header := albertKeyScreenHeader()
+	for _, want := range []string{
+		"[1/3] Clé Albert API",
+		"L'agent utilise Albert API, l'API d'IA générative de l'État.",
+		"La clé est enregistrée dans le trousseau de ce poste, jamais dans vos projets.",
+		"Vous n'avez pas encore de clé ?",
+		albertCreateKeyURL,
+		albertQuickstartURL,
+	} {
+		if !strings.Contains(header, want) {
+			t.Errorf("Albert key screen is missing %q", want)
+		}
+	}
+	if !strings.Contains(albertKeyPrompt, "elle ne s'affiche pas") {
+		t.Errorf("the key prompt must say the value is not displayed: %q", albertKeyPrompt)
+	}
+}
+
+// TestAlbertRejectionMessageDistinguishesFromNetwork pins that a refusal names
+// the key page and never reads like the network message.
+func TestAlbertRejectionMessageDistinguishesFromNetwork(t *testing.T) {
+	msg := albertRejectedMessage("HTTP 401")
+	if !strings.Contains(msg, albertCreateKeyURL) {
+		t.Errorf("a rejected key must point at the key page: %q", msg)
+	}
+	if !strings.Contains(msg, "refusé") {
+		t.Errorf("a rejected key must say it was refused: %q", msg)
+	}
+	if msg == albertUnreachableMessage || albertUnreachableMessage == albertRejectedMessage("x") {
+		t.Error("refusal and unreachable must be distinct messages")
+	}
+	if !strings.Contains(albertUnreachableMessage, "proxy") {
+		t.Errorf("the unreachable message must mention the administration proxy: %q", albertUnreachableMessage)
+	}
+}
+
+// TestSetupWizardRejectedKeyReasksInsteadOfExiting pins 3.2's acceptance
+// criterion "une erreur ne fait jamais quitter l'assistant": after a refusal
+// the wizard asks for the key again, and a valid key entered the second time
+// completes setup.
+func TestSetupWizardRejectedKeyReasksInsteadOfExiting(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	var attempts []string
+	// First key refused, second accepted; then no GitHub and defaults.
+	// key, key (re-ask), model, GitHub, name, email, apply.
+	input := "bad-key\ngood-key\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(_ context.Context, key string) error {
+				attempts = append(attempts, key)
+				if key == "bad-key" {
+					return justcode.RejectedCredentialError{Detail: "HTTP 401"}
+				}
+				return nil
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("a refused key followed by a valid one must complete setup: code=%d err=%v", code, err)
+		}
+	})
+	if len(attempts) != 2 || attempts[0] != "bad-key" || attempts[1] != "good-key" {
+		t.Fatalf("the wizard must re-ask after a refusal; validated keys: %v", attempts)
+	}
+	if !strings.Contains(out, "refusé") || !strings.Contains(out, "✅ Clé valide.") {
+		t.Errorf("expected a refusal notice then a success notice; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardUnreachableOffersRetryAndContinue pins the network branch:
+// [R] re-enters the key, and the key is stored unvalidated when the user
+// continues.
+func TestSetupWizardUnreachableOffersRetryAndContinue(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	calls := 0
+	// key -> unreachable -> R (retry) -> key again -> reachable -> defaults.
+	// key, R (retry), key, model, GitHub, name, email, apply.
+	input := "first-key\nr\nsecond-key\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				calls++
+				if calls == 1 {
+					return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+				}
+				return nil
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("retry then success must complete setup: code=%d err=%v", code, err)
+		}
+	})
+	if calls != 2 {
+		t.Fatalf("R must re-validate the key; validation calls=%d", calls)
+	}
+	if !strings.Contains(out, albertUnreachableMessage) {
+		t.Errorf("the unreachable message must be shown; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardUnreachableContinueStoresUnvalidated pins the [C] branch:
+// continuing stores the key without validation and setup proceeds.
+func TestSetupWizardUnreachableContinueStoresUnvalidated(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	calls := 0
+	// key -> unreachable -> c (continue) -> defaults.
+	// key, C (continue), model, GitHub, name, email, apply.
+	input := "only-key\nc\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error {
+				calls++
+				return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+			},
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("continue without validation must complete setup: code=%d err=%v", code, err)
+		}
+	})
+	if calls != 1 {
+		t.Fatalf("C must not re-validate; validation calls=%d", calls)
+	}
+	if !strings.Contains(out, "Clé enregistrée sans vérification.") {
+		t.Errorf("continuing must say the key was stored unvalidated; output:\n%s", out)
+	}
+	// A completed setup removes the journal, so assert on the outcome the
+	// journal existed for: the credential is in the store and settings were
+	// written.
+	m := readUserSettingsFile(t)
+	if m == nil {
+		t.Fatal("a completed setup must write the settings file")
+	}
+	_ = stateDir
+}
+
+// TestSetupWizardFlowIsKeyThenModelsThenGitHub pins the epic's announced order:
+// clé Albert API -> modèles -> GitHub. The [n/3] counters and the intro's
+// "3 étapes" are only truthful in that order.
+func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key, model, GitHub, name, email, apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	keyAt := strings.Index(out, "[1/3] Clé Albert API")
+	modelAt := strings.Index(out, "Default model")
+	githubAt := strings.Index(out, "GitHub credential (optional")
+	if keyAt < 0 || modelAt < 0 || githubAt < 0 {
+		t.Fatalf("flow markers missing (key=%d model=%d github=%d); output:\n%s", keyAt, modelAt, githubAt, out)
+	}
+	if !(keyAt < modelAt && modelAt < githubAt) {
+		t.Errorf("order must be key -> models -> GitHub; got key=%d model=%d github=%d", keyAt, modelAt, githubAt)
+	}
+}
+
 func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
@@ -204,15 +381,19 @@ func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
 	// not injectable per-run through setupWizardRun (only validate and
 	// ensure are), so this test uses the file fallback store: a rejected
 	// key must leave it absent (nothing was stored).
-	input := "bad-key\n"
+	// #162 changed the contract: a refusal re-asks instead of ending the run,
+	// so the flow only stops when the re-ask is answered with an empty key.
+	input := "bad-key\n\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error {
 			return justcode.RejectedCredentialError{Detail: "HTTP 401"}
 		},
 		func(context.Context) error { return nil },
 		func(string) string { return "" })
-	if code == 0 || err != nil {
-		t.Fatalf("a rejected key must exit non-zero: code=%d err=%v", code, err)
+	// An empty key abandons the run, which reports the resumable cancel
+	// message (non-nil) rather than silently succeeding.
+	if code == 0 {
+		t.Fatalf("abandoning after a rejected key must exit non-zero: code=%d err=%v", code, err)
 	}
 	// The journal must not claim the credential was stored.
 	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
@@ -244,9 +425,9 @@ func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
-	// Piped answers: key with a trailing newline (the raw pipe line), no
-	// GitHub, empty identity (defaults), empty model, apply.
-	input := "test-key\nn\n\n\n\n\ny\n"
+	// Piped answers in wizard order: key with a trailing newline (the raw
+	// pipe line), empty model, no GitHub, empty identity (defaults), apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
 	var seenKey string
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(_ context.Context, key string) error {
@@ -274,8 +455,9 @@ func TestSetupWizardEmptyNameFallsBackToDefault(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
-	// key, no GitHub, empty name, empty email (defaults), empty model, apply.
-	input := "test-key\nn\n\n\n\ny\n"
+	// Wizard order: key, empty model, no GitHub, empty name, empty email
+	// (both default), apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
 		func(context.Context) error { return nil },
@@ -302,7 +484,8 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 	if readUserSettingsFile(t) != nil {
 		t.Fatal("precondition: no user settings file may exist")
 	}
-	input := "test-key\nn\n\n\nsome-model\nn\n"
+	// Wizard order: key, model, no GitHub, name, email, then cancel at apply.
+	input := "test-key\nsome-model\nn\n\n\nn\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
 		func(context.Context) error { return nil },

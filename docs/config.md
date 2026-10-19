@@ -69,10 +69,13 @@ l'invité ; confirmer la perte avant de l'exécuter.
 ## Configurer la machine (`setup`)
 
 `just-code setup` prépare la machine en une passe guidée : diagnostic
-(plateforme, virtualisation, disque — lecture seule) → identifiant Albert
-(masqué, validé contre le catalogue ; rejet et indisponibilité réseau
-distincts) → identifiant GitHub optionnel → identité git → modèle par
-défaut → revue → application (réglages globaux + runtime managé).
+(plateforme, virtualisation, disque — lecture seule) → clé Albert API
+(masquée, validée contre Albert API) → modèle par défaut → identifiant GitHub
+optionnel → identité git → revue → application (réglages globaux + runtime
+managé).
+
+L'ordre suit celui annoncé par l'écran d'introduction : clé, puis modèles,
+puis GitHub. Les compteurs `[1/3]`… des écrans correspondent à ce parcours.
 
 ```bash
 just-code setup            # assistant interactif
@@ -96,10 +99,12 @@ Règles du flux :
   machine qui ne peut pas exécuter le runtime.
 - **Reprise.** Un setup interrompu reprend là où il s'est arrêté (journal
   d'état hôte) — les identifiants déjà stockés ne sont pas redemandés.
-- **Rejet ≠ réseau.** Une clé refusée (401/403) propose de la ressaisir ;
-  un endpoint injoignable stocke la clé avec un avertissement (la
-  validation se rattrapera avec `just-code models`). Aucun appel
-  d'inférence n'est effectué pour valider.
+- **Rejet ≠ réseau.** Une clé refusée (401/403) est signalée et **redemandée
+  sur place**, avec le lien de création de clé : un refus ne fait jamais
+  quitter l'assistant. Un endpoint injoignable laisse le choix entre réessayer
+  (`R`) et continuer sans vérifier (`C`) ; en continuant, la clé est stockée
+  avec un avertissement et la validation se rattrapera avec
+  `just-code models`. Aucun appel d'inférence n'est effectué pour valider.
 - **GitHub sans pénalité.** Ignorer l'identifiant GitHub ne bloque rien ;
   un identifiant stocké reste inactif jusqu'à l'activation explicite du
   workflow GitHub pour un projet Microsandbox.
