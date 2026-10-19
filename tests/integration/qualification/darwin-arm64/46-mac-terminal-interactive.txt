@@ -1,5 +1,0 @@
-META step=46-mac-terminal-interactive source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-16T17:33:32Z
-INTERACTIVE_CTRLC_40: exit=127 (130=SIGINT exit, 124=timeout)
-INTERACTIVE_CTRLC_200: exit=127 (130=SIGINT exit, 124=timeout)
-zsh:14: command not found: timeout
-CONTROL_N: exit=0

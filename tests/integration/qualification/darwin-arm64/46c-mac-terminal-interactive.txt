@@ -1,0 +1,14 @@
+META step=46c-mac-terminal-interactive source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T07:33:37Z (supersedes 46/46b: 46 lacked `timeout` on macOS so nothing ran — exit 127; 46b recorded macOS script(1)'s outer exit 1, which does not propagate the child status and proved neither the cancel path nor persistence)
+
+Harness: `just-code secrets import --apply --profile tty46c<case> --file .env` inside `script -q` (PTY), width set via `stty cols N rows 24` and verified in-transcript (`stty size` first line), key bytes sent by a feeder pipe at t+6/7s. The inner command records its own exit (`INNER_EXIT`) inside the typescript because macOS script(1) does not propagate it.
+
+INTERACTIVE_CTRLC_40: INNER_EXIT: 1 — `just-code: user aborted` (46c-40ctrlc.typescript)
+INTERACTIVE_CTRLC_200: INNER_EXIT: 1 — `just-code: user aborted` (46c-200ctrlc.typescript)
+On macOS huh turns Ctrl-C into its abort path ("user aborted", exit 1); on Linux the same byte ends the process by SIGINT (exit 130, see 22e/62). Same observable outcome on both: the prompt cancels immediately at both widths, the process exits, nothing is stored. The exit-code difference is the cancel mechanism, not a hang or a failure.
+
+CONTROL_N (80 cols): "Cancelled. No credentials stored.", INNER_EXIT: 0 (46c-ncancel.typescript)
+POSITIVE_CONTROL_Y (80 cols): "Stored .env (1 added...)", INNER_EXIT: 0 (46c-ycontrol.typescript)
+
+Persistence check: after all four runs the project-secret index (state dir, keychain store) contained exactly ONE entry — profile tty46cycontrol. Neither Ctrl-C run nor the n-cancel persisted anything; the positive control proves the check discriminates. Keychain item and namespace directory deleted after the run.
+
++ approval flow: no interactive prompt in v0.10.0 (#209); failed approve leaves partial state (#210) — see issue bodies

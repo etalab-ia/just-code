@@ -1,0 +1,12 @@
+24 80
+Project /private/tmp/qualif-46c | profile tty46cycontrol | .env
+  Variables: QUALIF46_KEY
+  Plan: 1 added, 0 changed, 0 unchanged, 0 removed
+[?2026$p[?2027$p[?25l[?2004h[?1004h[>4;2m[=1;1u[?u[J┃ Store these values?
+┃ The source files stay unchanged. This does not approve runtime delivery.
+┃
+┃                               Yes     No  
+
+←/→ toggle • enter submit • y Yes • n No[2A[10D  Yes     No  [3A[J[>4m[=0;1u[J[?25h[?2004l[?1004lStored .env (1 added, 0 changed, 0 unchanged, 0 removed).
+Secrets stored for this project/profile. Runtime delivery remains disabled until separately configured.
+INNER_EXIT: 0
