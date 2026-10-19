@@ -146,6 +146,7 @@ func secretsProfileCmd(args []string) (int, error) {
 func secretsBindingsCmd(args []string) (int, error) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: just-code secrets bindings <list|approve|revoke> [options]")
+		fmt.Fprintln(os.Stderr, "  approve asks for confirmation unless --yes is given; a non-interactive approval requires --yes")
 		return 2, nil
 	}
 	switch args[0] {
@@ -270,6 +271,28 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 		fmt.Printf("Approving %s#%s for %s -> guest %s, destinations: %s\n",
 			binding.Component, binding.Name, binding.Profile, binding.GuestEnv, strings.Join(binding.Destinations, ", "))
 		fmt.Println("The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.")
+	}
+	// Confirmation was declared by --yes but never read, so the flag promised
+	// a prompt that did not exist — including for --delivery guest, the action
+	// that makes a real value readable inside the sandbox. The import path
+	// already requires --yes for a non-interactive write; approval now follows
+	// the same rule.
+	if !opts.ConfirmYes {
+		if !projectSecretsTTYFn() {
+			return 2, fmt.Errorf("non-interactive approval requires explicit --yes")
+		}
+		description := "The value stays in the credential store; this records which guest variable or file receives it."
+		if guestReadable {
+			description = "This makes the real value readable inside the sandbox, where any process including the agent can read it."
+		}
+		confirm, err := projectSecretsConfirmFn("Approve this binding?", description, false)
+		if err != nil {
+			return 1, err
+		}
+		if !confirm {
+			fmt.Println("Cancelled. No approval recorded.")
+			return 0, nil
+		}
 	}
 	// Record the approval first: it validates the binding, and a rejected
 	// approval must not leave the project pointed at a different profile.

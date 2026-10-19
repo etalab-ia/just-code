@@ -20,7 +20,7 @@ func TestSecretsBindingsApproveGuestReadable(t *testing.T) {
 
 	// Guest-readable delivery needs no destination, and must state the trade.
 	out := captureSecretsStdout(t, func() {
-		if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "DB_PASSWORD", "--delivery", "guest", "--root", root}); code != 0 || err != nil {
+		if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "DB_PASSWORD", "--delivery", "guest", "--yes", "--root", root}); code != 0 || err != nil {
 			t.Fatalf("approve guest: code=%d err=%v", code, err)
 		}
 	})
@@ -77,10 +77,10 @@ func TestRevokeMessageMatchesTheDeliveryMode(t *testing.T) {
 	if code, err := projectSecretsImportCmd([]string{"--root", root, "--profile", "development", "--file", ".env", "--apply", "--yes"}); code != 0 || err != nil {
 		t.Fatalf("import: code=%d err=%v", code, err)
 	}
-	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "DB_PASSWORD", "--delivery", "guest", "--root", root}); code != 0 || err != nil {
+	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "DB_PASSWORD", "--delivery", "guest", "--yes", "--root", root}); code != 0 || err != nil {
 		t.Fatalf("approve guest: code=%d err=%v", code, err)
 	}
-	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "API_KEY", "--destination", "api.example.com", "--root", root}); code != 0 || err != nil {
+	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "API_KEY", "--destination", "api.example.com", "--yes", "--root", root}); code != 0 || err != nil {
 		t.Fatalf("approve proxy: code=%d err=%v", code, err)
 	}
 

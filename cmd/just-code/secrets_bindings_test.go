@@ -74,7 +74,7 @@ func TestSecretsBindingsApproveListRevoke(t *testing.T) {
 	}
 
 	out = captureSecretsStdout(t, func() {
-		if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "API_KEY", "--destination", "api.example.com", "--root", root}); code != 0 || err != nil {
+		if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "API_KEY", "--destination", "api.example.com", "--yes", "--root", root}); code != 0 || err != nil {
 			t.Fatalf("approve: code=%d err=%v", code, err)
 		}
 	})
@@ -100,7 +100,10 @@ func TestSecretsBindingsApproveListRevoke(t *testing.T) {
 
 	// Approving an unimported variable is recorded but reported as
 	// undeliverable at approval time, not silently accepted.
-	if _, err := secretsBindingsCmd([]string{"approve", "development", ".env", "NOT_IMPORTED", "--destination", "api.example.com", "--root", root}); err == nil {
+	// --yes so the failure under test is the unresolvable binding, not the
+	// non-interactive confirmation gate (which would make this pass for the
+	// wrong reason).
+	if _, err := secretsBindingsCmd([]string{"approve", "development", ".env", "NOT_IMPORTED", "--destination", "api.example.com", "--yes", "--root", root}); err == nil {
 		t.Fatal("approving a variable that was never imported must fail loudly")
 	}
 
@@ -131,7 +134,7 @@ func TestSecretsProfileSelection(t *testing.T) {
 	if code, err := secretsProfileCmd([]string{"development", "--root", root}); code != 0 || err != nil {
 		t.Fatalf("profile: code=%d err=%v", code, err)
 	}
-	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "API_KEY", "--destination", "api.example.com", "--root", root}); code != 0 || err != nil {
+	if code, err := secretsBindingsCmd([]string{"approve", "development", ".env", "API_KEY", "--destination", "api.example.com", "--yes", "--root", root}); code != 0 || err != nil {
 		t.Fatalf("approve: code=%d err=%v", code, err)
 	}
 	// Clearing the profile while bindings remain would make every start fail
