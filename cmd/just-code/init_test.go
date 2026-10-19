@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"charm.land/huh/v2"
 	"context"
 	"fmt"
 	"os"
@@ -48,6 +49,15 @@ func stubWizardHuh(t *testing.T) {
 func initTestProject(t *testing.T) string {
 	t.Helper()
 	stubWizardHuh(t)
+	// The wizard resolves the GitHub origin and stored credential before
+	// offering the approval question (#155). Stub the seam so the scripted
+	// tests stay hermetic: the real one reads the host keychain and a real
+	// git remote. Tests that exercise GitHub behavior install their own stub.
+	originalPreflight := githubInitPreflightFn
+	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
+		return justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, nil
+	}
+	t.Cleanup(func() { githubInitPreflightFn = originalPreflight })
 	originalHostResources := detectHostResourcesFn
 	detectHostResourcesFn = func() (justcode.HostResources, error) {
 		return justcode.HostResources{CPUs: 32, MemoryMB: 262144}, nil
@@ -283,6 +293,143 @@ func TestInitGitHubWorkflowRejectsNonMicrosandboxRuntime(t *testing.T) {
 	}
 	if approved {
 		t.Fatal("GitHub approval must not be persisted after runtime validation fails")
+	}
+}
+
+// TestInitSkipsGitHubQuestionWhenOriginUnusable pins #155: a project whose
+// origin or credential cannot support the guest workflow is never offered
+// the approval question, so the run can no longer fail after the last screen
+// and throw the session away. The reason is stated on screen.
+func TestInitSkipsGitHubQuestionWhenOriginUnusable(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalPreflight, originalApprove := githubInitPreflightFn, approveGitHubForProjectFn
+	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
+		return justcode.GitHubRemote{}, fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the guest GitHub workflow")
+	}
+	approved := false
+	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
+	// runtime, isolation, model, cpus, memory, credential-ref, skills, MCPs,
+	// skill storage, apply — the GitHub question is absent by design.
+	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	if strings.Contains(out, "Approve the GitHub workflow") {
+		t.Fatalf("the approval question must not be asked when the origin is unusable: %q", out)
+	}
+	if !strings.Contains(out, "GitHub guest workflow (optional) — unavailable for this project:") || !strings.Contains(out, "no readable origin remote") {
+		t.Fatalf("the skip must state the reason on screen: %q", out)
+	}
+	if approved {
+		t.Fatal("no approval may be recorded when the question is skipped")
+	}
+	if _, err := os.Stat(justcode.ProjectManifestPath(root)); err != nil {
+		t.Fatalf("the project must still be configured: %v", err)
+	}
+}
+
+// TestInitGitHubQuestionResolvesOriginUpfront pins the other half of #155:
+// with a usable origin the question is offered, names the repo, and a Yes
+// completes the run instead of failing after the review with the answers lost.
+func TestInitGitHubQuestionResolvesOriginUpfront(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalPreflight, originalApprove := githubInitPreflightFn, approveGitHubForProjectFn
+	var preflightRoots []string
+	githubInitPreflightFn = func(gotRoot string) (justcode.GitHubRemote, error) {
+		preflightRoots = append(preflightRoots, gotRoot)
+		return justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, nil
+	}
+	approveGitHubForProjectFn = func(string) error { return nil }
+	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
+	// runtime, isolation, model, cpus, memory, credential-ref, github=y,
+	// skills, MCPs, skill storage, apply.
+	input := strings.Join([]string{"", "", "", "", "", "", "y", "", "", "", ""}, "\n") + "\n"
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+		if code != 0 || err != nil {
+			t.Fatalf("a Yes with a usable origin must complete the run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "Approve the GitHub workflow for this project? [y/N]: ") {
+		t.Fatalf("the question must be asked: %q", out)
+	}
+	if !strings.Contains(out, "Origin: owner/repo") {
+		t.Fatalf("the question must name the resolved origin: %q", out)
+	}
+	if !strings.Contains(out, "guest workflow for owner/repo") {
+		t.Fatalf("the review must carry the resolved origin: %q", out)
+	}
+	if len(preflightRoots) < 2 {
+		t.Fatalf("the origin must be resolved at question time and re-checked before writing, got %d calls", len(preflightRoots))
+	}
+}
+
+// TestInitGitHubFlagFailsLoudlyWithoutOrigin pins the flag contract: an
+// explicit --github is an error, never a silent skip.
+func TestInitGitHubFlagFailsLoudlyWithoutOrigin(t *testing.T) {
+	root := initTestProject(t)
+	originalPreflight, originalApprove := githubInitPreflightFn, approveGitHubForProjectFn
+	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
+		return justcode.GitHubRemote{}, fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the guest GitHub workflow")
+	}
+	approveGitHubForProjectFn = func(string) error { return nil }
+	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
+	code, err := initRun(initOptions{
+		Root: root, GitHub: true, Yes: true,
+		Set: map[string]bool{"root": true, "github": true},
+	}, bufio.NewReader(strings.NewReader("")), false)
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "no readable origin remote") {
+		t.Fatalf("--github without a usable origin must fail with the preflight error: code=%d err=%v", code, err)
+	}
+	if _, statErr := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused --github must leave nothing on disk (stat error: %v)", statErr)
+	}
+}
+
+// TestAskInitQuestionsHuhOffersGitHubOnlyWhenUsable pins the huh form's half
+// of #155: the approval field is built only when the preflight resolves, and
+// a failed preflight forces the workflow off instead of letting the post-form
+// check destroy the session. huhRun is stubbed, so this exercises the
+// construction logic without a terminal.
+func TestAskInitQuestionsHuhOffersGitHubOnlyWhenUsable(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalRun := huhRun
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() { huhRun = originalRun })
+	originalPreflight := githubInitPreflightFn
+	t.Cleanup(func() { githubInitPreflightFn = originalPreflight })
+	opts := initOptions{
+		Root: root, Set: map[string]bool{"root": true},
+		hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384,
+	}
+
+	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
+		return justcode.GitHubRemote{}, fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the guest GitHub workflow")
+	}
+	answers, err := askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh: %v", err)
+	}
+	if answers.GitHubWorkflow || answers.GitHubRemote.Repo != "" {
+		t.Fatalf("an unusable origin must leave the workflow off with no stashed remote: %+v", answers)
+	}
+
+	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
+		return justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, nil
+	}
+	answers, err = askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh: %v", err)
+	}
+	if answers.GitHubRemote.Repo != "owner/repo" {
+		t.Fatalf("a usable origin must be stashed for the review, got %+v", answers)
 	}
 }
 
