@@ -228,6 +228,19 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 	if guestReadable && opts.GuestEnv != "" {
 		return 2, fmt.Errorf("--delivery guest takes no --guest-env: the value is delivered as a file, not as an environment placeholder")
 	}
+	// Confirmation was declared by --yes but never read, so the flag promised
+	// a prompt that did not exist — including for --delivery guest, the action
+	// that makes a real value readable inside the sandbox. The import path
+	// already requires --yes for a non-interactive write; approval now follows
+	// the same rule.
+	//
+	// The gate runs before the store is built and before any value is read: an
+	// invocation that must be refused as invalid automation should not touch
+	// the credential store, unlock a collection, or fail with an unrelated
+	// lookup error instead of the --yes requirement.
+	if !opts.ConfirmYes && !projectSecretsTTYFn() {
+		return 2, fmt.Errorf("non-interactive approval requires explicit --yes")
+	}
 	store, err := projectSecretStoreForCLI(opts.Root, opts.Fallback)
 	if err != nil {
 		return 1, err
@@ -272,15 +285,22 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 			binding.Component, binding.Name, binding.Profile, binding.GuestEnv, strings.Join(binding.Destinations, ", "))
 		fmt.Println("The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.")
 	}
-	// Confirmation was declared by --yes but never read, so the flag promised
-	// a prompt that did not exist — including for --delivery guest, the action
-	// that makes a real value readable inside the sandbox. The import path
-	// already requires --yes for a non-interactive write; approval now follows
-	// the same rule.
-	if !opts.ConfirmYes {
-		if !projectSecretsTTYFn() {
-			return 2, fmt.Errorf("non-interactive approval requires explicit --yes")
+	// An approval already in effect is reported as such: approvals are
+	// upserted, so declining a re-run that only changes a destination or the
+	// delivery mode leaves the previous approval active. Saying nothing was
+	// recorded could read as "no sandbox access". A read failure is not fatal:
+	// the prompt is a safety net, not a gate, and the approval itself still
+	// validates — it only means this note cannot be shown.
+	replacesExisting := false
+	if record, rerr := justcode.ReadProjectSecretBindingsRecordFor(store); rerr == nil {
+		for _, existing := range record.Bindings {
+			if existing.Profile == binding.Profile && existing.Component == binding.Component && existing.Name == binding.Name {
+				replacesExisting = true
+				break
+			}
 		}
+	}
+	if !opts.ConfirmYes {
 		description := "The value stays in the credential store; this records which guest variable or file receives it."
 		if guestReadable {
 			description = "This makes the real value readable inside the sandbox, where any process including the agent can read it."
@@ -291,6 +311,9 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 		}
 		if !confirm {
 			fmt.Println("Cancelled. No approval recorded.")
+			if replacesExisting {
+				fmt.Println("Note: the previous approval for this binding is unchanged and remains in effect.")
+			}
 			return 0, nil
 		}
 	}
