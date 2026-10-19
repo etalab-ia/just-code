@@ -40,24 +40,26 @@ func TestTartStartupFailureRecognisesTheVZRefusal(t *testing.T) {
 // refused to boot must be reported as such, immediately, rather than waiting
 // the full timeout and claiming the guest agent never answered.
 func TestWaitForAgentNamesTheVZFailureInsteadOfTimingOut(t *testing.T) {
-	// The exec probe never succeeds: the guest is up in name only, exactly as
-	// when Virtualization.framework refused to start it.
+	tt := newTestTart(t, nil)
+	// The exec probe never succeeds (the VM never booted), and the log the
+	// failing `tart run` writes is appended during the wait — writing it up
+	// front would make it an earlier run's entry, which the offset scan is
+	// now correct to ignore.
 	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		f, err := os.OpenFile(tt.LogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(`VZErrorDomain Code=-9 "The virtual machine encountered a security error"` + "\n")
+			_ = f.Close()
+		}
 		return ExecResult{ExitCode: 1, Stderr: "no such process"}
 	}}
-	tt := newTestTart(t, r)
+	tt.Runner = r
 	tt.Config.Isolation = IsolationFull
 	// Small seam so the early-exit assertion does not depend on a full timeout
 	// run: without it this test takes a real minute when the fix is absent.
 	tt.AgentWaitInterval = time.Millisecond
 	tt.AgentWaitPolls = 3
 	if err := os.MkdirAll(filepath.Dir(tt.LogPath()), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tt.LogPath(), []byte(
-		"Booting vm\n"+
-			`VZErrorDomain Code=-9 "The virtual machine encountered a security error"`+"\n"+
-			`NSPOSIXErrorDomain Code=22 "Failed to create new HostKey"`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,6 +80,65 @@ func TestWaitForAgentNamesTheVZFailureInsteadOfTimingOut(t *testing.T) {
 	// loop must consume all three.
 	if len(r.calls) > 2 {
 		t.Fatalf("the VM log must stop the poll early, got %d probes", len(r.calls))
+	}
+}
+
+// TestWaitForAgentSucceedsOnARetryAfterAFailedRun pins the user-visible
+// consequence of the P1: after the advice to unlock the keychain is followed,
+// the very next start must be able to succeed even though the shared log still
+// holds the previous refusal.
+func TestWaitForAgentSucceedsOnARetryAfterAFailedRun(t *testing.T) {
+	r := &fakeRunner{} // exec succeeds: the retry's VM booted
+	tt := newTestTart(t, r)
+	tt.AgentWaitInterval = time.Millisecond
+	tt.AgentWaitPolls = 3
+	if err := os.MkdirAll(filepath.Dir(tt.LogPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The log left behind by the failed run.
+	if err := os.WriteFile(tt.LogPath(), []byte(
+		`VZErrorDomain Code=-9 "The virtual machine encountered a security error"`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tt.waitForAgent(context.Background()); err != nil {
+		t.Fatalf("a healthy retry must not inherit the previous run's failure: %v", err)
+	}
+}
+
+// TestWaitForAgentDoesNotReportAPreviousRunsFailureOnTimeout is the
+// discriminating case for the P1: probes keep failing while the log holds only
+// an earlier run's refusal. The wait must run its course and report the plain
+// timeout; reading the shared log from byte 0 would surface the stale failure
+// on the very first poll and end the wait instantly with a false cause.
+func TestWaitForAgentDoesNotReportAPreviousRunsFailureOnTimeout(t *testing.T) {
+	r := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		return ExecResult{ExitCode: 1, Stderr: "not ready"}
+	}}
+	tt := newTestTart(t, r)
+	tt.AgentWaitInterval = time.Millisecond
+	tt.AgentWaitPolls = 4
+	if err := os.MkdirAll(filepath.Dir(tt.LogPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An earlier run's failure, already on disk before this wait begins.
+	if err := os.WriteFile(tt.LogPath(), []byte(
+		`VZErrorDomain Code=-9 "The virtual machine encountered a security error"`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := tt.waitForAgent(context.Background())
+	if err == nil {
+		t.Fatal("a guest that never answers must time out")
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for") {
+		t.Fatalf("the previous run's failure must not be reported, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "security error") {
+		t.Fatalf("the stale failure leaked into this run's verdict: %v", err)
+	}
+	if len(r.calls) != 4 {
+		t.Fatalf("the wait must run its full course, got %d probes", len(r.calls))
 	}
 }
 
@@ -132,8 +193,51 @@ func TestNewTartWiresTheAgentWaitSeam(t *testing.T) {
 // silent rather than turn a slow boot into a false error.
 func TestTartStartupFailureToleratesAMissingLog(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist.log")
-	if reason := tartStartupFailure(missing); reason != "" {
+	if reason := tartStartupFailure(missing, 0); reason != "" {
 		t.Fatalf("a missing log must not report a failure, got %q", reason)
+	}
+}
+
+// TestTartStartupFailureIgnoresAnEarlierRunsFailure pins the P1 on the #219
+// review: the VM log is append-only and shared across runs, so a previous
+// failure is still in the file when the user unlocks the keychain and retries.
+// Scanning from byte 0 reported that stale failure immediately, turning a
+// healthy retry into a false error.
+func TestTartStartupFailureIgnoresAnEarlierRunsFailure(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tart.log")
+	stale := "VZErrorDomain Code=-9 \"The virtual machine encountered a security error\"\n"
+	if err := os.WriteFile(logPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	offset := logSize(logPath)
+	if offset == 0 {
+		t.Fatal("the stale run must have written bytes")
+	}
+
+	// Unchanged file: the previous failure is present but belongs to the
+	// earlier run, so it must not be reported.
+	if reason := tartStartupFailure(logPath, offset); reason != "" {
+		t.Fatalf("an earlier run's failure must not be reported, got %q", reason)
+	}
+	// Without the offset the same bytes are (correctly) seen — this is what
+	// made the old scan wrong, so the difference is what the test pins.
+	if reason := tartStartupFailure(logPath, 0); reason == "" {
+		t.Fatal("the fixture must contain a readable failure for this test to mean anything")
+	}
+
+	// A genuine failure in this run still registers.
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`NSPOSIXErrorDomain Code=22 "Failed to create new HostKey"` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	reason := tartStartupFailure(logPath, offset)
+	if !strings.Contains(reason, "Failed to create new HostKey") {
+		t.Fatalf("this run's failure must be reported, got %q", reason)
 	}
 }
 
@@ -149,6 +253,10 @@ func TestLoginKeychainLockedReadsSecurityOutput(t *testing.T) {
 		{"locked", ExecResult{ExitCode: 1, Stderr: "The specified keychain could not be found."}, false},
 		{"locked wording", ExecResult{ExitCode: 1, Stderr: "keychain is locked"}, true},
 		{"locked stdout", ExecResult{ExitCode: 1, Stdout: "The keychain is locked."}, true},
+		// The wording a locked keychain returns in a session with no GUI to
+		// prompt in: this is the headless case the warning exists for, and it
+		// never says "locked".
+		{"no user interaction", ExecResult{ExitCode: 1, Stderr: "security: User interaction is not allowed."}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

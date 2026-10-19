@@ -386,6 +386,12 @@ func (t *Tart) waitForAgent(ctx context.Context) error {
 	if interval <= 0 {
 		interval = time.Second
 	}
+	// The VM log is append-only: OSStarter opens it with O_APPEND and nothing
+	// rotates it. A previous failed run therefore still contains its VZ error,
+	// and scanning from byte 0 would report that stale failure immediately on
+	// a healthy retry — precisely when the user has just unlocked the keychain
+	// and tried again. Only bytes written from here on belong to this launch.
+	logOffset := logSize(t.LogPath())
 	for i := 0; i < polls; i++ {
 		res, err := t.Runner.Run(ctx, "tart", "exec", t.VMName(), "true")
 		if err == nil && res.ExitCode == 0 {
@@ -397,7 +403,7 @@ func (t *Tart) waitForAgent(ctx context.Context) error {
 		// seconds. Polling for the full timeout and then reporting a generic
 		// "guest agent" timeout hides the real cause, which is only visible in
 		// the VM log. Stop as soon as the log names a startup failure.
-		if reason := tartStartupFailure(t.LogPath()); reason != "" {
+		if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
 			return fmt.Errorf("tart could not start %s: %s\n"+
 				"The VM never booted, so no guest agent could answer. On a machine with no GUI session "+
 				"(SSH, a rented Mac), Virtualization.framework cannot create the VM host key when the login "+
@@ -406,19 +412,42 @@ func (t *Tart) waitForAgent(ctx context.Context) error {
 		}
 		time.Sleep(interval)
 	}
-	if reason := tartStartupFailure(t.LogPath()); reason != "" {
+	if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
 		return fmt.Errorf("timed out waiting for %s guest agent; the VM log reports a startup failure: %s (full log: %s)",
 			t.VMName(), reason, t.LogPath())
 	}
 	return fmt.Errorf("timed out waiting for %s guest agent", t.VMName())
 }
 
+// logSize reports the current size of a log file, or 0 when it cannot be
+// read. Zero is the right fallback: it scans the whole file, which is what an
+// absent or unreadable log would have produced anyway.
+func logSize(logPath string) int64 {
+	info, err := os.Stat(logPath)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
 // tartStartupFailure extracts the first Virtualization.framework startup error
-// from a tart log, or "" when the log shows no such failure. The log is a live
-// file: the run may still be appending to it, so an unreadable or absent log
-// must stay silent rather than turn a slow boot into a false error.
-func tartStartupFailure(logPath string) string {
-	data, err := os.ReadFile(logPath)
+// written after fromOffset, or "" when the log shows no such failure. The log
+// is append-only and shared across runs, so the offset is what keeps a
+// previous run's failure from being read as this run's. The file is also live
+// — the VM may still be writing — so an unreadable or absent log stays silent
+// rather than turn a slow boot into a false error.
+func tartStartupFailure(logPath string, fromOffset int64) string {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if fromOffset > 0 {
+		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
+			return ""
+		}
+	}
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return ""
 	}
@@ -634,24 +663,34 @@ func (t *Tart) Doctor(ctx context.Context) error {
 	return nil
 }
 
-// loginKeychainLocked reports whether `security show-keychain-info` says the
-// login keychain is locked. It is best-effort and read-only: anything it cannot
-// determine is reported as "not locked", so a probe that does not work never
-// blocks a doctor run or invents a warning. Only darwin has the `security`
-// tool, and only a Mac can run Tart at all.
+// loginKeychainLocked reports a keychain state that will stop a Tart VM from
+// booting, using the only read-only signal the `security` CLI offers.
+//
+// This is deliberately narrow about what it claims. `security
+// show-keychain-info` displays keychain *settings* (lock-on-sleep, timeout),
+// not lock status, so a zero exit only means "the command ran", not "the
+// keychain is unlocked" — Apple's own status API (SecKeychainGetStatus) is not
+// reachable from the shell. The probe therefore warns only on the two errors a
+// headless session actually produces, and treats success as inconclusive
+// rather than as proof. A false "ready" is a known limit of this check, and
+// the real diagnosis remains the VM log read in waitForAgent.
+//
+// Read-only throughout: it must never unlock or modify a keychain, so an
+// unusable probe stays silent rather than blocking doctor.
 func loginKeychainLocked(ctx context.Context, r Runner) (bool, string) {
 	res, err := r.Run(ctx, "security", "show-keychain-info")
 	if err != nil || res.ExitCode == 0 {
-		// Not installed, or the keychain is unlocked and usable.
 		return false, ""
 	}
 	detail := strings.TrimSpace(res.Stderr)
 	if detail == "" {
 		detail = strings.TrimSpace(res.Stdout)
 	}
-	// `security` exits nonzero for a locked keychain and for other problems;
-	// only the locked wording is a warning we can act on.
-	if strings.Contains(strings.ToLower(detail), "locked") {
+	lower := strings.ToLower(detail)
+	// "locked" is the explicit wording; "user interaction is not allowed" is
+	// what a locked keychain returns in a session with no GUI to prompt in,
+	// which is exactly the headless case this warning exists for.
+	if strings.Contains(lower, "locked") || strings.Contains(lower, "user interaction is not allowed") {
 		return true, detail
 	}
 	return false, ""
