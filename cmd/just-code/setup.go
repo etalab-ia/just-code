@@ -254,7 +254,13 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			}
 			if probe.Unreachable {
 				fmt.Printf("%s (%s)\n", albertUnreachableMessage, probe.Detail)
-				if albertRetryChoice(in) {
+				retry, answered := albertRetryChoice(in)
+				if !answered {
+					// Aborted or unanswerable: cancel rather than store a key
+					// the user never agreed to continue with.
+					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+				}
+				if retry {
 					fmt.Println()
 					continue
 				}
@@ -553,10 +559,11 @@ const albertUnreachableMessage = "Albert API ne répond pas. Vérifiez votre con
 // continue keeps it unvalidated.
 const albertRetryPrompt = "[R] Réessayer  [C] Continuer sans vérifier"
 
-// albertRetryChoice asks whether to retry validation. It returns true to
-// retry, false to continue without validating. A read that cannot be answered
-// (end of input) continues, because the key is stored either way.
-func albertRetryChoice(in *bufio.Reader) bool {
+// albertRetryChoice asks whether to retry validation. It returns retry=true to
+// re-enter the key, retry=false to continue without validating, and ok=false
+// when the question was never answered (abort, end of input). ok=false must
+// cancel: only an explicit "continue" may authorize storing an unvalidated key.
+func albertRetryChoice(in *bufio.Reader) (retry bool, ok bool) {
 	if wizardHuhFn() {
 		choice := "continue"
 		err := huhRun(huh.NewForm(
@@ -571,19 +578,24 @@ func albertRetryChoice(in *bufio.Reader) bool {
 			),
 		))
 		if err != nil {
-			return false
+			// ErrUserAborted (Ctrl+C) or a render error: unanswered, so this
+			// is a cancellation, not a silent "continue".
+			return false, false
 		}
-		return choice == "retry"
+		return choice == "retry", true
 	}
 	answer, ok := promptLine(in, albertRetryPrompt+" : ")
 	if !ok {
-		return false
+		return false, false
 	}
 	switch strings.ToLower(strings.TrimSpace(answer)) {
 	case "r", "réessayer", "reessayer":
-		return true
+		return true, true
+	case "c", "continuer":
+		return false, true
 	}
-	return false
+	// An unrecognized answer is not a decision; ask again on the next pass.
+	return false, false
 }
 
 func printPreflight(res justcode.SetupPreflight) {

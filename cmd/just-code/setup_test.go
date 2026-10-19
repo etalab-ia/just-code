@@ -373,6 +373,38 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	}
 }
 
+// TestSetupUnreachableUnansweredPromptStoresNothing pins the second review
+// finding on #216: an end of input at the [R]/[C] prompt is NOT an explicit
+// "continue", so it must cancel rather than store an unvalidated key.
+func TestSetupUnreachableUnansweredPromptStoresNothing(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key, then end of input at the [R]/[C] question.
+	input := "only-key\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error {
+			return fmt.Errorf("could not reach the Albert endpoint: HTTP 503")
+		},
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
+	if code == 0 {
+		t.Errorf("an unanswered retry prompt must not report success: code=%d err=%v", code, err)
+	}
+	if store, serr := justcode.ConsentFileStore(); serr == nil {
+		if _, statErr := os.Stat(store.Path); statErr == nil {
+			t.Fatal("an unanswered retry prompt must not store the key")
+		}
+	}
+	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
+		t.Fatal("an unanswered retry prompt must not journal albert as stored")
+	}
+}
+
 // TestSetupUnreachableRetryThenAbandonStoresNothing is the regression test for
 // the review finding on #216: choosing R then giving up must not leave the
 // first, unvalidated key in the store — otherwise a later `setup` skips this
