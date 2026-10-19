@@ -175,7 +175,9 @@ if run_installer "$home" "$good_sums" 0 0 9 > "$temp_root/setup-failure.out" 2>&
 fi
 cmp -s "$target" "$fake_binary" || { printf 'setup failure rolled back the new binary unexpectedly\n' >&2; exit 1; }
 [ "$(cat "$home/.local/bin/just-code.previous")" = 'keep me' ] || { printf 'setup failure did not retain the previous binary\n' >&2; exit 1; }
-grep -F 'Pour revenir à la version précédente :' "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted rollback guidance\n' >&2; exit 1; }
+# The rollback command must use unquoted absolute paths so a copied line works
+# (a quoted ~ would not expand in most shells).
+grep -F "Pour revenir à la version précédente : mv $home/.local/bin/just-code.previous $home/.local/bin/just-code" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a usable rollback command\n' >&2; exit 1; }
 
 # No interactive terminal: the installer must NOT edit a shell profile file on
 # its own, must say how to get PATH in the current shell, and must still launch
@@ -201,7 +203,83 @@ if command -v setsid >/dev/null 2>&1; then
 	grep -F 'ne serait pas trouvée dans un nouveau terminal' "$temp_root/detached.out" >/dev/null || { printf 'headless install did not warn about PATH\n' >&2; exit 1; }
 	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$temp_root/detached.out" >/dev/null || { printf 'headless install did not print the PATH line\n' >&2; exit 1; }
 fi
-grep -F "Reprenez-la quand vous voulez : just-code setup" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted the resume command\n' >&2; exit 1; }
+
+	# Bash with no existing ~/.bash_profile: writing one would shadow an
+	# existing ~/.profile (login bash stops falling back to it). The installer
+	# must target ~/.profile instead.
+	bash_home="$temp_root/bash home"
+	mkdir -p "$bash_home"
+	printf 'export EDITOR=vi\n' > "$bash_home/.profile"
+	# No terminal means nothing is written, so drive the interactive path
+	# through a pty: that is where the prompt names the target file.
+	python3 - "$bash_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/bash-profile.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/bash", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+os.write(fd, b"\n")  # accept the PATH change
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	grep -F 'Ajouter la ligne suivante à ~/.profile ?' "$temp_root/bash-profile.out" >/dev/null || { printf 'bash without .bash_profile must target ~/.profile\n' >&2; exit 1; }
+	[ ! -e "$bash_home/.bash_profile" ] || { printf 'installer created a shadowing ~/.bash_profile\n' >&2; exit 1; }
+	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$bash_home/.profile" >/dev/null || { printf 'PATH line not written to ~/.profile\n' >&2; exit 1; }
+	grep -F 'export EDITOR=vi' "$bash_home/.profile" >/dev/null || { printf 'existing ~/.profile content was destroyed\n' >&2; exit 1; }
+
+	# Empty SHELL: unknown, must fall back to ~/.profile, not ~/.zshenv.
+	empty_home="$temp_root/empty shell home"
+	mkdir -p "$empty_home"
+	python3 - "$empty_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/empty-shell.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+os.write(fd, b"\n")
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	grep -F 'Ajouter la ligne suivante à ~/.profile ?' "$temp_root/empty-shell.out" >/dev/null || { printf 'empty SHELL must fall back to ~/.profile\n' >&2; exit 1; }
+	[ ! -e "$empty_home/.zshenv" ] || { printf 'empty SHELL must not be treated as zsh\n' >&2; exit 1; }
+# The resume command must name the installed binary by absolute path: the
+# invoking shell may not have ~/.local/bin on PATH (the very case handled
+# above), so a bare `just-code setup` would be a command not found.
+grep -F "Reprenez-la quand vous voulez : $home/.local/bin/just-code setup" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a resolvable resume command\n' >&2; exit 1; }
 grep -F "just-code est installé, mais la configuration n'est pas terminée." "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure message is not in French\n' >&2; exit 1; }
 
 unsupported_home="$temp_root/unsupported"

@@ -134,12 +134,22 @@ case ":${PATH:-}:" in
 		# shellcheck disable=SC2016
 		path_line='export PATH="$HOME/.local/bin:$PATH"'
 		# ~/.zshenv pour zsh (fichier lu par tous les shells zsh, comme le
-		# faisait Albert Code) ; repli POSIX pour les autres shells.
+		# faisait Albert Code) ; repli POSIX pour les autres shells, y compris
+		# un SHELL vide (inconnu), qu'il ne faut pas traiter comme zsh.
 		# The tilde is displayed as-is and stripped by the ${path_file#\~/} below.
 		# shellcheck disable=SC2088
 		case "$shell_name" in
-			zsh|'') path_file='~/.zshenv' ;;
-			bash) path_file='~/.bash_profile' ;;
+			zsh) path_file='~/.zshenv' ;;
+			bash)
+				# Écrire dans un ~/.bash_profile neuf masquerait un ~/.profile
+				# existant (bash de connexion ne le lirait plus) ; on préfère
+				# un fichier déjà présent, sinon ~/.profile lui-même.
+				if [ -f "$HOME/.bash_profile" ]; then
+					path_file='~/.bash_profile'
+				else
+					path_file='~/.profile'
+				fi
+				;;
 			*) path_file='~/.profile' ;;
 		esac
 		path_target="$HOME/${path_file#\~\/}"
@@ -193,9 +203,12 @@ else
 fi
 if [ "$setup_status" -ne 0 ]; then
 	printf 'just-code est installé, mais la configuration n'"'"'est pas terminée.\n' >&2
-	printf 'Reprenez-la quand vous voulez : just-code setup\n' >&2
+	# Le terminal courant n'a pas forcément ~/.local/bin dans son PATH (c'est
+	# le cas que le bloc PATH vient de traiter) : donner le chemin absolu, sinon
+	# la commande de reprise ne serait pas trouvée dans cette session.
+	printf 'Reprenez-la quand vous voulez : %s setup\n' "$target" >&2
 	if [ -f "$backup" ]; then
-		printf 'Pour revenir à la version précédente : mv "~/.local/bin/just-code.previous" "~/.local/bin/just-code"\n' >&2
+		printf 'Pour revenir à la version précédente : mv %s %s\n' "$backup" "$target" >&2
 	fi
 	exit "$setup_status"
 fi
