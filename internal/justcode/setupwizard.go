@@ -286,6 +286,7 @@ func (w SetupWizard) SaveSettings(model string, modelChosen bool) error {
 	}
 	if modelChosen {
 		j.DefaultModel = model
+		j.ModelChosen = true
 	}
 	return WriteSetupJournal(w.FS, w.StateDir, j)
 }

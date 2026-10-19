@@ -390,6 +390,67 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	}
 }
 
+// TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume pins the Kimi
+// review finding on #216, across two runs:
+//
+//  1. a completed install has a saved model, and a re-run answers the model
+//     prompt EMPTY (an explicit choice of the built-in default) but is then
+//     aborted at the recap;
+//  2. the resumed run's model prompt is never answered (EOF).
+//
+// The explicit default choice from run 1 must survive: the run may not reload
+// the saved model just because the resumed prompt was unanswered. That requires
+// journalling the answered-ness, not only the value.
+func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	us.DefaultModel = "albert/old"
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, us); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 1: key -> EMPTY model (explicit built-in) -> skip GitHub ->
+	// identities -> refuse at the recap.
+	_ = captureStdout(t, func() {
+		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader("the-key\n\n\n\n\nn\n")),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+	})
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !j.ModelChosen || j.DefaultModel != "" {
+		t.Fatalf("run 1 must journal the answered-empty choice: chosen=%v model=%q", j.ModelChosen, j.DefaultModel)
+	}
+
+	// Run 2: resume. The key is already stored, so the MODEL prompt is the
+	// first question, and the input makes it unanswered (EOF).
+	_ = captureStdout(t, func() {
+		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader("")),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+	})
+	after, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DefaultModel != "" {
+		t.Fatalf("an explicit default choice must not be undone by an unanswered resume; got %q", after.DefaultModel)
+	}
+}
+
 // TestUnansweredModelPromptKeepsTheSavedModel pins the round-6 finding on #216:
 // a completed install being reconfigured has no journal, so the prompt starts
 // from the saved setting. If the input runs out (EOF, Ctrl-D) the prompt is

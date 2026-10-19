@@ -296,13 +296,11 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	// install being reconfigured) the saved user setting is the current value,
 	// so an unanswered prompt must not look like "clear the model".
 	model := j.DefaultModel
-	modelAnswered := false
-	if model == "" {
+	modelAnswered := j.ModelChosen
+	if !modelAnswered {
 		if saved := currentUserModel(); saved != "" {
 			model = saved
 		}
-	} else {
-		modelAnswered = true
 	}
 	{
 		fmt.Println()
@@ -359,8 +357,12 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	// Only an ANSWERED choice is journaled. An unanswered prompt (EOF, Ctrl-D)
 	// leaves the saved setting alone: resetting it would silently undo a
 	// configuration the user never asked to change.
-	if modelAnswered && j.DefaultModel != model {
+	// Record answered-ness, not just the value: an answered EMPTY choice leaves
+	// the value unchanged ("" equals ""), and without the flag a resumed run
+	// could not tell that choice from an interruption.
+	if modelAnswered && (j.DefaultModel != model || !j.ModelChosen) {
 		j.DefaultModel = model
+		j.ModelChosen = true
 		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
 			return 1, err
 		}
@@ -611,9 +613,9 @@ func albertRejectedMessage(detail string) string {
 // refusal: the key may well be valid, so the user chooses whether to continue.
 const albertUnreachableMessage = "Albert API ne répond pas. Vérifiez votre connexion ou le proxy de votre administration."
 
-// albertRetryPrompt offers the two answers to an unreachable endpoint. The
-// key is already stored, so both choices are safe: retry re-enters it,
-// continue keeps it unvalidated.
+// albertRetryPrompt offers the two answers to an unreachable endpoint. The key
+// is NOT stored yet at this point: [R] re-enters it, [C] stores it unvalidated,
+// and any other outcome (abort, end of input) stores nothing.
 const albertRetryPrompt = "[R] Réessayer  [C] Continuer sans vérifier"
 
 // albertRetryChoice asks whether to retry validation. It returns retry=true to
