@@ -158,7 +158,11 @@ func authStatusCmd() (int, error) {
 				fmt.Printf("  state: error (%v)\n", err)
 			}
 		} else {
-			fmt.Println("  state: reachable")
+			// The probe is read-only by contract, so it cannot prove a write
+			// will succeed: a keyring whose collection is locked answers a
+			// lookup and then refuses to store. Saying so here is the
+			// difference between "reachable" and "usable".
+			fmt.Println("  state: reachable (read-only probe; a locked collection can still refuse writes)")
 		}
 		for _, kind := range justcode.KnownCredentialKinds() {
 			if _, err := native.Get(ctx, kind); err == nil {

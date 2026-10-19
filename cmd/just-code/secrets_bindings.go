@@ -163,7 +163,8 @@ func secretsProfileCmd(args []string) (int, error) {
 
 func secretsBindingsCmd(args []string) (int, error) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: just-code secrets bindings <list|approve|revoke> [options]")
+		fmt.Fprintln(os.Stderr, "Usage: just-code secrets bindings <list|approve|revoke> [--root PATH] [--profile NAME] [--fallback]")
+		fmt.Fprintln(os.Stderr, "  --fallback selects the owner-only file store, for hosts with no usable native store (headless Linux without a Secret Service session)")
 		return 2, nil
 	}
 	switch args[0] {
