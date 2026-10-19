@@ -428,18 +428,10 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	instructionsPath := filepath.Join(pc.Root, "AGENTS.md")
 	needsZone := !localOnly && (len(selected) > 0 || plan.Answers.Runtime == RuntimeMicrosandbox)
 	if !needsZone {
-		data, readErr := fs.ReadFile(instructionsPath)
-		switch {
-		case readErr == nil:
-			needsZone = hasManagedSkillZone(string(data))
-		case os.IsNotExist(readErr):
-			// No AGENTS.md at all: nothing to claim until a merge adds one.
-		default:
-			// Unreadable entry (a directory, a permissions problem): the
-			// zone state is unknown, so claim the path and let the
-			// validation below fail closed.
-			needsZone = true
-		}
+		// No AGENTS.md at all reads as no zone; an unreadable or
+		// non-regular entry fails closed, same as a zone, and the
+		// validation below refuses it.
+		needsZone = managedZoneAt(fs, instructionsPath)
 	}
 	if needsZone {
 		plan.InstructionsPath = instructionsPath
@@ -727,14 +719,8 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 		// refreshed on current content, and a non-regular AGENTS.md
 		// holding one is refused.
 		candidate := filepath.Join(plan.Answers.Root, "AGENTS.md")
-		data, readErr := fs.ReadFile(candidate)
-		switch {
-		case readErr == nil && hasManagedSkillZone(string(data)):
+		if managedZoneAt(fs, candidate) {
 			instructionsPath = candidate
-		case readErr == nil || os.IsNotExist(readErr):
-			// Still zoneless: the plan's decision stands.
-		default:
-			return readErr
 		}
 	}
 	if instructionsPath != "" {

@@ -447,6 +447,35 @@ func hasManagedSkillZone(text string) bool {
 	return err != nil || zone != ""
 }
 
+// managedZoneAt reports whether the AGENTS.md at path carries a managed
+// zone. The entry type is checked on the real filesystem before any read:
+// ReadFile on a FIFO or a symlink to an unbounded device can block
+// indefinitely or exhaust memory. Symlinks are followed, so a link to a
+// regular zone-less file stays untouched. A missing or dangling path reads
+// as no zone; a non-regular or unreadable entry reads as a zone so the
+// caller claims the path and its own validation refuses it.
+func managedZoneAt(fs FS, path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := os.Stat(path)
+		if err != nil {
+			return !os.IsNotExist(err)
+		}
+		info = resolved
+	}
+	if !info.Mode().IsRegular() {
+		return true
+	}
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	return hasManagedSkillZone(string(data))
+}
+
 // renderManagedInstructions renders the managed section: standing guidance
 // for runtimes with a host-loopback port forward, plus the pinned-skill list
 // when a selection exists.
