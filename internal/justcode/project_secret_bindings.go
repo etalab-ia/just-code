@@ -681,6 +681,75 @@ func RevokeProjectSecretBinding(fs FS, stateDir, namespace, profile, component, 
 //
 // Entries present in the index but not approved are simply not delivered and
 // are reported by the caller, never bound implicitly.
+//
+// ResolveBindingDeliveries is the single rule both the runtime and the
+// approval path apply, so "this binding is valid" cannot mean one thing to the
+// command that records it and another to the launch that consumes it.
+func resolveBindingDeliveries(set projectSecretBindingSet, index projectSecretIndex, namespace string) ([]ProjectSecretDelivery, error) {
+	byIdentity := map[string]ProjectSecretEntry{}
+	for _, e := range index.Entries {
+		byIdentity[e.identity()] = e
+	}
+	var deliveries []ProjectSecretDelivery
+	for _, b := range set.Bindings {
+		if set.Profile == "" {
+			return nil, fmt.Errorf("project secret bindings exist for %s but no active profile is selected", namespace)
+		}
+		if b.Profile != set.Profile {
+			return nil, fmt.Errorf("project secret binding %s belongs to profile %q while the active profile is %q", b.Name, b.Profile, set.Profile)
+		}
+		entry, ok := byIdentity[b.identity()]
+		if !ok {
+			return nil, fmt.Errorf("project secret binding %s is approved but no imported value matches it; re-import the component or remove the approval", b.Name)
+		}
+		deliveries = append(deliveries, ProjectSecretDelivery{
+			ProjectSecretBinding: b,
+			Reference:            entry.Reference,
+			Marker:               ProjectSecretPlaceholder(namespace, b.Profile, b.Component, b.Name),
+		})
+	}
+	return deliveries, nil
+}
+
+// ValidateBindingAgainst would resolve as if `candidate` were approved under
+// `profile`, without writing anything. The approval command uses it to answer
+// "would this resolve?" *before* touching the host-local state, so a binding
+// that cannot resolve is refused rather than recorded and then reported as
+// approved-but-broken.
+func (s *ProjectSecretStore) ValidateBindingAgainst(candidate ProjectSecretBinding, profile string) error {
+	path := ProjectSecretBindingsPath(s.stateDir, s.namespace)
+	set, err := ReadProjectSecretBindings(DefaultFS, path, s.namespace)
+	if err != nil {
+		return err
+	}
+	if candidate.GuestEnv == "" && !candidate.GuestReadable() {
+		candidate.GuestEnv = ProjectSecretGuestEnv(candidate.Component, candidate.Name)
+	}
+	replaced := false
+	for i, existing := range set.Bindings {
+		if existing.identity() == candidate.identity() {
+			set.Bindings[i] = candidate
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		set.Bindings = append(set.Bindings, candidate)
+	}
+	// Mirror ApproveProjectSecretBinding: the first approval adopts its profile
+	// as the active one when none is set, and a mismatch would otherwise refuse
+	// the very approval that establishes the profile.
+	if set.Profile == "" {
+		set.Profile = profile
+	}
+	index, err := s.readIndex()
+	if err != nil {
+		return err
+	}
+	_, err = resolveBindingDeliveries(set, index, s.namespace)
+	return err
+}
+
 func (s *ProjectSecretStore) Deliveries(ctx context.Context) ([]ProjectSecretDelivery, []string, error) {
 	path := ProjectSecretBindingsPath(s.stateDir, s.namespace)
 	set, err := ReadProjectSecretBindings(DefaultFS, path, s.namespace)
@@ -691,27 +760,9 @@ func (s *ProjectSecretStore) Deliveries(ctx context.Context) ([]ProjectSecretDel
 	if err != nil {
 		return nil, nil, err
 	}
-	byIdentity := map[string]ProjectSecretEntry{}
-	for _, e := range index.Entries {
-		byIdentity[e.identity()] = e
-	}
-	var deliveries []ProjectSecretDelivery
-	for _, b := range set.Bindings {
-		if set.Profile == "" {
-			return nil, nil, fmt.Errorf("project secret bindings exist for %s but no active profile is selected", s.namespace)
-		}
-		if b.Profile != set.Profile {
-			return nil, nil, fmt.Errorf("project secret binding %s belongs to profile %q while the active profile is %q", b.Name, b.Profile, set.Profile)
-		}
-		entry, ok := byIdentity[b.identity()]
-		if !ok {
-			return nil, nil, fmt.Errorf("project secret binding %s is approved but no imported value matches it; re-import the component or remove the approval", b.Name)
-		}
-		deliveries = append(deliveries, ProjectSecretDelivery{
-			ProjectSecretBinding: b,
-			Reference:            entry.Reference,
-			Marker:               ProjectSecretPlaceholder(s.namespace, b.Profile, b.Component, b.Name),
-		})
+	deliveries, err := resolveBindingDeliveries(set, index, s.namespace)
+	if err != nil {
+		return nil, nil, err
 	}
 	// Report imported entries the active profile does not deliver, so the
 	// omission is visible rather than silent.

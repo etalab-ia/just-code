@@ -290,6 +290,15 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 			binding.Component, binding.Name, binding.Profile, binding.GuestEnv, strings.Join(binding.Destinations, ", "))
 		fmt.Println("The value stays in the credential store; only its placeholder enters the guest, and it is substituted toward those destinations alone.")
 	}
+	// Validate before writing. Approving used to record the binding and switch
+	// the active profile first, then check that it resolves — so a binding that
+	// could not resolve (an unimported variable, a profile mismatch) left a
+	// phantom approval and a changed active profile behind on the exit-1 path,
+	// and `bindings list` then showed state the user never successfully
+	// created. Nothing is written until the resolution question is answered.
+	if err := store.ValidateBindingAgainst(binding, opts.Profile); err != nil {
+		return 1, fmt.Errorf("this approval would not resolve, so nothing was recorded: %w", err)
+	}
 	// Record the approval first: it validates the binding, and a rejected
 	// approval must not leave the project pointed at a different profile.
 	if err := justcode.ApproveProjectSecretBinding(justcode.DefaultFS, stateDir, store.Namespace(), binding); err != nil {
@@ -298,8 +307,10 @@ func secretsBindingsApproveCmd(args []string) (int, error) {
 	if err := justcode.SetProjectSecretActiveProfile(justcode.DefaultFS, stateDir, store.Namespace(), opts.Profile); err != nil {
 		return 1, err
 	}
-	// Verify the approval resolves now, so a typo in the variable name is
-	// reported here rather than at the next start.
+	// Re-check what was actually persisted. The pre-write validation used an
+	// in-memory candidate; this one reads the record back, so a failure here
+	// means the write itself did not land as intended and must not be reported
+	// as a working approval.
 	if _, _, err := store.ApprovedDeliveries(); err != nil {
 		return 1, fmt.Errorf("the approval was recorded but does not resolve: %w", err)
 	}
