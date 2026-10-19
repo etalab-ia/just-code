@@ -409,10 +409,13 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// needs a restart (or a stop/clean) must not become unusable because a
 	// credential is missing. The set is then recorded as unresolved rather
 	// than empty, so revocation cannot mistake it for "nothing was bound".
-	bindings, err := m.resolveBindings(ctx)
-	resolved := err == nil
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.\n", m.InstanceName(), err)
+	// The resolution error is kept in its own variable: `err` below is reused
+	// for later steps, and reassigning it here made the failure message print
+	// `(<nil>)` — the real cause only survived in the warning above.
+	bindings, resolveErr := m.resolveBindings(ctx)
+	resolved := resolveErr == nil
+	if resolveErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.\n", m.InstanceName(), resolveErr)
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
@@ -501,7 +504,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	if !resolved && containsCredentialOps(pending) {
 		return fmt.Errorf("cannot apply the credential operations of %s (%s): the credential set could not be resolved (%v). "+
 			"Store or restore the credential, then retry; nothing was changed",
-			m.InstanceName(), joinOps(pending), err)
+			m.InstanceName(), joinOps(pending), resolveErr)
 	}
 
 	// Persist the journal before the first side effect and advance it after
