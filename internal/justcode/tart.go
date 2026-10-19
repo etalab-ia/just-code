@@ -373,8 +373,14 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 }
 
 // waitForAgent polls `tart exec <vm> true` until the guest agent responds, up
-// to 60 seconds. fromOffset is the log length captured *before* the VM was
-// launched: only bytes past it belong to this launch.
+// to 60 seconds.
+//
+// fromOffset is the log length captured *before* the VM was launched: only
+// bytes past it belong to this launch, and startup-log diagnosis applies only
+// in that case. noLaunch says this call did not boot the VM but attached to one
+// already running; then the log cannot describe this call's boot at all, and a
+// failure in it belongs to an earlier run — so it is not read, rather than read
+// from some arbitrary point.
 //
 // The offset is a parameter rather than something read here on purpose. The
 // start failure this function diagnoses is emitted within seconds of the
@@ -399,6 +405,7 @@ func (t *Tart) waitForAgent(ctx context.Context, fromOffset int64) error {
 	// and scanning from byte 0 would report that stale failure on a healthy
 	// retry — precisely when the user has just unlocked the keychain and tried
 	// again. Only bytes written past the pre-launch mark belong to this run.
+	diagnoseStartup := fromOffset != noLaunch
 	logOffset := fromOffset
 	for i := 0; i < polls; i++ {
 		res, err := t.Runner.Run(ctx, "tart", "exec", t.VMName(), "true")
@@ -411,21 +418,29 @@ func (t *Tart) waitForAgent(ctx context.Context, fromOffset int64) error {
 		// seconds. Polling for the full timeout and then reporting a generic
 		// "guest agent" timeout hides the real cause, which is only visible in
 		// the VM log. Stop as soon as the log names a startup failure.
-		if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
-			return fmt.Errorf("tart could not start %s: %s\n"+
-				"The VM never booted, so no guest agent could answer. On a machine with no GUI session "+
-				"(SSH, a rented Mac), Virtualization.framework cannot create the VM host key when the login "+
-				"keychain is locked. Unlock that keychain or open a GUI session, then retry. Full log: %s",
-				t.VMName(), reason, t.LogPath())
+		if diagnoseStartup {
+			if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
+				return fmt.Errorf("tart could not start %s: %s\n"+
+					"The VM never booted, so no guest agent could answer. On a machine with no GUI session "+
+					"(SSH, a rented Mac), Virtualization.framework cannot create the VM host key when the login "+
+					"keychain is locked. Unlock that keychain or open a GUI session, then retry. Full log: %s",
+					t.VMName(), reason, t.LogPath())
+			}
 		}
 		time.Sleep(interval)
 	}
-	if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
-		return fmt.Errorf("timed out waiting for %s guest agent; the VM log reports a startup failure: %s (full log: %s)",
-			t.VMName(), reason, t.LogPath())
+	if diagnoseStartup {
+		if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
+			return fmt.Errorf("timed out waiting for %s guest agent; the VM log reports a startup failure: %s (full log: %s)",
+				t.VMName(), reason, t.LogPath())
+		}
 	}
 	return fmt.Errorf("timed out waiting for %s guest agent", t.VMName())
 }
+
+// noLaunch marks a waitForAgent call that attached to an already-running VM
+// rather than booting one, so startup-log diagnosis is skipped entirely.
+const noLaunch = -1
 
 // logSize reports the current size of a log file, or 0 when it cannot be
 // read. Zero is the right fallback: it scans the whole file, which is what an
@@ -570,9 +585,11 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 	if running {
-		// No launch happened in this call, so the whole log may be read: there
-		// is no earlier run to confuse this VM's failure with.
-		if err := t.waitForAgent(ctx, 0); err != nil {
+		// No launch happened in this call: the VM is already up, so its log
+		// says nothing about a boot in progress and a failure in it belongs to
+		// an earlier run. Startup-log diagnosis is skipped rather than applied
+		// to some arbitrary point in the file.
+		if err := t.waitForAgent(ctx, noLaunch); err != nil {
 			return err
 		}
 		if cfg.Isolation == IsolationFull {
