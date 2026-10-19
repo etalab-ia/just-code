@@ -94,9 +94,13 @@ func TestTransferArchiveKeepsSubSecondOrderWithinASecond(t *testing.T) {
 	gitInitForTransfer(t, dir)
 
 	early := time.Date(2021, 3, 4, 5, 6, 7, 100000000, time.UTC)
-	late := time.Date(2021, 3, 4, 5, 6, 7, 900000000, time.UTC)
-	// Both round to 05:06:07 under USTAR, so the assertion below is exactly
-	// what a whole-second header cannot satisfy.
+	late := time.Date(2021, 3, 4, 5, 6, 7, 400000000, time.UTC)
+	// Both fall in the same rounding bucket: Go rounds a sub-second mtime to
+	// the NEAREST second, so 100ms and 400ms both become 05:06:07 in a
+	// whole-second header and collapse to one value. That is what this test
+	// pins — the assertion below is exactly what a rounded header cannot
+	// satisfy. (800ms apart would not do it: 900ms rounds UP to :08, so the
+	// two values stay distinct and ordered even without PAX.)
 	for name, ts := range map[string]time.Time{"early.txt": early, "late.txt": late} {
 		if err := os.Chtimes(filepath.Join(dir, name), ts, ts); err != nil {
 			t.Fatal(err)
@@ -116,7 +120,7 @@ func TestTransferArchiveKeepsSubSecondOrderWithinASecond(t *testing.T) {
 		t.Fatalf("both files must be in the archive: %v", len(entries))
 	}
 	if e.ModTime.UTC().Equal(l.ModTime.UTC()) {
-		t.Fatalf("files created 800ms apart collapsed to the same mtime %v; "+
+		t.Fatalf("files created 300ms apart collapsed to the same mtime %v; "+
 			"a date-comparing tool has no order to act on", e.ModTime.UTC())
 	}
 	if !e.ModTime.UTC().Before(l.ModTime.UTC()) {

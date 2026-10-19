@@ -535,9 +535,12 @@ func BuildTransferArchive(man TransferManifest) ([]byte, error) {
 			}
 			dirsWritten[dir] = true
 			// A directory's own mtime is the one its children were added or
-			// removed against. If it cannot be read, leave the field unset:
-			// tar then records no timestamp for that entry rather than the
-			// 1970 stamp this function exists to avoid.
+			// removed against. If it cannot be read, the field stays zero;
+			// note that tar renders a zero time as the 1970 epoch rather
+			// than omitting it, so this entry does carry that stamp. It is
+			// effectively unreachable (an Lstat that fails here fails for
+			// the entry itself moments later), and it is not worth failing
+			// the transfer over a directory timestamp.
 			dirTime := time.Time{}
 			if info, err := os.Lstat(filepath.Join(man.Root, filepath.FromSlash(dir))); err == nil {
 				dirTime = info.ModTime()
