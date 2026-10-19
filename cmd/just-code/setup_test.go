@@ -361,7 +361,9 @@ func TestSetupWizardResumeSkipsIntro(t *testing.T) {
 	forceIntro(t, true) // a terminal is available; the intro must still be skipped
 	journalPastPreflight(t, stateDir)
 	out := captureStdout(t, func() {
-		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\nn\n\n\n\n\ny\n")),
+		// key, model, no GitHub, defaults: the empty line is the model answer,
+		// so the "n" that follows answers the GitHub question.
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\n\nn\n\n\n\ny\n")),
 			func(context.Context, string) error { return nil },
 			func(context.Context) error { return nil },
 			func(string) string { return "" })
@@ -387,7 +389,8 @@ func TestSetupWizardNoIntroWithoutTerminal(t *testing.T) {
 	journalPastPreflight(t, stateDir)
 	// No leading Enter: the first line is the key. If the wizard waited for an
 	// intro keypress, the key would be swallowed and validation would fail.
-	input := "test-key\nn\n\n\n\n\ny\n"
+	// key, model, no GitHub, defaults.
+	input := "test-key\n\nn\n\n\n\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
