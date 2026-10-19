@@ -45,6 +45,10 @@ if [ -z "${HOME:-}" ]; then
 	die 'la variable HOME n'"'"'est pas définie ; impossible de choisir un répertoire d'"'"'installation.'
 fi
 install_dir="$HOME/.local/bin"
+# The same path relative to $HOME, for the recovery commands that are printed
+# for the user to copy: a literal "$HOME/..." survives a HOME containing shell
+# metacharacters, which an interpolated absolute path would not.
+install_dir_rel="${install_dir#"$HOME"/}"
 mkdir -p "$install_dir" || die "création impossible de $install_dir ; choisissez un répertoire accessible en écriture."
 tmp_dir=$(mktemp -d "$install_dir/.just-code-install.XXXXXX") || die "création impossible d'un répertoire temporaire sous $install_dir"
 trap 'rm -rf "$tmp_dir"' 0
@@ -166,16 +170,37 @@ case ":${PATH:-}:" in
 					path_file='~/.bashrc'
 				fi
 				;;
-			*) path_file='~/.profile' ;;
+			*)
+				# sh/dash/ksh lisent ~/.profile ; fish et nushell ne le lisent
+				# pas, et y écrire un `export` POSIX ne changerait rien pour
+				# eux. Mieux vaut ne rien proposer que d'annoncer un ajout
+				# sans effet.
+				case "$shell_name" in
+					sh|dash|ksh|ash) path_file='~/.profile' ;;
+					fish|nu|nushell) path_file='' ;;
+					*) path_file='' ;;
+				esac
+				;;
 		esac
-		path_target="$HOME/${path_file#\~\/}"
+		if [ -z "$path_file" ]; then
+			# Shell non POSIX (fish, nushell) ou inconnu : aucun fichier de
+			# démarrage commun à modifier, et un `export` POSIX n'y aurait pas
+			# d'effet. On laisse le message non interactif ci-dessous donner la
+			# ligne à exécuter, sans prétendre l'avoir installée.
+			path_target=''
+		else
+			path_target="$HOME/${path_file#\~\/}"
+		fi
 		# On ne modifie le profil que si l'on peut poser la question : un
 		# script non interactif ne doit jamais éditer un fichier de shell.
-		can_prompt=0
-		if [ -t 0 ]; then
+		if [ -z "$path_target" ]; then
+			can_prompt=0
+		elif [ -t 0 ]; then
 			can_prompt=1
 		elif ( : < /dev/tty ) 2>/dev/null; then
 			can_prompt=1
+		else
+			can_prompt=0
 		fi
 		if [ "$can_prompt" -eq 1 ]; then
 			printf 'Le dossier ~/.local/bin n'"'"'est pas dans votre PATH : la commande just-code\n'
@@ -239,9 +264,15 @@ if [ "$setup_status" -ne 0 ]; then
 	# Le terminal courant n'a pas forcément ~/.local/bin dans son PATH (c'est
 	# le cas que le bloc PATH vient de traiter) : donner le chemin absolu, sinon
 	# la commande de reprise ne serait pas trouvée dans cette session.
-	printf 'Reprenez-la quand vous voulez : "%s" setup\n' "$target" >&2
+	# Le chemin est écrit littéralement en "$HOME/..." plutôt qu'interpolé : un
+	# HOME contenant des caractères de shell ($, guillemet, espace) casserait la
+	# commande collée. "$HOME" entre guillemets est sûr et se développe à
+	# l'exécution.
+	# shellcheck disable=SC2016  # literal "$HOME" is what the user should copy
+	printf 'Reprenez-la quand vous voulez : "$HOME/%s" setup\n' "$install_dir_rel" >&2
 	if [ -f "$backup" ]; then
-		printf 'Pour revenir à la version précédente : mv "%s" "%s"\n' "$backup" "$target" >&2
+		# shellcheck disable=SC2016
+		printf 'Pour revenir à la version précédente : mv "$HOME/%s/just-code.previous" "$HOME/%s/just-code"\n' "$install_dir_rel" "$install_dir_rel" >&2
 	fi
 	exit "$setup_status"
 fi
