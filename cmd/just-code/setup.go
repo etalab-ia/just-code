@@ -334,6 +334,18 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
 		}
 	}
+	// Record the choice immediately. The GitHub and git-identity stages come
+	// next and can be aborted; without this, resuming would reload the stale
+	// journal value and lose a model the user had already picked.
+	//
+	// The in-memory j must be updated too: later stages write the whole journal
+	// back, so a journal-only write here would be overwritten by the stale copy.
+	if model != "" && j.DefaultModel != model {
+		j.DefaultModel = model
+		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+			return 1, err
+		}
+	}
 
 	// Stage: optional GitHub credential. Skipping is penalty-free.
 	if !justcode.ContainsCredentialKind(j.CredentialKinds, "github") {

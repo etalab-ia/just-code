@@ -390,6 +390,43 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	}
 }
 
+// TestModelChoiceSurvivesAbortAfterTheModelStage pins the round-4 finding on
+// #216. Model selection was moved ahead of the GitHub and git-identity forms,
+// so a user who aborts one of those must not lose a model they already chose:
+// the journal has to hold it before those cancellation points.
+func TestModelChoiceSurvivesAbortAfterTheModelStage(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// key -> model -> skip GitHub (empty) -> default identity (two empties)
+	// -> refuse at the recap, which aborts after the model stage.
+	input := "the-key\nalbert/some-model\n\n\n\nn\n"
+	_ = captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code == 0 {
+			t.Errorf("an aborted run must not report success: code=%d err=%v", code, err)
+		}
+	})
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.DefaultModel != "albert/some-model" {
+		t.Fatalf("the model chosen before the abort must be journaled; got %q", j.DefaultModel)
+	}
+	// The settings write must still be deferred to Apply.
+	path, perr := justcode.UserSettingsPath()
+	if perr == nil {
+		us, rerr := justcode.ReadUserSettings(justcode.DefaultFS, path)
+		if rerr == nil && us.DefaultModel == "albert/some-model" {
+			t.Fatal("an aborted run must not write the model into user settings")
+		}
+	}
+}
+
 // TestSetupUnreachableTypoReasksInsteadOfExiting pins the round-3 finding on
 // #216: a typo at the [R]/[C] prompt is not a decision and must not end the
 // run — the wizard asks again.
