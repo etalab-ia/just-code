@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -447,31 +448,35 @@ func hasManagedSkillZone(text string) bool {
 	return err != nil || zone != ""
 }
 
+// maxAgentsProbeBytes bounds the zone-presence probe: AGENTS.md is a small
+// instructions file, and a pathological entry must not balloon the probe's
+// memory. The claim path still reads the full file it may rewrite.
+const maxAgentsProbeBytes = 1 << 20
+
 // managedZoneAt reports whether the AGENTS.md at path carries a managed
-// zone. The entry type is checked on the real filesystem before any read:
-// ReadFile on a FIFO or a symlink to an unbounded device can block
-// indefinitely or exhaust memory. Symlinks are followed, so a link to a
-// regular zone-less file stays untouched. A missing or dangling path reads
-// as no zone; a non-regular or unreadable entry reads as a zone so the
+// zone. It opens the path once with O_NONBLOCK — opening a FIFO for
+// reading blocks until a writer appears — inspects the opened handle
+// rather than re-resolving the path, and reads only a bounded regular
+// file, so an entry swapped in after validation cannot stall or bloat
+// the probe. A missing or dangling path reads as no zone; any other
+// non-regular or unreadable entry fails closed, same as a zone, so the
 // caller claims the path and its own validation refuses it.
-func managedZoneAt(fs FS, path string) bool {
-	info, err := os.Lstat(path)
+func managedZoneAt(path string) bool {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return !os.IsNotExist(err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		resolved, err := os.Stat(path)
-		if err != nil {
-			return !os.IsNotExist(err)
-		}
-		info = resolved
-	}
-	if !info.Mode().IsRegular() {
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
 		return true
 	}
-	data, err := fs.ReadFile(path)
+	if info.Size() > maxAgentsProbeBytes {
+		return true
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxAgentsProbeBytes+1))
 	if err != nil {
-		return !os.IsNotExist(err)
+		return true
 	}
 	return hasManagedSkillZone(string(data))
 }

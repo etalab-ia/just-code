@@ -1122,6 +1122,37 @@ func TestInitApplyRefusesZoneAddedBehindSymlinkAfterPlanning(t *testing.T) {
 	}
 }
 
+func TestInitPlanFailsClosedOnOversizedAgents(t *testing.T) {
+	// The zone probe reads at most maxAgentsProbeBytes; a larger file has
+	// an unknown zone state, so the plan claims the path (fail closed)
+	// instead of deciding from a truncated read.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	big := bytes.Repeat([]byte("a"), maxAgentsProbeBytes+1)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{StateDir: t.TempDir()}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.InstructionsPath == "" {
+		t.Fatal("an oversized AGENTS.md must fail closed into a claim, not read as zone-less")
+	}
+}
+
 func readFileForTest(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

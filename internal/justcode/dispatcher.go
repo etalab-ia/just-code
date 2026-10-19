@@ -425,6 +425,11 @@ func (d *Dispatcher) probePublishedPorts(ctx context.Context) {
 	d.probePortMappings(ctx, live)
 }
 
+// portProbeBudget bounds the total time spent probing host forwards. It is
+// a package variable so tests can shrink it; each mapping's probe keeps its
+// own shorter timeout.
+var portProbeBudget = 10 * time.Second
+
 func (d *Dispatcher) probePortMappings(ctx context.Context, mappings []PortMapping) {
 	// The first response is the reachability answer: following a redirect
 	// would let a diagnostic probe make an unintended request outside
@@ -436,13 +441,30 @@ func (d *Dispatcher) probePortMappings(ctx context.Context, mappings []PortMappi
 			return http.ErrUseLastResponse
 		},
 	}
+	// Every dead forward costs its full probe timeout, so the loop runs
+	// under a shared budget: a project carrying many unavailable mappings
+	// cannot stall the check for minutes. Mappings beyond the budget are
+	// reported as not probed rather than silently skipped.
+	deadline := time.Now().Add(portProbeBudget)
 	for _, pm := range mappings {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", pm.Host), nil)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			fmt.Printf("port %d (guest %d): not probed; the port-probe budget (%s) was spent on earlier mappings.\n", pm.Host, pm.Guest, portProbeBudget)
+			continue
+		}
+		timeout := 2 * time.Second
+		if remaining < timeout {
+			timeout = remaining
+		}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
+		req, err := http.NewRequestWithContext(pctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", pm.Host), nil)
 		if err != nil {
+			cancel()
 			fmt.Printf("port %d (guest %d): could not build the probe: %v\n", pm.Host, pm.Guest, err)
 			continue
 		}
 		resp, err := client.Do(req)
+		cancel()
 		if err != nil {
 			fmt.Printf("port %d (guest %d): no answer from the host forward. If a dev server should be listening, it must bind 0.0.0.0 inside the guest; a 127.0.0.1 bind there is unreachable through the forward.\n", pm.Host, pm.Guest)
 			continue

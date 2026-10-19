@@ -3,6 +3,7 @@ package justcode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // withGOOS temporarily points supportedRuntimes at a different platform so the
@@ -388,6 +390,55 @@ func TestDispatcherCheckProbesOnlyAppliedPortMappings(t *testing.T) {
 	}
 	if strings.Contains(out, strconv.Itoa(int(DefaultPort))) {
 		t.Fatalf("the OpenCode server forward must not be reported as a preview mapping: %q", out)
+	}
+}
+
+func TestDispatcherCheckPortProbeBudgetBoundsStalledChecks(t *testing.T) {
+	// A forward that accepts but never answers costs its full probe
+	// timeout; without a shared budget, many such mappings stall the check
+	// for minutes. The budget is a seam so the test runs fast.
+	oldBudget := portProbeBudget
+	portProbeBudget = 150 * time.Millisecond
+	t.Cleanup(func() { portProbeBudget = oldBudget })
+	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer hang.Close()
+	hangPort, err := strconv.Atoi(strings.TrimPrefix(hang.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mappings := []PortMapping{
+		{Host: uint16(hangPort), Guest: 8080},
+		{Host: uint16(hangPort), Guest: 8081},
+		{Host: uint16(hangPort), Guest: 8082},
+	}
+	cfg := Config{Isolation: IsolationFull, PortsConfigured: true, Ports: mappings}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeAppliedPortsBackend{
+			fakeBackend: fakeBackend{id: RuntimeMicrosandbox, running: true},
+			applied:     mappings,
+		},
+		RuntimeTart:    &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM: &fakeBackend{id: RuntimeAgentVM},
+	})
+	start := time.Now()
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatal(checkErr)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("three stalled probes took %s; the budget did not bind", elapsed)
+	}
+	if got := fmt.Sprintf("port %d (guest 8080): no answer from the host forward", hangPort); !strings.Contains(out, got) {
+		t.Fatalf("first stalled mapping was not probed: %q", out)
+	}
+	if got := fmt.Sprintf("port %d (guest 8082): not probed; the port-probe budget", hangPort); !strings.Contains(out, got) {
+		t.Fatalf("mapping beyond the budget was not reported as not probed: %q", out)
 	}
 }
 

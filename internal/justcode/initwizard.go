@@ -431,7 +431,7 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		// No AGENTS.md at all reads as no zone; an unreadable or
 		// non-regular entry fails closed, same as a zone, and the
 		// validation below refuses it.
-		needsZone = managedZoneAt(fs, instructionsPath)
+		needsZone = managedZoneAt(instructionsPath)
 	}
 	if needsZone {
 		plan.InstructionsPath = instructionsPath
@@ -719,7 +719,7 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 		// refreshed on current content, and a non-regular AGENTS.md
 		// holding one is refused.
 		candidate := filepath.Join(plan.Answers.Root, "AGENTS.md")
-		if managedZoneAt(fs, candidate) {
+		if managedZoneAt(candidate) {
 			instructionsPath = candidate
 		}
 	}
