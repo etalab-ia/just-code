@@ -117,14 +117,21 @@ func projectSecretStoreForCLI(root string, fallback bool) (*justcode.ProjectSecr
 	}
 	store, err := projectSecretsCredentialStoreFn(fallback)
 	if err != nil {
-		// No store from the flag/seam (e.g. no native adapter and no
-		// --fallback): let the project record decide before failing.
-		store = nil
-	}
-	// The recorded kind wins. On a headless host the native adapter resolves
-	// without error but never held the imported values, so consulting the flag
-	// alone is exactly the mismatch this fixes.
-	if store, err = justcode.PreferRecordedCredentialStore(store, project.Root, projectSecretsStateDirFn()); err != nil {
+		// The requested store could not be built — for instance --fallback on a
+		// host with no usable config directory. Proceed only when the project
+		// record names a store this host can actually resolve; otherwise the
+		// original failure must survive, or the command would silently run
+		// against a store the user did not ask for, and could mutate metadata
+		// there.
+		recorded, recErr := justcode.RecordedCredentialStore(project.Root, projectSecretsStateDirFn())
+		if recErr != nil || recorded == nil {
+			return nil, err
+		}
+		store = recorded
+	} else if store, err = justcode.PreferRecordedCredentialStore(store, project.Root, projectSecretsStateDirFn()); err != nil {
+		// The recorded kind wins. On a headless host the native adapter
+		// resolves without error but never held the imported values, so
+		// consulting the flag alone is exactly the mismatch this fixes.
 		return nil, err
 	}
 	return projectSecretsStoreFactoryFn(project.Root, projectSecretsStateDirFn(), store)

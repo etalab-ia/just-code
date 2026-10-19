@@ -486,21 +486,49 @@ func defaultCredentialStoreOrError() (CredentialStore, error) {
 // which case the recorded kind alone is resolved (a platform with no native
 // adapter can still have consented file-store values).
 func PreferRecordedCredentialStore(active CredentialStore, root, stateDir string) (CredentialStore, error) {
-	_, namespace, err := projectSecretScope(root)
+	kind, err := RecordedCredentialStoreKind(root, stateDir)
 	if err != nil {
 		return nil, err
 	}
-	recorded := RecordedProjectSecretStoreKind(stateDir, namespace)
-	if recorded == "" {
+	if kind == "" {
 		if active == nil {
 			return credentialStoreForKind("")
 		}
 		return active, nil
 	}
-	if active != nil && active.Kind() == recorded {
+	// Compare kinds before building anything: an active store that already
+	// matches the record is returned as-is, which keeps the flag/seam
+	// authoritative and avoids constructing an adapter just to discard it.
+	if active != nil && active.Kind() == kind {
 		return active, nil
 	}
-	return credentialStoreForKind(recorded)
+	return credentialStoreForKind(kind)
+}
+
+// RecordedCredentialStore resolves the credential store an import recorded for
+// this project scope, or (nil, nil) when nothing is recorded. It exists so a
+// caller that must not invent a default — a command whose explicitly requested
+// store could not be built — can tell "no record" from "a store to use". Every
+// other caller wants PreferRecordedCredentialStore.
+func RecordedCredentialStore(root, stateDir string) (CredentialStore, error) {
+	kind, err := RecordedCredentialStoreKind(root, stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if kind == "" {
+		return nil, nil
+	}
+	return credentialStoreForKind(kind)
+}
+
+// RecordedCredentialStoreKind returns only the store kind an import recorded
+// for this project scope, or "" when none is recorded.
+func RecordedCredentialStoreKind(root, stateDir string) (string, error) {
+	_, namespace, err := projectSecretScope(root)
+	if err != nil {
+		return "", err
+	}
+	return RecordedProjectSecretStoreKind(stateDir, namespace), nil
 }
 
 // ProjectSecretBindingsRecord is the CLI-facing view of the host-local
