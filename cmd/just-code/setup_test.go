@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,20 @@ func forceIntro(t *testing.T, show bool) {
 	orig := setupIntroFn
 	setupIntroFn = func() bool { return show }
 	t.Cleanup(func() { setupIntroFn = orig })
+}
+
+// forceEnter makes the intro's Enter press read from the same piped reader the
+// wizard uses, so a piped test still drives the intro. Production reads the
+// terminal directly, one byte at a time, so pasted typed-ahead text is left for
+// the next prompt.
+func forceEnter(t *testing.T, in *bufio.Reader) {
+	t.Helper()
+	orig := waitForEnterFn
+	waitForEnterFn = func() bool {
+		_, ok := promptLine(in, "")
+		return ok
+	}
+	t.Cleanup(func() { waitForEnterFn = orig })
 }
 
 // forcePreflightPass stubs the host preflight to a non-fatal result, so tests
@@ -241,6 +256,69 @@ func TestSetupIntroScreenContent(t *testing.T) {
 	}
 }
 
+// TestWaitForEnterLeavesTypedAheadInput is the regression test for the round-3
+// finding on #215: the intro must consume exactly the Enter press, so a key the
+// user pasted along with it is still there for the next prompt.
+//
+// It runs the REAL waitForEnter against a pipe: a buffered read would drain the
+// whole pipe, so asserting on what remains afterwards is what distinguishes the
+// two implementations.
+func TestWaitForEnterLeavesTypedAheadInput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString("\n"); err != nil {
+		t.Fatal(err)
+	}
+	// The Enter press is the leading newline; everything the user pasted along
+	// with it follows and must still be there afterwards.
+	if _, err := w.WriteString("pasted-key\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	if !waitForEnter() {
+		t.Fatal("waitForEnter must report that Enter was read")
+	}
+	// Only the newline may be gone: reading the pipe again must yield nothing.
+	rest, _ := io.ReadAll(r)
+	if string(rest) != "pasted-key\n" {
+		t.Fatalf("waitForEnter consumed typed-ahead input: %q", rest)
+	}
+}
+
+// TestWaitForEnterStopsAtTheFirstNewline is the complement: input queued
+// BEFORE the Enter press belongs to the intro and must be consumed with it.
+func TestWaitForEnterStopsAtTheFirstNewline(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString("noise\n\nsecond-line\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	if !waitForEnter() {
+		t.Fatal("waitForEnter must report that Enter was read")
+	}
+	rest, _ := io.ReadAll(r)
+	if string(rest) != "\nsecond-line\n" {
+		t.Fatalf("waitForEnter must stop at the first newline; left %q", rest)
+	}
+}
+
 // TestSetupWizardShowsIntroBeforeAnyPrompt pins that on a fresh run the intro
 // is printed before the first question, that Enter (the leading empty line of
 // the piped answers) starts the wizard, and that the screen precedes the key
@@ -255,8 +333,12 @@ func TestSetupWizardShowsIntroBeforeAnyPrompt(t *testing.T) {
 	forcePreflightPass(t)
 	// Leading empty line = Enter on the intro; then key, no GitHub, defaults.
 	input := "\ntest-key\nn\n\n\n\n\ny\n"
+	// The same reader feeds both the intro's Enter and the wizard body, so the
+	// leading empty line is consumed exactly once.
+	in := bufio.NewReader(strings.NewReader(input))
+	forceEnter(t, in)
 	out := captureStdout(t, func() {
-		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		code, err := setupWizardRun(true, in,
 			func(context.Context, string) error { return nil },
 			func(context.Context) error { return nil },
 			func(string) string { return "" })

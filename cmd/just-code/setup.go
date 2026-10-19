@@ -190,13 +190,34 @@ Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.
 // terminal.
 var setupIntroFn = func() bool { return stdinIsTTYFn() && stdoutIsTTY() }
 
+// waitForEnterFn reads one Enter press from the terminal. It is a package
+// variable so tests can exercise the intro without a terminal.
+var waitForEnterFn = waitForEnter
+
+// waitForEnter reads a line from the terminal ONE BYTE AT A TIME. A buffered
+// reader would pull in whatever the user pasted after the newline, and that
+// typed-ahead text belongs to the next prompt — the Albert key, which is read
+// straight from the terminal by readPassword and would never see it.
+func waitForEnter() bool {
+	one := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(one)
+		if n > 0 && one[0] == '\n' {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+	}
+}
+
 // printSetupIntro shows the intro and waits for Enter. It returns false when
 // the user could not be read (end of input), so the caller stops without
 // having written anything.
-func printSetupIntro(in *bufio.Reader) bool {
+func printSetupIntro() bool {
 	fmt.Print(setupIntroScreen)
 	fmt.Println()
-	if _, ok := promptLine(in, ""); !ok {
+	if !waitForEnterFn() {
 		fmt.Println("Configuration interrompue.")
 		return false
 	}
@@ -238,7 +259,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		// dropped into the wizard with no explanation of what it will ask
 		// for. A resumed run skips it (the else branch below).
 		if setupIntroFn() {
-			if !printSetupIntro(in) {
+			if !printSetupIntro() {
 				return 1, nil
 			}
 		}
