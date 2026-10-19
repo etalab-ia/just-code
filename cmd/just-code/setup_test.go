@@ -383,10 +383,14 @@ func TestSetupWizardResumeSkipsIntro(t *testing.T) {
 // and answer the intro (piped input) must not print it, because the program
 // would otherwise wait for a keypress nobody can send.
 func TestSetupWizardNoIntroWithoutTerminal(t *testing.T) {
-	stateDir, _ := setupTestEnv(t)
+	setupTestEnv(t)
 	forceNonTTY(t)
-	forceIntro(t, false)
-	journalPastPreflight(t, stateDir)
+	// A FRESH run, so the intro gate is actually evaluated: journalling past
+	// preflight would take the resume branch instead, where the gate is never
+	// consulted and this test would assert nothing about the guard.
+	forcePreflightPass(t)
+	// The gate is left REAL (stdin/stdout are not terminals under `go test`),
+	// which is the condition under test.
 	// No leading Enter: the first line is the key. If the wizard waited for an
 	// intro keypress, the key would be swallowed and validation would fail.
 	// key, model, no GitHub, defaults.
