@@ -1,0 +1,16 @@
+META step=22f-terminal-interactive-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:36:08Z case=ctrlc-40cols
+Script started on 2026-10-19 10:36:15+00:00 [<not executed on terminal>]
+24 40
+Project ~/qualif/proj-d | profile amd64chk-40 | .env
+  Variables: API_TOKEN, DUPE_KEY
+  Plan: 2 added, 0 changed, 0 unchanged, 0 removed
+[?2026$p[?2027$p[?25l[?2004h[?1004h[>4;2m[=1;1u[?u[J┃ Store these values?
+┃ The source files stay unchanged. This
+┃ does not approve runtime delivery.
+┃
+┃              Yes     No  
+
+←/→ toggle • enter submit • y Yes • n No[>4m[=0;1u[J[?25h[?2004l[?1004ljust-code: user aborted
+INNER_EXIT:1
+
+Script done on 2026-10-19 10:36:22+00:00 [COMMAND_EXIT_CODE="0"]

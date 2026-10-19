@@ -1,0 +1,54 @@
+META step=22f-terminal-interactive-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:36:08Z (supersedes the Ctrl-C result of 22e: 22e recorded only exit=130, the outer script(1)/timeout status with no transcript and no verified dimensions; measured with a raw transcript, the post-handshake cancel is huh's abort path -- the message 'just-code: user aborted', inner exit 1, nothing persisted -- at both widths, identical to darwin-arm64/46c and linux-arm64/62b. 130 is the pre-handshake cooked-mode SIGINT, demonstrated in linux-arm64/62b-cookedctrlc.typescript; the n-cancel control of 22e remains valid)
+
+Harness: each run executes inside dbus-run-session with the login keyring unlocked first, so the positive control can store. script(1) PTY, width set by stty cols and verified in-transcript (stty size is the first line), key bytes fed by a pipe, app status recorded as INNER_EXIT inside the typescript because the trailing echo masks script(1)'s outer status. Ctrl-C sent at t+7s, after terminal negotiation settles.
+
+Binary under test: v0.10.0 commit db9b8fcd2d27 (linux/amd64)
+
++ index BEFORE (profiles amd64chk-* must be absent)
+7 development
+1 staging
+1 tty40
+1 ttytest
+
++ interactive huh Ctrl-C at 200 cols, Ctrl-C at t+7s
+    transcript dimensions: 24 200
+    prompt rendered:       1 time(s)
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ interactive huh Ctrl-C at 40 cols, Ctrl-C at t+7s
+    transcript dimensions: 24 40
+    abort message:         just-code: user aborted
+    inner status:          INNER_EXIT:1
+
++ index AFTER the two Ctrl-C runs (both profiles must still be absent)
+7 development
+1 staging
+1 tty40
+1 ttytest
+CTRLC_STORED_200: 0
+CTRLC_STORED_40:  0
+
++ positive control: answer y at 80 cols (proves the persistence check discriminates)
+    transcript dimensions: 24 80
+    result line:           Stored .env (2 added, 0 changed, 0 unchanged, 0 removed).
+    inner status:          INNER_EXIT:0
+
++ index AFTER the positive control (amd64chk-y must hold the 2 variables of .env)
+2 amd64chk-y
+7 development
+1 staging
+1 tty40
+1 ttytest
+YCTRL_STORED: 2
+
++ cleanup: remove the control's keyring items and index entries, then re-list
+    keyring item removed: project-env-06af713a9405bd77c7b16c685c34649553122a232c5382de1eff1f414486ff9a-fcba9b13c92a538ea79d1da8becc54de
+    keyring item removed: project-env-06af713a9405bd77c7b16c685c34649553122a232c5382de1eff1f414486ff9a-8e06a96b43bbe8fc999f2b521f0e3285
+
++ index FINAL (must equal the baseline: 7 development / 1 staging / 1 tty40 / 1 ttytest)
+7 development
+1 staging
+1 tty40
+1 ttytest
+RETRY_DONE

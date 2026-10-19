@@ -4,7 +4,7 @@ Harness: `just-code secrets import --apply --profile tty46c<case> --file .env` i
 
 INTERACTIVE_CTRLC_40: INNER_EXIT: 1 — `just-code: user aborted` (46c-40ctrlc.typescript)
 INTERACTIVE_CTRLC_200: INNER_EXIT: 1 — `just-code: user aborted` (46c-200ctrlc.typescript)
-On macOS huh turns Ctrl-C into its abort path ("user aborted", exit 1); on Linux the same byte ends the process by SIGINT (exit 130, see 22e/62). Same observable outcome on both: the prompt cancels immediately at both widths, the process exits, nothing is stored. The exit-code difference is the cancel mechanism, not a hang or a failure.
+On macOS huh turns Ctrl-C into its abort path ("user aborted", inner exit 1). Linux behaves the same: re-measured with a raw transcript on both Linux arches (linux-arm64/62b, linux-amd64/22f), the post-handshake cancel is the same huh abort path — "just-code: user aborted", inner exit 1, nothing stored — at 40 and 200 cols. The 130 recorded by the older linux files (22e/62) was the outer script(1)/timeout status, not the app's cancel path; 130 is what a pty in cooked mode produces when Ctrl-C arrives as SIGINT before huh takes the terminal (demonstrated in linux-arm64/62b-cookedctrlc.typescript). Same observable outcome on all three: the prompt cancels immediately at both widths, the process exits, nothing is stored.
 
 CONTROL_N (80 cols): "Cancelled. No credentials stored.", INNER_EXIT: 0 (46c-ncancel.typescript)
 POSITIVE_CONTROL_Y (80 cols): "Stored .env (1 added...)", INNER_EXIT: 0 (46c-ycontrol.typescript)

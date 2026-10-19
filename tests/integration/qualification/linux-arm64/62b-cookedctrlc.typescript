@@ -1,0 +1,9 @@
+META step=62b-asahi-terminal-200-retry source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T10:28:29Z case=mechanism-ctrlc-130-vs-1
+A cooked-mode pty (no raw-mode app) turns Ctrl-C into SIGINT for the foreground process group, so the shell reports 128+2=130. A raw-mode TUI (huh) disables ISIG, so the byte is delivered as data and the process exits through its own abort path (1). Reproduced with script(1) at 200 cols, Ctrl-C at t+2s:
+
+# 1. cooked pty (plain sleep, no raw-mode app): SIGINT kills the process group
+  cooked sleep pty:  OUTER_EXIT=130   (130 = killed by SIGINT; the inner echo never ran)
+# 2. pty with ISIG off (what a raw-mode TUI does): no signal is generated
+  isig-off pty:      OUTER_EXIT=0   (INNER_EXIT:0; the Ctrl-C was harmless data)
+# 3. just-code with Ctrl-C delivered before it switches the terminal to raw mode (the cooked window), 200 cols, a fallback 'n' answers the prompt if it survives the early byte so the run cannot hang
+  just-code cooked window: OUTER_EXIT=1   abort line present: 1   stored: 0
