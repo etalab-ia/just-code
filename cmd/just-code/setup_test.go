@@ -390,6 +390,44 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	}
 }
 
+// TestUnansweredModelPromptKeepsTheSavedModel pins the round-6 finding on #216:
+// a completed install being reconfigured has no journal, so the prompt starts
+// from the saved setting. If the input runs out (EOF, Ctrl-D) the prompt is
+// unanswered, and the run must not clear a model the user never asked to change.
+func TestUnansweredModelPromptKeepsTheSavedModel(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// A model already saved by a previous successful setup.
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	us.DefaultModel = "albert/keep-me"
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, us); err != nil {
+		t.Fatal(err)
+	}
+	// Input runs out right after the key, so every later prompt is unanswered.
+	input := "the-key\n"
+	_ = captureStdout(t, func() {
+		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+	})
+	after, uerr := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if uerr != nil {
+		t.Fatal(uerr)
+	}
+	if after.DefaultModel != "albert/keep-me" {
+		t.Fatalf("an unanswered model prompt must keep the saved model; got %q", after.DefaultModel)
+	}
+}
+
 // TestEmptyModelAnswerClearsAJournaledChoice pins the round-5 finding on #216:
 // a resumed run that had journaled a custom model must be able to go back to
 // the built-in default by answering the prompt with an empty line.

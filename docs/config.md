@@ -75,7 +75,9 @@ optionnel → identité git → revue → application (réglages globaux + runti
 managé).
 
 L'ordre suit celui annoncé par l'écran d'introduction : clé, puis modèles,
-puis GitHub. Les compteurs `[1/3]`… des écrans correspondent à ce parcours.
+puis GitHub. L'écran de la clé porte le compteur `[1/3]` ; les compteurs des
+deux écrans suivants seront ajoutés avec l'écran de sélection des modèles,
+qui est encore celui d'aujourd'hui.
 
 ```bash
 just-code setup            # assistant interactif

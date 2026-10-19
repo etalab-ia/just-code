@@ -292,7 +292,18 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	// Stage: model selection (catalogue-validated when reachable). It runs
 	// right after the Albert key because the catalogue check needs that key,
 	// and because the announced flow is key -> models -> GitHub -> recap.
+	// A journal has the run's own working value; without one (a completed
+	// install being reconfigured) the saved user setting is the current value,
+	// so an unanswered prompt must not look like "clear the model".
 	model := j.DefaultModel
+	modelAnswered := false
+	if model == "" {
+		if saved := currentUserModel(); saved != "" {
+			model = saved
+		}
+	} else {
+		modelAnswered = true
+	}
 	{
 		fmt.Println()
 		fmt.Println("Default model (leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue):")
@@ -316,11 +327,13 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			// run keeps the interrupted choice and there is no way back to the
 			// default through setup.
 			model = chosen
+			modelAnswered = true
 		} else {
 			chosen, answered := promptLine(in, "Model: ")
 			chosen = strings.TrimSpace(chosen)
 			if answered {
 				model = chosen
+				modelAnswered = true
 			}
 		}
 	}
@@ -342,7 +355,11 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	//
 	// The in-memory j must be updated too: later stages write the whole journal
 	// back, so a journal-only write here would be overwritten by the stale copy.
-	if j.DefaultModel != model {
+	//
+	// Only an ANSWERED choice is journaled. An unanswered prompt (EOF, Ctrl-D)
+	// leaves the saved setting alone: resetting it would silently undo a
+	// configuration the user never asked to change.
+	if modelAnswered && j.DefaultModel != model {
 		j.DefaultModel = model
 		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
 			return 1, err
@@ -458,6 +475,10 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	fmt.Printf("  Git identity: %s <%s>\n", strings.TrimSpace(j.GitName), strings.TrimSpace(j.GitEmail))
 	if model != "" {
 		fmt.Printf("  Default model: %s\n", model)
+	} else if !modelAnswered {
+		// The prompt was never answered: the saved setting is untouched, so the
+		// recap must not announce a change the run will not make.
+		fmt.Println("  Default model: unchanged")
 	} else {
 		fmt.Println("  Default model: albert/deepseek-v4-flash (built-in)")
 	}
@@ -479,7 +500,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 	// Apply: write the settings (only now — a cancelled apply must leave
 	// the settings untouched), then install the runtime.
-	if err := w.SaveSettings(model); err != nil {
+	if err := w.SaveSettings(model, modelAnswered); err != nil {
 		return 1, err
 	}
 	fmt.Println()
@@ -502,6 +523,22 @@ func storeLabel(fallback bool) string {
 		return "file"
 	}
 	return "native"
+}
+
+// currentUserModel reads the model saved in the user settings, if any. It is
+// the wizard's starting value when there is no journal (a completed install
+// being reconfigured), so that an unanswered prompt is distinguishable from a
+// deliberate "go back to the built-in default".
+func currentUserModel() string {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return ""
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return ""
+	}
+	return us.DefaultModel
 }
 
 // validateModelAgainstCatalogue checks the chosen model against the P10
