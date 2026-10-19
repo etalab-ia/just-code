@@ -12,6 +12,7 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
+	"golang.org/x/term"
 )
 
 // setupCmd implements `just-code setup` (P11): the global setup wizard.
@@ -194,11 +195,30 @@ var setupIntroFn = func() bool { return stdinIsTTYFn() && stdoutIsTTY() }
 // variable so tests can exercise the intro without a terminal.
 var waitForEnterFn = waitForEnter
 
-// waitForEnter reads a line from the terminal ONE BYTE AT A TIME. A buffered
-// reader would pull in whatever the user pasted after the newline, and that
-// typed-ahead text belongs to the next prompt — the Albert key, which is read
-// straight from the terminal by readPassword and would never see it.
+// waitForEnter waits for one Enter press on the terminal. Two constraints meet
+// here:
+//
+//   - a buffered reader would pull in whatever the user pasted after the
+//     newline, and that typed-ahead text belongs to the next prompt — the
+//     Albert key, which readPassword reads straight from the terminal and
+//     would never see;
+//   - with echo on, a key pasted together with Enter is printed and stays in
+//     the scrollback before the password prompt can hide it.
+//
+// On a terminal, term.ReadPassword satisfies both: it turns echo off and reads
+// exactly one line (the kernel hands over complete lines, so a following line
+// stays queued). Off a terminal there is nothing to echo-hide and no key
+// prompt to protect, so a byte-at-a-time read keeps the "consume only the
+// newline" contract for piped input.
 func waitForEnter() bool {
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		if _, err := term.ReadPassword(fd); err != nil {
+			return false
+		}
+		fmt.Println()
+		return true
+	}
 	one := make([]byte, 1)
 	for {
 		n, err := os.Stdin.Read(one)
