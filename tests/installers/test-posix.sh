@@ -356,6 +356,122 @@ PY
 		printf 'the expanded HOME leaked into a printed recovery command\n' >&2; exit 1
 	fi
 
+	# An unwritable profile must not fail the install before the wizard runs:
+	# the PATH edit is a convenience, the binary is already in place.
+	# A directory in place of the profile file fails the append for any uid
+	# (a chmod 0444 file does not stop root).
+	ro_home="$temp_root/readonly home"
+	mkdir -p "$ro_home/.zshenv"
+	python3 - "$ro_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/readonly.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/zsh", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+os.write(fd, b"\n")
+deadline = time.time() + 8
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	grep -F "Le profil ~/.zshenv n'a pas pu être modifié." "$temp_root/readonly.out" >/dev/null || { printf 'an unwritable profile must be reported, not fatal\n' >&2; exit 1; }
+	[ -e "$ro_home/setup-called" ] || { printf 'an unwritable profile must not prevent the wizard from running\n' >&2; exit 1; }
+
+	# A `just-code.previous` directory would swallow the backup silently.
+	prev_home="$temp_root/prev home"
+	mkdir -p "$prev_home/.local/bin/just-code.previous"
+	env FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_ASSET=$asset FAKE_BINARY="$fake_binary" \
+		FAKE_SUMS="$good_sums" FAKE_URL_LOG="$temp_root/prev-urls" \
+		FAKE_RELEASE_URL="$release_url" FAKE_SETUP_LOG="$prev_home/setup-called" \
+		FAKE_TARGET="$prev_home/.local/bin/just-code" REAL_MV="$real_mv" \
+		HOME="$prev_home" PATH="$fake_bin:$PATH" \
+		"$installer" > "$temp_root/prev.out" 2>&1 || true
+	grep -F "n'est pas un fichier ordinaire" "$temp_root/prev.out" >/dev/null || { printf 'a non-regular backup path must be refused\n' >&2; exit 1; }
+	[ ! -e "$prev_home/.local/bin/just-code.previous/just-code.previous" ] || { printf 'the backup was moved inside a directory\n' >&2; exit 1; }
+
+	# Ctrl-C during setup: the signal must reach the wizard AND the wrapper must
+	# still print the recovery guidance. Guarding the wrapper by IGNORING SIGINT
+	# would look like it works here but would silently make the wizard
+	# uninterruptible, because an ignored signal disposition is inherited
+	# across exec.
+	sig_home="$temp_root/sig home"
+	mkdir -p "$sig_home"
+	cat > "$temp_root/sig-setup" <<'EOS'
+#!/bin/sh
+[ "${1:-}" = setup ] || exit 0
+printf called > "$FAKE_SETUP_LOG"
+printf 'assistant demarre\n'
+sleep 20
+EOS
+	chmod +x "$temp_root/sig-setup"
+	sha256sum "$temp_root/sig-setup" | awk '{print $1"  just-code-linux-x64"}' > "$temp_root/sig-sums"
+	fake_state="$temp_root/sig-bin"
+	rm -rf "$fake_state"; mkdir -p "$fake_state"
+	cat > "$fake_state/uname" <<'EOS'
+#!/bin/sh
+case "$1" in -s) echo Linux;; -m) echo x86_64;; *) exit 2;; esac
+EOS
+	cat > "$fake_state/curl" <<'EOS'
+#!/bin/sh
+out=''; url=''
+while [ $# -gt 0 ]; do case "$1" in -o|--output) out=$2; shift 2;; -w|--write-out) shift 2;; -*) shift;; *) url=$1; shift;; esac; done
+case "$url" in
+	*/releases/latest) printf '%s' "$FAKE_RELEASE_URL";;
+	*/SHA256SUMS) cp "$FAKE_SUMS" "$out";;
+	*/"$FAKE_ASSET") cp "$FAKE_BINARY" "$out";;
+	*) exit 22;;
+esac
+EOS
+	chmod +x "$fake_state/uname" "$fake_state/curl"
+	python3 - "$temp_root" "$installer" "$sig_home" "$fake_state" "$real_mv" <<'PY' > "$temp_root/sig.out" 2>&1
+import os, pty, sys, time, select, signal
+root, installer, home, fake_state, real_mv = sys.argv[1:6]
+env = {
+    "HOME": home, "PATH": f"{fake_state}:/usr/bin:/bin", "SHELL": "/bin/zsh", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": "just-code-linux-x64",
+    "FAKE_BINARY": os.path.join(root, "sig-setup"), "FAKE_SUMS": os.path.join(root, "sig-sums"),
+    "FAKE_URL_LOG": os.path.join(root, "sig-urls"),
+    "FAKE_RELEASE_URL": "https://github.com/etalab-ia/just-code/releases/tag/just-code-v9.8.7",
+    "FAKE_SETUP_LOG": os.path.join(root, "sig-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+time.sleep(1.5)
+os.write(fd, b"\n")          # accept the PATH prompt
+time.sleep(2.0)              # let the wizard start
+os.killpg(os.getpgid(pid), signal.SIGINT)   # what a terminal Ctrl-C sends
+out = b""
+deadline = time.time() + 10
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	grep -F 'assistant demarre' "$temp_root/sig.out" >/dev/null || { printf 'the wizard never started\n' >&2; exit 1; }
+	grep -F 'La configuration a été interrompue.' "$temp_root/sig.out" >/dev/null || { printf 'an interrupted setup must reach the recovery block\n' >&2; exit 1; }
+	grep -F 'Reprenez-la quand vous voulez : "$HOME/.local/bin/just-code" setup' "$temp_root/sig.out" >/dev/null || { printf 'an interrupted setup must print the resume command\n' >&2; exit 1; }
+
 	# Linux bash with an existing ~/.bashrc: a new terminal there is a
 	# non-login shell, which reads ~/.bashrc and neither ~/.bash_profile nor
 	# ~/.profile. Targeting the login files would leave just-code unavailable
@@ -583,7 +699,9 @@ PY
 # one); a bare absolute path would split at the space when pasted.
 # A literal "$HOME/..." is printed instead of the expanded path, so a HOME
 # containing shell metacharacters cannot break the copied command.
-grep -F 'Reprenez-la quand vous voulez : "$HOME/.local/bin" setup' "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a resolvable resume command\n' >&2; exit 1; }
+# The command must name the BINARY, not the containing directory: pasting a
+# directory path fails with "Is a directory".
+grep -F 'Reprenez-la quand vous voulez : "$HOME/.local/bin/just-code" setup' "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a resolvable resume command\n' >&2; exit 1; }
 grep -F "just-code est installé, mais la configuration n'est pas terminée." "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure message is not in French\n' >&2; exit 1; }
 
 unsupported_home="$temp_root/unsupported"

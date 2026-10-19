@@ -37,7 +37,8 @@ Si le répertoire d'installation n'est pas déjà dans `PATH`, l'installateur pr
 - zsh : `~/.zshenv` ;
 - bash sous macOS : `~/.bash_profile` s'il existe, sinon `~/.profile` (un `~/.bash_profile` n'est jamais créé de zéro, car il masquerait un `~/.profile` existant) ;
 - bash sous Linux : `~/.bashrc`, le seul fichier lu par un terminal qui ouvre un shell non connecté ;
-- autre shell : `~/.profile`.
+- `sh`, `dash`, `ksh`, `ash` : `~/.profile` ;
+- fish, nushell et shells inconnus : aucune modification n'est proposée, car un `export` POSIX n'y aurait pas d'effet ; l'installateur affiche la ligne à ajouter au fichier de démarrage de ce shell.
 
 Il attend une réponse ; appuyer sur Entrée accepte, répondre `n` refuse. La modification n'est jamais faite d'office, et une ligne déjà présente n'est pas ajoutée une seconde fois. Une lecture impossible (Ctrl-D) est traitée comme un refus, pas comme une acceptation. Lorsque aucun terminal n'est disponible (script non interactif, `curl … | sh` sans terminal de contrôle), l'installateur ne modifie aucun fichier de profil et se contente d'afficher la ligne à exécuter dans la session courante. Le résultat de l'installation est annoncé avant le lancement de l'assistant, et un assistant interrompu ou en échec indique la commande de reprise, donnée en chemin absolu (`"$HOME/.local/bin/just-code" setup`) car le terminal courant n'a pas encore le nouveau `PATH`.
 

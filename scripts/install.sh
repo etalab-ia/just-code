@@ -52,7 +52,11 @@ install_dir_rel="${install_dir#"$HOME"/}"
 mkdir -p "$install_dir" || die "création impossible de $install_dir ; choisissez un répertoire accessible en écriture."
 tmp_dir=$(mktemp -d "$install_dir/.just-code-install.XXXXXX") || die "création impossible d'un répertoire temporaire sous $install_dir"
 trap 'rm -rf "$tmp_dir"' 0
-trap 'exit 1' HUP INT TERM
+# Une interruption (Ctrl-C) doit passer par le même bloc de reprise qu'un échec
+# de l'assistant : sortir directement sur le signal priverait l'utilisateur de
+# la commande de reprise, alors que c'est le cas le plus fréquent.
+interrupted=0
+trap 'interrupted=1' HUP INT TERM
 
 target="$install_dir/just-code"
 backup="$install_dir/just-code.previous"
@@ -61,6 +65,12 @@ if [ -L "$target" ]; then
 fi
 if [ -e "$target" ] && [ ! -f "$target" ]; then
 	die "$target n'est pas un fichier ordinaire ; remplacement refusé."
+fi
+# Le même garde-fou pour le retour arrière : un `just-code.previous` qui serait
+# un répertoire ferait déplacer la sauvegarde À L'INTÉRIEUR de lui, et le
+# binaire précédent deviendrait introuvable sans aucun signalement.
+if [ -e "$backup" ] && [ ! -f "$backup" ]; then
+	die "$backup n'est pas un fichier ordinaire ; retour arrière refusé, déplacez-le d'abord."
 fi
 
 command -v curl >/dev/null 2>&1 || die 'curl est nécessaire pour télécharger les fichiers de la release.'
@@ -231,11 +241,21 @@ case ":${PATH:-}:" in
 						# préfixerait alors le PATH une fois de plus).
 						printf 'La ligne est déjà présente dans %s.\n\n' "$path_file"
 					else
-						{
+						# Une modification de profil ratée (fichier en lecture
+						# seule, montage en lecture seule, permission) ne doit pas
+						# faire échouer l'installation : le binaire est déjà en
+						# place et l'assistant doit encore démarrer. On retombe sur
+						# le message « ligne non ajoutée », qui donne la commande
+						# à exécuter dans la session courante.
+						if {
 							printf '\n# just-code\n'
 							printf '%s\n' "$path_line"
-						} >> "$path_target" || die "impossible de modifier $path_file"
-						printf 'La ligne a été ajoutée à %s.\n\n' "$path_file"
+						} >> "$path_target" 2>/dev/null; then
+							printf 'La ligne a été ajoutée à %s.\n\n' "$path_file"
+						else
+							printf 'Le profil %s n'"'"'a pas pu être modifié.\n\n' "$path_file"
+							printf 'Ligne non ajoutée. Pour ce terminal, lancez :\n  %s\n\n' "$path_line"
+						fi
 					fi
 					;;
 				*)
@@ -261,6 +281,9 @@ else
 fi
 if [ "$setup_status" -ne 0 ]; then
 	printf 'just-code est installé, mais la configuration n'"'"'est pas terminée.\n' >&2
+	if [ "$interrupted" -eq 1 ]; then
+		printf 'La configuration a été interrompue.\n' >&2
+	fi
 	# Le terminal courant n'a pas forcément ~/.local/bin dans son PATH (c'est
 	# le cas que le bloc PATH vient de traiter) : donner le chemin absolu, sinon
 	# la commande de reprise ne serait pas trouvée dans cette session.
@@ -269,7 +292,7 @@ if [ "$setup_status" -ne 0 ]; then
 	# commande collée. "$HOME" entre guillemets est sûr et se développe à
 	# l'exécution.
 	# shellcheck disable=SC2016  # literal "$HOME" is what the user should copy
-	printf 'Reprenez-la quand vous voulez : "$HOME/%s" setup\n' "$install_dir_rel" >&2
+	printf 'Reprenez-la quand vous voulez : "$HOME/%s/just-code" setup\n' "$install_dir_rel" >&2
 	if [ -f "$backup" ]; then
 		# shellcheck disable=SC2016
 		printf 'Pour revenir à la version précédente : mv "$HOME/%s/just-code.previous" "$HOME/%s/just-code"\n' "$install_dir_rel" "$install_dir_rel" >&2
