@@ -1,3 +1,4 @@
+META step=46c-mac-terminal-interactive case=ctrlc-200cols source=db9b8fcd2d270f32f8b5848b1a6586a1e15bc42d date=2026-10-19T07:33:37Z
 24 200
 Project /private/tmp/qualif-46c | profile tty46c200ctrlc | .env
   Variables: QUALIF46_KEY
