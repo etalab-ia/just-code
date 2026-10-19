@@ -141,13 +141,36 @@ case ":${PATH:-}:" in
 		case "$shell_name" in
 			zsh) path_file='~/.zshenv' ;;
 			bash)
-				# Écrire dans un ~/.bash_profile neuf masquerait un ~/.profile
-				# existant (bash de connexion ne le lirait plus) ; on préfère
-				# un fichier déjà présent, sinon ~/.profile lui-même.
-				if [ -f "$HOME/.bash_profile" ]; then
-					path_file='~/.bash_profile'
+				# Bash ne lit pas le même fichier selon le type de shell, et le
+				# type dépend de la plateforme : un Terminal macOS ouvre un
+				# shell de connexion (~/.bash_profile, avec repli sur
+				# ~/.profile), un terminal Linux ouvre un shell interactif non
+				# connecté (~/.bashrc). On vise le fichier que les nouveaux
+				# terminaux de cette plateforme lisent vraiment.
+				# ~/.bash_profile n'est jamais créé de zéro : il masquerait un
+				# ~/.profile existant, que bash de connexion ne lirait plus.
+				if [ "$system" = 'Darwin' ]; then
+					if [ -f "$HOME/.bash_profile" ]; then
+						path_file='~/.bash_profile'
+					elif [ -f "$HOME/.bashrc" ]; then
+						path_file='~/.bashrc'
+					elif [ -f "$HOME/.profile" ]; then
+						path_file='~/.profile'
+					else
+						path_file='~/.bash_profile'
+					fi
 				else
-					path_file='~/.profile'
+					if [ -f "$HOME/.bashrc" ]; then
+						path_file='~/.bashrc'
+					elif [ -f "$HOME/.bash_profile" ]; then
+						path_file='~/.bash_profile'
+					elif [ -f "$HOME/.profile" ]; then
+						path_file='~/.profile'
+					else
+						# Rien à masquer : ~/.bashrc est le fichier lu par un
+						# terminal Linux ordinaire.
+						path_file='~/.bashrc'
+					fi
 				fi
 				;;
 			*) path_file='~/.profile' ;;
@@ -206,9 +229,9 @@ if [ "$setup_status" -ne 0 ]; then
 	# Le terminal courant n'a pas forcément ~/.local/bin dans son PATH (c'est
 	# le cas que le bloc PATH vient de traiter) : donner le chemin absolu, sinon
 	# la commande de reprise ne serait pas trouvée dans cette session.
-	printf 'Reprenez-la quand vous voulez : %s setup\n' "$target" >&2
+	printf 'Reprenez-la quand vous voulez : "%s" setup\n' "$target" >&2
 	if [ -f "$backup" ]; then
-		printf 'Pour revenir à la version précédente : mv %s %s\n' "$backup" "$target" >&2
+		printf 'Pour revenir à la version précédente : mv "%s" "%s"\n' "$backup" "$target" >&2
 	fi
 	exit "$setup_status"
 fi

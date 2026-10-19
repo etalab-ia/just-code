@@ -177,7 +177,9 @@ cmp -s "$target" "$fake_binary" || { printf 'setup failure rolled back the new b
 [ "$(cat "$home/.local/bin/just-code.previous")" = 'keep me' ] || { printf 'setup failure did not retain the previous binary\n' >&2; exit 1; }
 # The rollback command must use unquoted absolute paths so a copied line works
 # (a quoted ~ would not expand in most shells).
-grep -F "Pour revenir à la version précédente : mv $home/.local/bin/just-code.previous $home/.local/bin/just-code" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a usable rollback command\n' >&2; exit 1; }
+# Quoted, so the line survives a HOME containing spaces (this test's $home has
+# one); a bare absolute path would split at the space when pasted.
+grep -F "Pour revenir à la version précédente : mv \"$home/.local/bin/just-code.previous\" \"$home/.local/bin/just-code\"" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a usable rollback command\n' >&2; exit 1; }
 
 # No interactive terminal: the installer must NOT edit a shell profile file on
 # its own, must say how to get PATH in the current shell, and must still launch
@@ -276,10 +278,51 @@ sys.stdout.write(out.decode("utf-8", "replace"))
 PY
 	grep -F 'Ajouter la ligne suivante à ~/.profile ?' "$temp_root/empty-shell.out" >/dev/null || { printf 'empty SHELL must fall back to ~/.profile\n' >&2; exit 1; }
 	[ ! -e "$empty_home/.zshenv" ] || { printf 'empty SHELL must not be treated as zsh\n' >&2; exit 1; }
+
+	# Linux bash with an existing ~/.bashrc: a new terminal there is a
+	# non-login shell, which reads ~/.bashrc and neither ~/.bash_profile nor
+	# ~/.profile. Targeting the login files would leave just-code unavailable
+	# until the user logged out and back in.
+	rc_home="$temp_root/rc home"
+	mkdir -p "$rc_home"
+	printf 'export EDITOR=vi\n' > "$rc_home/.bashrc"
+	python3 - "$rc_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/bashrc.out" 2>&1
+import os, pty, sys, time, select
+home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+env = {
+    "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/bash", "TERM": "xterm",
+    "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
+    "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
+}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve("/bin/sh", ["sh", installer], env)
+out = b""
+time.sleep(1.2)
+os.write(fd, b"\n")
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.4)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if b"configuration" in out: break
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+	grep -F 'Ajouter la ligne suivante à ~/.bashrc ?' "$temp_root/bashrc.out" >/dev/null || { printf 'linux bash must target ~/.bashrc\n' >&2; exit 1; }
+	[ ! -e "$rc_home/.bash_profile" ] || { printf 'installer created a shadowing ~/.bash_profile on linux\n' >&2; exit 1; }
+	grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$rc_home/.bashrc" >/dev/null || { printf 'PATH line not written to ~/.bashrc\n' >&2; exit 1; }
+	grep -F 'export EDITOR=vi' "$rc_home/.bashrc" >/dev/null || { printf 'existing ~/.bashrc content was destroyed\n' >&2; exit 1; }
 # The resume command must name the installed binary by absolute path: the
 # invoking shell may not have ~/.local/bin on PATH (the very case handled
 # above), so a bare `just-code setup` would be a command not found.
-grep -F "Reprenez-la quand vous voulez : $home/.local/bin/just-code setup" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a resolvable resume command\n' >&2; exit 1; }
+# Quoted, so the line survives a HOME containing spaces (this test's $home has
+# one); a bare absolute path would split at the space when pasted.
+grep -F "Reprenez-la quand vous voulez : \"$home/.local/bin/just-code\" setup" "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure omitted a resolvable resume command\n' >&2; exit 1; }
 grep -F "just-code est installé, mais la configuration n'est pas terminée." "$temp_root/setup-failure.out" >/dev/null || { printf 'setup failure message is not in French\n' >&2; exit 1; }
 
 unsupported_home="$temp_root/unsupported"
