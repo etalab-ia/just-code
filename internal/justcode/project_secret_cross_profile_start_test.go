@@ -100,3 +100,47 @@ func TestTransientResolutionFailureStillStartsNoOp(t *testing.T) {
 		t.Fatalf("a transient resolution failure must not make a healthy instance unusable: %v", err)
 	}
 }
+
+// TestCorruptBindingMetadataFailsTheNoOpStart covers the gap an independent
+// review found in the first version of this fix. That version listed the
+// structural cases explicitly and let everything else fall through to the
+// tolerant path, so malformed `bindings.json` — which no retry can repair —
+// still produced an exit-0 start. The classification is now inverted: only a
+// credential-store fault is tolerated, and anything unrecognised fails closed.
+func TestCorruptBindingMetadataFailsTheNoOpStart(t *testing.T) {
+	isolateHostState(t)
+	client := &fakeMSBClient{exists: true, status: "running"}
+	m := projectSecretTestRuntime(t, client)
+	// A record that parses as JSON but cannot be validated: the same class as
+	// an unsupported schema version, and permanent.
+	path := ProjectSecretBindingsPath(m.StateDir, m.ProjectSecrets.Namespace())
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"schemaVersion":999,"bindings":[{"profile":"development"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.Isolation = IsolationFull
+	m.Probe = func(context.Context, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	statePath := instanceStatePath(DefaultStateDir(), m.InstanceName())
+	if err := WriteInstanceState(DefaultFS, statePath, m.desiredState(true, testBindings(m.cfg.APIKey), nil).toState()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Remove(statePath)
+		_ = os.RemoveAll(filepath.Dir(statePath))
+	}()
+
+	// Sanity: the fixture must actually be rejected by the reader, or this
+	// test would pass for the wrong reason on a permissive validator.
+	if _, err := ReadProjectSecretBindings(DefaultFS, path, m.ProjectSecrets.Namespace()); err == nil {
+		t.Fatal("the fixture must be rejected by ReadProjectSecretBindings for this test to mean anything")
+	}
+
+	err := m.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("unreadable binding metadata is permanent and must fail the start, not warn and succeed")
+	}
+}

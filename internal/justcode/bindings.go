@@ -627,7 +627,12 @@ func resolveAlbertWith(read credentialReader, ctx context.Context, cfg Config, f
 	// The message names the two routes that exist. It deliberately does not
 	// promise a .env: since P12 a .env is not read implicitly, so pointing at
 	// one would send the user to a file that has no effect.
-	return "", "", "", "", fmt.Errorf("no Albert credential found: export ALBERT_API_KEY in the environment, or store one with 'just-code auth add albert'")
+	// The not-found sentinel is preserved: the no-op start path distinguishes
+	// a credential that is simply not stored yet (tolerated, the store may
+	// come back or the user may store it) from a structural mismatch (fatal).
+	// A bare message would make this the one transient case classified as
+	// structural (#204).
+	return "", "", "", "", fmt.Errorf("%w: no Albert credential found: export ALBERT_API_KEY in the environment, or store one with 'just-code auth add albert'", ErrCredentialNotFound)
 }
 
 // withHostSecrets publishes each resolved value under its binding's host

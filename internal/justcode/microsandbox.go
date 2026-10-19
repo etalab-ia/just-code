@@ -424,7 +424,12 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 			// the omission the desired set, and the refresh would strip the
 			// persisted registration (the patch semantics make absence
 			// authoritative). A transient store failure must not become the
-			// loss of a live binding.
+			// loss of a live binding. A store *fault* is the one failure the
+			// no-op start path still tolerates, because the store may come
+			// back and an instance that only needs a restart must not become
+			// unusable meanwhile (#204). Storage faults are recognised by
+			// their typed store error, not by an allow-list of the cases we
+			// happened to think of, so anything unrecognised fails closed.
 			return nil, fmt.Errorf("cannot read the approved %s credential for %s: %w", b.Kind, m.InstanceName(), err)
 		}
 		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store, entry: string(b.Kind)})
