@@ -718,13 +718,32 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	}
 	instructionsChanged := false
 	instructionsAfter := plan.InstructionsAfter
-	if plan.InstructionsPath != "" {
-		if info, err := os.Lstat(plan.InstructionsPath); err == nil && !info.Mode().IsRegular() {
-			return fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
+	instructionsPath := plan.InstructionsPath
+	if instructionsPath == "" {
+		// A managed zone can appear between Plan and Apply — the plan
+		// left the path unclaimed because none existed. Re-check at apply
+		// time so the committed manifest never contradicts the
+		// instructions on disk: a zone that appeared is stripped or
+		// refreshed on current content, and a non-regular AGENTS.md
+		// holding one is refused.
+		candidate := filepath.Join(plan.Answers.Root, "AGENTS.md")
+		data, readErr := fs.ReadFile(candidate)
+		switch {
+		case readErr == nil && hasManagedSkillZone(string(data)):
+			instructionsPath = candidate
+		case readErr == nil || os.IsNotExist(readErr):
+			// Still zoneless: the plan's decision stands.
+		default:
+			return readErr
+		}
+	}
+	if instructionsPath != "" {
+		if info, err := os.Lstat(instructionsPath); err == nil && !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file; refusing to change managed instructions", instructionsPath)
 		} else if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		current, err := fs.ReadFile(plan.InstructionsPath)
+		current, err := fs.ReadFile(instructionsPath)
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -790,8 +809,8 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	)
 	if instructionsChanged {
 		mutations = append(mutations, managedFileMutation{
-			path: plan.InstructionsPath, mode: 0o644,
-			write: func() error { return atomicWrite(fs, plan.InstructionsPath, []byte(instructionsAfter), 0o644) },
+			path: instructionsPath, mode: 0o644,
+			write: func() error { return atomicWrite(fs, instructionsPath, []byte(instructionsAfter), 0o644) },
 		})
 	}
 	if err := applyManagedFileMutations(fs, mutations); err != nil {
@@ -799,7 +818,7 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	}
 	w.print(fmt.Sprintf("Wrote %s\nWrote %s\n", plan.ManifestPath, plan.LockPath))
 	if instructionsChanged {
-		w.print(fmt.Sprintf("Updated %s\n", plan.InstructionsPath))
+		w.print(fmt.Sprintf("Updated %s\n", instructionsPath))
 	}
 	if plan.Answers.SkillsLocalOnly && len(plan.Answers.Skills) > 0 {
 		w.print("Saved host-local project skills outside the checkout.\n")
