@@ -271,6 +271,10 @@ func (w SetupWizard) SaveSettings(model string) error {
 	}
 	if model != "" {
 		us.DefaultModel = model
+	} else {
+		// An explicit built-in choice clears a previously stored model, so a
+		// resumed run that had picked one can go back to the default.
+		us.DefaultModel = ""
 	}
 	if err := WriteUserSettings(w.FS, path, us); err != nil {
 		return err

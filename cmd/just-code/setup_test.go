@@ -390,6 +390,54 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	}
 }
 
+// TestEmptyModelAnswerClearsAJournaledChoice pins the round-5 finding on #216:
+// a resumed run that had journaled a custom model must be able to go back to
+// the built-in default by answering the prompt with an empty line.
+func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// Pre-journal a custom model, as an interrupted run would have left it.
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.DefaultModel = "albert/previous-choice"
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	// key -> EMPTY model (choose the built-in) -> skip GitHub -> identities
+	// -> apply.
+	input := "the-key\n\n\n\n\n\ny\n"
+	_ = captureStdout(t, func() {
+		code, rerr := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || rerr != nil {
+			t.Fatalf("run: code=%d err=%v", code, rerr)
+		}
+	})
+	after, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if after.DefaultModel != "" {
+		t.Fatalf("an empty answer must clear the journaled model; got %q", after.DefaultModel)
+	}
+	path, perr := justcode.UserSettingsPath()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	us, uerr := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if uerr != nil {
+		t.Fatal(uerr)
+	}
+	if us.DefaultModel != "" {
+		t.Fatalf("an empty answer must clear the stored model; got %q", us.DefaultModel)
+	}
+}
+
 // TestModelChoiceSurvivesAbortAfterTheModelStage pins the round-4 finding on
 // #216. Model selection was moved ahead of the GitHub and git-identity forms,
 // so a user who aborts one of those must not lose a model they already chose:

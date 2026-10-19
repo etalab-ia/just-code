@@ -311,13 +311,15 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 				return 1, err
 			}
 			chosen = strings.TrimSpace(chosen)
-			if chosen != "" && chosen != model {
-				model = chosen
-			}
+			// An answered empty value is an explicit choice of the built-in
+			// default, so it must CLEAR a journaled model: otherwise a resumed
+			// run keeps the interrupted choice and there is no way back to the
+			// default through setup.
+			model = chosen
 		} else {
-			chosen, _ := promptLine(in, "Model: ")
+			chosen, answered := promptLine(in, "Model: ")
 			chosen = strings.TrimSpace(chosen)
-			if chosen != "" && chosen != model {
+			if answered {
 				model = chosen
 			}
 		}
@@ -340,7 +342,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	//
 	// The in-memory j must be updated too: later stages write the whole journal
 	// back, so a journal-only write here would be overwritten by the stale copy.
-	if model != "" && j.DefaultModel != model {
+	if j.DefaultModel != model {
 		j.DefaultModel = model
 		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
 			return 1, err
