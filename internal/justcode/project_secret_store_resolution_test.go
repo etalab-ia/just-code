@@ -159,11 +159,59 @@ func TestPreferRecordedCredentialStoreResolvesWithNoActiveStore(t *testing.T) {
 	}
 }
 
-// TestCredentialStoreForKindRejectsUnknownKind pins the fail-closed branch: an
-// index naming a store this build does not know must error, not silently read
-// somewhere else.
-func TestCredentialStoreForKindRejectsUnknownKind(t *testing.T) {
+// TestCredentialStoreForKindAcceptsNativeAdapterKinds is the regression for a
+// bug introduced by the first version of this change: an import without
+// --fallback records the adapter's own Kind() ("secret-service", "keychain",
+// "credential-manager"), never the "native" alias. Rejecting those broke every
+// normal native-backed import.
+//
+// This asserts against storeAvailability() rather than a literal so it holds
+// on every platform the tests can run on, and it constructs the store's kind
+// the same way the index does — from the adapter, not from the alias.
+func TestCredentialStoreForKindAcceptsNativeAdapterKinds(t *testing.T) {
+	native := storeAvailability()
+	if native == "none" {
+		t.Skipf("no native credential adapter on this platform")
+	}
+	store, err := credentialStoreForKind(native)
+	if err != nil {
+		t.Fatalf("credentialStoreForKind(%q) failed: %v", native, err)
+	}
+	if store.Kind() != native {
+		t.Fatalf("kind = %q, want %q", store.Kind(), native)
+	}
+	// The alias the CLI uses as an input convention must keep working too.
+	if _, err := credentialStoreForKind("native"); err != nil {
+		t.Fatalf("the native alias must resolve: %v", err)
+	}
+}
+
+// TestCredentialStoreForKindRejectsForeignKind pins the fail-closed branch: a
+// store kind this host does not provide must error with the host's own kind
+// named, not silently read somewhere else.
+func TestCredentialStoreForKindRejectsForeignKind(t *testing.T) {
 	if _, err := credentialStoreForKind("gpg-agent"); err == nil {
-		t.Fatal("unknown recorded store kind must be refused")
+		t.Fatal("a foreign recorded store kind must be refused")
+	}
+}
+
+// TestNativeImportStaysResolvable is the end-to-end shape of the Codex
+// finding: a project whose index records the native adapter kind must still
+// reopen its store. It writes the index the way a real native import does —
+// with the adapter's Kind(), which is what made the first attempt wrong.
+func TestNativeImportStaysResolvable(t *testing.T) {
+	native := storeAvailability()
+	if native == "none" {
+		t.Skipf("no native credential adapter on this platform")
+	}
+	root, state := t.TempDir(), t.TempDir()
+	writeRecordedStoreKind(t, root, state, native)
+
+	store, err := projectSecretStoreFor(root, state)
+	if err != nil {
+		t.Fatalf("a native-backed project must still resolve: %v", err)
+	}
+	if store.Kind() != native {
+		t.Fatalf("kind = %q, want %q", store.Kind(), native)
 	}
 }

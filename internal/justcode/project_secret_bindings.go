@@ -451,13 +451,25 @@ func credentialStoreForKind(kind string) (CredentialStore, error) {
 	case "file":
 		return NewFileCredentialStore()
 	case "", "native":
-		if store := DefaultCredentialStore(); store != nil {
-			return store, nil
-		}
-		return nil, fmt.Errorf("no native credential store is available on this platform; store and import with --fallback to use the owner-only file store after consenting")
+		return defaultCredentialStoreOrError()
 	default:
-		return nil, fmt.Errorf("project secret index names an unknown credential store %q", kind)
+		// An import records the adapter's own Kind(), so a native-backed
+		// import writes "secret-service", "keychain" or "credential-manager"
+		// — never the "native" alias, which is only an input convention.
+		if kind == storeAvailability() {
+			return defaultCredentialStoreOrError()
+		}
+		return nil, fmt.Errorf("project secret index names credential store %q, which this host does not provide (it provides %q): re-import the component on this host, or move the state from the host that created it", kind, storeAvailability())
 	}
+}
+
+// defaultCredentialStoreOrError resolves the platform's native store, naming
+// the recovery when the platform has no adapter at all.
+func defaultCredentialStoreOrError() (CredentialStore, error) {
+	if store := DefaultCredentialStore(); store != nil {
+		return store, nil
+	}
+	return nil, fmt.Errorf("no native credential store is available on this platform; store and import with --fallback to use the owner-only file store after consenting")
 }
 
 // PreferRecordedCredentialStore reconciles an already-resolved store with the
