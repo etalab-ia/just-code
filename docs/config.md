@@ -69,15 +69,14 @@ l'invité ; confirmer la perte avant de l'exécuter.
 ## Configurer la machine (`setup`)
 
 `just-code setup` prépare la machine en une passe guidée : diagnostic
-(plateforme, virtualisation, disque — lecture seule) → clé Albert API
-(masquée, validée contre Albert API) → modèle par défaut → identifiant GitHub
-optionnel → identité git → revue → application (réglages globaux + runtime
-managé).
+(plateforme, virtualisation, disque — lecture seule) → écran d'introduction
+(parcours annoncé, Entrée pour commencer) → clé Albert API (masquée, validée
+contre Albert API ; rejet et indisponibilité réseau distincts) → modèle par
+défaut → identifiant GitHub optionnel → identité git → revue → application
+(réglages globaux + runtime managé).
 
 L'ordre suit celui annoncé par l'écran d'introduction : clé, puis modèles,
-puis GitHub. L'écran de la clé porte le compteur `[1/3]` ; les compteurs des
-deux écrans suivants seront ajoutés avec l'écran de sélection des modèles,
-qui est encore celui d'aujourd'hui.
+puis GitHub. Les compteurs `[1/3]`… des écrans correspondent à ce parcours.
 
 ```bash
 just-code setup            # assistant interactif
@@ -99,6 +98,12 @@ Règles du flux :
 - **Aucune saisie avant un bloqueur fatal.** La virtualisation et le disque
   sont vérifiés avant toute invite : la clé n'est jamais demandée sur une
   machine qui ne peut pas exécuter le runtime.
+- **Introduction sur un premier lancement.** Un setup neuf affiche l'écran
+  d'introduction (bannière, durée estimée, les trois étapes) et attend Entrée
+  avant la première question. Un setup repris ne le réaffiche pas. L'écran
+  n'est montré que si l'entrée et la sortie sont toutes deux un terminal : sur
+  une exécution non interactive, il est omis plutôt que d'attendre une touche
+  qui ne viendra pas.
 - **Reprise.** Un setup interrompu reprend là où il s'est arrêté (journal
   d'état hôte) — les identifiants déjà stockés ne sont pas redemandés.
 - **Rejet ≠ réseau.** Une clé refusée (401/403) est signalée et **redemandée

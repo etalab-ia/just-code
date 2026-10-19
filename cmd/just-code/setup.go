@@ -12,6 +12,7 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
+	"golang.org/x/term"
 )
 
 // setupCmd implements `just-code setup` (P11): the global setup wizard.
@@ -71,6 +72,14 @@ func setupCmd(args []string) (int, error) {
 // tests do not depend on the host's KVM state, PATH, network, or settings.
 var setupDoctorCollectFn = func() justcode.DiagnosticsReport {
 	return (justcode.Diagnostics{}).Collect(context.Background())
+}
+
+// setupPreflightFn runs the host preflight the wizard gates on. It is a package
+// variable so tests can reach the fresh-start branch (intro, then the first
+// prompt) on a host where the real preflight would be fatal, such as a
+// KVM-less CI runner.
+var setupPreflightFn = func(ctx context.Context) justcode.SetupPreflight {
+	return (justcode.SetupPreflighter{}).RunPreflight(ctx)
 }
 
 func setupDoctorCmd(jsonOutput bool) (int, error) {
@@ -148,6 +157,93 @@ func setupRunCmd(fallback bool) (int, error) {
 	return setupWizardRun(fallback, bufio.NewReader(os.Stdin), nil, nil, nil)
 }
 
+// setupIntroScreen is the first thing a fresh `just-code setup` shows. It is
+// displayed only when the run can both render it and read the answer, so a
+// piped run (no terminal) is never blocked waiting for a keypress nobody can
+// send. The banner is the one the README opens with.
+const setupIntroScreen = `       _            __                    __
+      (_)_  _______/ /_   _________  ____/ /__
+     / / / / / ___/ __/  / ___/ __ \/ __  / _ \
+    / / /_/ (__  ) /_   / /__/ /_/ / /_/ /  __/
+ __/ /\__,_/____/\__/   \___/\____/\__,_/\___/
+/___/
+
+just code : coder avec l'IA souveraine de l'État, dans une machine isolée.
+
+Cette configuration se fait une seule fois sur ce poste.
+Durée : environ 3 minutes. Espace disque : environ 2 Go.
+
+3 étapes :
+  1. Clé Albert API (obligatoire) : l'agent utilise les modèles de l'État.
+  2. Sélection des modèles à utiliser.
+  3. GitHub (facultatif) : pour pousser les modifications sur GitHub en pull request.
+
+Vos identifiants et votre identité git sont enregistrés au fil des questions,
+pour que la configuration puisse reprendre si elle est interrompue.
+Le modèle est confirmé au récapitulatif final.
+Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.
+`
+
+// setupIntroFn reports whether the intro screen can be shown and answered: it
+// needs both an input terminal (to read the keypress) and an output terminal
+// (otherwise the screen goes to a file and the program blocks on an invisible
+// prompt). It is a package variable so tests can exercise the intro without a
+// terminal.
+var setupIntroFn = func() bool { return stdinIsTTYFn() && stdoutIsTTY() }
+
+// waitForEnterFn reads one Enter press from the terminal. It is a package
+// variable so tests can exercise the intro without a terminal.
+var waitForEnterFn = waitForEnter
+
+// waitForEnter waits for one Enter press on the terminal. Two constraints meet
+// here:
+//
+//   - a buffered reader would pull in whatever the user pasted after the
+//     newline, and that typed-ahead text belongs to the next prompt — the
+//     Albert key, which readPassword reads straight from the terminal and
+//     would never see;
+//   - with echo on, a key pasted together with Enter is printed and stays in
+//     the scrollback before the password prompt can hide it.
+//
+// On a terminal, term.ReadPassword satisfies both: it turns echo off and reads
+// exactly one line (the kernel hands over complete lines, so a following line
+// stays queued). Off a terminal there is nothing to echo-hide and no key
+// prompt to protect, so a byte-at-a-time read keeps the "consume only the
+// newline" contract for piped input.
+func waitForEnter() bool {
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		if _, err := term.ReadPassword(fd); err != nil {
+			return false
+		}
+		fmt.Println()
+		return true
+	}
+	one := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(one)
+		if n > 0 && one[0] == '\n' {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+	}
+}
+
+// printSetupIntro shows the intro and waits for Enter. It returns false when
+// the user could not be read (end of input), so the caller stops without
+// having written anything.
+func printSetupIntro() bool {
+	fmt.Print(setupIntroScreen)
+	fmt.Println()
+	if !waitForEnterFn() {
+		fmt.Println("Configuration interrompue.")
+		return false
+	}
+	return true
+}
+
 // setupWizardRun is the testable core of the wizard: input comes from in,
 // and the network-facing seams (Albert validation, runtime installation)
 // are injectable so tests never hit the network or download anything. A nil
@@ -171,14 +267,21 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	if j.Stage == justcode.StagePreflight && len(j.CredentialKinds) == 0 && j.GitName == "" {
 		// Fresh start: preflight first, so a fatal blocker surfaces before
 		// any prompt.
-		p := justcode.SetupPreflighter{}
-		res := p.RunPreflight(ctx)
+		res := setupPreflightFn(ctx)
 		j.Preflight = res
 		if res.Fatal {
 			fmt.Println("This host cannot run just-code's managed runtime:")
 			printPreflight(res)
 			_ = justcode.WriteSetupJournal(fs, stateDir, j)
 			return 1, fmt.Errorf("setup stopped: fix the failures above, then re-run 'just-code setup'")
+		}
+		// Intro before any prompt: on a fresh run the user has just been
+		// dropped into the wizard with no explanation of what it will ask
+		// for. A resumed run skips it (the else branch below).
+		if setupIntroFn() {
+			if !printSetupIntro() {
+				return 1, nil
+			}
 		}
 		j.Stage = justcode.StageCredential
 		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {

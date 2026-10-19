@@ -47,9 +47,9 @@ Dans PowerShell sous Windows :
 irm https://raw.githubusercontent.com/etalab-ia/just-code/main/scripts/install.ps1 | iex
 ```
 
-L'installateur choisit une seule release stable, télécharge le binaire et `SHA256SUMS` depuis cette même release, puis compare l'empreinte avant de remplacer l'installation. L'assistant `just-code setup` est lancé après l'installation.
+L'installateur choisit une seule release stable, télécharge le binaire et `SHA256SUMS` depuis cette même release, puis compare l'empreinte avant de remplacer l'installation. Il annonce le résultat, traite `PATH` (en demandant l'autorisation avant de modifier un fichier de shell) puis lance l'assistant `just-code setup`.
 
-Prérequis : OpenCode CLI sur l'hôte (`npm install -g opencode-ai`) et une **clé Albert API**. Le runtime Microsandbox est téléchargé et vérifié automatiquement au premier démarrage.
+Prérequis : une **clé Albert API**. Le runtime Microsandbox est téléchargé et vérifié automatiquement au premier démarrage. En isolation complète (le défaut), OpenCode est installé dans l'invité : aucune installation sur l'hôte n'est nécessaire. En isolation partielle, l'hôte doit fournir l'OpenCode CLI (`npm install -g opencode-ai`).
 
 Binaires par plateforme, installation manuelle, vérification, compilation depuis les sources : [docs/installation.md](docs/installation.md).
 

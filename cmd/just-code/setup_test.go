@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,17 +13,6 @@ import (
 
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
-
-// The cmd-level tests exercise the wizard flow end to end with a disposable
-// HOME (so the real state dir and user settings are never touched), piped
-// non-TTY input (the documented degraded mode), and injected seams for the
-// network-facing operations (Albert validation, runtime install) — the
-// tests never hit the network and never download the runtime.
-//
-// The preflight runs for real against the disposable HOME; on a host without
-// KVM it is fatal before any prompt, so tests that need the prompt flow set
-// the journal past preflight first (the same resumability the wizard itself
-// provides).
 
 // setupTestEnv isolates HOME and returns the state dir and settings path.
 func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
@@ -49,6 +39,41 @@ func forceNonTTY(t *testing.T) {
 	orig := stdinIsTTYFn
 	stdinIsTTYFn = func() bool { return false }
 	t.Cleanup(func() { stdinIsTTYFn = orig })
+}
+
+// forceIntro pins the intro gate for the test. Pass true to simulate a run
+// that can show and answer the intro, false for a run without a terminal.
+func forceIntro(t *testing.T, show bool) {
+	t.Helper()
+	orig := setupIntroFn
+	setupIntroFn = func() bool { return show }
+	t.Cleanup(func() { setupIntroFn = orig })
+}
+
+// forceEnter makes the intro's Enter press read from the same piped reader the
+// wizard uses, so a piped test still drives the intro. Production reads the
+// terminal directly, one byte at a time, so pasted typed-ahead text is left for
+// the next prompt.
+func forceEnter(t *testing.T, in *bufio.Reader) {
+	t.Helper()
+	orig := waitForEnterFn
+	waitForEnterFn = func() bool {
+		_, ok := promptLine(in, "")
+		return ok
+	}
+	t.Cleanup(func() { waitForEnterFn = orig })
+}
+
+// forcePreflightPass stubs the host preflight to a non-fatal result, so tests
+// can exercise the fresh-start branch (intro, then the first prompt) on a host
+// whose real preflight would stop the wizard before any prompt.
+func forcePreflightPass(t *testing.T) {
+	t.Helper()
+	orig := setupPreflightFn
+	setupPreflightFn = func(context.Context) justcode.SetupPreflight {
+		return justcode.SetupPreflight{Platform: "test/arch", VirtualizationOK: true}
+	}
+	t.Cleanup(func() { setupPreflightFn = orig })
 }
 
 // journalPastPreflight writes a journal whose preflight already passed, so
@@ -195,6 +220,316 @@ func readUserSettingsFile(t *testing.T) map[string]any {
 		t.Fatal(err)
 	}
 	return m
+}
+
+// TestSetupIntroScreenContent pins the screen shown before any prompt: the
+// README banner, the "3 étapes" announcement the [n/3] counter later follows,
+// the duration/disk figures, and the Ctrl+C hint.
+func TestSetupIntroScreenContent(t *testing.T) {
+	for _, want := range []string{
+		"(_)_  _______/ /_",
+		"just code : coder avec l'IA souveraine",
+		"Cette configuration se fait une seule fois sur ce poste.",
+		"Durée : environ 3 minutes. Espace disque : environ 2 Go.",
+		"3 étapes :",
+		"1. Clé Albert API (obligatoire)",
+		"2. Sélection des modèles à utiliser.",
+		"3. GitHub (facultatif)",
+		"Vos identifiants et votre identité git sont enregistrés au fil des questions,",
+		"pour que la configuration puisse reprendre si elle est interrompue.",
+		"Le modèle est confirmé au récapitulatif final.",
+		"Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.",
+	} {
+		if !strings.Contains(setupIntroScreen, want) {
+			t.Errorf("intro screen is missing %q", want)
+		}
+	}
+}
+
+// TestWaitForEnterLeavesTypedAheadInput is the regression test for the round-3
+// finding on #215: the intro must consume exactly the Enter press, so a key the
+// user pasted along with it is still there for the next prompt.
+//
+// It runs the REAL waitForEnter against a pipe: a buffered read would drain the
+// whole pipe, so asserting on what remains afterwards is what distinguishes the
+// two implementations.
+func TestWaitForEnterLeavesTypedAheadInput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString("\n"); err != nil {
+		t.Fatal(err)
+	}
+	// The Enter press is the leading newline; everything the user pasted along
+	// with it follows and must still be there afterwards.
+	if _, err := w.WriteString("pasted-key\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	if !waitForEnter() {
+		t.Fatal("waitForEnter must report that Enter was read")
+	}
+	// Only the newline may be gone: reading the pipe again must yield nothing.
+	rest, _ := io.ReadAll(r)
+	if string(rest) != "pasted-key\n" {
+		t.Fatalf("waitForEnter consumed typed-ahead input: %q", rest)
+	}
+}
+
+// TestWaitForEnterStopsAtTheFirstNewline is the complement: input queued
+// BEFORE the Enter press belongs to the intro and must be consumed with it.
+func TestWaitForEnterStopsAtTheFirstNewline(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString("noise\n\nsecond-line\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	if !waitForEnter() {
+		t.Fatal("waitForEnter must report that Enter was read")
+	}
+	rest, _ := io.ReadAll(r)
+	if string(rest) != "\nsecond-line\n" {
+		t.Fatalf("waitForEnter must stop at the first newline; left %q", rest)
+	}
+}
+
+// TestSetupWizardShowsIntroBeforeAnyPrompt pins that on a fresh run the intro
+// is printed before the first question, that Enter (the leading empty line of
+// the piped answers) starts the wizard, and that the screen precedes the key
+// prompt.
+func TestSetupWizardShowsIntroBeforeAnyPrompt(t *testing.T) {
+	setupTestEnv(t)
+	forceNonTTY(t)
+	forceIntro(t, true)
+	// Fresh run (no journal past preflight), so the intro is reached through
+	// the real preflight branch; the preflight itself is stubbed to pass so a
+	// KVM-less runner still gets there.
+	forcePreflightPass(t)
+	// Leading empty line = Enter on the intro; then key, model, no GitHub,
+	// defaults. The empty line after the key is the model answer, so the "n"
+	// that follows is the GitHub answer, not the model one: the order is key ->
+	// models -> GitHub.
+	input := "\ntest-key\n\nn\n\n\n\ny\n"
+	// The same reader feeds both the intro's Enter and the wizard body, so the
+	// leading empty line is consumed exactly once.
+	in := bufio.NewReader(strings.NewReader(input))
+	forceEnter(t, in)
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, in,
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run after intro: code=%d err=%v", code, err)
+		}
+	})
+	introAt := strings.Index(out, "3 étapes :")
+	if introAt < 0 {
+		t.Fatalf("fresh run did not print the intro screen; output:\n%s", out)
+	}
+	keyAt := strings.Index(out, "[1/3] Clé Albert API")
+	if keyAt < 0 {
+		t.Fatalf("the Albert prompt never appeared; output:\n%s", out)
+	}
+	if introAt > keyAt {
+		t.Errorf("intro must precede the first prompt (intro at %d, prompt at %d)", introAt, keyAt)
+	}
+}
+
+// TestSetupWizardResumeSkipsIntro pins that only a first launch shows the
+// intro: a resumed run (journal already past preflight) goes straight to the
+// resume notice and the first prompt.
+func TestSetupWizardResumeSkipsIntro(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	forceIntro(t, true) // a terminal is available; the intro must still be skipped
+	journalPastPreflight(t, stateDir)
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\nn\n\n\n\n\ny\n")),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("resume run: code=%d err=%v", code, err)
+		}
+	})
+	if strings.Contains(out, "3 étapes :") {
+		t.Errorf("a resumed run must not re-print the intro screen; output:\n%s", out)
+	}
+	if !strings.Contains(out, "Resuming setup") {
+		t.Errorf("resume notice missing; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardNoIntroWithoutTerminal pins the guard: a run that cannot show
+// and answer the intro (piped input) must not print it, because the program
+// would otherwise wait for a keypress nobody can send.
+func TestSetupWizardNoIntroWithoutTerminal(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	forceIntro(t, false)
+	journalPastPreflight(t, stateDir)
+	// No leading Enter: the first line is the key. If the wizard waited for an
+	// intro keypress, the key would be swallowed and validation would fail.
+	input := "test-key\nn\n\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run without intro: code=%d err=%v", code, err)
+		}
+	})
+	if strings.Contains(out, "3 étapes :") {
+		t.Errorf("a run without a terminal must not print the intro screen; output:\n%s", out)
+	}
+}
+
+func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// The store seam: a fake that records puts. The wizard's Store func is
+	// not injectable per-run through setupWizardRun (only validate and
+	// ensure are), so this test uses the file fallback store: a rejected
+	// key must leave it absent (nothing was stored).
+	// #162 changed the contract: a refusal re-asks instead of ending the run,
+	// so the flow only stops when the re-ask is answered with an empty key.
+	input := "bad-key\n\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error {
+			return justcode.RejectedCredentialError{Detail: "HTTP 401"}
+		},
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
+	// An empty key abandons the run, which reports the resumable cancel
+	// message (non-nil) rather than silently succeeding.
+	if code == 0 {
+		t.Fatalf("abandoning after a rejected key must exit non-zero: code=%d err=%v", code, err)
+	}
+	// The journal must not claim the credential was stored.
+	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
+		t.Fatal("a rejected key must not be journaled as stored")
+	}
+	// The file fallback store must not exist (no Put happened).
+	if store, err := justcode.ConsentFileStore(); err == nil {
+		if _, serr := os.Stat(store.Path); serr == nil {
+			t.Fatal("a rejected key must not create the credential store")
+		}
+	}
+}
+
+func TestSetupCompletionMessageDescribesFullDefault(t *testing.T) {
+	message := setupCompletionMessage()
+	if !strings.Contains(message, "Microsandbox/full") || !strings.Contains(message, "TUI running inside the guest") {
+		t.Fatalf("setup completion message = %q, want full-mode default guidance", message)
+	}
+	if strings.Contains(message, "start the backend and attach the TUI") {
+		t.Fatalf("setup completion message still describes the legacy backend flow: %q", message)
+	}
+}
+
+func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// Piped answers in wizard order: key with a trailing newline (the raw
+	// pipe line), empty model, no GitHub, empty identity (defaults), apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
+	var seenKey string
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(_ context.Context, key string) error {
+			seenKey = key
+			return nil
+		},
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
+	if code != 0 || err != nil {
+		t.Fatalf("wizard run: code=%d err=%v", code, err)
+	}
+	if seenKey != "test-key" {
+		t.Fatalf("the piped key must arrive trimmed, got %q", seenKey)
+	}
+	// A completed setup removes the journal.
+	if _, serr := os.Stat(justcode.SetupJournalPath(stateDir)); !os.IsNotExist(serr) {
+		t.Fatal("a completed setup must remove the journal")
+	}
+}
+
+// TestSetupWizardEmptyNameFallsBackToDefault pins the documented default:
+// an empty name input must persist "Albert Code Agent", not an empty
+// gitName that would print as a blank author in the review.
+func TestSetupWizardEmptyNameFallsBackToDefault(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	// Wizard order: key, empty model, no GitHub, empty name, empty email
+	// (both default), apply.
+	input := "test-key\n\nn\n\n\n\ny\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error { return nil },
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
+	if code != 0 || err != nil {
+		t.Fatalf("wizard run: code=%d err=%v", code, err)
+	}
+	m := readUserSettingsFile(t)
+	if m == nil {
+		t.Fatal("settings file must exist after a completed setup")
+	}
+	if got, _ := m["gitName"].(string); got != "Albert Code Agent" {
+		t.Fatalf("empty name must fall back to the documented default, got %q", got)
+	}
+	if got, _ := m["gitEmail"].(string); got != "albert-code@noreply.etalab.gouv.fr" {
+		t.Fatalf("empty email must fall back to the documented default, got %q", got)
+	}
+}
+
+func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	if readUserSettingsFile(t) != nil {
+		t.Fatal("precondition: no user settings file may exist")
+	}
+	// Wizard order: key, model, no GitHub, name, email, then cancel at apply.
+	input := "test-key\nsome-model\nn\n\n\nn\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error { return nil },
+		func(context.Context) error { return nil },
+		func(string) string { return "" })
+	if code == 0 || err == nil {
+		t.Fatalf("cancel at apply must exit non-zero: code=%d err=%v", code, err)
+	}
+	m := readUserSettingsFile(t)
+	// The identity is persisted at its own stage (durable by design); the
+	// model must NOT be written by a cancelled apply.
+	if m != nil {
+		if _, ok := m["defaultModel"]; ok {
+			t.Fatalf("a cancelled apply must not write the model setting, got %v", m)
+		}
+	}
 }
 
 // TestAlbertKeyScreenShowsStepAndLinks pins screen 3.2's content: the [1/3]
@@ -673,135 +1008,5 @@ func TestSetupUnreachableRetryThenAbandonStoresNothing(t *testing.T) {
 	}
 	if negativeCalls == 0 {
 		t.Fatal("precondition: the endpoint was never probed")
-	}
-}
-
-func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
-	stateDir, _ := setupTestEnv(t)
-	forceNonTTY(t)
-	journalPastPreflight(t, stateDir)
-	// The store seam: a fake that records puts. The wizard's Store func is
-	// not injectable per-run through setupWizardRun (only validate and
-	// ensure are), so this test uses the file fallback store: a rejected
-	// key must leave it absent (nothing was stored).
-	// #162 changed the contract: a refusal re-asks instead of ending the run,
-	// so the flow only stops when the re-ask is answered with an empty key.
-	input := "bad-key\n\n"
-	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
-		func(context.Context, string) error {
-			return justcode.RejectedCredentialError{Detail: "HTTP 401"}
-		},
-		func(context.Context) error { return nil },
-		func(string) string { return "" })
-	// An empty key abandons the run, which reports the resumable cancel
-	// message (non-nil) rather than silently succeeding.
-	if code == 0 {
-		t.Fatalf("abandoning after a rejected key must exit non-zero: code=%d err=%v", code, err)
-	}
-	// The journal must not claim the credential was stored.
-	j, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	if justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
-		t.Fatal("a rejected key must not be journaled as stored")
-	}
-	// The file fallback store must not exist (no Put happened).
-	if store, err := justcode.ConsentFileStore(); err == nil {
-		if _, serr := os.Stat(store.Path); serr == nil {
-			t.Fatal("a rejected key must not create the credential store")
-		}
-	}
-}
-
-func TestSetupCompletionMessageDescribesFullDefault(t *testing.T) {
-	message := setupCompletionMessage()
-	if !strings.Contains(message, "Microsandbox/full") || !strings.Contains(message, "TUI running inside the guest") {
-		t.Fatalf("setup completion message = %q, want full-mode default guidance", message)
-	}
-	if strings.Contains(message, "start the backend and attach the TUI") {
-		t.Fatalf("setup completion message still describes the legacy backend flow: %q", message)
-	}
-}
-
-func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
-	stateDir, _ := setupTestEnv(t)
-	forceNonTTY(t)
-	journalPastPreflight(t, stateDir)
-	// Piped answers in wizard order: key with a trailing newline (the raw
-	// pipe line), empty model, no GitHub, empty identity (defaults), apply.
-	input := "test-key\n\nn\n\n\n\ny\n"
-	var seenKey string
-	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
-		func(_ context.Context, key string) error {
-			seenKey = key
-			return nil
-		},
-		func(context.Context) error { return nil },
-		func(string) string { return "" })
-	if code != 0 || err != nil {
-		t.Fatalf("wizard run: code=%d err=%v", code, err)
-	}
-	if seenKey != "test-key" {
-		t.Fatalf("the piped key must arrive trimmed, got %q", seenKey)
-	}
-	// A completed setup removes the journal.
-	if _, serr := os.Stat(justcode.SetupJournalPath(stateDir)); !os.IsNotExist(serr) {
-		t.Fatal("a completed setup must remove the journal")
-	}
-}
-
-// TestSetupWizardEmptyNameFallsBackToDefault pins the documented default:
-// an empty name input must persist "Albert Code Agent", not an empty
-// gitName that would print as a blank author in the review.
-func TestSetupWizardEmptyNameFallsBackToDefault(t *testing.T) {
-	stateDir, _ := setupTestEnv(t)
-	forceNonTTY(t)
-	journalPastPreflight(t, stateDir)
-	// Wizard order: key, empty model, no GitHub, empty name, empty email
-	// (both default), apply.
-	input := "test-key\n\nn\n\n\n\ny\n"
-	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
-		func(context.Context, string) error { return nil },
-		func(context.Context) error { return nil },
-		func(string) string { return "" })
-	if code != 0 || err != nil {
-		t.Fatalf("wizard run: code=%d err=%v", code, err)
-	}
-	m := readUserSettingsFile(t)
-	if m == nil {
-		t.Fatal("settings file must exist after a completed setup")
-	}
-	if got, _ := m["gitName"].(string); got != "Albert Code Agent" {
-		t.Fatalf("empty name must fall back to the documented default, got %q", got)
-	}
-	if got, _ := m["gitEmail"].(string); got != "albert-code@noreply.etalab.gouv.fr" {
-		t.Fatalf("empty email must fall back to the documented default, got %q", got)
-	}
-}
-
-func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
-	stateDir, _ := setupTestEnv(t)
-	forceNonTTY(t)
-	journalPastPreflight(t, stateDir)
-	if readUserSettingsFile(t) != nil {
-		t.Fatal("precondition: no user settings file may exist")
-	}
-	// Wizard order: key, model, no GitHub, name, email, then cancel at apply.
-	input := "test-key\nsome-model\nn\n\n\nn\n"
-	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
-		func(context.Context, string) error { return nil },
-		func(context.Context) error { return nil },
-		func(string) string { return "" })
-	if code == 0 || err == nil {
-		t.Fatalf("cancel at apply must exit non-zero: code=%d err=%v", code, err)
-	}
-	m := readUserSettingsFile(t)
-	// The identity is persisted at its own stage (durable by design); the
-	// model must NOT be written by a cancelled apply.
-	if m != nil {
-		if _, ok := m["defaultModel"]; ok {
-			t.Fatalf("a cancelled apply must not write the model setting, got %v", m)
-		}
 	}
 }
