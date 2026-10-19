@@ -103,7 +103,9 @@ func albertCodeImportCmd(args []string) (int, error) {
 	}
 	fmt.Print(plan.Format())
 	if !opts.apply {
+		fmt.Println("Preview only. Pass --apply to write the just-code project manifest and lockfile.")
 		fmt.Println("No changes made.")
+		warnUnapprovedImportInputs(plan.Root)
 		return 0, nil
 	}
 	if len(plan.SourceFiles) == 0 {
@@ -182,7 +184,35 @@ func albertCodeImportCmd(args []string) (int, error) {
 	} else if err := apply(); err != nil {
 		return 1, err
 	}
+	warnUnapprovedImportInputs(plan.Root)
 	return 0, nil
+}
+
+// warnUnapprovedImportInputs lists the execution-relevant project inputs that
+// the launch trust gate will block on, so a successful import does not leave
+// the user surprised by the first run (#154). It mirrors the launch error's
+// wording on purpose. Read-only: it computes, never approves.
+// warnUnapprovedImportInputs announces execution inputs that still need trust
+// approval. The recommendation names the project directory because 'trust
+// approve' resolves its project from the current directory: an import into a
+// different --root must not suggest approving whatever project the caller
+// happens to stand in.
+func warnUnapprovedImportInputs(projectRoot string) {
+	unapproved, err := justcode.DiscoverUnapprovedInputs(justcode.DefaultFS, justcode.DefaultStateDir(), projectRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not check which project inputs still need trust approval: %v\n", err)
+		return
+	}
+	if len(unapproved) == 0 {
+		return
+	}
+	var lines []string
+	for _, u := range unapproved {
+		lines = append(lines, fmt.Sprintf("  %s (%s)", u.Path, u.Reason))
+	}
+	fmt.Printf("This project declares OpenCode inputs that execute code or launch processes, and they are not approved at their current content:\n%s\n"+
+		"The first 'just-code' run will stop for this. Review them, then run 'just-code trust approve' from %s to record approval for the current content.\n",
+		strings.Join(lines, "\n"), projectRoot)
 }
 
 func applyAlbertCodeImport(plan justcode.AlbertCodeImport, wizard justcode.InitWizard, setupPlan justcode.InitPlan, importKey, existingMatches bool) error {

@@ -3,6 +3,7 @@ package justcode
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,13 +24,59 @@ var opencodeConfigFiles = []string{
 	".opencode/opencode.jsonc",
 }
 
+// confinedProjectPath verifies that no component of rel below root is a
+// symlink or a parent traversal, and returns the joined path. Lstat and Open
+// both resolve intermediate symlinks, so an untrusted checkout that makes
+// .opencode (or any deeper directory) a symlink would otherwise make project
+// reads touch files outside the checkout. The walk starts at root, not at
+// the filesystem root: absolute paths legitimately contain symlinks (on
+// macOS every /tmp and /var path is one), so only the project-relative
+// components are checked.
+func confinedProjectPath(root, rel string) (string, error) {
+	rel = filepath.Clean(rel)
+	if rel == "." {
+		return root, nil
+	}
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("project path %s must be relative to the project root", rel)
+	}
+	cur := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return "", fmt.Errorf("project path %s escapes the project root", rel)
+		}
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("%s is a symlink; refusing to follow project paths outside the checkout", cur)
+		}
+	}
+	return cur, nil
+}
+
+// maxOpenCodeConfigSize bounds a single project OpenCode config read. The
+// config is read from checkouts that may be untrusted (import preview, trust
+// discovery), so the read is bounded the same way the importer bounds its
+// inputs.
+const maxOpenCodeConfigSize = 1 << 20
+
 // FindProjectOpenCodeConfig returns the first existing OpenCode config path
 // under root, or "" when none exists. Discovery order matches OpenCode's
-// (files at the root before files in .opencode/).
+// (files at the root before files in .opencode/). It uses Lstat and reports
+// any non-directory entry, including symlinks and non-regular files: the
+// config must stay in the trust flow so a repointable or unreadable entry
+// blocks launch (parse and approval both refuse it) instead of silently
+// disappearing from discovery.
 func FindProjectOpenCodeConfig(root string) string {
 	for _, rel := range opencodeConfigFiles {
 		path := filepath.Join(root, rel)
-		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+		if fi, err := os.Lstat(path); err == nil && !fi.IsDir() {
 			return path
 		}
 	}
@@ -130,15 +177,25 @@ func stripTrailingCommas(src string) string {
 }
 
 // ParseProjectOpenCodeConfig reads and parses the config at path (JSON or
-// JSONC) into a generic map. It is strictly read-only. An empty path returns
-// an empty map and no error (no project config is a normal state). A
-// malformed file is an error: the conflict detector must not silently treat
-// an unparseable project config as "no conflicts".
-func ParseProjectOpenCodeConfig(path string) (map[string]any, error) {
+// JSONC) into a generic map, confining the read to root: any symlink in the
+// path components below root is refused, not followed. It is strictly
+// read-only. An empty path returns an empty map and no error (no project
+// config is a normal state). A malformed file is an error: the conflict
+// detector must not silently treat an unparseable project config as "no
+// conflicts".
+func ParseProjectOpenCodeConfig(root, path string) (map[string]any, error) {
 	if path == "" {
 		return map[string]any{}, nil
 	}
-	raw, err := os.ReadFile(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, fmt.Errorf("read project OpenCode config %s: %w", path, err)
+	}
+	abs, err := confinedProjectPath(root, rel)
+	if err != nil {
+		return nil, fmt.Errorf("read project OpenCode config %s: %w", path, err)
+	}
+	raw, err := readProjectConfigFile(abs)
 	if err != nil {
 		return nil, fmt.Errorf("read project OpenCode config %s: %w", path, err)
 	}
@@ -147,6 +204,44 @@ func ParseProjectOpenCodeConfig(path string) (map[string]any, error) {
 		return nil, fmt.Errorf("parse project OpenCode config %s: %w", path, err)
 	}
 	return parsed, nil
+}
+
+// readProjectConfigFile reads a project OpenCode config without following
+// symlinks, without opening non-regular files, and with a size bound. The
+// config is read from checkouts that may be untrusted, so a symlink pointing
+// outside the worktree, a FIFO that would hang the read, or a device file
+// that would exhaust memory must be refused instead of read.
+func readProjectConfigFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file; refusing to read")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("file changed while opening; refusing to read")
+	}
+	if openedInfo.Size() > maxOpenCodeConfigSize {
+		return nil, fmt.Errorf("exceeds the OpenCode config size limit (%d bytes)", maxOpenCodeConfigSize)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxOpenCodeConfigSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxOpenCodeConfigSize {
+		return nil, fmt.Errorf("exceeds the OpenCode config size limit (%d bytes)", maxOpenCodeConfigSize)
+	}
+	return data, nil
 }
 
 func parseProjectOpenCodeConfig(raw []byte) (map[string]any, error) {
@@ -193,7 +288,7 @@ func DiscoverProjectExecutionInputs(root string) (ProjectExecutionInputs, error)
 	cfgPath := FindProjectOpenCodeConfig(root)
 	out.ConfigPath = cfgPath
 	if cfgPath != "" {
-		cfg, err := ParseProjectOpenCodeConfig(cfgPath)
+		cfg, err := ParseProjectOpenCodeConfig(root, cfgPath)
 		if err != nil {
 			return out, err
 		}
@@ -221,9 +316,19 @@ func DiscoverProjectExecutionInputs(root string) (ProjectExecutionInputs, error)
 		}
 	}
 	for _, dir := range []string{".opencode/plugin", ".opencode/plugins"} {
-		entries, err := os.ReadDir(filepath.Join(root, dir))
+		abs, err := confinedProjectPath(root, dir)
 		if err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return out, fmt.Errorf("read %s: %w", dir, err)
+		}
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return out, fmt.Errorf("read %s: %w", dir, err)
 		}
 		for _, e := range entries {
 			if e.IsDir() {
