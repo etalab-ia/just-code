@@ -417,13 +417,14 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 	}
 	// The managed zone is claimed only when this plan can change it: a
-	// selection with pins, the Microsandbox standing guidance, a local-only
-	// strip, or a stale zone left by an earlier versioned setup all rewrite
-	// the zone. A pin-less Tart or agent-vm project without a zone renders
-	// nothing to change, so its AGENTS.md is neither validated nor claimed —
-	// a symlinked AGENTS.md must not block an init that touches nothing.
+	// selection with pins or the Microsandbox standing guidance rewrites
+	// the zone, and so does a stale zone left by an earlier versioned
+	// setup (a local-only strip removes it, a merge refreshes it). A
+	// pin-less Tart or agent-vm project without a zone renders nothing to
+	// change, so its AGENTS.md is neither validated nor claimed — a
+	// symlinked AGENTS.md must not block an init that touches nothing.
 	instructionsPath := filepath.Join(pc.Root, "AGENTS.md")
-	needsZone := localOnly || len(selected) > 0 || plan.Answers.Runtime == RuntimeMicrosandbox
+	needsZone := len(selected) > 0 || plan.Answers.Runtime == RuntimeMicrosandbox
 	if !needsZone {
 		data, readErr := fs.ReadFile(instructionsPath)
 		switch {

@@ -424,6 +424,43 @@ func TestDispatcherCheckSkipsPortProbesWhenAppliedMappingsUnreadable(t *testing.
 	}
 }
 
+func TestDispatcherCheckReportsStaleForwardAfterLastMappingRemoved(t *testing.T) {
+	// `ports remove` of the final entry persists portsConfigured with an
+	// empty list: the sandbox keeps forwarding the removed mapping until
+	// recreate, and check must still report it rather than going silent.
+	stale := freeLocalPort(t)
+	cfg := Config{
+		Isolation:       IsolationFull,
+		PortsConfigured: true,
+		Ports:           nil,
+	}
+	d := NewDispatcherWith(cfg, map[Runtime]Backend{
+		RuntimeMicrosandbox: &fakeAppliedPortsBackend{
+			fakeBackend: fakeBackend{id: RuntimeMicrosandbox, running: true},
+			applied: []PortMapping{
+				{Host: stale, Guest: 3000},
+				{Host: uint16(DefaultPort), Guest: uint16(DefaultPort)},
+			},
+		},
+		RuntimeTart:    &fakeBackend{id: RuntimeTart},
+		RuntimeAgentVM: &fakeBackend{id: RuntimeAgentVM},
+	})
+	var out string
+	var checkErr error
+	out = captureStdout(t, func() {
+		checkErr = d.Check(context.Background(), nil)
+	})
+	if checkErr != nil {
+		t.Fatal(checkErr)
+	}
+	if got := "port " + strconv.Itoa(int(stale)) + " (guest 3000): still forwarded until the sandbox is recreated"; !strings.Contains(out, got) {
+		t.Fatalf("stale forward after the last mapping was removed was not reported: %q", out)
+	}
+	if strings.Contains(out, strconv.Itoa(int(DefaultPort))) {
+		t.Fatalf("the OpenCode server forward must not be reported as a preview mapping: %q", out)
+	}
+}
+
 func TestDispatcherCheckTreatsRedirectAnswerAsReachable(t *testing.T) {
 	// A forward that answers with a redirect is reachable; following the
 	// redirect would turn a diagnostic probe into a request to an arbitrary

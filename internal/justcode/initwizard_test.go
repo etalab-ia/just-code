@@ -853,6 +853,90 @@ func TestInitZonelessPlanLeavesSymlinkedAgentsUntouched(t *testing.T) {
 	}
 }
 
+func TestInitLocalOnlyZonelessPlanLeavesSymlinkedAgentsUntouched(t *testing.T) {
+	// A local-only strip with no managed zone is a no-op: the plan must
+	// not claim (and refuse) a symlinked AGENTS.md it would not change.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(outside, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	wizard := InitWizard{StateDir: t.TempDir()}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart, SkillsLocalOnly: true, SkillsLocalOnlySet: true})
+	if err != nil {
+		t.Fatalf("a zoneless local-only plan must not validate an AGENTS.md it will not touch: %v", err)
+	}
+	if plan.InstructionsChanged || plan.InstructionsPath != "" {
+		t.Fatalf("zoneless local-only plan must not claim AGENTS.md: changed=%v path=%q", plan.InstructionsChanged, plan.InstructionsPath)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileForTest(t, outside); string(got) != "keep me\n" {
+		t.Fatalf("external file changed: %q", got)
+	}
+}
+
+func TestInitLocalOnlyStripsStaleZoneOnOtherRuntimes(t *testing.T) {
+	// The zone-presence check must not swallow the strip it exists for: a
+	// stale managed zone on a pin-less tart project is still removed by a
+	// local-only init.
+	if _, err := parseRuntimeName(string(RuntimeTart)); err != nil {
+		t.Skipf("%s is not selectable on this platform (%v)", RuntimeTart, err)
+	}
+	root := initTestRoot(t)
+	manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+	if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{
+		Runtime: string(RuntimeTart), Isolation: string(IsolationFull),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	lock := SkillLock{Repository: projectSkillsRepository, Revision: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64)}
+	zoned, err := MergeManagedInstructions("User rules.\n", []string{"official/rgaa"}, map[string]SkillLock{"official/rgaa": lock}, RuntimeTart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(zoned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wizard := InitWizard{StateDir: t.TempDir()}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Runtime: RuntimeTart, SkillsLocalOnly: true, SkillsLocalOnlySet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.InstructionsChanged {
+		t.Fatal("a stale managed zone must be stripped by a local-only init")
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	got := string(readFileForTest(t, filepath.Join(root, "AGENTS.md")))
+	if strings.Contains(got, "BEGIN JUST-CODE MANAGED SKILLS") {
+		t.Fatalf("managed zone survived the local-only strip: %q", got)
+	}
+	if !strings.Contains(got, "User rules.") {
+		t.Fatalf("unmanaged bytes were lost: %q", got)
+	}
+}
+
 func readFileForTest(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

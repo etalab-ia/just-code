@@ -372,13 +372,15 @@ type appliedPortMappingsBackend interface {
 // information and never fails because a dev server is down. The legacy
 // implicit 3000-3010 range is not probed; only configured mappings are, and
 // only on Microsandbox: the mappings describe that runtime's host-loopback
-// forwards, which no other runtime creates.
+// forwards, which no other runtime creates. An explicitly emptied mapping
+// list still counts as configured: the sandbox keeps forwarding the removed
+// mappings until recreate, and check reports them.
 //
 // Only mappings the running sandbox actually applied are probed: manifest
 // changes take effect on recreate, so a newly configured host port may belong
 // to an unrelated service and a removed mapping may still be forwarded.
 func (d *Dispatcher) probePublishedPorts(ctx context.Context) {
-	if !d.cfg.PortsConfigured || len(d.cfg.Ports) == 0 {
+	if !d.cfg.PortsConfigured {
 		return
 	}
 	ab, ok := d.backends[RuntimeMicrosandbox].(appliedPortMappingsBackend)
