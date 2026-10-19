@@ -39,17 +39,23 @@ type Tart struct {
 
 	KillPollInterval time.Duration
 	KillMaxPolls     int
+	// AgentWaitInterval and AgentWaitPolls bound the guest-agent wait, so a
+	// test can exercise the timeout path without waiting a real minute.
+	AgentWaitInterval time.Duration
+	AgentWaitPolls    int
 }
 
 // NewTart builds a Tart orchestrator with production defaults.
 func NewTart(cfg Config) *Tart {
 	return &Tart{
-		Config:           cfg,
-		Runner:           OSRunner{},
-		Starter:          OSStarter{},
-		StateDir:         DefaultStateDir(),
-		KillPollInterval: time.Second,
-		KillMaxPolls:     10,
+		Config:            cfg,
+		Runner:            OSRunner{},
+		Starter:           OSStarter{},
+		StateDir:          DefaultStateDir(),
+		KillPollInterval:  time.Second,
+		KillMaxPolls:      10,
+		AgentWaitInterval: time.Second,
+		AgentWaitPolls:    60,
 	}
 }
 
@@ -368,15 +374,140 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 
 // waitForAgent polls `tart exec <vm> true` until the guest agent responds, up
 // to 60 seconds.
-func (t *Tart) waitForAgent(ctx context.Context) error {
-	for i := 0; i < 60; i++ {
+//
+// fromOffset is the log length captured *before* the VM was launched: only
+// bytes past it belong to this launch, and startup-log diagnosis applies only
+// in that case. noLaunch says this call did not boot the VM but attached to one
+// already running; then the log cannot describe this call's boot at all, and a
+// failure in it belongs to an earlier run — so it is not read, rather than read
+// from some arbitrary point.
+//
+// The offset is a parameter rather than something read here on purpose. The
+// start failure this function diagnoses is emitted within seconds of the
+// detached `tart run` starting, and Start has already returned by the time the
+// first probe runs — so taking the mark here would seek past the very error it
+// is looking for and fall back to the generic timeout this fixes. It must be
+// captured before startVM.
+func (t *Tart) waitForAgent(ctx context.Context, fromOffset int64) error {
+	polls := t.AgentWaitPolls
+	if polls <= 0 {
+		// A zero value is a test-built Tart that did not set the seam; the
+		// production default is what a real orchestrator carries, but a struct
+		// literal must not silently disable the wait entirely.
+		polls = 60
+	}
+	interval := t.AgentWaitInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	// The VM log is append-only: OSStarter opens it with O_APPEND and nothing
+	// rotates it. A previous failed run therefore still contains its VZ error,
+	// and scanning from byte 0 would report that stale failure on a healthy
+	// retry — precisely when the user has just unlocked the keychain and tried
+	// again. Only bytes written past the pre-launch mark belong to this run.
+	diagnoseStartup := fromOffset != noLaunch
+	logOffset := fromOffset
+	for i := 0; i < polls; i++ {
 		res, err := t.Runner.Run(ctx, "tart", "exec", t.VMName(), "true")
 		if err == nil && res.ExitCode == 0 {
 			return nil
 		}
-		time.Sleep(time.Second)
+		// A guest that never answers is usually a guest that never booted: on
+		// a headless Mac, Virtualization.framework refuses to create the VM's
+		// host key when the login keychain is locked, and the run dies within
+		// seconds. Polling for the full timeout and then reporting a generic
+		// "guest agent" timeout hides the real cause, which is only visible in
+		// the VM log. Stop as soon as the log names a startup failure.
+		if diagnoseStartup {
+			if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
+				return fmt.Errorf("tart could not start %s: %s\n"+
+					"The VM never booted, so no guest agent could answer. On a machine with no GUI session "+
+					"(SSH, a rented Mac), Virtualization.framework cannot create the VM host key when the login "+
+					"keychain is locked. Unlock that keychain or open a GUI session, then retry. Full log: %s",
+					t.VMName(), reason, t.LogPath())
+			}
+		}
+		time.Sleep(interval)
+	}
+	if diagnoseStartup {
+		if reason := tartStartupFailure(t.LogPath(), logOffset); reason != "" {
+			return fmt.Errorf("timed out waiting for %s guest agent; the VM log reports a startup failure: %s (full log: %s)",
+				t.VMName(), reason, t.LogPath())
+		}
 	}
 	return fmt.Errorf("timed out waiting for %s guest agent", t.VMName())
+}
+
+// noLaunch marks a waitForAgent call that attached to an already-running VM
+// rather than booting one, so startup-log diagnosis is skipped entirely.
+const noLaunch = -1
+
+// logSize reports the current size of a log file, or 0 when it cannot be
+// read. Zero is the right fallback: it scans the whole file, which is what an
+// absent or unreadable log would have produced anyway.
+func logSize(logPath string) int64 {
+	info, err := os.Stat(logPath)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+// tartStartupFailure extracts the first Virtualization.framework startup error
+// written after fromOffset, or "" when the log shows no such failure. The log
+// is append-only and shared across runs, so the offset is what keeps a
+// previous run's failure from being read as this run's. The file is also live
+// — the VM may still be writing — so an unreadable or absent log stays silent
+// rather than turn a slow boot into a false error.
+func tartStartupFailure(logPath string, fromOffset int64) string {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if fromOffset > 0 {
+		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
+			return ""
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if isTartStartupFailure(line) {
+			return line
+		}
+	}
+	return ""
+}
+
+// isTartStartupFailure reports whether a log line describes the specific
+// startup failure a locked login keychain causes: the host key cannot be
+// created.
+//
+// The match is deliberately narrow. VZErrorDomain covers many distinct codes —
+// invalid configuration, invalid disk, VM limit, network failures — and only
+// one of them is the keychain case, so matching the domain alone would blame a
+// locked keychain for any Virtualization.framework error and send the user to
+// unlock something that is not the problem. Anything else is left to the
+// generic timeout, which reports the true cause without inventing one.
+//
+// Wording varies across macOS versions, so both the security-error message and
+// the host-key POSIX failure are accepted, in either the tart or the bare
+// framework form.
+func isTartStartupFailure(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.Contains(line, "Failed to create new HostKey") {
+		return true
+	}
+	if strings.Contains(line, "VZErrorDomain") && strings.Contains(line, "security error") {
+		return true
+	}
+	return false
 }
 
 func (t *Tart) clone(ctx context.Context) error {
@@ -454,7 +585,11 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 	if running {
-		if err := t.waitForAgent(ctx); err != nil {
+		// No launch happened in this call: the VM is already up, so its log
+		// says nothing about a boot in progress and a failure in it belongs to
+		// an earlier run. Startup-log diagnosis is skipped rather than applied
+		// to some arbitrary point in the file.
+		if err := t.waitForAgent(ctx, noLaunch); err != nil {
 			return err
 		}
 		if cfg.Isolation == IsolationFull {
@@ -493,10 +628,14 @@ func (t *Tart) Start(ctx context.Context) error {
 		return err
 	}
 	fmt.Printf("Starting %s with Tart...\n", vm)
+	// Mark the log before launching: the detached process starts writing
+	// immediately, and the failure this diagnoses can be on disk by the time
+	// startVM returns. Taking the mark after the launch would skip it.
+	logOffset := logSize(t.LogPath())
 	if err := t.startVM(ctx); err != nil {
 		return err
 	}
-	if err := t.waitForAgent(ctx); err != nil {
+	if err := t.waitForAgent(ctx, logOffset); err != nil {
 		return err
 	}
 	if cfg.Isolation == IsolationFull {
@@ -551,8 +690,49 @@ func (t *Tart) Doctor(ctx context.Context) error {
 		return fmt.Errorf("tart is not installed")
 	}
 	fmt.Print(res.Stdout)
+	// A locked login keychain is not fatal to `tart` itself but makes every VM
+	// fail to boot, and the failure surfaces much later as an unhelpful guest
+	// agent timeout. Name it here, where the user is looking, rather than
+	// letting it be discovered after a five-minute wait. This is advisory: a
+	// keychain can be unlocked, and doctor stays read-only.
+	if locked, detail := loginKeychainLocked(ctx, t.Runner); locked {
+		fmt.Printf("Warning: the login keychain appears locked (%s). Virtualization.framework stores each VM's host key there, so a Tart VM cannot boot until it is unlocked — `start --tart` would fail with a guest agent timeout. Unlock it (or open a GUI session) before starting.\n", detail)
+	}
 	fmt.Println("Tart runtime is ready.")
 	return nil
+}
+
+// loginKeychainLocked reports a keychain state that will stop a Tart VM from
+// booting, using the only read-only signal the `security` CLI offers.
+//
+// This is deliberately narrow about what it claims. `security
+// show-keychain-info` displays keychain *settings* (lock-on-sleep, timeout),
+// not lock status, so a zero exit only means "the command ran", not "the
+// keychain is unlocked" — Apple's own status API (SecKeychainGetStatus) is not
+// reachable from the shell. The probe therefore warns only on the two errors a
+// headless session actually produces, and treats success as inconclusive
+// rather than as proof. A false "ready" is a known limit of this check, and
+// the real diagnosis remains the VM log read in waitForAgent.
+//
+// Read-only throughout: it must never unlock or modify a keychain, so an
+// unusable probe stays silent rather than blocking doctor.
+func loginKeychainLocked(ctx context.Context, r Runner) (bool, string) {
+	res, err := r.Run(ctx, "security", "show-keychain-info")
+	if err != nil || res.ExitCode == 0 {
+		return false, ""
+	}
+	detail := strings.TrimSpace(res.Stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(res.Stdout)
+	}
+	lower := strings.ToLower(detail)
+	// "locked" is the explicit wording; "user interaction is not allowed" is
+	// what a locked keychain returns in a session with no GUI to prompt in,
+	// which is exactly the headless case this warning exists for.
+	if strings.Contains(lower, "locked") || strings.Contains(lower, "user interaction is not allowed") {
+		return true, detail
+	}
+	return false, ""
 }
 
 func (t *Tart) ID() Runtime { return RuntimeTart }
