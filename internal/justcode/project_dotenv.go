@@ -73,7 +73,11 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 	seen := map[string]bool{}
 	for key := range values {
 		if !validSecretIdentifier(key) {
-			return ProjectDotenv{}, fmt.Errorf("dotenv contains an unsupported variable name")
+			// The name is safe to print — it is an identifier, not a value —
+			// and printing it is the point: the qualification protocol requires
+			// each refused class to name the variable, and a file with many
+			// variables gives the user nothing to act on without it.
+			return ProjectDotenv{}, fmt.Errorf("variable name %q is not supported; names may use letters, digits and underscore, may not start with a digit, and are limited to 128 characters", key)
 		}
 	}
 	// Record repeated assignment lines without mistaking KEY=value text inside

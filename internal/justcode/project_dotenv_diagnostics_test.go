@@ -40,6 +40,15 @@ func TestImportRefusalNamesTheVariableAndTheRule(t *testing.T) {
 			wantVar: "NUL_VALUE",
 			wantIn:  "NUL",
 		},
+		{
+			// A name is an identifier, not a value, so it is safe to print —
+			// and necessary: a file with many variables gives the user nothing
+			// to act on when the refusal does not say which one.
+			name:    "unsupported variable name",
+			data:    "has space=1\n",
+			wantVar: "has space",
+			wantIn:  "not supported",
+		},
 	} {
 		_, err := ParseProjectDotenv([]byte(c.data))
 		if err == nil {
