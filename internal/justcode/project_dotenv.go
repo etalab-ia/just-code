@@ -205,11 +205,17 @@ func attributeFaultByte(data []byte, offset int) string {
 	// marker belongs to. This runs only on an input that already parsed, so it
 	// cannot reintroduce the accusation the guard above prevents.
 	if end := offset + len(token); end <= len(candidate) {
-		truncated := make([]byte, 0, end+1)
-		truncated = append(truncated, candidate[:end]...)
-		truncated = append(truncated, '\n')
-		if name, ok := keyHoldingMarker(truncated, mask, token); ok {
-			return name
+		// Cutting mid-value can leave a quote open — `A="bad<token>` does not
+		// parse — so the cut is also offered with the quote closed. The second
+		// form is tried only after the first fails, and both are handed to the
+		// parser: the repair closes a quote, it does not re-implement quoting.
+		for _, tail := range []string{"\n", "\"\n"} {
+			truncated := make([]byte, 0, end+len(tail))
+			truncated = append(truncated, candidate[:end]...)
+			truncated = append(truncated, tail...)
+			if name, ok := keyHoldingMarker(truncated, mask, token); ok && name != "" {
+				return name
+			}
 		}
 	}
 	return ""
@@ -292,13 +298,14 @@ func firstInvalidUTF8Byte(data []byte) int {
 // line. A CRLF pair is an ordinary line ending and is never considered.
 //
 // Candidates are pre-filtered because the confirming substitution re-parses the
-// whole input. Only a carriage return whose following statement is NOT a
-// well-formed assignment can have split a value; a carriage return that merely
-// separates two assignments is legal and is skipped without a parse. That keeps
-// the scan linear on a file that is mostly legal separators — which a plain
-// "try the first N" bound failed to do, because a legitimate file can carry
-// many legal separators before the faulty one, and the bound then discarded the
-// only candidate that mattered.
+// whole input. A carriage return in front of a statement the parser accepts on
+// its own — an assignment, a comment, or a blank line — is a legal separator and
+// cannot have split a value, so it is skipped after a parse of that statement
+// alone, never of the file. Because consecutive separators partition the input,
+// those fragment parses total linear work, and the whole-file parse is spent
+// only on a genuine candidate. A plain "try the first N" bound was tried first
+// and rejected: a legitimate file can carry many legal separators before the
+// faulty one, and the bound discarded the only candidate that mattered.
 func carriageReturnFault(data []byte) string {
 	for i := 0; i < len(data); i++ {
 		if data[i] != '\r' {
@@ -308,8 +315,8 @@ func carriageReturnFault(data []byte) string {
 			i++ // CRLF: an ordinary line ending.
 			continue
 		}
-		if isAssignmentStatement(data[i+1:]) {
-			continue // a legal separator between two assignments
+		if statementStandalone(data[i+1:]) {
+			continue // a legal separator: assignment, comment, or blank line
 		}
 		if name := attributeFaultByte(data, i); name != "" {
 			return name
@@ -318,27 +325,28 @@ func carriageReturnFault(data []byte) string {
 	return ""
 }
 
-// isAssignmentStatement reports whether the text is a well-formed assignment,
-// accepting both '=' and the yaml-style ':' that godotenv parses. It reads only
-// the statement's own line, terminated by a newline or by a bare carriage
-// return, because godotenv treats either as a line ending.
+// statementStandalone reports whether the statement beginning at rest is
+// accepted by the parser on its own — an assignment, a comment, or a blank
+// line. A carriage return in front of such a statement is a legal separator and
+// cannot have split a value.
 //
-// This is a filter, not a validator: a false positive costs one extra parse,
-// while hiding a real candidate would suppress the diagnosis. Where the two
-// error, prefer calling something an assignment only when it plainly is.
-func isAssignmentStatement(rest []byte) bool {
+// The parser decides, rather than a hand-written classifier. Earlier versions
+// read the identifier and delimiter themselves, and three review rounds each
+// found a statement class they misjudged: comments and blank lines were treated
+// as candidates (so a file full of them was re-parsed once per CR, which is the
+// quadratic cost the filter was meant to remove), and a malformed value such as
+// `tail="` was accepted because only its identifier was checked. Delegating
+// costs one parse per CR, but only for statements that are not assignments —
+// and it cannot drift from the grammar the way a copy does.
+func statementStandalone(rest []byte) bool {
+	// The terminator is kept: the parser distinguishes `tail` (a bare word,
+	// which it accepts) from `tail\n` (a name with a bad character in it, which
+	// it rejects). Stripping it judged the split fragment legal and skipped the
+	// very carriage return that caused the failure.
 	end := len(rest)
 	if j := bytes.IndexAny(rest, "\r\n"); j >= 0 {
-		end = j
+		end = j + 1
 	}
-	line := strings.TrimSpace(string(rest[:end]))
-	line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-	if line == "" || strings.HasPrefix(line, "#") {
-		return false
-	}
-	delim := strings.IndexAny(line, "=:")
-	if delim <= 0 {
-		return false
-	}
-	return validSecretIdentifier(strings.TrimSpace(line[:delim]))
+	_, err := godotenv.UnmarshalBytes(rest[:end])
+	return err == nil
 }

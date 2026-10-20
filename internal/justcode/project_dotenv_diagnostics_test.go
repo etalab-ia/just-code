@@ -372,3 +372,69 @@ func TestImportSizeLimitStillReportsSize(t *testing.T) {
 		t.Fatalf("a size fault must not be reported as an encoding fault: %v", err)
 	}
 }
+
+// TestImportRefusalSkipsCommentAndBlankCarriageReturnSeparators is the sixth
+// review round's P1. Comments and blank lines are legal statements too, so a
+// file that uses them as bare-CR separators was re-parsing the whole input once
+// per separator — the quadratic cost the filter exists to remove, reintroduced
+// because the first classifier recognised only assignments. The filter now asks
+// the parser whether the following statement stands on its own.
+func TestImportRefusalSkipsCommentAndBlankCarriageReturnSeparators(t *testing.T) {
+	var b strings.Builder
+	// 8000 separators, not 2000: the quadratic implementation took ~1.3 s at
+	// 2000 and slipped under a 2 s budget, so the test passed against the very
+	// code it was written to catch. At 8000 it takes ~20 s against ~5 ms here.
+	// A threshold is only as good as the gap it splits.
+	for i := 0; i < 8000; i++ {
+		b.WriteString("A=1\r# comment\n")
+	}
+	b.WriteString("K=bad\rtail\n")
+	done := make(chan error, 1)
+	go func() {
+		_, err := ParseProjectDotenv([]byte(b.String()))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a carriage return splitting a value must be refused")
+		}
+		if !strings.Contains(err.Error(), "K:") {
+			t.Errorf("the fault must be named past comment separators: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("comment-only separators must not cause a re-parse per separator")
+	}
+}
+
+// TestImportRefusalKeepsAMalformedSeparatorAsCandidate is the sixth round's P2.
+// `tail="` is not a well-formed statement — its quote is unterminated — so a
+// carriage return in front of it may be the cause and must stay a candidate.
+// The first classifier checked only the identifier and skipped it.
+func TestImportRefusalKeepsAMalformedSeparatorAsCandidate(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("K=bad\rtail=\"\n"))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("a malformed-looking separator must not hide the fault: %v", err)
+	}
+}
+
+// TestImportRefusalNamesQuotedDuplicateOverwrittenByLaterAssignment is the
+// sixth round's P3. When the faulty value is quoted and a later duplicate
+// overwrites it, cutting the input just after the marker leaves the quote open,
+// so the truncated form does not parse and the key was lost. The cut is now
+// also offered with the quote closed.
+func TestImportRefusalNamesQuotedDuplicateOverwrittenByLaterAssignment(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("A=\"bad\x00\"\nA=good\n"))
+	if err == nil {
+		t.Fatal("a NUL byte in a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "A:") {
+		t.Errorf("a quoted duplicate overwritten later must still be named: %v", err)
+	}
+	if !strings.Contains(err.Error(), "NUL") {
+		t.Errorf("the refusal must state the NUL rule: %v", err)
+	}
+}
