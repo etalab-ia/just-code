@@ -281,15 +281,6 @@ func firstInvalidUTF8Byte(data []byte) int {
 	return -1
 }
 
-// maxFaultCandidates bounds how many candidate bytes are tried when
-// attributing a fault. Each attempt re-parses the whole input, so an unbounded
-// scan over a file full of candidate bytes is quadratic and can stall the
-// import on a file that is within the size limit. Legitimate files essentially
-// never carry many candidates — a value with a carriage return in it is a
-// single one — so past this bound the diagnosis falls back to naming the file
-// rather than the variable. That is a less specific message, never a wrong one.
-const maxFaultCandidates = 8
-
 // carriageReturnFault names the variable a fatal carriage return belongs to,
 // or "" when none can be tied to the failure.
 //
@@ -299,8 +290,16 @@ const maxFaultCandidates = 8
 // file parse for the attribution to stand — otherwise the real fault lies
 // elsewhere and blaming the carriage return would send the user to the wrong
 // line. A CRLF pair is an ordinary line ending and is never considered.
+//
+// Candidates are pre-filtered because the confirming substitution re-parses the
+// whole input. Only a carriage return whose following statement is NOT a
+// well-formed assignment can have split a value; a carriage return that merely
+// separates two assignments is legal and is skipped without a parse. That keeps
+// the scan linear on a file that is mostly legal separators — which a plain
+// "try the first N" bound failed to do, because a legitimate file can carry
+// many legal separators before the faulty one, and the bound then discarded the
+// only candidate that mattered.
 func carriageReturnFault(data []byte) string {
-	tried := 0
 	for i := 0; i < len(data); i++ {
 		if data[i] != '\r' {
 			continue
@@ -309,12 +308,37 @@ func carriageReturnFault(data []byte) string {
 			i++ // CRLF: an ordinary line ending.
 			continue
 		}
-		if tried++; tried > maxFaultCandidates {
-			return ""
+		if isAssignmentStatement(data[i+1:]) {
+			continue // a legal separator between two assignments
 		}
 		if name := attributeFaultByte(data, i); name != "" {
 			return name
 		}
 	}
 	return ""
+}
+
+// isAssignmentStatement reports whether the text is a well-formed assignment,
+// accepting both '=' and the yaml-style ':' that godotenv parses. It reads only
+// the statement's own line, terminated by a newline or by a bare carriage
+// return, because godotenv treats either as a line ending.
+//
+// This is a filter, not a validator: a false positive costs one extra parse,
+// while hiding a real candidate would suppress the diagnosis. Where the two
+// error, prefer calling something an assignment only when it plainly is.
+func isAssignmentStatement(rest []byte) bool {
+	end := len(rest)
+	if j := bytes.IndexAny(rest, "\r\n"); j >= 0 {
+		end = j
+	}
+	line := strings.TrimSpace(string(rest[:end]))
+	line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+	if line == "" || strings.HasPrefix(line, "#") {
+		return false
+	}
+	delim := strings.IndexAny(line, "=:")
+	if delim <= 0 {
+		return false
+	}
+	return validSecretIdentifier(strings.TrimSpace(line[:delim]))
 }

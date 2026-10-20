@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -299,6 +300,31 @@ func TestImportRefusalStaysFastOnManyCandidateBytes(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("attribution must stay bounded on a file full of bare carriage returns")
+	}
+}
+
+// TestImportRefusalReachesTheFaultyCarriageReturnBeyondLegalOnes is the fifth
+// review round's finding, and the reason the candidate bound was replaced by a
+// filter rather than merely raised. A legitimate file can carry many legal
+// bare-CR separators before the one that actually splits a value; "try the
+// first N" discarded exactly the candidate that mattered and fell back to the
+// generic message. Skipping the legal separators without a parse keeps the scan
+// linear *and* reaches the fault, whatever its position.
+func TestImportRefusalReachesTheFaultyCarriageReturnBeyondLegalOnes(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&b, "A%d=1\r", i)
+	}
+	b.WriteString("K=bad\rtail\n")
+	_, err := ParseProjectDotenv([]byte(b.String()))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("the faulty carriage return must be named even after legal ones: %v", err)
+	}
+	if !strings.Contains(err.Error(), "carriage return") {
+		t.Errorf("the refusal must state the carriage-return rule: %v", err)
 	}
 }
 
