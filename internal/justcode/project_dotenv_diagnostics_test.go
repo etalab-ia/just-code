@@ -115,6 +115,76 @@ func TestImportAcceptsTheCarriageReturnFormsThatAreLegal(t *testing.T) {
 	}
 }
 
+// TestImportRefusalNamesTheEnclosingAssignmentNotTheContinuation covers the
+// non-disclosure hole an independent review found in the first version of this
+// fix. That version located a fault's line by splitting on newlines, but
+// godotenv lets a quoted value span physical lines — so in
+// `K="first\nSECRET_TOKEN=...` it read the second line as an assignment and
+// printed what was actually value text. The scanner now follows the parser's
+// statement grammar, where the fault is attributed to K and no continuation
+// line is ever mistaken for a key.
+func TestImportRefusalNamesTheEnclosingAssignmentNotTheContinuation(t *testing.T) {
+	const secret = "SUPERSECRET_TOKEN_9f3a"
+	_, err := ParseProjectDotenv([]byte("K=\"first\n" + secret + "=\xff\"\n"))
+	if err == nil {
+		t.Fatal("an invalid byte inside a multiline value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("the refusal must name the enclosing assignment K: %v", err)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "9f3a") {
+		t.Errorf("the refusal leaked value text from a continuation line: %v", err)
+	}
+}
+
+// TestImportRefusalBlamesOnlyTheFaultyCarriageReturn is the ordering guard: a
+// bare carriage return is a legal separator, so when the parser fails on
+// something else the carriage return must not be accused. The first version
+// scanned unconditionally and named A for `A=1\rB=2\nBROKEN="`, whose real
+// fault is the unterminated BROKEN quote.
+func TestImportRefusalBlamesOnlyTheFaultyCarriageReturn(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("A=1\rB=2\nBROKEN=\"\n"))
+	if err == nil {
+		t.Fatal("an unterminated quoted value must be refused")
+	}
+	if strings.Contains(err.Error(), "A:") || strings.Contains(err.Error(), "B:") {
+		t.Errorf("a legal bare-CR separator must not be blamed for an unrelated failure: %v", err)
+	}
+	if strings.Contains(err.Error(), "carriage return") {
+		t.Errorf("the failure is an unterminated quote, not a carriage return: %v", err)
+	}
+}
+
+// TestImportRefusalRecognizesYAMLDelimiter pins the second grammar gap: the
+// parser accepts ':' as an assignment delimiter, so a diagnostic that only
+// looks for '=' fails to name the variable on those lines.
+func TestImportRefusalRecognizesYAMLDelimiter(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("API_KEY: bad\xff\n"))
+	if err == nil {
+		t.Fatal("an invalid byte must be refused")
+	}
+	if !strings.Contains(err.Error(), "API_KEY") {
+		t.Errorf("a colon-delimited assignment must be named like an equals one: %v", err)
+	}
+}
+
+// TestCarriageReturnRemedyIsAccurate pins the advice itself. Converting the CR
+// to LF does NOT repair `K=bad\rtail`: the trailing fragment is still a line
+// with no assignment. Telling the user to do it would send them in a circle.
+func TestCarriageReturnRemedyIsAccurate(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("K=bad\rtail\n"))
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "convert the file to LF") {
+		t.Errorf("LF conversion does not repair this shape, so it must not be advised: %v", err)
+	}
+	if !strings.Contains(msg, "remove the carriage return") {
+		t.Errorf("the advice must be the remedy that works: %v", err)
+	}
+}
+
 // TestImportSizeLimitStillReportsSize pins the one fault that really is about
 // size: it must say so rather than fall into the encoding wording.
 func TestImportSizeLimitStillReportsSize(t *testing.T) {
