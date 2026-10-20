@@ -3,6 +3,7 @@ package justcode
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -439,18 +440,72 @@ func TestImportRefusalNamesQuotedDuplicateOverwrittenByLaterAssignment(t *testin
 	}
 }
 
+// TestImportRefusalNamesAValueSplitBySeveralCarriageReturns is the eighth
+// round's P2. Confirming one CR at a time could not repair `K=bad\rtail\rend`:
+// neutralising either CR left the other fragment malformed, so the whole file
+// still failed to parse and nothing was attributed. The repair drops the run of
+// splits that continues the same value, which is what the remedy asks for.
+func TestImportRefusalNamesAValueSplitBySeveralCarriageReturns(t *testing.T) {
+	for _, in := range []string{
+		"K=bad\rtail\rend\n",
+		"K=a\rb\rc\rd\n",
+	} {
+		_, err := ParseProjectDotenv([]byte(in))
+		if err == nil {
+			t.Fatalf("a value split by carriage returns must be refused: %q", in)
+		}
+		if !strings.Contains(err.Error(), "K:") {
+			t.Errorf("a value split by several carriage returns must be named: %q -> %v", in, err)
+		}
+		if !strings.Contains(err.Error(), "carriage return") {
+			t.Errorf("the refusal must state the carriage-return rule: %v", err)
+		}
+	}
+}
+
+// TestImportRefusalDoesNotClaimTheRemainderHasNoAssignment is the eighth round's
+// P2 on wording. `K=bad\rtail="` is attributed to K, but the remainder does
+// contain an assignment delimiter and fails on its unterminated quote, so a
+// message asserting the remainder "has no assignment" describes the wrong fault.
+// The rule is about validity, and the message says so.
+func TestImportRefusalDoesNotClaimTheRemainderHasNoAssignment(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("K=bad\rtail=\"\n"))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("the fault must be named: %v", err)
+	}
+	if strings.Contains(err.Error(), "has no assignment") {
+		t.Errorf("the remainder does contain a delimiter; the message must not claim otherwise: %v", err)
+	}
+}
+
 // TestImportRefusalBoundsWorkOnManyMalformedFragments is the seventh round's P1.
 // The filter made legal separators free, but every *malformed* fragment still
 // costs a whole-file re-parse, and a file can carry about one candidate per
 // byte — so an 8 KB file with 2000 such fragments spent 1.04 s. A count cap was
 // ruled out by fuzzing: the successful candidate can sit arbitrarily far down
 // the list, so the budget is spent in re-parsed bytes and adapts to file size.
+//
+// It asserts the re-parsed bytes directly rather than a wall-clock budget. The
+// first version used 3 seconds, and it failed in CI, whose `go test -race`
+// instruments execution ~23x slower: the same input took 7.3 s instrumented
+// against 0.3 s plain. A timing assertion measures the machine as much as the
+// code, and this one had already been loosened once for the same reason. The
+// byte count is the contract the code actually holds and does not vary with the
+// runner; the time bound is kept only as a generous backstop against a hang.
 func TestImportRefusalBoundsWorkOnManyMalformedFragments(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("BROKEN=\"\n")
 	for i := 0; i < 4000; i++ {
 		b.WriteString("K=\"\r")
 	}
+	var reparsed int64
+	prev := observeFaultReparseBytes
+	observeFaultReparseBytes = func(n int) { atomic.AddInt64(&reparsed, int64(n)) }
+	defer func() { observeFaultReparseBytes = prev }()
+
 	done := make(chan error, 1)
 	go func() {
 		_, err := ParseProjectDotenv([]byte(b.String()))
@@ -466,8 +521,18 @@ func TestImportRefusalBoundsWorkOnManyMalformedFragments(t *testing.T) {
 		if strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), "K=\"") {
 			t.Errorf("the refusal must not quote source text: %v", err)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("attribution must be bounded on a file of malformed fragments")
+	case <-time.After(60 * time.Second):
+		t.Fatal("attribution must terminate on a file of malformed fragments")
+	}
+	got := atomic.LoadInt64(&reparsed)
+	if got > maxFaultReparseBytes {
+		t.Errorf("attribution re-parsed %d bytes, over the %d-byte budget", got, maxFaultReparseBytes)
+	}
+	// And the budget must actually be spent: without the bound this input
+	// re-parses about len(data) per fragment, tens of MiB in total. A tiny
+	// figure would mean the bypass was reached without doing the work.
+	if got == 0 {
+		t.Error("no re-parsing was observed: the attribution never ran")
 	}
 }
 

@@ -45,6 +45,16 @@ const (
 // the diagnosis for every file that is not adversarially broken.
 const maxFaultReparseBytes = 4 << 20
 
+// observeFaultReparseBytes is a test seam: it is called with the size of each
+// whole-file re-parse the fault attribution spends. Tests assert the work budget
+// through it instead of through wall-clock time, because a timing assertion is
+// only meaningful against the machine it was written on — this package's CI runs
+// `go test -race`, which instrumented execution ~23x slower than a plain build
+// (the same 4000-fragment input took 7.3 s instead of 0.3 s) and pushed a
+// 3-second budget past its own bound. Re-parsed bytes are the contract the code
+// actually holds, and they do not vary with the runner.
+var observeFaultReparseBytes = func(int) {}
+
 type ProjectDotenv struct {
 	Values     map[string]string
 	Duplicates []string
@@ -102,7 +112,14 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 			// it is still not a valid statement. What repairs the file is
 			// removing the CR from the value or making the remainder a real
 			// assignment.
-			return ProjectDotenv{}, fmt.Errorf("%s: the value contains a carriage return, which ends the assignment early, so the rest of the line is read as a separate statement that has no assignment; remove the carriage return from the value, or make the remainder a complete assignment", name)
+			//
+			// The wording says the remainder is not a valid statement rather
+			// than that it has no assignment: `tail="` does contain a
+			// delimiter and is rejected because its quote is unterminated,
+			// and a remainder can also be malformed for other reasons. Only
+			// the first CR is asserted as the cause, which is what the
+			// confirmation actually proved.
+			return ProjectDotenv{}, fmt.Errorf("%s: the value contains a carriage return, which ends the assignment early, so the rest of the line is read as a separate statement that is not a valid assignment; remove the carriage return from the value, or make the remainder a complete assignment", name)
 		}
 		// Anything else stays deliberately opaque: the reason cannot be given
 		// without either quoting the source or guessing, and a wrong guess is
@@ -197,10 +214,29 @@ func attributeFaultByte(data []byte, offset int) string {
 	if token == "" {
 		return ""
 	}
+	// The fault byte becomes the token, and the other bare CRs that continue
+	// the same physical line are dropped with it. A value split by several CRs
+	// — `K=bad\rtail\rend` — is not repaired by neutralising any single one, so
+	// confirming them one at a time attributed nothing and fell back to the
+	// file-level message. Suppressing the rest of the run repairs the line as a
+	// whole, which is what the remedy ("remove the carriage return from the
+	// value") actually asks for. Only bare CRs before the line's end are
+	// dropped, so a fault on another line is untouched and the parse guard still
+	// rejects an attribution that would not stand on its own.
+	rest := data[offset+1:]
+	if j := bytes.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[:j]
+	}
 	candidate := make([]byte, 0, len(data)+len(token))
 	candidate = append(candidate, data[:offset]...)
 	candidate = append(candidate, token...)
-	candidate = append(candidate, data[offset+1:]...)
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == '\r' {
+			continue // another split in the same value: drop it with the first
+		}
+		candidate = append(candidate, rest[i])
+	}
+	candidate = append(candidate, data[offset+1+len(rest):]...)
 	// Parse with the same literal-dollar masking the main parse applies.
 	// Without it the injected token is expanded away whenever it lands just
 	// after a '$', because godotenv then reads it as a variable reference —
@@ -343,13 +379,14 @@ func carriageReturnFault(data []byte) string {
 		if statementStandalone(data[i+1:]) {
 			continue // a legal separator: assignment, comment, or blank line
 		}
-		if spent >= maxFaultReparseBytes {
+		if spent+len(data) > maxFaultReparseBytes {
 			return "" // budget exhausted: name the file, never a wrong variable
 		}
 		// Charged per attempt rather than per parse: attributeFaultByte does at
 		// least one whole-file parse and at most a few, so len(data) per attempt
 		// is the natural unit and keeps the budget in bytes of input re-read.
 		spent += len(data)
+		observeFaultReparseBytes(len(data))
 		name := attributeFaultByte(data, i)
 		if name != "" {
 			return name
@@ -358,27 +395,49 @@ func carriageReturnFault(data []byte) string {
 	return ""
 }
 
+// firstStatementLen returns the length of the first statement in rest, as the
+// parser consumes it, or 0 when rest is empty.
+//
+// The boundary is not simply the next carriage return. To godotenv a CR is
+// whitespace while it scans a variable name, so a statement runs to the next
+// LF unless an assignment delimiter appears first — and only then does the
+// following CR end it, because a CR terminates an unquoted *value*. Getting
+// this wrong is what hid a fault: cutting at the first CR turned `tail\rend`
+// into `tail\r`, which parses, so the filter called a broken statement legal
+// and skipped the carriage return that caused the failure.
+func firstStatementLen(rest []byte) int {
+	end := len(rest)
+	if j := bytes.IndexByte(rest, '\n'); j >= 0 {
+		end = j + 1
+	}
+	line := rest[:end]
+	if d := bytes.IndexAny(line, "=:"); d >= 0 {
+		if cr := bytes.IndexByte(line[d:], '\r'); cr >= 0 {
+			return d + cr + 1
+		}
+	}
+	return end
+}
+
 // statementStandalone reports whether the statement beginning at rest is
 // accepted by the parser on its own — an assignment, a comment, or a blank
 // line. A carriage return in front of such a statement is a legal separator and
 // cannot have split a value.
 //
-// The parser decides, rather than a hand-written classifier. Earlier versions
-// read the identifier and delimiter themselves, and three review rounds each
-// found a statement class they misjudged: comments and blank lines were treated
-// as candidates (so a file full of them was re-parsed once per CR, which is the
-// quadratic cost the filter was meant to remove), and a malformed value such as
-// `tail="` was accepted because only its identifier was checked. Delegating
-// costs one parse per CR, but only for statements that are not assignments —
-// and it cannot drift from the grammar the way a copy does.
+// The parser decides whether the statement is well formed, rather than a
+// hand-written classifier. Earlier versions read the identifier and delimiter
+// themselves, and review rounds each found a class they misjudged: comments and
+// blank lines were treated as candidates (so a file full of them was re-parsed
+// once per CR, the quadratic cost the filter exists to remove), malformed values
+// such as `tail="` were accepted because only the identifier was checked, and a
+// statement reaching across a whitespace CR was cut short. Delegating costs one
+// parse per CR, but only for statements that are not legal separators — and it
+// cannot drift from the grammar the way a copy does.
 func statementStandalone(rest []byte) bool {
-	// The terminator is kept: the parser distinguishes `tail` (a bare word,
-	// which it accepts) from `tail\n` (a name with a bad character in it, which
-	// it rejects). Stripping it judged the split fragment legal and skipped the
-	// very carriage return that caused the failure.
-	end := len(rest)
-	if j := bytes.IndexAny(rest, "\r\n"); j >= 0 {
-		end = j + 1
+	end := firstStatementLen(rest)
+	// A blank or whitespace-only statement is legal.
+	if len(bytes.TrimSpace(rest[:end])) == 0 {
+		return true
 	}
 	_, err := godotenv.UnmarshalBytes(rest[:end])
 	return err == nil
