@@ -33,11 +33,15 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 		return ProjectDotenv{}, fmt.Errorf("dotenv file is %d bytes, over the %d-byte import limit", len(data), MaxProjectDotenvBytes)
 	}
 	if !utf8.Valid(data) {
-		return ProjectDotenv{}, invalidTextError(data, "the value is not valid UTF-8; dotenv files must be UTF-8")
+		const reason = "the value is not valid UTF-8; dotenv files must be UTF-8"
+		if name := attributeFaultByte(data, firstInvalidUTF8Byte(data)); name != "" {
+			return ProjectDotenv{}, fmt.Errorf("%s: %s", name, reason)
+		}
+		return ProjectDotenv{}, fmt.Errorf("the dotenv file contains text no loader can decode: %s", reason)
 	}
 	if i := bytes.IndexByte(data, 0); i >= 0 {
-		if f := locateFault(data, i); f.Name != "" {
-			return ProjectDotenv{}, fmt.Errorf("%s: the value contains a NUL byte, which no dotenv loader accepts", f.Name)
+		if name := attributeFaultByte(data, i); name != "" {
+			return ProjectDotenv{}, fmt.Errorf("%s: the value contains a NUL byte, which no dotenv loader accepts", name)
 		}
 		return ProjectDotenv{}, fmt.Errorf("the dotenv file contains a NUL byte, which no dotenv loader accepts")
 	}
@@ -139,177 +143,97 @@ func closesQuote(line string, quote byte) bool {
 	return false
 }
 
-// dotenvFault locates a byte offset in a dotenv file and attributes it to the
-// variable whose assignment it belongs to, using the same statement grammar
-// godotenv parses with.
-type dotenvFault struct {
-	// Name is the variable the fault belongs to, or "" when none could be
-	// established safely. A caller must not print a name it did not get here.
-	Name string
-}
-
-// locateFault walks the file the way the parser does — one statement at a
-// time, with quoted values allowed to span physical lines — and returns the
-// assignment name in effect at offset target.
+// attributeFaultByte returns the name of the variable whose value contains the
+// byte at offset, by asking the parser rather than imitating it.
 //
-// Walking the grammar rather than splitting on newlines is what keeps a
-// continuation line of a quoted value from being mistaken for an assignment:
-// in `K="first\nSECRET=...`, a line-based reader sees `SECRET=...` as a key and
-// prints it, which is the non-disclosure guarantee broken. Only text before the
-// value's own delimiter is ever returned, so no value reaches the caller.
-func locateFault(data []byte, target int) dotenvFault {
+// The byte is replaced with an unambiguous ASCII token and the file is parsed
+// again; the token surfaces in whichever value the parser assigned it to, and
+// that value's key is the answer. A byte belonging to no value — inside a
+// comment, or in a file that still fails to parse — yields no name, and the
+// caller falls back to naming only the file.
+//
+// Delegating to the parser is deliberate. The first versions of this diagnostic
+// walked the grammar by hand, and three review rounds each found a fresh
+// divergence from it: quoted values spanning physical lines, comment blocks,
+// escape parity, carriage returns inside quotes. A hand-written walker has to
+// reproduce every rule the parser applies, and misses are silent; the parser
+// applies them by construction and cannot drift.
+func attributeFaultByte(data []byte, offset int) string {
+	if offset < 0 || offset >= len(data) {
+		return ""
+	}
+	token := faultToken(data)
+	candidate := make([]byte, 0, len(data)+len(token))
+	candidate = append(candidate, data[:offset]...)
+	candidate = append(candidate, token...)
+	candidate = append(candidate, data[offset+1:]...)
+	values, err := godotenv.UnmarshalBytes(candidate)
+	if err != nil {
+		// Neutralising this byte did not make the file parse, so the byte is
+		// not what decides the outcome. Naming a variable here would accuse a
+		// line that may be innocent.
+		return ""
+	}
 	name := ""
-	i := 0
-	for i < len(data) {
-		// Skip blank space and comments, as getStatementStart does.
-		for i < len(data) && (isDotenvSpace(rune(data[i])) || data[i] == '\n') {
-			i++
-		}
-		if i >= len(data) {
-			break
-		}
-		if data[i] == '#' {
-			for i < len(data) && data[i] != '\n' {
-				i++
-			}
+	for key, value := range values {
+		if !strings.Contains(value, token) {
 			continue
 		}
-		start := i
-		// Key: everything before the first '=' or ':', which godotenv accepts
-		// as an assignment delimiter too (yaml style).
-		nameStart := start
-		for i < len(data) && data[i] != '=' && data[i] != ':' && data[i] != '\n' && data[i] != '\r' {
-			i++
+		if name != "" {
+			return "" // reached more than one value: ambiguous, so name none
 		}
-		if i >= len(data) || (data[i] != '=' && data[i] != ':') {
-			// Not an assignment: skip the rest of the physical line.
-			for i < len(data) && data[i] != '\n' {
-				i++
-			}
-			name = ""
-			continue
-		}
-		key := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data[nameStart:i])), "export "))
-		if !validSecretIdentifier(key) {
-			key = "" // not a name we would have accepted, so not one we name
-		}
-		i++ // past the delimiter
 		name = key
-		// Value: a quoted value spans physical lines, so consume to its
-		// closing quote; an unquoted one ends at the line end.
-		for i < len(data) && (data[i] == ' ' || data[i] == '\t') {
-			i++
-		}
-		if i < len(data) && (data[i] == '"' || data[i] == '\'') {
-			quote := data[i]
-			i++
-			for i < len(data) {
-				if data[i] == quote && (i == 0 || data[i-1] != '\\') {
-					i++
-					break
-				}
-				i++
-			}
-		}
-		// The fault belongs to this statement when its offset falls inside it.
-		next := i
-		for next < len(data) && data[next] != '\n' {
-			next++
-		}
-		if target < next || (target >= start && target < next) {
-			return dotenvFault{Name: name}
-		}
-		i = next
-		name = ""
 	}
-	return dotenvFault{Name: ""}
+	if !validSecretIdentifier(name) {
+		return ""
+	}
+	return name
 }
 
-// isDotenvSpace mirrors godotenv: it treats '\r' and friends as spacing but
-// leaves '\n' to end the statement.
-func isDotenvSpace(r rune) bool {
-	switch r {
-	case '\t', '\v', '\f', '\r', ' ', 0x85, 0xA0:
-		return true
+// faultToken returns an ASCII token absent from data, so a substitution can be
+// recognised without ambiguity. It grows until it does not occur.
+func faultToken(data []byte) string {
+	token := "JUSTCODE_FAULT_"
+	for bytes.Contains(data, []byte(token)) {
+		token += "X"
 	}
-	return false
+	return token
 }
 
-// invalidTextError names the variable whose assignment carries an undecodable
-// sequence, falling back to the file when none can be established. The offset
-// of the first invalid byte is what makes the message actionable without
-// echoing the value that contains it.
-func invalidTextError(data []byte, reason string) error {
+// firstInvalidUTF8Byte returns the offset of the first byte that is not valid
+// UTF-8, or -1 when the whole slice is valid.
+func firstInvalidUTF8Byte(data []byte) int {
 	for i := 0; i < len(data); {
 		r, size := utf8.DecodeRune(data[i:])
 		if r == utf8.RuneError && size == 1 {
-			if f := locateFault(data, i); f.Name != "" {
-				return fmt.Errorf("%s: %s", f.Name, reason)
-			}
-			return fmt.Errorf("the dotenv file contains text no loader can decode: %s", reason)
+			return i
 		}
 		i += size
 	}
-	return fmt.Errorf("the dotenv file contains text no loader can decode: %s", reason)
+	return -1
 }
 
-// carriageReturnFault reports the assignment a fatal carriage return belongs
-// to, or "" when none can be tied to the failure.
+// carriageReturnFault names the variable a fatal carriage return belongs to,
+// or "" when none can be tied to the failure.
 //
-// A bare carriage return is a line ending to godotenv, so it is NOT itself a
-// fault: it only explains a failure when it split an unquoted value, letting
-// the following text be read as a new statement. This is therefore only
-// consulted after the parser has failed, and it requires that the text after
-// the carriage return could not have been a statement on its own — otherwise
-// the real fault lies elsewhere and blaming the carriage return would send the
-// user to the wrong line.
+// A bare carriage return is a line ending to godotenv, so it is not itself a
+// fault; it explains a failure only when it split a value, letting the text
+// after it be read as a new statement. Substituting it must therefore make the
+// file parse for the attribution to stand — otherwise the real fault lies
+// elsewhere and blaming the carriage return would send the user to the wrong
+// line. A CRLF pair is an ordinary line ending and is never considered.
 func carriageReturnFault(data []byte) string {
 	for i := 0; i < len(data); i++ {
 		if data[i] != '\r' {
 			continue
 		}
 		if i+1 < len(data) && data[i+1] == '\n' {
-			i++
+			i++ // CRLF: an ordinary line ending.
 			continue
 		}
-		// CRLF and a CR that merely separates two well-formed assignments are
-		// both legal. Only report when the remainder of the physical line is
-		// not an assignment, which is where godotenv would reject it.
-		rest := data[i+1:]
-		if end := bytes.IndexByte(rest, '\n'); end >= 0 {
-			rest = rest[:end]
+		if name := attributeFaultByte(data, i); name != "" {
+			return name
 		}
-		trimmed := strings.TrimSpace(string(rest))
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if _, _, ok := splitDotenvAssignment(trimmed); ok {
-			continue
-		}
-		if f := locateFault(data, i); f.Name != "" {
-			return f.Name
-		}
-		return ""
 	}
 	return ""
-}
-
-// splitDotenvAssignment reports whether the line is a well-formed assignment,
-// accepting both '=' and the yaml-style ':' that godotenv parses.
-func splitDotenvAssignment(line string) (string, string, bool) {
-	line = strings.TrimSpace(line)
-	line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-	if line == "" || strings.HasPrefix(line, "#") {
-		return "", "", false
-	}
-	for i := 0; i < len(line); i++ {
-		if line[i] == '=' || line[i] == ':' {
-			name := strings.TrimSpace(line[:i])
-			if name == "" || !validSecretIdentifier(name) {
-				return "", "", false
-			}
-			return name, strings.TrimSpace(line[i+1:]), true
-		}
-	}
-	return "", "", false
 }

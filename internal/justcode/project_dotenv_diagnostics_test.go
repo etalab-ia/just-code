@@ -185,6 +185,62 @@ func TestCarriageReturnRemedyIsAccurate(t *testing.T) {
 	}
 }
 
+// The three cases below are the third review round's findings. Each is a fresh
+// divergence between a hand-written grammar walker and the parser it imitated:
+// comment blocks, carriage returns inside quoted values, and escape parity.
+// They are the reason the walker was replaced by asking the parser directly
+// (attributeFaultByte), so they are kept as the regression fixtures that pin
+// the delegation.
+
+// TestImportRefusalDoesNotBlameACommentLine: a byte inside a comment belongs to
+// no variable. The walker used to advance past it and name the following
+// assignment.
+func TestImportRefusalDoesNotBlameACommentLine(t *testing.T) {
+	for _, c := range []struct{ name, data string }{
+		{"NUL in a leading comment", "# bad\x00\nNEXT=ok\n"},
+		{"NUL in a middle comment", "A=1\n# bad\x00\nB=2\n"},
+	} {
+		_, err := ParseProjectDotenv([]byte(c.data))
+		if err == nil {
+			t.Fatalf("%s: expected a refusal", c.name)
+		}
+		for _, innocent := range []string{"NEXT:", "A:", "B:"} {
+			if strings.Contains(err.Error(), innocent) {
+				t.Errorf("%s: a comment byte must not be attributed to %s: %v", c.name, innocent, err)
+			}
+		}
+	}
+}
+
+// TestImportRefusalIgnoresCarriageReturnInsideQuotes: godotenv keeps a CR
+// inside a quoted value rather than treating it as a line ending, so a CR
+// there cannot explain a failure elsewhere in the file.
+func TestImportRefusalIgnoresCarriageReturnInsideQuotes(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("A=\"ok\rstill\"\nBROKEN=\"\n"))
+	if err == nil {
+		t.Fatal("an unterminated quoted value must be refused")
+	}
+	if strings.Contains(err.Error(), "A:") {
+		t.Errorf("a carriage return inside a quoted value must not be blamed: %v", err)
+	}
+	if strings.Contains(err.Error(), "carriage return") {
+		t.Errorf("the real fault is the unterminated quote: %v", err)
+	}
+}
+
+// TestImportRefusalHandlesEscapedQuotes: godotenv closes a quoted value on an
+// even run of backslashes and keeps it open on an odd one. A byte after such a
+// value must be attributed with the same parity, or the wrong variable is named.
+func TestImportRefusalHandlesEscapedQuotes(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("A=\"x\\\\\"\nB=bad\x00\n"))
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if strings.Contains(err.Error(), "A:") {
+		t.Errorf("the byte after an escaped quote belongs to B, not A: %v", err)
+	}
+}
+
 // TestImportSizeLimitStillReportsSize pins the one fault that really is about
 // size: it must say so rather than fall into the encoding wording.
 func TestImportSizeLimitStillReportsSize(t *testing.T) {
