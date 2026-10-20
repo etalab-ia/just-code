@@ -3,6 +3,7 @@ package justcode
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The import path used to refuse a whole file with one message shared by four
@@ -238,6 +239,92 @@ func TestImportRefusalHandlesEscapedQuotes(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "A:") {
 		t.Errorf("the byte after an escaped quote belongs to B, not A: %v", err)
+	}
+}
+
+// The four tests below are the fourth review round's findings. Three of them
+// target the parser-delegating oracle itself rather than the grammar: two are
+// quadratic blow-ups and one is an interaction with dollar expansion. They are
+// bounded engineering defects in a mechanism that can no longer diverge from
+// the grammar, so they were fixed rather than replaced.
+
+// TestImportRefusalAttributesDollarAdjacentByte: the injected marker must not
+// be expanded away. godotenv reads `$NAME` as a variable reference, so a
+// marker placed just after a '$' would vanish from the parsed value and lose
+// the attribution with it. The oracle masks dollars exactly as the main parse
+// does.
+func TestImportRefusalAttributesDollarAdjacentByte(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("K=secret$\x00\n"))
+	if err == nil {
+		t.Fatal("a NUL byte must be refused")
+	}
+	if !strings.Contains(err.Error(), "K") {
+		t.Errorf("a byte after a literal dollar must still be attributed to K: %v", err)
+	}
+}
+
+// TestImportRefusalAttributesOverwrittenDuplicate: godotenv resolves duplicate
+// assignments last-definition-wins, so the marker is absent from the parsed
+// map when a later assignment overwrote the value it was inserted into. The
+// oracle cuts the input after the marker so the parser can still see it.
+func TestImportRefusalAttributesOverwrittenDuplicate(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("A=bad\x00\nA=good\n"))
+	if err == nil {
+		t.Fatal("a NUL byte must be refused")
+	}
+	if !strings.Contains(err.Error(), "A") {
+		t.Errorf("an overwritten duplicate still names its key: %v", err)
+	}
+}
+
+// TestImportRefusalStaysFastOnManyCandidateBytes bounds the work spent on
+// attribution. Each candidate re-parses the whole input, so an unbounded scan
+// over a file full of bare carriage returns is quadratic; the file is still
+// within the 1 MiB limit, so the size check does not protect against it.
+func TestImportRefusalStaysFastOnManyCandidateBytes(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 4000; i++ {
+		b.WriteString("K=1\r")
+	}
+	b.WriteString("BROKEN=\"\n")
+	done := make(chan error, 1)
+	go func() {
+		_, err := ParseProjectDotenv([]byte(b.String()))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an unterminated quoted value must be refused")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("attribution must stay bounded on a file full of bare carriage returns")
+	}
+}
+
+// TestImportRefusalStaysFastOnHostileMarkerPrefix bounds token generation. A
+// file containing the marker prefix followed by a long run of the extension
+// byte would make every progressively longer candidate occur, copying an
+// increasingly large string before the parse even begins.
+func TestImportRefusalStaysFastOnHostileMarkerPrefix(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("A=x\n# " + faultTokenPrefix)
+	for i := 0; i < 200000; i++ {
+		b.WriteByte('X')
+	}
+	b.WriteString("\nB=y\x00\n")
+	done := make(chan error, 1)
+	go func() {
+		_, err := ParseProjectDotenv([]byte(b.String()))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a NUL byte must be refused")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("marker generation must not be quadratic on a hostile prefix")
 	}
 }
 

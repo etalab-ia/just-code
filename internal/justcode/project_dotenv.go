@@ -14,6 +14,15 @@ import (
 
 const MaxProjectDotenvBytes = 1 << 20
 
+// faultTokenPrefix and faultMaskPrefix label the markers the fault-attribution
+// parse injects. They are named constants because the hostile-input test builds
+// its input from the prefix: a test that hardcoded the string would silently
+// stop testing anything the day the prefix changed, and would still pass.
+const (
+	faultTokenPrefix = "JUSTCODE_FLT_"
+	faultMaskPrefix  = "JUSTCODE_MSK_"
+)
+
 type ProjectDotenv struct {
 	Values     map[string]string
 	Duplicates []string
@@ -162,42 +171,101 @@ func attributeFaultByte(data []byte, offset int) string {
 	if offset < 0 || offset >= len(data) {
 		return ""
 	}
-	token := faultToken(data)
+	token := faultMarker(data, faultTokenPrefix)
+	if token == "" {
+		return ""
+	}
 	candidate := make([]byte, 0, len(data)+len(token))
 	candidate = append(candidate, data[:offset]...)
 	candidate = append(candidate, token...)
 	candidate = append(candidate, data[offset+1:]...)
-	values, err := godotenv.UnmarshalBytes(candidate)
-	if err != nil {
+	// Parse with the same literal-dollar masking the main parse applies.
+	// Without it the injected token is expanded away whenever it lands just
+	// after a '$', because godotenv then reads it as a variable reference —
+	// `K=secret$<NUL>` would lose the token and lose the attribution with it.
+	mask := faultMarker(candidate, faultMaskPrefix)
+	if mask == "" {
+		return ""
+	}
+	name, parsed := keyHoldingMarker(candidate, mask, token)
+	if !parsed {
 		// Neutralising this byte did not make the file parse, so the byte is
 		// not what decides the outcome. Naming a variable here would accuse a
-		// line that may be innocent.
+		// line that may be innocent. This guard is what keeps a legal bare-CR
+		// separator from being blamed for an unrelated failure elsewhere.
 		return ""
+	}
+	if name != "" {
+		return name
+	}
+	// The file parses, but the marker is in no value: a later duplicate
+	// assignment overwrote it, because godotenv resolves duplicates
+	// last-definition-wins. Cutting the input just after the marker removes
+	// the overwriting assignment, so the same parser can report the key the
+	// marker belongs to. This runs only on an input that already parsed, so it
+	// cannot reintroduce the accusation the guard above prevents.
+	if end := offset + len(token); end <= len(candidate) {
+		truncated := make([]byte, 0, end+1)
+		truncated = append(truncated, candidate[:end]...)
+		truncated = append(truncated, '\n')
+		if name, ok := keyHoldingMarker(truncated, mask, token); ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// keyHoldingMarker parses the masked input and returns the single key whose
+// value contains marker, plus whether the input parsed at all. A name is ""
+// when no value holds the marker, or when more than one does (ambiguous, so
+// naming one would be a guess).
+func keyHoldingMarker(input []byte, mask, marker string) (string, bool) {
+	values, err := godotenv.UnmarshalBytes([]byte(strings.ReplaceAll(string(input), "$", mask)))
+	if err != nil {
+		return "", false
 	}
 	name := ""
 	for key, value := range values {
-		if !strings.Contains(value, token) {
+		if !strings.Contains(value, marker) {
 			continue
 		}
 		if name != "" {
-			return "" // reached more than one value: ambiguous, so name none
+			return "", true // reached more than one value: ambiguous, so name none
 		}
 		name = key
 	}
 	if !validSecretIdentifier(name) {
-		return ""
+		return "", true
 	}
-	return name
+	return name, true
 }
 
-// faultToken returns an ASCII token absent from data, so a substitution can be
-// recognised without ambiguity. It grows until it does not occur.
-func faultToken(data []byte) string {
-	token := "JUSTCODE_FAULT_"
-	for bytes.Contains(data, []byte(token)) {
-		token += "X"
+// faultMarker returns a fixed-length random ASCII token, with the given
+// prefix, that does not occur in data. It returns "" if no such token could be
+// produced in a few attempts.
+//
+// The length is fixed and the search bounded on purpose. Growing the token
+// until it is absent costs quadratic time on hostile input: a permitted file
+// containing the prefix followed by a long run of the extension byte makes
+// every progressively longer candidate occur, so the loop copies an
+// increasingly large string before parsing even begins. A random token of
+// constant length is absent with overwhelming probability, and re-rolling a few
+// times bounds the work.
+//
+// The two prefixes differ so that one marker can never be found as a substring
+// of the other, which would make a masked dollar look like an injected token.
+func faultMarker(data []byte, prefix string) string {
+	for attempt := 0; attempt < 8; attempt++ {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			return ""
+		}
+		token := prefix + hex.EncodeToString(buf)
+		if !bytes.Contains(data, []byte(token)) {
+			return token
+		}
 	}
-	return token
+	return ""
 }
 
 // firstInvalidUTF8Byte returns the offset of the first byte that is not valid
@@ -213,6 +281,15 @@ func firstInvalidUTF8Byte(data []byte) int {
 	return -1
 }
 
+// maxFaultCandidates bounds how many candidate bytes are tried when
+// attributing a fault. Each attempt re-parses the whole input, so an unbounded
+// scan over a file full of candidate bytes is quadratic and can stall the
+// import on a file that is within the size limit. Legitimate files essentially
+// never carry many candidates — a value with a carriage return in it is a
+// single one — so past this bound the diagnosis falls back to naming the file
+// rather than the variable. That is a less specific message, never a wrong one.
+const maxFaultCandidates = 8
+
 // carriageReturnFault names the variable a fatal carriage return belongs to,
 // or "" when none can be tied to the failure.
 //
@@ -223,6 +300,7 @@ func firstInvalidUTF8Byte(data []byte) int {
 // elsewhere and blaming the carriage return would send the user to the wrong
 // line. A CRLF pair is an ordinary line ending and is never considered.
 func carriageReturnFault(data []byte) string {
+	tried := 0
 	for i := 0; i < len(data); i++ {
 		if data[i] != '\r' {
 			continue
@@ -230,6 +308,9 @@ func carriageReturnFault(data []byte) string {
 		if i+1 < len(data) && data[i+1] == '\n' {
 			i++ // CRLF: an ordinary line ending.
 			continue
+		}
+		if tried++; tried > maxFaultCandidates {
+			return ""
 		}
 		if name := attributeFaultByte(data, i); name != "" {
 			return name
