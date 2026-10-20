@@ -424,7 +424,12 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 			// the omission the desired set, and the refresh would strip the
 			// persisted registration (the patch semantics make absence
 			// authoritative). A transient store failure must not become the
-			// loss of a live binding.
+			// loss of a live binding. A store *fault* is the one failure the
+			// no-op start path still tolerates, because the store may come
+			// back and an instance that only needs a restart must not become
+			// unusable meanwhile (#204). Storage faults are recognised by
+			// their typed store error, not by an allow-list of the cases we
+			// happened to think of, so anything unrecognised fails closed.
 			return nil, fmt.Errorf("cannot read the approved %s credential for %s: %w", b.Kind, m.InstanceName(), err)
 		}
 		out = append(out, resolvedBinding{msbSecretBinding: b, source: bindingSourceStore, value: v, store: store, entry: string(b.Kind)})
@@ -483,6 +488,18 @@ func (m *MicrosandboxRuntime) resolveProjectSecretBindings(ctx context.Context) 
 		seen[d.GuestEnv] = true
 		value, err := store.Get(ctx, d.Profile, d.Component, d.Name)
 		if err != nil {
+			// An APPROVED project secret whose backing entry is gone is not
+			// the tolerable "not stored yet" case, even though the store
+			// reports both as not-found: the user already imported and
+			// approved it, so only re-importing or removing the approval can
+			// restore a consistent project state. Treating it as transient
+			// would let a healthy no-op start exit 0 while the guest kept
+			// serving the previous value (#204). The sentinel is therefore
+			// unwrapped away: it is the store *fault* branch — a typed
+			// *StoreError — that stays tolerable, and that still matches.
+			if isNotFound(err) {
+				return nil, fmt.Errorf("cannot read the approved project secret %s (%s): %w", d.Name, d.Component, ErrProjectSecretImportMissing)
+			}
 			return nil, fmt.Errorf("cannot read the approved project secret %s (%s): %w", d.Name, d.Component, err)
 		}
 		ref := d.Reference

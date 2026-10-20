@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,26 @@ import (
 	"strconv"
 	"strings"
 )
+
+// isTransientCredentialFailure reports whether a binding-resolution failure
+// may repair itself on a retry, and may therefore be tolerated on the no-op
+// start path in place of failing the start.
+//
+// Only two conditions qualify, and both are about the credential store rather
+// than about the project's configuration:
+//
+//   - the credential is simply not stored yet (ErrCredentialNotFound);
+//   - the store itself is at fault — locked, denied, unavailable, corrupt —
+//     which surfaces as a typed *StoreError.
+//
+// Anything else is structural and fails closed: an approval that names another
+// profile, an import that is gone, malformed or unsupported binding metadata.
+// Those never repair themselves, so tolerating them would let `start` exit 0
+// while the guest keeps serving the previous profile's secrets (#204).
+func isTransientCredentialFailure(err error) bool {
+	var storeErr *StoreError
+	return errors.Is(err, ErrCredentialNotFound) || errors.As(err, &storeErr)
+}
 
 // Reconciliation and non-destructive restart (P07). The goal: applying setup
 // changes to an existing instance must not mean recreating it. Changes are
@@ -415,6 +436,24 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	bindings, resolveErr := m.resolveBindings(ctx)
 	resolved := resolveErr == nil
 	if resolveErr != nil {
+		// Tolerate ONLY a credential-store fault: the store is locked,
+		// denied, unavailable or corrupt, or the credential is not stored
+		// yet. Those repair themselves, and an instance that merely needs a
+		// restart must not become unusable meanwhile.
+		//
+		// Everything else fails closed. A structural mismatch — an approval
+		// naming another profile, an import that is gone, malformed binding
+		// metadata — never repairs itself, so warning and continuing would
+		// report success while the guest keeps serving the previous profile's
+		// secrets. "Reusing the persisted references" is precisely the claim
+		// that is false in those cases (#204).
+		//
+		// The test is phrased as "is this a store fault?" rather than an
+		// allow-list of known-bad cases, so a failure nobody anticipated
+		// fails closed instead of silently falling through to the warning.
+		if !isTransientCredentialFailure(resolveErr) {
+			return fmt.Errorf("cannot start %s: %w", m.InstanceName(), resolveErr)
+		}
 		fmt.Fprintf(os.Stderr, "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.\n", m.InstanceName(), resolveErr)
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
