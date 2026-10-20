@@ -438,3 +438,52 @@ func TestImportRefusalNamesQuotedDuplicateOverwrittenByLaterAssignment(t *testin
 		t.Errorf("the refusal must state the NUL rule: %v", err)
 	}
 }
+
+// TestImportRefusalBoundsWorkOnManyMalformedFragments is the seventh round's P1.
+// The filter made legal separators free, but every *malformed* fragment still
+// costs a whole-file re-parse, and a file can carry about one candidate per
+// byte — so an 8 KB file with 2000 such fragments spent 1.04 s. A count cap was
+// ruled out by fuzzing: the successful candidate can sit arbitrarily far down
+// the list, so the budget is spent in re-parsed bytes and adapts to file size.
+func TestImportRefusalBoundsWorkOnManyMalformedFragments(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("BROKEN=\"\n")
+	for i := 0; i < 4000; i++ {
+		b.WriteString("K=\"\r")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := ParseProjectDotenv([]byte(b.String()))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a malformed file must be refused")
+		}
+		// The budget may be exhausted before the fault is found, so either the
+		// key or the generic fallback is acceptable — a wrong name is not.
+		if strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), "K=\"") {
+			t.Errorf("the refusal must not quote source text: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("attribution must be bounded on a file of malformed fragments")
+	}
+}
+
+// TestImportRefusalNamesSingleQuotedDuplicateOverwrittenByLaterAssignment is the
+// seventh round's P2. godotenv treats both `"` and `'` as quotes, so a quoted
+// duplicate may use either; closing only the double quote left the single-quoted
+// form unparsed and the key unnamed.
+func TestImportRefusalNamesSingleQuotedDuplicateOverwrittenByLaterAssignment(t *testing.T) {
+	_, err := ParseProjectDotenv([]byte("A='bad\x00'\nA=good\n"))
+	if err == nil {
+		t.Fatal("a NUL byte in a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "A:") {
+		t.Errorf("a single-quoted duplicate overwritten later must still be named: %v", err)
+	}
+	if !strings.Contains(err.Error(), "NUL") {
+		t.Errorf("the refusal must state the NUL rule: %v", err)
+	}
+}

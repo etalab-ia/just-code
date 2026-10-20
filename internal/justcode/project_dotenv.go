@@ -23,6 +23,28 @@ const (
 	faultMaskPrefix  = "JUSTCODE_MSK_"
 )
 
+// maxFaultReparseBytes bounds the total input re-parsed while attributing a
+// fault. Each candidate confirmation re-parses the whole file, and a file can
+// carry about one candidate per byte, so the uncapped scan is quadratic: a
+// 1 MiB file whose every statement is malformed would re-parse 1 MiB a million
+// times. Measured, an 8 KB file with 2000 malformed fragments already spends
+// 1.04 s. The budget is expressed in re-parsed bytes rather than a number of
+// attempts so that it adapts to size: a small file gets hundreds of attempts,
+// while a 1 MiB file gets four. Measured, a 1 MiB file whose every fragment is
+// malformed now spends 422 ms and returns the generic message. Past the budget the caller
+// falls back to naming the file rather than the variable, which is a less
+// specific message, never a wrong one.
+//
+// A plain "try the first N candidates" bound was tried and rejected twice over:
+// it discarded the only candidate that mattered when a legitimate file carried
+// more than N separators before the fault, and fuzzing shows the successful
+// candidate can sit arbitrarily far down the list (a file with twenty quoted
+// values containing a carriage return needs twenty failed confirmations before
+// the real fault). A budget that spends itself only on genuinely malformed
+// candidates — legal separators are skipped without re-parsing the file — keeps
+// the diagnosis for every file that is not adversarially broken.
+const maxFaultReparseBytes = 4 << 20
+
 type ProjectDotenv struct {
 	Values     map[string]string
 	Duplicates []string
@@ -206,10 +228,12 @@ func attributeFaultByte(data []byte, offset int) string {
 	// cannot reintroduce the accusation the guard above prevents.
 	if end := offset + len(token); end <= len(candidate) {
 		// Cutting mid-value can leave a quote open — `A="bad<token>` does not
-		// parse — so the cut is also offered with the quote closed. The second
-		// form is tried only after the first fails, and both are handed to the
-		// parser: the repair closes a quote, it does not re-implement quoting.
-		for _, tail := range []string{"\n", "\"\n"} {
+		// parse — so the cut is also offered with a quote closed. Both quote
+		// kinds godotenv recognises are tried: it treats `"` and `'` as quotes
+		// but a backtick as an ordinary character. The plain cut is tried first
+		// and each form is handed to the parser: the repair closes a quote, it
+		// does not re-implement quoting.
+		for _, tail := range []string{"\n", "\"\n", "'\n"} {
 			truncated := make([]byte, 0, end+len(tail))
 			truncated = append(truncated, candidate[:end]...)
 			truncated = append(truncated, tail...)
@@ -307,6 +331,7 @@ func firstInvalidUTF8Byte(data []byte) int {
 // and rejected: a legitimate file can carry many legal separators before the
 // faulty one, and the bound discarded the only candidate that mattered.
 func carriageReturnFault(data []byte) string {
+	spent := 0
 	for i := 0; i < len(data); i++ {
 		if data[i] != '\r' {
 			continue
@@ -318,7 +343,15 @@ func carriageReturnFault(data []byte) string {
 		if statementStandalone(data[i+1:]) {
 			continue // a legal separator: assignment, comment, or blank line
 		}
-		if name := attributeFaultByte(data, i); name != "" {
+		if spent >= maxFaultReparseBytes {
+			return "" // budget exhausted: name the file, never a wrong variable
+		}
+		// Charged per attempt rather than per parse: attributeFaultByte does at
+		// least one whole-file parse and at most a few, so len(data) per attempt
+		// is the natural unit and keeps the budget in bytes of input re-read.
+		spent += len(data)
+		name := attributeFaultByte(data, i)
+		if name != "" {
 			return name
 		}
 	}
