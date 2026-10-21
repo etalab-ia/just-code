@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // The import path used to refuse a whole file with one message shared by four
@@ -792,5 +794,77 @@ func TestImportRefusalNamesSingleQuotedDuplicateOverwrittenByLaterAssignment(t *
 	}
 	if !strings.Contains(err.Error(), "NUL") {
 		t.Errorf("the refusal must state the NUL rule: %v", err)
+	}
+}
+
+// TestImportRefusalStillNamesTheFaultAcrossCRLFLineEndings pins the CRLF
+// boundary: a CRLF pair is an ordinary line ending, never a fault candidate, so
+// a file that uses CRLF endings must still have a genuine bare-CR split
+// diagnosed, and the CRLF pairs themselves must never be blamed.
+func TestImportRefusalStillNamesTheFaultAcrossCRLFLineEndings(t *testing.T) {
+	for _, c := range []struct{ name, data string }{
+		{"fault after CRLF", "A=ok\r\nK=bad\rtail\r\n"},
+		{"CRLF everywhere", "A=ok\r\nK=bad\rtail\r\nB=2\r\n"},
+	} {
+		_, err := ParseProjectDotenv([]byte(c.data))
+		if err == nil {
+			t.Fatalf("%s: a carriage return splitting a value must be refused", c.name)
+		}
+		if !strings.Contains(err.Error(), "K:") {
+			t.Errorf("%s: the fault is in K: %v", c.name, err)
+		}
+		if !strings.Contains(err.Error(), "carriage return") {
+			t.Errorf("%s: the refusal must state the carriage-return rule: %v", c.name, err)
+		}
+	}
+}
+
+// TestImportRefusalAmbiguousLocationNamesNothing pins the non-disclosure guard
+// on attribution: when the injected marker lands in more than one value, no
+// single variable can be named without guessing, so attribution returns nothing
+// and the caller falls back to a safe, value-free message. Naming one of them
+// would accuse a line that may be innocent, and explaining the ambiguity cannot
+// be done without quoting values.
+func TestImportRefusalAmbiguousLocationNamesNothing(t *testing.T) {
+	marker := faultTokenPrefix + "DEADBEEF"
+	// The marker occupies two distinct values: attribution must not choose.
+	name, ok := keyHoldingMarker([]byte("A="+marker+"\nB="+marker+"\n"), "MASK", marker)
+	if name != "" || !ok {
+		t.Errorf("ambiguous marker must yield no name: got name=%q ok=%v", name, ok)
+	}
+	// A single holder still resolves, proving the guard above is what changed.
+	single, ok := keyHoldingMarker([]byte("A="+marker+"\nB=hello\n"), "MASK", marker)
+	if single != "A" || !ok {
+		t.Errorf("single marker must resolve to A: got name=%q ok=%v", single, ok)
+	}
+}
+
+// TestDotenvParserContractPinnedToV151 records the godotenv v1.5.1 behaviors
+// the diagnostics below depend on, so a dependency bump that changes any of them
+// fails loudly instead of silently changing what is reported. Each case states
+// the exact contract and how the code relies on it.
+func TestDotenvParserContractPinnedToV151(t *testing.T) {
+	// A bare CR after a value leaves the trailing fragment as a new statement.
+	// With no trailing newline the fragment parses as a bare (empty-named)
+	// assignment, which the importer refuses separately. With a trailing
+	// newline the newline becomes the first byte of the fragment's key scan,
+	// so the parse fails -- the shape carriageReturnFault diagnoses.
+	if _, err := godotenv.UnmarshalBytes([]byte("K=bad\rreturn")); err != nil {
+		t.Errorf("contract: a bare CR at EOF must parse into a stray assignment: %v", err)
+	}
+	if _, err := godotenv.UnmarshalBytes([]byte("K=bad\rreturn\n")); err == nil {
+		t.Error("contract: a trailing newline after a bare-CR fragment must fail the parse")
+	}
+	// CRLF pairs are normalized before parsing, not treated as a fault.
+	if v, err := godotenv.UnmarshalBytes([]byte("A=\"x\r\ny\"\n")); err != nil || v["A"] != "x\ny" {
+		t.Errorf("contract: CRLF inside a quoted value is normalized, not a fault: %v %q", err, v["A"])
+	}
+	// A bare CR between assignments is a legal separator.
+	if v, err := godotenv.UnmarshalBytes([]byte("A=1\rB=2\n")); err != nil || v["A"] != "1" || v["B"] != "2" {
+		t.Errorf("contract: a bare CR between assignments must split them legally: %v %q", err, v)
+	}
+	// A bare CR inside quotes is value content, not a terminator.
+	if _, err := godotenv.UnmarshalBytes([]byte("A=\"ok\rstill\"\n")); err != nil {
+		t.Errorf("contract: a bare CR inside quotes is value content, not a terminator: %v", err)
 	}
 }
