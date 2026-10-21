@@ -162,11 +162,17 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 	seen := map[string]bool{}
 	for key := range values {
 		if !validSecretIdentifier(key) {
-			// The name is safe to print — it is an identifier, not a value —
-			// and printing it is the point: the qualification protocol requires
-			// each refused class to name the variable, and a file with many
-			// variables gives the user nothing to act on without it.
-			return ProjectDotenv{}, fmt.Errorf("variable name %q is not supported; names may use letters, digits and underscore, may not start with a digit, and are limited to 128 characters", key)
+			// The name is echoed only when it is a short, whitespace-free,
+			// printable token — a plausible identifier. godotenv accepts names
+			// containing spaces, so a rejected name can be stray or pasted text
+			// to the left of a delimiter and would leak into the refusal if
+			// echoed whole; such names are redacted, not echoed. Short,
+			// token-like names are still named, as the qualification protocol
+			// requires.
+			if safeNameToEcho(key) {
+				return ProjectDotenv{}, fmt.Errorf("variable name %q is not supported; names may use letters, digits and underscore, may not start with a digit, and are limited to 128 characters", key)
+			}
+			return ProjectDotenv{}, fmt.Errorf("the dotenv file contains a variable name that is not supported; names may use letters, digits and underscore, may not start with a digit, and are limited to 128 characters")
 		}
 	}
 	// Record repeated assignment lines without mistaking KEY=value text inside
@@ -534,6 +540,26 @@ func statementKey(statement []byte) string {
 		}
 	}
 	return ""
+}
+
+// safeNameToEcho reports whether a rejected secret name is safe to include in a
+// refusal message. A name is echoed only when it is a short, non-empty,
+// whitespace-free run of printable ASCII — a plausible identifier token.
+// godotenv accepts names containing spaces, so a name that is long, empty, or
+// contains whitespace or control bytes may be stray or pasted text sitting left
+// of a delimiter, and echoing it could leak material that was never a real
+// variable name.
+func safeNameToEcho(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c <= ' ' || c >= 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // firstStatementLen returns the length of the first statement in rest, as the

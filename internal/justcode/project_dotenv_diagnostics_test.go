@@ -46,12 +46,12 @@ func TestImportRefusalNamesTheVariableAndTheRule(t *testing.T) {
 			wantIn:  "NUL",
 		},
 		{
-			// A name is an identifier, not a value, so it is safe to print —
-			// and necessary: a file with many variables gives the user nothing
-			// to act on when the refusal does not say which one.
+			// A short, whitespace-free token is named (the qualification
+			// protocol requires it); names that carry spaces or other stray
+			// text are redacted, covered below.
 			name:    "unsupported variable name",
-			data:    "has space=1\n",
-			wantVar: "has space",
+			data:    "1invalid=1\n",
+			wantVar: "1invalid",
 			wantIn:  "not supported",
 		},
 	} {
@@ -71,6 +71,36 @@ func TestImportRefusalNamesTheVariableAndTheRule(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "syntax is invalid or unsupported") {
 			t.Errorf("%s: a diagnosed fault must not fall back to the generic wording: %v", c.name, err)
+		}
+	}
+}
+
+// TestImportRefusalRedactsUnsafeVariableName pins the redaction half of the
+// unsupported-name diagnosis. godotenv accepts names containing spaces, so a
+// rejected name is not guaranteed to be a safe identifier: it can be stray or
+// pasted text to the left of a delimiter (e.g. a value typed before an '='),
+// or long enough to bloat the refusal. Such names must not be echoed — the
+// rule is stated, but the raw name never reaches the message.
+func TestImportRefusalRedactsUnsafeVariableName(t *testing.T) {
+	longName := strings.Repeat("a", 200)
+	for _, c := range []struct {
+		name, data, suspect string
+	}{
+		{"name with spaces", "has space=1\n", "has space"},
+		{"overlong name", longName + "=1\n", longName},
+	} {
+		_, err := ParseProjectDotenv([]byte(c.data))
+		if err == nil {
+			t.Fatalf("%s: an unsupported variable name must be refused", c.name)
+		}
+		if !strings.Contains(err.Error(), "not supported") {
+			t.Errorf("%s: the refusal must state the rule: %v", c.name, err)
+		}
+		if strings.Contains(err.Error(), c.suspect) {
+			t.Errorf("%s: the rejected name %q must be redacted: %v", c.name, c.suspect, err)
+		}
+		if len(err.Error()) > 512 {
+			t.Errorf("%s: the refusal must stay small: %d bytes", c.name, len(err.Error()))
 		}
 	}
 }
