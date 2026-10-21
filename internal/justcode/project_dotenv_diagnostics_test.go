@@ -476,6 +476,77 @@ func TestImportRefusalNamesTheFaultPastOverlappingLegalSeparators(t *testing.T) 
 	}
 }
 
+// TestImportFaultScanStaysLinearAcrossQuotedValues pins the scan invariant of the
+// statement walk alongside the closing-quote cut.
+//
+// A quoted value holding many carriage returns is the shape that used to cost one
+// whole-file filter pass per CR. The walk now charges each statement exactly the
+// bytes it then advances by, so the total cannot exceed the input: this is a
+// property of the loop's shape, not a budget that a hostile input can reach. No
+// earlier implementation satisfies it, so the cost assertion cannot be mutated
+// into failing — it fails earlier, on attribution. Read it as a guard against a
+// future edit that charges a statement and then advances by less, not as the
+// regression test for the quadratic behaviour: that one is the attribution check
+// below, which names K here and A (twice) on the heads before this fix.
+//
+// The assertion is on scanned bytes, not wall clock: instrumented runs are far
+// slower, so a seconds-based budget measures the machine rather than the code.
+func TestImportFaultScanStaysLinearAcrossQuotedValues(t *testing.T) {
+	// One long quoted value holding many CRs, closed once, then a real fault.
+	const quotes = 4000
+	var b strings.Builder
+	b.WriteString("A=\"")
+	b.WriteString(strings.Repeat("a\r", quotes))
+	b.WriteString("\"\rK=bad\rtail\n")
+
+	var scanned int64
+	prev := observeFaultScanBytes
+	observeFaultScanBytes = func(n int) { atomic.AddInt64(&scanned, int64(n)) }
+	defer func() { observeFaultScanBytes = prev }()
+
+	_, err := ParseProjectDotenv([]byte(b.String()))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.HasPrefix(err.Error(), "K:") {
+		t.Errorf("the fault is in K: %v", err)
+	}
+	if got, limit := atomic.LoadInt64(&scanned), int64(len(b.String())); got > limit {
+		t.Errorf("scanning is quadratic in the quoted value: scanned %d bytes of %d", got, limit)
+	}
+}
+
+// TestImportRefusalNamesTheFaultAfterAQuotedValueOnTheSameLine is the tenth
+// round's P2. Re-cutting an unterminated quote at the next LF swallowed every
+// CR-separated statement in between, so `P=ok\rA="a\rb"\rK=bad\rtail` reported P
+// — a legal separator — while the fault was two statements later in K. The cut
+// now ends at the quote that closes the value, which is where the parser's own
+// value scan ends, and takes only the one separator that follows it.
+//
+// The single-quoted and escaped-quote forms are here because the closing-quote
+// scan has to agree with godotenv's, including its naive rule that a quote
+// preceded by one backslash is escaped whatever the backslash run length.
+func TestImportRefusalNamesTheFaultAfterAQuotedValueOnTheSameLine(t *testing.T) {
+	cases := []struct{ name, input string }{
+		{"double quoted", "P=ok\rA=\"a\rb\"\rK=bad\rtail\n"},
+		{"single quoted", "P=ok\rA='a\rb'\rK=bad\rtail\n"},
+		{"escaped quote inside", "P=ok\rA=\"a\\\"c\rb\"\rK=bad\rtail\n"},
+		{"several CRs inside", "A=\"a\rb\rc\"\rK=bad\rtail\n"},
+		{"legal statement between", "A=\"a\rb\"\rB=ok\rK=bad\rtail\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseProjectDotenv([]byte(tc.input))
+			if err == nil {
+				t.Fatal("a carriage return splitting a value must be refused")
+			}
+			if !strings.HasPrefix(err.Error(), "K:") {
+				t.Errorf("the fault is in K, not in the separators before it: %v", err)
+			}
+		})
+	}
+}
+
 // TestImportRefusalIgnoresQuotedCarriageReturnsInABudgetedFile is the ninth
 // round's P2 on the re-parse budget. A legal quoted value holding four carriage
 // returns in a near-limit file spent four whole-file confirmations — they are

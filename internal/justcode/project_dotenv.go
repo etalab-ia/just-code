@@ -383,11 +383,13 @@ func firstInvalidUTF8Byte(data []byte) int {
 // does — turns the middle of a perfectly good string into a fragment that fails
 // to parse. Four such carriage returns in one quoted value then spent four
 // whole-file confirmations and hid the real fault a few lines further down.
-// StatementStandalone tells the two apart: the fragment ends with an
-// unterminated quote, so the value continues past the cut and the statement is
-// re-cut at the next LF, its real boundary. Only a statement that genuinely
-// fails to parse on its own, and whose preceding byte is a bare carriage
-// return, is confirmed against the whole file.
+// isUnterminatedQuote tells the two apart: the fragment ends with a quote still
+// open, so the value continues past the cut and the statement is re-cut at the
+// quote that closes it -- plus the one separator that follows, so the walk
+// resumes at a statement boundary. Extending to the next LF instead would
+// swallow every CR-separated statement in between and blame the first of them.
+// Only a statement that genuinely fails to parse on its own, and whose preceding
+// byte is a bare carriage return, is confirmed against the whole file.
 //
 // A plain "try the first N" bound was tried first and rejected: a legitimate
 // file can carry many legal separators before the faulty one, and the bound
@@ -408,8 +410,18 @@ func carriageReturnFault(data []byte) string {
 		}
 		if reason := statementError(data[pos : pos+end]); isUnterminatedQuote(reason) {
 			// A quote is open across the cut, so this is not a statement
-			// boundary: re-cut where the parser's outer scan ends.
-			if nl := bytes.IndexByte(data[pos:], '\n'); nl >= 0 {
+			// boundary: continue to the quote that closes the value, which is
+			// where the parser's own value scan ends. The separator that follows
+			// it is taken too, so the next statement still starts at a statement
+			// boundary and the byte before it stays the candidate separator.
+			if rest, ok := closingQuoteRest(data[pos:pos+end], data[pos+end:]); ok {
+				end = len(data[pos:]) - len(rest)
+				if nl := separatorLen(rest); nl > 0 {
+					end += nl
+				}
+			} else if nl := bytes.IndexByte(data[pos:], '\n'); nl >= 0 {
+				// No closing quote at all: the file is genuinely unterminated,
+				// so fall back to the line end and let the caller report it.
 				end = nl + 1
 			}
 		}
@@ -514,4 +526,56 @@ func statementError(statement []byte) error {
 // past it.
 func isUnterminatedQuote(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "unterminated quoted value")
+}
+
+// closingQuoteRest finds the quote that ends a value the parser left open, and
+// returns the text after it. head is the fragment the parser refused; tail is
+// everything after it, which is scanned without being copied.
+//
+// The scan mirrors godotenv's own: the opening quote is the first quote of the
+// value, a matching quote ends it, and a quote whose immediately preceding byte
+// is a backslash is skipped. That last rule is deliberately naive -- it does not
+// count the backslash run -- because godotenv's is, and a cut chosen by a
+// different rule than the parser's would end somewhere the parser disagrees.
+func closingQuoteRest(head, tail []byte) ([]byte, bool) {
+	open := bytes.IndexAny(head, "\"'")
+	if open < 0 {
+		return nil, false
+	}
+	quote := head[open]
+	at := func(i int) byte {
+		if i < len(head) {
+			return head[i]
+		}
+		return tail[i-len(head)]
+	}
+	for i := open + 1; i < len(head)+len(tail); i++ {
+		if at(i) != quote || at(i-1) == '\\' {
+			continue
+		}
+		if i+1 <= len(head) {
+			return head[i+1:], true
+		}
+		return tail[i+1-len(head):], true
+	}
+	return nil, false
+}
+
+// separatorLen returns the length of the line ending at the start of rest, so a
+// statement re-cut at its closing quote can take the separator with it and leave
+// the walk at a real statement boundary.
+func separatorLen(rest []byte) int {
+	if len(rest) == 0 {
+		return 0
+	}
+	switch rest[0] {
+	case '\r':
+		if len(rest) > 1 && rest[1] == '\n' {
+			return 2
+		}
+		return 1
+	case '\n':
+		return 1
+	}
+	return 0
 }
