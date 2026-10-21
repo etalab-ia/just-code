@@ -62,6 +62,12 @@ const maxFaultReparseBytes = 4 << 20
 // re-parse budget is: a count is too generous on a small file and too tight on a
 // large one. Past it the filter stops and the caller falls back to the
 // file-level message, which is less specific but never wrong.
+//
+// It cannot bite a file that is not adversarially shaped. When the statements do
+// partition the input, each one ends at the next CR or LF, so the scanned total
+// is at most len(data) -- and the import limit caps that at 1 MiB, well under
+// this budget. Only overlapping statements (CRs stacked on one line) can exceed
+// it, which is exactly the case worth giving up on.
 const maxFaultScanBytes = 4 << 20
 
 // observeFaultReparseBytes is a test seam: it is called with the size of each
