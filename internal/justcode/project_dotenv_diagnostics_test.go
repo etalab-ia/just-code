@@ -505,6 +505,43 @@ func TestImportRefusalStillNamesTheFaultAfterTheFilterBudget(t *testing.T) {
 	}
 }
 
+// TestImportRefusalNamesTheFaultInALargeClassicMacFile is the safety proof for
+// the scan budget, as a test rather than a comment.
+//
+// The budget can only bite a file whose statements overlap. In a file the parser
+// accepts statement by statement each statement ends at the next CR or LF, so
+// the scanned total is at most len(data) -- and the import limit caps that just
+// under 1 MiB, four times below the budget. This file is the worst such case
+// that fits: ~1.04 MB of CR-terminated assignments, every byte of it scanned,
+// with the fault on the last line. If the budget were reachable here, the
+// diagnosis would silently degrade for classic-Mac line endings.
+func TestImportRefusalNamesTheFaultInALargeClassicMacFile(t *testing.T) {
+	var b strings.Builder
+	for i := 0; b.Len() < MaxProjectDotenvBytes-64; i++ {
+		fmt.Fprintf(&b, "KEY%05d=value%05d\r", i, i)
+	}
+	b.WriteString("K=bad\rtail\n")
+	if b.Len() > MaxProjectDotenvBytes {
+		t.Fatalf("fixture is %d bytes, over the import limit; it would test the wrong refusal", b.Len())
+	}
+
+	var scanned int64
+	prev := observeFaultScanBytes
+	observeFaultScanBytes = func(n int) { atomic.AddInt64(&scanned, int64(n)) }
+	defer func() { observeFaultScanBytes = prev }()
+
+	_, err := ParseProjectDotenv([]byte(b.String()))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("a large well-formed file must not cost the diagnosis: %v", err)
+	}
+	if got := atomic.LoadInt64(&scanned); got > maxFaultScanBytes {
+		t.Errorf("scanned %d bytes of a %d-byte file, over the budget", got, b.Len())
+	}
+}
+
 // TestImportRefusalNamesAValueSplitBySeveralCarriageReturns is the eighth
 // round's P2. Confirming one CR at a time could not repair `K=bad\rtail\rend`:
 // neutralising either CR left the other fragment malformed, so the whole file
