@@ -440,6 +440,71 @@ func TestImportRefusalNamesQuotedDuplicateOverwrittenByLaterAssignment(t *testin
 	}
 }
 
+// TestImportRefusalBoundsSeparatorFilterWork is the eighth round's P2, and the
+// one that showed the separator filter itself had no work bound.
+//
+// The filter's premise is that the statements it cuts partition the input, so
+// skipping a legal separator costs linear work overall. Carriage returns stacked
+// on one long physical line break that premise: every one of them opens a
+// statement running to the same distant line end, so k CRs on a line of length L
+// cost k*L. Before the bound this was measured at 13 ms for 2000 CRs, 171 ms for
+// 8000, 2.8 s for 32000 and 11.3 s for 64000 -- doubling the input quadrupled
+// the time, i.e. genuinely quadratic, and the 1 MiB import limit extrapolates to
+// tens of minutes inside a single scan.
+//
+// The assertion is on bytes scanned, not on elapsed time, for the reason the
+// re-parse budget is: CI runs `go test -race`, roughly 23x slower, so a
+// wall-clock threshold would measure the runner rather than the code.
+func TestImportRefusalBoundsSeparatorFilterWork(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(strings.Repeat("\r", 20000))
+	b.WriteString("A=" + strings.Repeat("x", 20) + "\n")
+	b.WriteString("BROKEN=\"\n")
+
+	var scanned, reparsed int64
+	prevScan, prevReparse := observeFaultScanBytes, observeFaultReparseBytes
+	observeFaultScanBytes = func(n int) { atomic.AddInt64(&scanned, int64(n)) }
+	observeFaultReparseBytes = func(n int) { atomic.AddInt64(&reparsed, int64(n)) }
+	defer func() {
+		observeFaultScanBytes, observeFaultReparseBytes = prevScan, prevReparse
+	}()
+
+	_, err := ParseProjectDotenv([]byte(b.String()))
+	if err == nil {
+		t.Fatal("a malformed file must be refused")
+	}
+	// The generic fallback is the expected outcome once the budget is spent; a
+	// wrong variable name would not be.
+	if strings.Contains(err.Error(), "BROKEN") {
+		t.Errorf("the refusal must not name a variable it did not prove: %v", err)
+	}
+	if got := atomic.LoadInt64(&scanned); got > maxFaultScanBytes {
+		t.Errorf("the separator filter scanned %d bytes, over the %d-byte budget", got, maxFaultScanBytes)
+	}
+	if got := atomic.LoadInt64(&reparsed); got > maxFaultReparseBytes {
+		t.Errorf("attribution re-parsed %d bytes, over the %d-byte budget", got, maxFaultReparseBytes)
+	}
+}
+
+// TestImportRefusalStillNamesTheFaultAfterTheFilterBudget guards the obvious
+// over-correction: bounding the scan must not cost a diagnosis on an ordinary
+// file. A legitimate file's statements partition the input and so scan
+// linearly, leaving it far below the budget.
+func TestImportRefusalStillNamesTheFaultAfterTheFilterBudget(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&b, "A%d=1\r", i)
+	}
+	b.WriteString("K=bad\rtail\n")
+	_, err := ParseProjectDotenv([]byte(b.String()))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("a legal-separator prefix must not cost the diagnosis: %v", err)
+	}
+}
+
 // TestImportRefusalNamesAValueSplitBySeveralCarriageReturns is the eighth
 // round's P2. Confirming one CR at a time could not repair `K=bad\rtail\rend`:
 // neutralising either CR left the other fragment malformed, so the whole file

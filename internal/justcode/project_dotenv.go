@@ -45,6 +45,25 @@ const (
 // the diagnosis for every file that is not adversarially broken.
 const maxFaultReparseBytes = 4 << 20
 
+// maxFaultScanBytes bounds the bytes the separator filter examines before it
+// gives up and lets the generic message be used.
+//
+// The filter is meant to make the scan linear: it skips a carriage return that
+// begins a statement the parser accepts on its own, since such a CR cannot have
+// split a value. That holds when the statements partition the input — one
+// statement per CR, disjoint. It does not hold when many carriage returns sit on
+// one long physical line: every one of them then opens a statement running to
+// the same distant line end, so k CRs on a line of length L cost k*L instead of
+// L. Measured, that is genuinely quadratic: 2000 CRs 13 ms, 4000 45 ms, 8000
+// 171 ms, 16000 687 ms, 32000 2.8 s, 64000 11.3 s. Extrapolated to the 1 MiB
+// import limit the single scan would run for tens of minutes.
+//
+// The bound is on bytes scanned, not on candidates, for the same reason the
+// re-parse budget is: a count is too generous on a small file and too tight on a
+// large one. Past it the filter stops and the caller falls back to the
+// file-level message, which is less specific but never wrong.
+const maxFaultScanBytes = 4 << 20
+
 // observeFaultReparseBytes is a test seam: it is called with the size of each
 // whole-file re-parse the fault attribution spends. Tests assert the work budget
 // through it instead of through wall-clock time, because a timing assertion is
@@ -54,6 +73,10 @@ const maxFaultReparseBytes = 4 << 20
 // 3-second budget past its own bound. Re-parsed bytes are the contract the code
 // actually holds, and they do not vary with the runner.
 var observeFaultReparseBytes = func(int) {}
+
+// observeFaultScanBytes is the same seam for the separator filter, so a test can
+// assert the scan stays bounded without measuring wall-clock time.
+var observeFaultScanBytes = func(int) {}
 
 type ProjectDotenv struct {
 	Values     map[string]string
@@ -368,6 +391,7 @@ func firstInvalidUTF8Byte(data []byte) int {
 // faulty one, and the bound discarded the only candidate that mattered.
 func carriageReturnFault(data []byte) string {
 	spent := 0
+	scanned := 0
 	for i := 0; i < len(data); i++ {
 		if data[i] != '\r' {
 			continue
@@ -376,7 +400,13 @@ func carriageReturnFault(data []byte) string {
 			i++ // CRLF: an ordinary line ending.
 			continue
 		}
-		if statementStandalone(data[i+1:]) {
+		end := firstStatementLen(data[i+1:])
+		if scanned+end > maxFaultScanBytes {
+			return "" // scan budget exhausted: name the file, never a wrong variable
+		}
+		scanned += end
+		observeFaultScanBytes(end)
+		if statementStandalone(data[i+1 : i+1+end]) {
 			continue // a legal separator: assignment, comment, or blank line
 		}
 		if spent+len(data) > maxFaultReparseBytes {
@@ -419,10 +449,10 @@ func firstStatementLen(rest []byte) int {
 	return end
 }
 
-// statementStandalone reports whether the statement beginning at rest is
-// accepted by the parser on its own — an assignment, a comment, or a blank
-// line. A carriage return in front of such a statement is a legal separator and
-// cannot have split a value.
+// statementStandalone reports whether statement, already cut to its length by
+// firstStatementLen, is accepted by the parser on its own — an assignment, a
+// comment, or a blank line. A carriage return in front of such a statement is a
+// legal separator and cannot have split a value.
 //
 // The parser decides whether the statement is well formed, rather than a
 // hand-written classifier. Earlier versions read the identifier and delimiter
@@ -433,12 +463,11 @@ func firstStatementLen(rest []byte) int {
 // statement reaching across a whitespace CR was cut short. Delegating costs one
 // parse per CR, but only for statements that are not legal separators — and it
 // cannot drift from the grammar the way a copy does.
-func statementStandalone(rest []byte) bool {
-	end := firstStatementLen(rest)
+func statementStandalone(statement []byte) bool {
 	// A blank or whitespace-only statement is legal.
-	if len(bytes.TrimSpace(rest[:end])) == 0 {
+	if len(bytes.TrimSpace(statement)) == 0 {
 		return true
 	}
-	_, err := godotenv.UnmarshalBytes(rest[:end])
+	_, err := godotenv.UnmarshalBytes(statement)
 	return err == nil
 }
