@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -61,6 +62,10 @@ type Diagnostics struct {
 	ProbeAlbert func(context.Context, string) CredentialProbe
 	VerifyStore func(context.Context) (string, error)
 	ReadAlbert  func(context.Context) (string, error)
+	// ReadCredential probes one credential kind in the store chain (native
+	// then the consented file fallback) and reports which store answered.
+	// The value is discarded by the caller and never reaches the report.
+	ReadCredential func(context.Context, CredentialKind) (string, string, error)
 }
 
 var diagnosticVersionPattern = regexp.MustCompile(`^(?:go)?v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$`)
@@ -448,10 +453,6 @@ func (d Diagnostics) projectSection(fs FS, stateDir, projectDir string) Diagnost
 func (d Diagnostics) credentialSection(ctx context.Context, fs FS, stateDir string) DiagnosticSection {
 	section := DiagnosticSection{Title: "Credentials and storage"}
 	journal, err := ReadSetupJournal(fs, stateDir)
-	if err != nil {
-		section.Items = append(section.Items, DiagnosticItem{Name: "Setup journal", Value: "error", Detail: err.Error(), Status: DiagnosticFailed})
-		return section
-	}
 	verifyStore := d.VerifyStore
 	if verifyStore == nil {
 		verifyStore = func(ctx context.Context) (string, error) {
@@ -475,17 +476,118 @@ func (d Diagnostics) credentialSection(ctx context.Context, fs FS, stateDir stri
 	if journal.StoreKind != "" {
 		section.Items = append(section.Items, DiagnosticItem{Name: "Credential store", Value: journal.StoreKind, Detail: "kind only; no secret values are displayed", Status: DiagnosticInfo})
 	}
-	if len(journal.CredentialKinds) == 0 {
-		section.Items = append(section.Items, DiagnosticItem{Name: "Stored credentials", Value: "none recorded in setup journal", Status: DiagnosticInfo})
-	} else {
-		section.Items = append(section.Items, DiagnosticItem{Name: "Stored credentials", Value: strings.Join(journal.CredentialKinds, ", "), Detail: "kind only; values are never displayed", Status: DiagnosticInfo})
-	}
+	// The inventory comes from the store, never from the journal: a setup
+	// that finishes removes its journal, so the journal cannot prove that a
+	// key is absent. Same read path and classification as 'auth status'.
+	section.Items = append(section.Items, d.storedCredentialsItem(ctx))
+	// The journal is reported as what it is: a resume marker, never an
+	// inventory. It costs one read of the same small file already read
+	// above; the extra read is what separates "absent" (setup finished)
+	// from "present but at the first stage" (setup interrupted), which the
+	// journal contents alone cannot distinguish.
+	section.Items = append(section.Items, setupJournalItem(fs, stateDir, journal, err))
 	if us, err := d.userSettings(fs); err != nil {
 		section.Items = append(section.Items, DiagnosticItem{Name: "User settings", Value: "error", Detail: err.Error(), Status: DiagnosticFailed})
 	} else if us.CredentialRef != "" {
 		section.Items = append(section.Items, DiagnosticItem{Name: "Default credential reference", Value: "configured", Detail: "reference name omitted from support output", Status: DiagnosticInfo})
 	}
 	return section
+}
+
+// storedCredentialsItem probes the credential store for every known kind and
+// reports which ones hold a value. It reuses the runtime's own read path so
+// doctor confirms exactly what a launch would confirm, instead of trusting the
+// setup journal, which successful setup deletes. The value is discarded here:
+// only kind names and the store that answered reach the report.
+//
+// Absence and unreadable are different claims, and the classification follows
+// the read path's own semantics. A native keyring that refuses a read cannot
+// distinguish "absent" from "locked", so that kind is named as unreadable and
+// doctor declines to call the store empty. A host with no native keyring at
+// all is not a failure: the run path resolves credentials from the consented
+// file fallback there, so doctor still reports that inventory.
+func (d Diagnostics) storedCredentialsItem(ctx context.Context) DiagnosticItem {
+	detail := "read from the credential store; kind names only, values are never displayed"
+	read := d.ReadCredential
+	if read == nil {
+		read = func(ctx context.Context, kind CredentialKind) (string, string, error) {
+			return readStoredCredential(ctx, kind)
+		}
+	}
+	var stored, unreadable, stores, absent []string
+	// One deadline for the whole inventory, not one per kind: a keyring
+	// daemon that is down would otherwise cost a timeout for every kind,
+	// and a diagnostic must not take a multiple of its own budget to answer.
+	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	for _, kind := range KnownCredentialKinds() {
+		value, store, err := read(probeCtx, kind)
+		switch {
+		case err == nil && strings.TrimSpace(value) != "":
+			stored = append(stored, string(kind))
+			if store != "" && !slices.Contains(stores, store) {
+				stores = append(stores, store)
+			}
+		case err == nil || IsCredentialNotFound(err):
+			// The runtime's own read path collapses "native absent, fallback
+			// missing or never consented" into ErrCredentialNotFound, so a
+			// not-found outcome means the store genuinely holds nothing for
+			// this kind. An empty value is an absence too, not a stored
+			// credential. Anything else is a store that refused the read,
+			// which is a different claim and is counted separately.
+			absent = append(absent, string(kind))
+		default:
+			unreadable = append(unreadable, string(kind))
+		}
+	}
+	if len(stored) == 0 && len(absent) == 0 {
+		// Nothing was read at all, so nothing is known about the inventory.
+		return DiagnosticItem{Name: "Stored credentials", Value: "not read", Status: DiagnosticWarn,
+			Detail: "the credential store refused every read, which is not proof that no credential is stored"}
+	}
+	value := "none"
+	status := DiagnosticInfo
+	if len(stored) > 0 {
+		value = strings.Join(stored, ", ")
+		if len(stores) > 0 {
+			detail = fmt.Sprintf("read from the %s credential store; kind names only, values are never displayed", strings.Join(stores, " and "))
+		}
+		status = DiagnosticOK
+	}
+	if len(stored) == 0 {
+		detail = "the store holds none of the known kinds; store one with 'just-code auth add albert' or run 'just-code setup'"
+	}
+	if len(unreadable) > 0 {
+		return DiagnosticItem{
+			Name: "Stored credentials", Value: value, Status: DiagnosticWarn,
+			Detail: fmt.Sprintf("%s; unreadable: %s (the store refused the read, which is not proof of absence)", detail, strings.Join(unreadable, ", ")),
+		}
+	}
+	return DiagnosticItem{Name: "Stored credentials", Value: value, Detail: detail, Status: status}
+}
+
+// setupJournalItem reports the wizard's progress record as what it is: a
+// resume marker. An absent journal means setup finished (or was cancelled),
+// not that no credential exists.
+func setupJournalItem(fs FS, stateDir string, journal SetupJournal, readErr error) DiagnosticItem {
+	if readErr != nil {
+		return DiagnosticItem{Name: "Setup journal", Value: "error", Detail: readErr.Error(), Status: DiagnosticFailed}
+	}
+	if _, err := fs.ReadFile(SetupJournalPath(stateDir)); err != nil {
+		if os.IsNotExist(err) {
+			return DiagnosticItem{Name: "Setup journal", Value: "absent", Detail: "setup completed or was cancelled; the journal is not a record of stored credentials", Status: DiagnosticInfo}
+		}
+		return DiagnosticItem{Name: "Setup journal", Value: "unreadable", Detail: "the journal file could not be read", Status: DiagnosticWarn}
+	}
+	value := string(journal.Stage)
+	if value == "" {
+		value = "in progress"
+	}
+	detail := "setup interrupted: re-run 'just-code setup' to resume"
+	if len(journal.CredentialKinds) > 0 {
+		detail = fmt.Sprintf("setup interrupted: recorded %s so far; the credential store is the authority on what is stored", strings.Join(journal.CredentialKinds, ", "))
+	}
+	return DiagnosticItem{Name: "Setup journal", Value: value, Detail: detail, Status: DiagnosticWarn}
 }
 
 func verifyCredentialStore(ctx context.Context, preferred string) (string, error) {

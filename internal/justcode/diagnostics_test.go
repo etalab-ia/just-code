@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDiagnosticsCollectDoesNotPrintCredentialValue(t *testing.T) {
@@ -50,7 +51,8 @@ func TestDiagnosticsCollectDoesNotPrintCredentialValue(t *testing.T) {
 		ProbeAlbert: func(context.Context, string) CredentialProbe {
 			return CredentialProbe{Unreachable: true, Detail: "offline test: " + secret}
 		},
-		VerifyStore: func(context.Context) (string, error) { return "test-store", nil },
+		VerifyStore:    func(context.Context) (string, error) { return "test-store", nil },
+		ReadCredential: noStoredCredentials(),
 	}.Collect(context.Background())
 	if strings.Contains(diagnosticText(report), secret) {
 		t.Fatalf("diagnostics exposed the credential value: %q", diagnosticText(report))
@@ -101,12 +103,13 @@ func TestDiagnosticsProjectSectionsReportSelectionsWithoutFetching(t *testing.T)
 
 	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true, RuntimeInstalled: false}
 	report := Diagnostics{
-		Preflight:   &preflight,
-		StateDir:    state,
-		ProjectDir:  root,
-		LookPath:    func(string) (string, error) { return "", execNotFound() },
-		VerifyStore: func(context.Context) (string, error) { return "test-store", nil },
-		ReadAlbert:  func(context.Context) (string, error) { return "", ErrCredentialNotFound },
+		Preflight:      &preflight,
+		StateDir:       state,
+		ProjectDir:     root,
+		LookPath:       func(string) (string, error) { return "", execNotFound() },
+		VerifyStore:    func(context.Context) (string, error) { return "test-store", nil },
+		ReadAlbert:     func(context.Context) (string, error) { return "", ErrCredentialNotFound },
+		ReadCredential: noStoredCredentials(),
 	}.Collect(context.Background())
 	text := diagnosticText(report)
 	for _, want := range []string{"Project skills and MCPs", "official/rgaa", "data-gouv", "Managed Microsandbox runtime"} {
@@ -132,6 +135,15 @@ func TestDiagnosticsStoredCredentialAndJournalUseResolvedStateDir(t *testing.T) 
 		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
 		VerifyStore: func(context.Context) (string, error) { return "native", nil },
 		ReadAlbert:  func(context.Context) (string, error) { return secret, nil },
+		// The journal records albert, but the store is what doctor must read.
+		// An injected reader keeps the assertion about the store rather than
+		// about the host's real keyring.
+		ReadCredential: func(_ context.Context, kind CredentialKind) (string, string, error) {
+			if kind == CredentialAlbert {
+				return secret, "native", nil
+			}
+			return "", "native", ErrCredentialNotFound
+		},
 		ProbeAlbert: func(_ context.Context, value string) CredentialProbe {
 			probed = value
 			return CredentialProbe{Rejected: true, Detail: "test rejection"}
@@ -143,6 +155,200 @@ func TestDiagnosticsStoredCredentialAndJournalUseResolvedStateDir(t *testing.T) 
 	}
 	if strings.Contains(text, secret) || !strings.Contains(text, "native") || !strings.Contains(text, "albert") {
 		t.Fatalf("credential/storage diagnostics missing kinds or exposing secret: %q", text)
+	}
+	if got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials"); got.Value != "albert" {
+		t.Fatalf("the stored credential must come from the store, not only the journal: %+v", got)
+	}
+}
+
+// #193: a finished setup removes its journal, so doctor must confirm the
+// credential from the store instead of concluding "none recorded".
+func TestDiagnosticsReportsStoredCredentialAfterSetupJournalRemoved(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	state := t.TempDir()
+	secret := "credential-value-must-never-print"
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	report := Diagnostics{
+		Preflight:   &preflight,
+		StateDir:    state,
+		ProjectDir:  t.TempDir(),
+		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) { return "native", nil },
+		ReadAlbert:  func(context.Context) (string, error) { return secret, nil },
+		ReadCredential: func(_ context.Context, kind CredentialKind) (string, string, error) {
+			if kind == CredentialAlbert {
+				return secret, "native", nil
+			}
+			return "", "native", ErrCredentialNotFound
+		},
+		ProbeAlbert: func(context.Context, string) CredentialProbe {
+			return CredentialProbe{Unreachable: true, Detail: "offline test"}
+		},
+	}.Collect(context.Background())
+	text := diagnosticText(report)
+	if strings.Contains(text, secret) {
+		t.Fatalf("diagnostics exposed the credential value: %q", text)
+	}
+	if strings.Contains(text, "none recorded in setup journal") {
+		t.Fatalf("doctor still concludes from the journal: %q", text)
+	}
+	if got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials"); got.Value != "albert" || got.Status != DiagnosticOK {
+		t.Fatalf("doctor did not confirm the credential from the store: %+v", got)
+	}
+	if got := diagnosticItemFrom(t, report, "Credentials and storage", "Setup journal"); got.Value != "absent" {
+		t.Fatalf("an absent journal must be reported as absent, not as an empty inventory: %+v", got)
+	}
+}
+
+// The journal is a resume marker, never proof that a credential exists: when
+// it records a kind the store no longer holds, doctor reports the store.
+func TestDiagnosticsDoesNotTrustJournalAsCredentialInventory(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	state := t.TempDir()
+	if err := WriteSetupJournal(DefaultFS, state, SetupJournal{
+		Stage: SetupStage("credential"), StoreKind: "native", CredentialKinds: []string{"albert"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	report := Diagnostics{
+		Preflight: &preflight, StateDir: state, ProjectDir: t.TempDir(),
+		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) { return "native", nil },
+		ReadAlbert:  func(context.Context) (string, error) { return "", ErrCredentialNotFound },
+		ReadCredential: func(_ context.Context, _ CredentialKind) (string, string, error) {
+			return "", "native", ErrCredentialNotFound
+		},
+	}.Collect(context.Background())
+	if got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials"); got.Value != "none" {
+		t.Fatalf("an empty store must report none even when the journal lists a kind: %+v", got)
+	}
+	if got := diagnosticItemFrom(t, report, "Credentials and storage", "Setup journal"); got.Value != string(StageCredential) {
+		t.Fatalf("a present journal must still report the interrupted stage: %+v", got)
+	}
+}
+
+// A keyring that refuses a read cannot prove absence: the kind is unreadable,
+// not "none".
+func TestDiagnosticsReportsUnreadableCredentialKindSeparately(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	report := Diagnostics{
+		Preflight: &preflight, StateDir: t.TempDir(), ProjectDir: t.TempDir(),
+		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) { return "native", nil },
+		ReadAlbert:  func(context.Context) (string, error) { return "", nil },
+		ReadCredential: func(_ context.Context, kind CredentialKind) (string, string, error) {
+			if kind == CredentialGithub {
+				return "", "native", &StoreError{Op: "get", Kind: "native", State: "locked", Err: errors.New("collection locked")}
+			}
+			return "", "native", ErrCredentialNotFound
+		},
+	}.Collect(context.Background())
+	text := diagnosticText(report)
+	if !strings.Contains(text, "unreadable: github") {
+		t.Fatalf("a refused read must be named as unreadable: %q", text)
+	}
+	got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials")
+	if got.Status != DiagnosticWarn {
+		t.Fatalf("an unreadable kind must warn, not pass as a clean inventory: %+v", got)
+	}
+}
+
+// A keyring that refuses every read proves nothing: doctor says the inventory
+// was not read rather than reporting an empty one. Absence has to be earned by
+// a read that succeeded.
+func TestDiagnosticsReportsNotReadWhenEveryCredentialReadIsRefused(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	report := Diagnostics{
+		Preflight: &preflight, StateDir: t.TempDir(), ProjectDir: t.TempDir(),
+		LookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) {
+			return "", &StoreError{Op: "verify", Kind: "native", State: "unavailable", Err: errors.New("daemon not running")}
+		},
+		ReadAlbert: func(context.Context) (string, error) { return "", nil },
+		ReadCredential: func(_ context.Context, _ CredentialKind) (string, string, error) {
+			return "", "", &StoreError{Op: "get", Kind: "native", State: "unavailable", Err: errors.New("daemon not running")}
+		},
+	}.Collect(context.Background())
+	got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials")
+	if got.Value != "not read" || got.Status != DiagnosticWarn {
+		t.Fatalf("a store that refused every read must not claim an inventory: %+v", got)
+	}
+	if strings.Contains(got.Detail, "none of the known kinds") {
+		t.Fatalf("refused reads must not be reported as absence: %+v", got)
+	}
+}
+
+// A host with no native keyring is not a failure: the run path resolves from
+// the consented file fallback there, so doctor still reports that inventory.
+func TestDiagnosticsReportsFileFallbackInventoryWithoutNativeStore(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	secret := "fallback-credential-never-print"
+	report := Diagnostics{
+		Preflight: &preflight, StateDir: t.TempDir(), ProjectDir: t.TempDir(),
+		LookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) {
+			return "none", errors.New("native credential store is not supported on this platform")
+		},
+		ReadAlbert: func(context.Context) (string, error) { return "", nil },
+		ReadCredential: func(_ context.Context, kind CredentialKind) (string, string, error) {
+			if kind == CredentialAlbert {
+				return secret, "file", nil
+			}
+			// Faithful to the runtime's aggregate read path: an absent or
+			// never-consented fallback comes back as ErrCredentialNotFound.
+			return "", "", ErrCredentialNotFound
+		},
+	}.Collect(context.Background())
+	text := diagnosticText(report)
+	if strings.Contains(text, secret) {
+		t.Fatalf("diagnostics exposed the credential value: %q", text)
+	}
+	got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials")
+	if got.Value != "albert" || got.Status != DiagnosticOK {
+		t.Fatalf("the file fallback inventory must still be reported: %+v", got)
+	}
+}
+
+// The inventory is read under one shared deadline, not one per kind: a keyring
+// daemon that is not answering must not cost a multiple of the budget. The
+// fake refuses to read unless the context already carries a deadline, so this
+// fails if the bound is ever dropped.
+func TestDiagnosticsCredentialInventoryReadsUnderABoundedContext(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	deadlines := 0
+	var first time.Time
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	report := Diagnostics{
+		Preflight: &preflight, StateDir: t.TempDir(), ProjectDir: t.TempDir(),
+		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) { return "native", nil },
+		ReadAlbert:  func(context.Context) (string, error) { return "", nil },
+		ReadCredential: func(ctx context.Context, _ CredentialKind) (string, string, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				return "", "", errors.New("credential inventory read has no deadline")
+			}
+			// The shared budget must cover all kinds, so the first deadline is
+			// the whole budget and later reads inherit it rather than starting
+			// their own. A per-kind timeout would multiply the worst case.
+			if first.IsZero() {
+				first = deadline
+			} else if !deadline.Equal(first) {
+				return "", "", errors.New("each kind got its own deadline instead of one shared budget")
+			}
+			deadlines++
+			return "", "", errors.New("secret-service: daemon not answering")
+		},
+	}.Collect(context.Background())
+	if deadlines != len(KnownCredentialKinds()) {
+		t.Fatalf("every known kind must be read under a deadline, got %d", deadlines)
+	}
+	if got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials"); got.Value != "not read" {
+		t.Fatalf("a store that never answered must not claim an inventory: %+v", got)
 	}
 }
 
@@ -172,9 +378,10 @@ func TestDiagnosticsDoesNotMutateInterruptedProjectUpdate(t *testing.T) {
 	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
 	report := Diagnostics{
 		Preflight: &preflight, FS: readonly, StateDir: state, ProjectDir: root,
-		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
-		VerifyStore: func(context.Context) (string, error) { return "test-store", nil },
-		ReadAlbert:  func(context.Context) (string, error) { return "", ErrCredentialNotFound },
+		LookPath:       func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore:    func(context.Context) (string, error) { return "test-store", nil },
+		ReadAlbert:     func(context.Context) (string, error) { return "", ErrCredentialNotFound },
+		ReadCredential: noStoredCredentials(),
 	}.Collect(context.Background())
 	if readonly.writes != 0 {
 		t.Fatalf("doctor attempted %d filesystem mutations", readonly.writes)
@@ -210,9 +417,10 @@ func TestDiagnosticsValidatesExplicitRuntimeWithoutManagedInstall(t *testing.T) 
 	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
 	report := Diagnostics{
 		Preflight: &preflight, StateDir: t.TempDir(), ProjectDir: t.TempDir(),
-		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
-		VerifyStore: func(context.Context) (string, error) { return "test-store", nil },
-		ReadAlbert:  func(context.Context) (string, error) { return "", ErrCredentialNotFound },
+		LookPath:       func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore:    func(context.Context) (string, error) { return "test-store", nil },
+		ReadAlbert:     func(context.Context) (string, error) { return "", ErrCredentialNotFound },
+		ReadCredential: noStoredCredentials(),
 	}.Collect(context.Background())
 	for _, section := range report.Sections {
 		if section.Title != "Runtime and VM state" {
@@ -283,3 +491,31 @@ func diagnosticText(report DiagnosticsReport) string {
 }
 
 func execNotFound() error { return exec.ErrNotFound }
+
+// noStoredCredentials is the hermetic stand-in for the credential store: it
+// reports every kind as absent, so a doctor test never reads the host's real
+// keyring. A test that only passes because this machine holds no credentials
+// would fail on a maintainer's laptop, which is the fragility this avoids.
+func noStoredCredentials() func(context.Context, CredentialKind) (string, string, error) {
+	return func(_ context.Context, _ CredentialKind) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
+}
+
+// diagnosticItemFrom finds one report item by section title and item name, so
+// assertions read the structured value instead of matching a rendered line.
+func diagnosticItemFrom(t *testing.T, report DiagnosticsReport, sectionTitle, itemName string) DiagnosticItem {
+	t.Helper()
+	for _, section := range report.Sections {
+		if section.Title != sectionTitle {
+			continue
+		}
+		for _, item := range section.Items {
+			if item.Name == itemName {
+				return item
+			}
+		}
+	}
+	t.Fatalf("report has no %q item in section %q: %+v", itemName, sectionTitle, report.Sections)
+	return DiagnosticItem{}
+}
