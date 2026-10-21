@@ -440,6 +440,78 @@ func TestImportRefusalNamesQuotedDuplicateOverwrittenByLaterAssignment(t *testin
 	}
 }
 
+// TestImportRefusalNamesTheFaultPastOverlappingLegalSeparators is the ninth
+// round's P2 on the scan budget. Five CR-only blank separators in front of one
+// long statement each opened a "statement" running to that same distant line
+// end, so five scans of ~900 KB exceeded the 4 MiB budget before the loop
+// reached the carriage return that actually split K. The file is legal apart
+// from that one fault, and it received only the generic message.
+//
+// Walking statements removes the overlap: the separators partition the input, so
+// each byte is scanned once. The assertion is therefore the invariant itself —
+// the scan never exceeds the input — rather than a budget it could never reach.
+func TestImportRefusalNamesTheFaultPastOverlappingLegalSeparators(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("\r\r\r\r\r")
+	b.WriteString("A=" + strings.Repeat("x", 900_000) + "\n")
+	b.WriteString("K=bad\rtail\n")
+	if b.Len() > MaxProjectDotenvBytes {
+		t.Fatalf("fixture is %d bytes, over the import limit", b.Len())
+	}
+
+	var scanned int64
+	prev := observeFaultScanBytes
+	observeFaultScanBytes = func(n int) { atomic.AddInt64(&scanned, int64(n)) }
+	defer func() { observeFaultScanBytes = prev }()
+
+	_, err := ParseProjectDotenv([]byte(b.String()))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("overlapping legal separators must not cost the diagnosis: %v", err)
+	}
+	if got := atomic.LoadInt64(&scanned); got > int64(b.Len()) {
+		t.Errorf("scanned %d bytes of a %d-byte file: the walk must stay one pass", got, b.Len())
+	}
+}
+
+// TestImportRefusalIgnoresQuotedCarriageReturnsInABudgetedFile is the ninth
+// round's P2 on the re-parse budget. A legal quoted value holding four carriage
+// returns in a near-limit file spent four whole-file confirmations — they are
+// content, not separators — and the fifth candidate, the real fault, was
+// rejected with the generic message.
+//
+// A carriage return inside a quoted value must not reach the re-parse budget at
+// all. The fixture sits at the import limit so the budget is genuinely tight:
+// at 200 KB the old code still named K, which is why the size matters.
+func TestImportRefusalIgnoresQuotedCarriageReturnsInABudgetedFile(t *testing.T) {
+	padLen := MaxProjectDotenvBytes - 6000
+	var b strings.Builder
+	b.WriteString("A=\"a\rb\rc\rd\re\"\n")
+	b.WriteString("P=" + strings.Repeat("z", padLen) + "\n")
+	b.WriteString("K=bad\rtail\n")
+	if b.Len() > MaxProjectDotenvBytes {
+		t.Fatalf("fixture is %d bytes, over the import limit", b.Len())
+	}
+
+	var reparsed int64
+	prev := observeFaultReparseBytes
+	observeFaultReparseBytes = func(n int) { atomic.AddInt64(&reparsed, int64(n)) }
+	defer func() { observeFaultReparseBytes = prev }()
+
+	_, err := ParseProjectDotenv([]byte(b.String()))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("legal quoted carriage returns must not cost the diagnosis: %v", err)
+	}
+	if got := atomic.LoadInt64(&reparsed); got > maxFaultReparseBytes {
+		t.Errorf("re-parsed %d bytes, over the %d-byte budget", got, maxFaultReparseBytes)
+	}
+}
+
 // TestImportRefusalBoundsSeparatorFilterWork is the eighth round's P2, and the
 // one that showed the separator filter itself had no work bound.
 //
@@ -478,8 +550,8 @@ func TestImportRefusalBoundsSeparatorFilterWork(t *testing.T) {
 	if strings.Contains(err.Error(), "BROKEN") {
 		t.Errorf("the refusal must not name a variable it did not prove: %v", err)
 	}
-	if got := atomic.LoadInt64(&scanned); got > maxFaultScanBytes {
-		t.Errorf("the separator filter scanned %d bytes, over the %d-byte budget", got, maxFaultScanBytes)
+	if got := atomic.LoadInt64(&scanned); got > int64(b.Len()) {
+		t.Errorf("the separator filter scanned %d bytes of a %d-byte file: the walk must stay one pass", got, b.Len())
 	}
 	if got := atomic.LoadInt64(&reparsed); got > maxFaultReparseBytes {
 		t.Errorf("attribution re-parsed %d bytes, over the %d-byte budget", got, maxFaultReparseBytes)
@@ -505,16 +577,13 @@ func TestImportRefusalStillNamesTheFaultAfterTheFilterBudget(t *testing.T) {
 	}
 }
 
-// TestImportRefusalNamesTheFaultInALargeClassicMacFile is the safety proof for
-// the scan budget, as a test rather than a comment.
-//
-// The budget can only bite a file whose statements overlap. In a file the parser
-// accepts statement by statement each statement ends at the next CR or LF, so
-// the scanned total is at most len(data) -- and the import limit caps that just
-// under 1 MiB, four times below the budget. This file is the worst such case
-// that fits: ~1.04 MB of CR-terminated assignments, every byte of it scanned,
-// with the fault on the last line. If the budget were reachable here, the
-// diagnosis would silently degrade for classic-Mac line endings.
+// TestImportRefusalNamesTheFaultInALargeClassicMacFile pins the largest
+// classic-Mac file the importer accepts: ~1.04 MB of CR-terminated assignments,
+// every byte of it scanned, with the fault on the last line. It is the shape
+// that made the removed scan budget degrade — a budget sized from whole-file
+// assumptions could be spent by a legal prefix — so it guards against
+// reintroducing one. The scan assertion is the walk's invariant: one pass, never
+// more bytes than the input holds.
 func TestImportRefusalNamesTheFaultInALargeClassicMacFile(t *testing.T) {
 	var b strings.Builder
 	for i := 0; b.Len() < MaxProjectDotenvBytes-64; i++ {
@@ -537,8 +606,8 @@ func TestImportRefusalNamesTheFaultInALargeClassicMacFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "K:") {
 		t.Errorf("a large well-formed file must not cost the diagnosis: %v", err)
 	}
-	if got := atomic.LoadInt64(&scanned); got > maxFaultScanBytes {
-		t.Errorf("scanned %d bytes of a %d-byte file, over the budget", got, b.Len())
+	if got := atomic.LoadInt64(&scanned); got > int64(b.Len()) {
+		t.Errorf("scanned %d bytes of a %d-byte file: the walk must stay one pass", got, b.Len())
 	}
 }
 

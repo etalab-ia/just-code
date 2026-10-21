@@ -45,30 +45,19 @@ const (
 // the diagnosis for every file that is not adversarially broken.
 const maxFaultReparseBytes = 4 << 20
 
-// maxFaultScanBytes bounds the bytes the separator filter examines before it
-// gives up and lets the generic message be used.
-//
-// The filter is meant to make the scan linear: it skips a carriage return that
-// begins a statement the parser accepts on its own, since such a CR cannot have
-// split a value. That holds when the statements partition the input — one
-// statement per CR, disjoint. It does not hold when many carriage returns sit on
-// one long physical line: every one of them then opens a statement running to
-// the same distant line end, so k CRs on a line of length L cost k*L instead of
-// L. Measured, that is genuinely quadratic: 2000 CRs 13 ms, 4000 45 ms, 8000
-// 171 ms, 16000 687 ms, 32000 2.8 s, 64000 11.3 s. Extrapolated to the 1 MiB
-// import limit the single scan would run for tens of minutes.
-//
-// The bound is on bytes scanned, not on candidates, for the same reason the
-// re-parse budget is: a count is too generous on a small file and too tight on a
-// large one. Past it the filter stops and the caller falls back to the
-// file-level message, which is less specific but never wrong.
-//
-// It cannot bite a file that is not adversarially shaped. When the statements do
-// partition the input, each one ends at the next CR or LF, so the scanned total
-// is at most len(data) -- and the import limit caps that at 1 MiB, well under
-// this budget. Only overlapping statements (CRs stacked on one line) can exceed
-// it, which is exactly the case worth giving up on.
-const maxFaultScanBytes = 4 << 20
+// The separator filter needs no work budget: it walks the file once. Earlier
+// versions tested each carriage return where it appeared, so many CRs on one
+// long physical line each opened a statement running to the same distant line
+// end — k CRs on a line of length L costing k*L. Measured, that was genuinely
+// quadratic: 2000 CRs 13 ms, 4000 45 ms, 8000 171 ms, 16000 687 ms, 32000 2.8 s,
+// 64000 11.3 s, or tens of minutes at the 1 MiB import limit. A byte budget was
+// added to bound it, and review then showed the budget itself was the bug: a
+// file that was legal apart from one fault spent it on overlapping separators
+// and received only the generic message. Walking statements fixes the cause
+// instead — each byte belongs to exactly one statement, so the scan totals
+// len(data) and cannot be pushed higher by any arrangement of separators. The
+// budget is gone rather than unreachable, because a bound that can never trigger
+// is a test that can never fail.
 
 // observeFaultReparseBytes is a test seam: it is called with the size of each
 // whole-file re-parse the fault attribution spends. Tests assert the work budget
@@ -81,7 +70,8 @@ const maxFaultScanBytes = 4 << 20
 var observeFaultReparseBytes = func(int) {}
 
 // observeFaultScanBytes is the same seam for the separator filter, so a test can
-// assert the scan stays bounded without measuring wall-clock time.
+// assert the scan stays within one pass over the input without measuring
+// wall-clock time.
 var observeFaultScanBytes = func(int) {}
 
 type ProjectDotenv struct {
@@ -376,8 +366,8 @@ func firstInvalidUTF8Byte(data []byte) int {
 	return -1
 }
 
-// carriageReturnFault names the variable a fatal carriage return belongs to,
-// or "" when none can be tied to the failure.
+// carriageReturnFault names the variable a bare carriage return split, or ""
+// when none can be tied to the failure.
 //
 // A bare carriage return is a line ending to godotenv, so it is not itself a
 // fault; it explains a failure only when it split a value, letting the text
@@ -386,34 +376,57 @@ func firstInvalidUTF8Byte(data []byte) int {
 // elsewhere and blaming the carriage return would send the user to the wrong
 // line. A CRLF pair is an ordinary line ending and is never considered.
 //
-// Candidates are pre-filtered because the confirming substitution re-parses the
-// whole input. A carriage return in front of a statement the parser accepts on
-// its own — an assignment, a comment, or a blank line — is a legal separator and
-// cannot have split a value, so it is skipped after a parse of that statement
-// alone, never of the file. Because consecutive separators partition the input,
-// those fragment parses total linear work, and the whole-file parse is spent
-// only on a genuine candidate. A plain "try the first N" bound was tried first
-// and rejected: a legitimate file can carry many legal separators before the
-// faulty one, and the bound discarded the only candidate that mattered.
+// The candidates are found by walking the file statement by statement rather
+// than by testing each carriage return where it appears. Walking is what keeps
+// legal content out of the budget: a carriage return inside a quoted value is
+// not a separator at all, and cutting a statement at it — which per-byte testing
+// does — turns the middle of a perfectly good string into a fragment that fails
+// to parse. Four such carriage returns in one quoted value then spent four
+// whole-file confirmations and hid the real fault a few lines further down.
+// StatementStandalone tells the two apart: the fragment ends with an
+// unterminated quote, so the value continues past the cut and the statement is
+// re-cut at the next LF, its real boundary. Only a statement that genuinely
+// fails to parse on its own, and whose preceding byte is a bare carriage
+// return, is confirmed against the whole file.
+//
+// A plain "try the first N" bound was tried first and rejected: a legitimate
+// file can carry many legal separators before the faulty one, and the bound
+// discarded the only candidate that mattered.
+//
+// The scan therefore needs no budget: a file the parser accepts statement by
+// statement is walked in a single linear pass — the statements partition the
+// input, so the total is len(data) — and finds its fault with one whole-file
+// parse. The re-parse budget below stays as a backstop so a crafted file cannot
+// turn the diagnostic itself into a denial of service; when it is reached the
+// caller names the file instead of a variable: less specific, never wrong.
 func carriageReturnFault(data []byte) string {
 	spent := 0
-	scanned := 0
-	for i := 0; i < len(data); i++ {
-		if data[i] != '\r' {
-			continue
+	for pos := 0; pos < len(data); {
+		end := firstStatementLen(data[pos:])
+		if end == 0 {
+			break
 		}
-		if i+1 < len(data) && data[i+1] == '\n' {
-			i++ // CRLF: an ordinary line ending.
-			continue
+		if reason := statementError(data[pos : pos+end]); isUnterminatedQuote(reason) {
+			// A quote is open across the cut, so this is not a statement
+			// boundary: re-cut where the parser's outer scan ends.
+			if nl := bytes.IndexByte(data[pos:], '\n'); nl >= 0 {
+				end = nl + 1
+			}
 		}
-		end := firstStatementLen(data[i+1:])
-		if scanned+end > maxFaultScanBytes {
-			return "" // scan budget exhausted: name the file, never a wrong variable
-		}
-		scanned += end
+		// Charges the statement, and the walk advances by exactly that many
+		// bytes, so the total is len(data) at most — see the note on the removed
+		// scan budget above.
 		observeFaultScanBytes(end)
-		if statementStandalone(data[i+1 : i+1+end]) {
-			continue // a legal separator: assignment, comment, or blank line
+		if statementStandalone(data[pos : pos+end]) {
+			pos += end
+			continue // a legal statement: its separator cannot have split a value
+		}
+		// The statement fails on its own, so the byte in front of it may be the
+		// carriage return that split the value ending the previous statement.
+		cr := pos - 1
+		if cr < 0 || data[cr] != '\r' {
+			pos += end
+			continue
 		}
 		if spent+len(data) > maxFaultReparseBytes {
 			return "" // budget exhausted: name the file, never a wrong variable
@@ -423,10 +436,10 @@ func carriageReturnFault(data []byte) string {
 		// is the natural unit and keeps the budget in bytes of input re-read.
 		spent += len(data)
 		observeFaultReparseBytes(len(data))
-		name := attributeFaultByte(data, i)
-		if name != "" {
+		if name := attributeFaultByte(data, cr); name != "" {
 			return name
 		}
+		pos += end
 	}
 	return ""
 }
@@ -469,11 +482,36 @@ func firstStatementLen(rest []byte) int {
 // statement reaching across a whitespace CR was cut short. Delegating costs one
 // parse per CR, but only for statements that are not legal separators — and it
 // cannot drift from the grammar the way a copy does.
+//
+// The statement must be cut so it holds no CRLF. godotenv's entry point
+// substitutes a marker for every `$` before it parses, so each parse here costs
+// the length of the text it was given, substitution included — and a statement
+// reaching across a CRLF carries the substitution of everything up to that line
+// end. Charging that against the re-parse budget let four legal carriage returns
+// inside a quoted value, which are not separators at all, spend the budget of a
+// near-limit file and hide the real fault.
 func statementStandalone(statement []byte) bool {
+	return statementError(statement) == nil
+}
+
+// statementError parses one statement on its own and returns the parser's
+// reason, or nil when the parser accepts it — an assignment, a comment, or a
+// blank line.
+func statementError(statement []byte) error {
 	// A blank or whitespace-only statement is legal.
 	if len(bytes.TrimSpace(statement)) == 0 {
-		return true
+		return nil
 	}
 	_, err := godotenv.UnmarshalBytes(statement)
-	return err == nil
+	return err
+}
+
+// isUnterminatedQuote reports whether the parser stopped because a quoted value
+// was still open when the fragment ended. godotenv's outer scan closes a value
+// only on a matching quote, skipping an escaped one, so this is the one failure
+// that means "the boundary is wrong" rather than "the statement is invalid": a
+// carriage return inside a quoted value is content, and the statement continues
+// past it.
+func isUnterminatedQuote(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "unterminated quoted value")
 }
