@@ -145,6 +145,19 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 		// worse than an honest "unsupported". The message says what to do.
 		return ProjectDotenv{}, fmt.Errorf("dotenv syntax is invalid or unsupported; the offending line is not quoted here because it may contain a secret value")
 	}
+	// A successful parse can still hide an empty-named assignment: a statement
+	// with no '=' or ':' delimiter becomes a value under the "" key. Most
+	// often this is the trailing fragment of a value split by a bare carriage
+	// return — `K=bad\rreturn` parses as K="bad" plus an unnamed "return" —
+	// and it must be refused with the same named diagnosis the newline-carrying
+	// form gets (#208). Anything else is stray text, named as what it is rather
+	// than reported as an unsupported variable name.
+	if _, hasEmpty := values[""]; hasEmpty {
+		if name := emptyNameAttribution(data); name != "" {
+			return ProjectDotenv{}, fmt.Errorf("%s: the value contains a carriage return, which ends the assignment early, so the rest of the line is read as a separate statement that is not a valid assignment; remove the carriage return from the value, or make the remainder a complete assignment", name)
+		}
+		return ProjectDotenv{}, fmt.Errorf("the dotenv file contains text that is not a named assignment; every line must be an assignment like KEY=value")
+	}
 	duplicates := map[string]bool{}
 	seen := map[string]bool{}
 	for key := range values {
@@ -452,6 +465,73 @@ func carriageReturnFault(data []byte) string {
 			return name
 		}
 		pos += end
+	}
+	return ""
+}
+
+// emptyNameAttribution reports the variable whose value a bare carriage return
+// split near the end of the file, leaving an empty-named assignment behind, or
+// "" when the empty-named assignment is not a carriage-return split.
+//
+// The whole file already parses when this runs: an empty-named assignment is
+// legal, so there is no failing statement for carriageReturnFault to find. It
+// happens when a statement has no '=' or ':' delimiter, so godotenv reads the
+// whole thing as a value under the empty key. Usually that is the trailing
+// fragment of a value a bare carriage return split — `K=bad\rreturn` parses as
+// K="bad" plus an unnamed "return" — and the fragment should be refused with
+// the same named carriage-return message the newline-carrying form gets (#208).
+//
+// The walk reuses the same statement boundaries as carriageReturnFault. When a
+// statement is empty-named and the byte before it is a bare CR, that CR
+// terminated the previous assignment's value and the fragment is its tail, so
+// the previous statement's key is the answer. A CRLF before the fragment is an
+// ordinary line ending and leaves it on its own line, not a split value.
+func emptyNameAttribution(data []byte) string {
+	var prevKey string
+	for pos := 0; pos < len(data); {
+		end := firstStatementLen(data[pos:])
+		if end == 0 {
+			break
+		}
+		stmt := data[pos : pos+end]
+		if reason := statementError(stmt); isUnterminatedQuote(reason) {
+			if rest, ok := closingQuoteRest(data[pos:pos+end], data[pos+end:]); ok {
+				end = len(data[pos:]) - len(rest)
+				if nl := separatorLen(rest); nl > 0 {
+					end += nl
+				}
+				stmt = data[pos : pos+end]
+			} else if nl := bytes.IndexByte(data[pos:], '\n'); nl >= 0 {
+				end = nl + 1
+				stmt = data[pos : pos+end]
+			}
+		}
+		key := statementKey(stmt)
+		if key == "" && prevKey != "" && pos > 0 && data[pos-1] == '\r' {
+			if pos < 2 || data[pos-2] != '\n' {
+				return prevKey
+			}
+		}
+		if key != "" {
+			prevKey = key
+		}
+		pos += end
+	}
+	return ""
+}
+
+// statementKey returns the single named key a statement parses to, or "" when
+// the statement is a comment, blank, malformed, or an assignment with no name
+// (the empty key godotenv produces for text with no '=' or ':' delimiter).
+func statementKey(statement []byte) string {
+	values, err := godotenv.UnmarshalBytes(statement)
+	if err != nil || len(values) != 1 {
+		return ""
+	}
+	for k := range values {
+		if k != "" {
+			return k
+		}
 	}
 	return ""
 }

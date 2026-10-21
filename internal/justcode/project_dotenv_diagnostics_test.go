@@ -69,7 +69,7 @@ func TestImportRefusalNamesTheVariableAndTheRule(t *testing.T) {
 		if strings.Contains(err.Error(), "too large or contains invalid text") {
 			t.Errorf("%s: the merged message must be split: %v", c.name, err)
 		}
-		if strings.Contains(err.Error(), "syntax is invalid or unsupported") && c.name != "carriage return inside a value" {
+		if strings.Contains(err.Error(), "syntax is invalid or unsupported") {
 			t.Errorf("%s: a diagnosed fault must not fall back to the generic wording: %v", c.name, err)
 		}
 	}
@@ -106,17 +106,79 @@ func TestImportRefusalNeverEchoesTheValue(t *testing.T) {
 // an ordinary line ending, and a bare CR followed by a well-formed assignment
 // parses as two assignments. Refusing those would reject valid files.
 func TestImportAcceptsTheCarriageReturnFormsThatAreLegal(t *testing.T) {
-	for _, c := range []struct{ name, data string }{
-		{"CRLF line endings", "A=ok\r\nB=two\r\n"},
-		{"bare CR between assignments", "A=1\rB=2\n"},
-		{"lone CRLF", "\r\n"},
+	for _, c := range []struct {
+		name, data string
+		want       map[string]string
+	}{
+		{"CRLF line endings", "A=ok\r\nB=two\r\n", map[string]string{"A": "ok", "B": "two"}},
+		{"bare CR between assignments", "A=1\rB=2\n", map[string]string{"A": "1", "B": "2"}},
+		{"lone CRLF", "\r\n", map[string]string{}},
 	} {
 		got, err := ParseProjectDotenv([]byte(c.data))
 		if err != nil {
 			t.Errorf("%s: must parse, not refuse: %v", c.name, err)
 			continue
 		}
-		_ = got
+		for wantKey, wantVal := range c.want {
+			if got.Values[wantKey] != wantVal {
+				t.Errorf("%s: expected %s=%q, got %q", c.name, wantKey, wantVal, got.Values[wantKey])
+			}
+		}
+		if len(got.Values) != len(c.want) {
+			t.Errorf("%s: expected %d keys, got %d: %v", c.name, len(c.want), len(got.Values), got.Values)
+		}
+	}
+}
+
+// TestImportRefusalNamesTheCarriageReturnSplitAtEOF is the P2 counterpart to
+// the newline-carrying case: a bare CR that splits a value whose trailing
+// fragment sits at the very end of the file (no following newline) parses as a
+// stray empty-named assignment, so the parse succeeds and carriageReturnFault
+// never runs. It must still be refused with the same named carriage-return
+// diagnosis rather than the generic empty-variable-name message. This is the
+// shape a classic-Mac file (CR line endings) produces when its last line has a
+// split value.
+func TestImportRefusalNamesTheCarriageReturnSplitAtEOF(t *testing.T) {
+	for _, c := range []struct{ name, data string }{
+		{"split at EOF no newline", "K=bad\rreturn"},
+		{"split at EOF", "K=bad\rtail"},
+		{"split then more CRs", "A=1\rK=bad\rtail\r"},
+	} {
+		_, err := ParseProjectDotenv([]byte(c.data))
+		if err == nil {
+			t.Fatalf("%s: a carriage return splitting a value must be refused", c.name)
+		}
+		if !strings.Contains(err.Error(), "K:") {
+			t.Errorf("%s: the refusal must name K: %v", c.name, err)
+		}
+		if !strings.Contains(err.Error(), "carriage return") {
+			t.Errorf("%s: the refusal must state the carriage-return rule: %v", c.name, err)
+		}
+		if strings.Contains(err.Error(), "variable name") && strings.Contains(err.Error(), "not supported") {
+			t.Errorf("%s: the empty-variable-name message must not replace the CR diagnosis: %v", c.name, err)
+		}
+	}
+}
+
+// TestImportRefusalNamesStrayTextWithoutAnAssignment covers the other empty-
+// named shape: text with no '=' or ':' delimiter, preceded by a newline rather
+// than a bare CR, is genuine stray content and must be refused with a message
+// that says so instead of the generic empty-variable-name wording.
+func TestImportRefusalNamesStrayTextWithoutAnAssignment(t *testing.T) {
+	for _, c := range []struct{ name, data string }{
+		{"stray text after a line", "A=1\nfoo"},
+		{"bare value line", "=value\n"},
+	} {
+		_, err := ParseProjectDotenv([]byte(c.data))
+		if err == nil {
+			t.Fatalf("%s: stray non-assignment text must be refused", c.name)
+		}
+		if !strings.Contains(err.Error(), "not a named assignment") {
+			t.Errorf("%s: the refusal must name the stray-text class: %v", c.name, err)
+		}
+		if strings.Contains(err.Error(), "variable name") && strings.Contains(err.Error(), "not supported") {
+			t.Errorf("%s: the empty-variable-name message must not be used: %v", c.name, err)
+		}
 	}
 }
 
@@ -866,5 +928,13 @@ func TestDotenvParserContractPinnedToV151(t *testing.T) {
 	// A bare CR inside quotes is value content, not a terminator.
 	if _, err := godotenv.UnmarshalBytes([]byte("A=\"ok\rstill\"\n")); err != nil {
 		t.Errorf("contract: a bare CR inside quotes is value content, not a terminator: %v", err)
+	}
+	// isUnterminatedQuote keys on this exact error prefix when the walk re-cuts
+	// a fragment at the quote that closes its value (project_dotenv.go). A
+	// godotenv bump that rewords the error would stop the re-cut from firing
+	// and turn quoted CRs back into budget-charged candidates.
+	_, err := godotenv.UnmarshalBytes([]byte("A=\"unterminated\n"))
+	if err == nil || !strings.HasPrefix(err.Error(), "unterminated quoted value") {
+		t.Errorf("contract: an unterminated quote must fail with %q, got %v", "unterminated quoted value", err)
 	}
 }
