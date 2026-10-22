@@ -153,16 +153,17 @@ else
   fail "T5 violation absente du journal runtime"
 fi
 
-# T6: canal query non substitué -> violation même vers l'hôte autorisé.
+# T6: les query params ne sont pas substitués, mais leur placeholder est
+# transmis littéralement vers un hôte autorisé (depuis msb 0.7.5).
 "$MSB" exec "$SB" -- sh -c \
   'wget -q -T 20 -O- --header="X-T: $P02_CANARY" "https://p02lab.test:8443/t6?tok=$P02_CANARY"' \
   >/dev/null 2>&1 || true
-T6_REACHED="$(grep -c '"path": "/t6' "$LAB/requests.jsonl" || true)"
-if [ "$T6_REACHED" = "0" ]; then
-  ok "T6 canal query: violation (non substitué par défaut)"
-else
-  fail "T6 canal query: requête livrée avec placeholder"
-fi
+T6_RESULT="$(grep '"path": "/t6' "$LAB/requests.jsonl" | tail -1 | \
+  node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);console.log((r.path||'')+'\\t'+(r.headers['x-t']||''))}catch(e){console.log('\\t')}})")"
+T6_PATH="$(printf '%s' "$T6_RESULT" | cut -f1)"
+T6_HEADER="$(printf '%s' "$T6_RESULT" | cut -f2-)"
+check "T6 query placeholder passe sans substitution" '/t6?tok=$MSB_P02_CANARY' "$T6_PATH"
+check "T6 en-tête substitué" "$CANARY" "$T6_HEADER"
 
 # T7: Basic auth — le placeholder base64-encodé EST reconnu et substitué.
 T7_B64="$(printf 'user:$MSB_P02_CANARY' | base64)"

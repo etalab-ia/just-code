@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """DNS UDP server for the P02 credential lab.
 
-Answers p02lab.test and evil.test with the host LAN IP, REFUSED (rcode 5)
-for other names so the resolver falls back to 1.1.1.1. See the suite README.
+Answers p02lab.test and evil.test with the host LAN IP. Returns NODATA for
+AAAA queries to those names and REFUSED (rcode 5) for other names so the
+resolver falls back to 1.1.1.1. See the suite README.
 """
 
 import socket
@@ -47,6 +48,8 @@ def main():
                 + struct.pack(">HHIH", 1, 1, 60, 4)
                 + socket.inet_aton(known[qname])
             )
+        elif qname in known and qtype == 28 and qclass == 1:
+            answer = qid + struct.pack(">HHHHH", 0x8180, 1, 0, 0, 0) + data[12:offset + 4]
         else:
             answer = qid + struct.pack(">HHHHH", 0x8185, 1, 0, 0, 0) + data[12:offset + 4]
         sock.sendto(answer, addr)
