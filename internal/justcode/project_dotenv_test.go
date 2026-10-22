@@ -38,6 +38,36 @@ func TestParseProjectDotenvReportsDuplicateKeysLastWins(t *testing.T) {
 	}
 }
 
+func TestParseProjectDotenvReportsColonDuplicateKeysLastWins(t *testing.T) {
+	parsed, err := ParseProjectDotenv([]byte("A: first\nB: other\nA: last\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Values["A"] != "last" || !reflect.DeepEqual(parsed.Duplicates, []string{"A"}) {
+		t.Fatalf("duplicate handling with ':' delimiter: values=%v duplicates=%v", keysOf(parsed.Values), parsed.Duplicates)
+	}
+}
+
+func TestParseProjectDotenvReportsMixedSeparatorDuplicates(t *testing.T) {
+	parsed, err := ParseProjectDotenv([]byte("A: first\nA=last\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Values["A"] != "last" || !reflect.DeepEqual(parsed.Duplicates, []string{"A"}) {
+		t.Fatalf("duplicate handling across ':' and '=' delimiters: values=%v duplicates=%v", keysOf(parsed.Values), parsed.Duplicates)
+	}
+}
+
+func TestParseProjectDotenvNoFalseColonDuplicate(t *testing.T) {
+	parsed, err := ParseProjectDotenv([]byte("A: first\nB: second\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Duplicates) != 0 {
+		t.Fatalf("unexpected duplicate keys for distinct colon assignments: %v", parsed.Duplicates)
+	}
+}
+
 func TestParseProjectDotenvRejectsUnsafeAndMalformedInput(t *testing.T) {
 	for _, source := range []string{"BAD-KEY=value\n", "BROKEN=\"unterminated-secret", "KEY=value\x00"} {
 		_, err := ParseProjectDotenv([]byte(source))
