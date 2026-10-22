@@ -296,6 +296,11 @@ func storeImportedAlbertCredential(ctx context.Context, store justcode.Credentia
 		return false, fmt.Errorf("store Albert credential: %w", err)
 	}
 	bumpImportedCredentialGenerationFn(justcode.CredentialAlbert)
+	// Record the store the import wrote to, so later starts read the value from
+	// there rather than re-probing a native adapter this host may not be able to
+	// answer. Best-effort, like the generation bump: the value is already
+	// stored.
+	_ = justcode.RecordCredentialStore(justcode.DefaultStateDir(), justcode.CredentialAlbert, store.Kind())
 	return true, nil
 }
 
@@ -316,6 +321,10 @@ func rollbackImportedCredential(ctx context.Context, store justcode.CredentialSt
 	if err := store.Remove(ctx, justcode.CredentialAlbert); err != nil && !justcode.IsCredentialNotFound(err) {
 		return err
 	}
+	// The rollback removed the entry it just created, so the record must not
+	// keep pointing at a store that no longer holds it. Scoped to this store,
+	// like `auth remove`.
+	_ = justcode.ForgetCredentialStore(justcode.DefaultStateDir(), justcode.CredentialAlbert, store.Kind())
 	bumpImportedCredentialGenerationFn(justcode.CredentialAlbert)
 	return nil
 }

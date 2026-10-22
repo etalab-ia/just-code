@@ -554,24 +554,25 @@ func placeholderFor(envVar string) string { return "$MSB_" + envVar }
 // cannot be verified, and the runtime must not start a sandbox on it without
 // the reason being surfaced.
 //
+// A completed write can record the store it used (see credentials_recorded.go).
+// When that record names the file store, the read answers from it directly
+// rather than probing a native adapter that may be unreachable — the consent
+// decision was already made, and a D-Bus-less host would otherwise fail to read
+// a value the user deliberately stored there. Nothing else changes: a native
+// not-found still continues to the fallback, and a native failure is still a
+// hard error when no record pins the file store.
+//
 // The returned store name records which store answered, so the caller can
 // persist it: revocation must target the store it was read from.
+//
+// The state directory and the store adapters are seams (the same pattern as
+// stdinIsTTYFn) because both are host state: a test that used the real keychain
+// would pass or fail on what the developer's machine happens to hold.
+var credentialStateDirFn = DefaultStateDir
+var credentialStoreReadersFn = defaultCredentialStoreReaders
+
 func readStoredCredential(ctx context.Context, kind CredentialKind) (string, string, error) {
-	native := func(ctx context.Context, kind CredentialKind) (string, error) {
-		if s := DefaultCredentialStore(); s == nil {
-			return "", ErrCredentialNotFound
-		} else {
-			return s.Get(ctx, kind)
-		}
-	}
-	fileGet := func(ctx context.Context, kind CredentialKind) (string, error) {
-		fs, err := NewFileCredentialStore()
-		if err != nil {
-			return "", err
-		}
-		return fs.Get(ctx, kind)
-	}
-	return readStoredWithNative(ctx, kind, native, fileGet)
+	return readStoredCredentialIn(ctx, kind, credentialStateDirFn(), credentialStoreReadersFn())
 }
 
 // ResolveAlbert is the exported form of resolveAlbert, for the CLI's

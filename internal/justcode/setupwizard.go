@@ -191,6 +191,12 @@ func (w SetupWizard) PutCredential(ctx context.Context, kind CredentialKind, val
 	if err := store.Put(ctx, kind, value); err != nil {
 		return err
 	}
+	// Record the store that received the value, so a later start reads it back
+	// from there instead of re-probing a native adapter that may be
+	// unreachable. Best-effort: the credential is stored, and losing the record
+	// only restores the previous default chain. Written through the wizard's own
+	// FS so an injected filesystem stays injected.
+	_ = writeRecordedCredentialStore(w.FS, w.StateDir, kind, store.Kind())
 	j, err := ReadSetupJournal(w.FS, w.StateDir)
 	if err != nil {
 		return err
