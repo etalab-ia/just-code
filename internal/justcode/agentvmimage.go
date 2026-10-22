@@ -55,11 +55,18 @@ func ValidateBaseTemplateImage(ctx context.Context, r Runner, image string) erro
 	}
 	// A failed check does not yet say the image is wrong: limactl refuses to
 	// run at all for some callers (`must not run as the root user`), and that
-	// refusal arrives on this same command. Lima gates that in a
+	// refusal arrives on this same command. In Lima 1.x that gate sits in a
 	// PersistentPreRunE on the root command, so it applies to every subcommand
 	// while --help bypasses it — which is why the capability probe above
 	// passes as root. A subcommand that carries no image therefore fails
 	// identically and serves as a witness.
+	//
+	// Lima 2.x moved the same gate to a panic at the top of main(), which
+	// --help does not bypass, so as root the probe exits non-zero and this
+	// check reports "unsupported" instead. That path skips validation rather
+	// than witnessing it, and is harmless: as root on 2.x every limactl call
+	// panics, so the build fails on its own with Lima's message before this
+	// check could matter.
 	//
 	// `info` is that subcommand: it reads the template store, `limayaml` and
 	// LimaHome — the same inputs `template validate` needs — so it fails when
@@ -74,7 +81,7 @@ func ValidateBaseTemplateImage(ctx context.Context, r Runner, image string) erro
 	// to do with the configured image — `info` reads the template store,
 	// `default.yaml` and LimaHome, so a broken store fails it while a
 	// genuinely bad image also fails the validation. Nothing cheap separates
-	// those two: Lima exits 1 in both cases, and matching the refusal text
+	// those two: Lima exits non-zero in both cases, and matching the refusal text
 	// would tie the attribution to Lima's wording, which is exactly the
 	// fragility the witness exists to avoid. The result therefore reports
 	// that no verdict is available rather than asserting either cause.

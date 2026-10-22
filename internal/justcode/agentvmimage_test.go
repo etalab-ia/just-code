@@ -156,22 +156,18 @@ func TestEnvExampleAGENTVMImageMatchesDefault(t *testing.T) {
 	}
 }
 
-// createBaseTemplate is the step that resolves the image, so its failure must
-// carry Lima's explanation.
 // A failed validate does not always mean a bad image: limactl refuses to run
 // at all as root ("must not run as the root user"), and that refusal arrives on
 // the same command. Blaming AGENT_VM_IMAGE there would send the user to change
-// a value that was never the problem. Probing the known-good default separates
-// the two without depending on Lima's wording.
+// a value that was never the problem. The image-free `limactl info` witness
+// separates the two without depending on Lima's wording.
 func TestValidateBaseTemplateImageDistinguishesLimaRefusal(t *testing.T) {
 	refusal := `time="2026-10-22T14:51:44Z" level=fatal msg="must not run as the root user"`
 	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
-		switch {
-		case len(args) >= 3 && args[0] == "template" && args[2] == "--help":
+		if len(args) >= 3 && args[0] == "template" && args[2] == "--help" {
 			return ExecResult{ExitCode: 0}
-		case len(args) >= 3 && args[0] == "template" && args[2] == DefaultAgentVMImage:
-			return ExecResult{ExitCode: 1, Stderr: refusal}
 		}
+		// Every real subcommand refuses, including the image-free witness.
 		return ExecResult{ExitCode: 1, Stderr: refusal}
 	}}
 	err := ValidateBaseTemplateImage(context.Background(), runner, "template://debian-13")
@@ -184,6 +180,12 @@ func TestValidateBaseTemplateImageDistinguishesLimaRefusal(t *testing.T) {
 	// Still actionable: the real reason travels with the message.
 	if !strings.Contains(err.Error(), "must not run as the root user") {
 		t.Errorf("the limactl refusal must be surfaced: %v", err)
+	}
+	// This fake refuses every command, so a witness built from an image would
+	// fail exactly like `info` and the assertions above would still pass.
+	// Assert the shape of the call instead.
+	if !runner.hasCall("limactl info") {
+		t.Errorf("the witness must be image-independent; calls: %v", runner.calls)
 	}
 }
 
