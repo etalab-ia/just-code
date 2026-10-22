@@ -263,6 +263,41 @@ func TestImportRefusalBlamesOnlyTheFaultyCarriageReturn(t *testing.T) {
 	}
 }
 
+// TestImportRefusalDoesNotBlameALegalSeparatorForBackticks: the carriage-return
+// branch and the backtick branch can both claim the same failure, and only one
+// of them is right. A bare CR in front of a statement that fails its key scan
+// really did cut the preceding value short. But go-rotini reports the backtick
+// refusal only after a key and a delimiter were scanned, so the statement after
+// the CR is a complete assignment: `A=ok\rK=1` parses as two assignments, and
+// the CR is not the fault. Classifying the backtick first is what keeps that
+// distinction; the reverse order accuses a separator that did its job.
+func TestImportRefusalDoesNotBlameALegalSeparatorForBackticks(t *testing.T) {
+	const secret = "SUPERSECRET_9f3a"
+	for _, in := range []string{
+		"A=ok\rK=`" + secret + "`\n",
+		"A=\"ok\"\rK=`" + secret + "`\n",
+		"B=1\rA=ok\rK=`" + secret + "`\n",
+	} {
+		_, err := ParseProjectDotenv([]byte(in))
+		if err == nil {
+			t.Fatalf("%q: a backtick value must be refused", in)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "carriage return") {
+			t.Errorf("%q: a legal separator must not be blamed for a backtick refusal: %v", in, err)
+		}
+		if !strings.Contains(msg, "backtick") {
+			t.Errorf("%q: the real fault is the backtick value: %v", in, err)
+		}
+		if !strings.Contains(msg, "K:") {
+			t.Errorf("%q: the refusal must name K, the statement that carries the backtick: %v", in, err)
+		}
+		if strings.Contains(msg, secret) {
+			t.Errorf("%q: the refusal must not quote the value: %v", in, err)
+		}
+	}
+}
+
 // TestImportRefusalRecognizesYAMLDelimiter pins the second grammar gap: the
 // parser accepts ':' as an assignment delimiter, so a diagnostic that only
 // looks for '=' fails to name the variable on those lines.
@@ -879,6 +914,7 @@ func TestImportRefusalRefusesBacktickValues(t *testing.T) {
 		{"quoted", "K=`SUPERSECRET`\n", "K"},
 		{"unterminated", "K=`X\n", "K"},
 		{"export-prefixed", "export K=`X`\n", "K"},
+		{"tab-separated export prefix", "export\tK=`X`\n", "K"},
 		{"yaml-delimiter", "K: `X`\n", "K"},
 		{"second-line", "A=1\nK=`SECRET2`\n", "K"},
 		{"oversized-name", strings.Repeat("N", 200) + "=`X`\n", ""},

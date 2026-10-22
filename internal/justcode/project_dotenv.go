@@ -61,6 +61,16 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 		}
 		var pe *dotenv.ParseError
 		if errors.As(err, &pe) {
+			// A backtick refusal belongs to the statement that contains it, so it
+			// is classified before the carriage-return branch. go-rotini reports
+			// this error only after scanning a key and a delimiter, which proves
+			// the statement after a bare carriage return is a complete
+			// assignment: the carriage return separated two statements rather
+			// than cutting a value short, and blaming it would send the reader
+			// after a separator that did its job.
+			if rerr := backtickRefusal(data, pe); rerr != nil {
+				return ProjectDotenv{}, rerr
+			}
 			if name, bareCR := crSplitName(data, pe); bareCR {
 				if name == "" {
 					// The split is real but the preceding assignment's name is
@@ -70,9 +80,6 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 				return ProjectDotenv{}, fmt.Errorf("%s: the value contains a carriage return, which ends the assignment early, so the rest of the line is read as a separate statement that is not a valid assignment; remove the carriage return from the value, or make the remainder a complete assignment", name)
 			}
 			if rerr := nameScanRefusal(data, pe); rerr != nil {
-				return ProjectDotenv{}, rerr
-			}
-			if rerr := backtickRefusal(data, pe); rerr != nil {
 				return ProjectDotenv{}, rerr
 			}
 		}
@@ -215,7 +222,7 @@ func crSplitName(data []byte, pe *dotenv.ParseError) (string, bool) {
 
 // statementName extracts the attempted variable name from the statement line
 // containing off: the text left of the first '=' or ':' delimiter, with an
-// "export " prefix consumed the way the library consumes it. The boolean is
+// `export` prefix consumed the way the library consumes it. The boolean is
 // false when the line carries no delimiter, i.e. it is not an assignment
 // attempt at all.
 func statementName(data []byte, off int) (string, bool) {
@@ -232,11 +239,24 @@ func statementName(data []byte, off int) (string, bool) {
 	if delim < 0 {
 		return "", false
 	}
-	name := strings.TrimSpace(string(line[:delim]))
-	if after, ok := strings.CutPrefix(name, "export "); ok {
-		name = strings.TrimSpace(after)
+	return stripExportPrefix(strings.TrimSpace(string(line[:delim]))), true
+}
+
+// stripExportPrefix removes the `export` keyword the library consumes before
+// scanning a name. Verified against go-rotini v1.0.3: `export K=1`,
+// `export\tK=1` and `export  K=1` all yield the name K, while `exportK=1`
+// yields the name exportK. So the keyword needs at least one blank after it,
+// and a glued `export` is part of the name.
+func stripExportPrefix(name string) string {
+	after, ok := strings.CutPrefix(name, "export")
+	if !ok {
+		return name
 	}
-	return name, true
+	trimmed := strings.TrimLeft(after, " \t")
+	if len(trimmed) == len(after) {
+		return name
+	}
+	return strings.TrimSpace(trimmed)
 }
 
 // nameScanRefusal classifies the key-scan failures go-rotini reports — the
