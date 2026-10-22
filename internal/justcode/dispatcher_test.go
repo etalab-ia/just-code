@@ -388,7 +388,9 @@ func TestDispatcherCheckProbesOnlyAppliedPortMappings(t *testing.T) {
 	if got := "port " + strconv.Itoa(int(stale)) + " (guest 3000): still forwarded until the sandbox is recreated"; !strings.Contains(out, got) {
 		t.Fatalf("stale applied mapping was not reported: %q", out)
 	}
-	if strings.Contains(out, strconv.Itoa(int(DefaultPort))) {
+	// Match the reported line shape, not the bare digits: an ephemeral port
+	// such as 40967 contains "4096" and made this assertion fail at random.
+	if strings.Contains(out, fmt.Sprintf("port %d (guest %d):", DefaultPort, DefaultPort)) {
 		t.Fatalf("the OpenCode server forward must not be reported as a preview mapping: %q", out)
 	}
 }
@@ -507,7 +509,9 @@ func TestDispatcherCheckReportsStaleForwardAfterLastMappingRemoved(t *testing.T)
 	if got := "port " + strconv.Itoa(int(stale)) + " (guest 3000): still forwarded until the sandbox is recreated"; !strings.Contains(out, got) {
 		t.Fatalf("stale forward after the last mapping was removed was not reported: %q", out)
 	}
-	if strings.Contains(out, strconv.Itoa(int(DefaultPort))) {
+	// See the note in TestDispatcherCheckProbesOnlyAppliedPortMappings: the
+	// bare digits match unrelated ephemeral ports by coincidence.
+	if strings.Contains(out, fmt.Sprintf("port %d (guest %d):", DefaultPort, DefaultPort)) {
 		t.Fatalf("the OpenCode server forward must not be reported as a preview mapping: %q", out)
 	}
 }
