@@ -118,9 +118,13 @@ const (
 	// user-managed and is never built or overwritten.
 	DefaultAgentVMTemplate = "agent-vm-base"
 	DefaultAgentVMVM       = "opencode-agent-vm"
-	// DefaultAgentVMImage matches the image agent-vm itself creates its base
-	// template from, so a just-code-built template is equivalent.
-	DefaultAgentVMImage = "template:debian-13"
+	// DefaultAgentVMImage is the Lima image the base template is built from.
+	// It is pinned to a release on purpose: `template://debian` is a rolling
+	// alias that pointed at Debian 12 in Lima 1.2 and Debian 13 later, so it
+	// would silently change the guest on a Lima upgrade. The locator form
+	// (`template://`) is required — `template:debian-12` is not valid Lima
+	// syntax — and debian-12 is still shipped by Lima 1.0.
+	DefaultAgentVMImage = "template://debian-12"
 	// Default base template sizing. The disk default is deliberately generous
 	// for the toolchain: Lima resizes disks up only, never down, and Agent
 	// CLI installations grow over time.

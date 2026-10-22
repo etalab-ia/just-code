@@ -185,6 +185,12 @@ func (a *AgentVM) ensureBaseTemplate(ctx context.Context) error {
 	if a.Config.AgentVMResourcesErr != nil {
 		return a.Config.AgentVMResourcesErr
 	}
+	// Checked before the first destructive step of the build (which deletes
+	// any existing template), so an unresolvable image costs a second rather
+	// than a failed multi-minute build with the old template already gone.
+	if err := ValidateBaseTemplateImage(ctx, a.Runner, a.Config.AgentVMImage); err != nil {
+		return err
+	}
 	if err := BuildBaseTemplate(ctx, a.Runner, a.BaseTemplateSpec(), a.templateMarkerPath(), mustAsset("agentvm-base-prep.sh"), os.Stdout); err != nil {
 		return err
 	}
@@ -617,7 +623,14 @@ func (a *AgentVM) Doctor(ctx context.Context) error {
 			// side effect, so it is reported here and performed by Start.
 			// An existing but unmarked template is the interrupted-build case,
 			// and Start rebuilds it.
-			fmt.Printf("base template %s is not ready; it will be built on the next start.\n", a.Config.AgentVMTemplate)
+			//
+			// The image is checked here because this is the last moment it can
+			// be reported before Start rebuilds: a start that fails on it has
+			// already deleted the previous template.
+			if err := ValidateBaseTemplateImage(ctx, a.Runner, a.Config.AgentVMImage); err != nil {
+				return err
+			}
+			fmt.Printf("base template %s is not ready; it will be built on the next start from %s.\n", a.Config.AgentVMTemplate, a.Config.AgentVMImage)
 			return nil
 		}
 		return fmt.Errorf("base template %s not found; build it with 'agent-vm setup' or point AGENT_VM_TEMPLATE at an existing template", a.Config.AgentVMTemplate)
