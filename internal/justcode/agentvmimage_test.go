@@ -169,7 +169,7 @@ func TestValidateBaseTemplateImageAttributesFailureOnDefaultImage(t *testing.T) 
 // The default image is the one most installs actually configure, so the
 // witness must not depend on the configured image differing from it. Lima's
 // root refusal arrives on every subcommand, including ones that take no image,
-// which is what makes `limactl list` a usable witness here.
+// which is what makes `limactl info` a usable witness here.
 func TestValidateBaseTemplateImageDistinguishesRefusalOnDefaultImage(t *testing.T) {
 	refusal := `time="2026-10-22T14:51:44Z" level=fatal msg="must not run as the root user"`
 	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
@@ -186,11 +186,28 @@ func TestValidateBaseTemplateImageDistinguishesRefusalOnDefaultImage(t *testing.
 	if strings.Contains(err.Error(), "is not a Lima image") {
 		t.Errorf("must not blame AGENT_VM_IMAGE when limactl could not run: %v", err)
 	}
-	if !strings.Contains(err.Error(), "cannot run here") {
-		t.Errorf("the message must say the check could not run: %v", err)
+	if !strings.Contains(err.Error(), "could not be checked") {
+		t.Errorf("the message must say the check was not performed: %v", err)
 	}
 	if !strings.Contains(err.Error(), "must not run as the root user") {
 		t.Errorf("the limactl refusal must be surfaced: %v", err)
+	}
+	// Both failures are reported: a non-zero witness is not proof that the
+	// image check failed for the same reason, so its own diagnostic must not
+	// be discarded.
+	if !strings.Contains(err.Error(), "validating the image also failed") {
+		t.Errorf("the image diagnostic must be preserved alongside the witness: %v", err)
+	}
+	// This fake refuses every command, so a witness built from an image would
+	// fail exactly like `info` and the assertions above would still pass —
+	// which is how the first witness implementation hid its hole. Assert the
+	// shape of the call instead: the witness carries no image, and the image
+	// is validated once.
+	if !runner.hasCall("limactl info") {
+		t.Errorf("the witness must be image-independent; calls: %v", runner.calls)
+	}
+	if n := strings.Count(strings.Join(runner.calls, "\n"), "template validate template://"); n != 1 {
+		t.Errorf("exactly one image must be validated, got %d: %v", n, runner.calls)
 	}
 }
 
@@ -201,14 +218,62 @@ func TestValidateBaseTemplateImageAttributesWhenWitnessSucceeds(t *testing.T) {
 		switch {
 		case len(args) >= 3 && args[0] == "template" && args[2] == "--help":
 			return ExecResult{ExitCode: 0}
-		case len(args) > 0 && args[0] == "list":
-			return ExecResult{ExitCode: 0, Stdout: "agent-vm-base|Running\n"}
+		case len(args) > 0 && args[0] == "info":
+			return ExecResult{ExitCode: 0, Stdout: `{"version":"v1.2.0"}`}
 		}
 		return ExecResult{ExitCode: 1, Stderr: `level=fatal msg="template \"debian-13.yaml\" not found"`}
 	}}
 	err := ValidateBaseTemplateImage(context.Background(), runner, "template://debian-13")
 	if err == nil || !strings.Contains(err.Error(), "is not a Lima image") {
 		t.Fatalf("a witness that runs proves the image itself is at fault: %v", err)
+	}
+}
+
+// The witness must not be fooled by state that only affects instances: a
+// leftover or unhealthy instance makes `limactl list` fail with
+// unmatchedInstancesError, which is why the witness is `info` and not `list`.
+// `info` reads the template store and LimaHome, the same inputs the image
+// check needs, and touches no instance state.
+func TestValidateBaseTemplateImageWitnessIgnoresInstanceState(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		switch {
+		case len(args) >= 3 && args[0] == "template" && args[2] == "--help":
+			return ExecResult{ExitCode: 0}
+		case len(args) > 0 && args[0] == "info":
+			return ExecResult{ExitCode: 0, Stdout: `{"version":"v1.2.0"}`}
+		}
+		return ExecResult{ExitCode: 1, Stderr: `level=fatal msg="template \"nope.yaml\" not found"`}
+	}}
+	err := ValidateBaseTemplateImage(context.Background(), runner, "template://nope")
+	if err == nil || !strings.Contains(err.Error(), "is not a Lima image") {
+		t.Fatalf("an unhealthy instance must not stop the image from being blamed: %v", err)
+	}
+}
+
+// A witness made of another image would misreport this case: when the DEFAULT
+// image is itself missing from the store while limactl runs fine, validating
+// the default as the witness fails too, and the user is told the image "could
+// not be checked" when it was checked and found unusable. `info` keeps the
+// two apart because it does not depend on any single template.
+func TestValidateBaseTemplateImageAttributesMissingDefaultImage(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		switch {
+		case len(args) >= 3 && args[0] == "template" && args[2] == "--help":
+			return ExecResult{ExitCode: 0}
+		case len(args) > 0 && args[0] == "info":
+			return ExecResult{ExitCode: 0, Stdout: `{"version":"v1.2.0"}`}
+		}
+		return ExecResult{ExitCode: 1, Stderr: `level=fatal msg="template \"debian-12.yaml\" not found"`}
+	}}
+	err := ValidateBaseTemplateImage(context.Background(), runner, DefaultAgentVMImage)
+	if err == nil {
+		t.Fatal("an unresolvable default image must be refused")
+	}
+	if strings.Contains(err.Error(), "could not be checked") {
+		t.Errorf("the check ran, so it must not be reported as not performed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "is not a Lima image") {
+		t.Errorf("the missing image must be blamed on AGENT_VM_IMAGE: %v", err)
 	}
 }
 
