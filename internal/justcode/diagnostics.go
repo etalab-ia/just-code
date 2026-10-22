@@ -482,7 +482,7 @@ func (d Diagnostics) credentialSection(ctx context.Context, fs FS, stateDir stri
 	section.Items = append(section.Items, d.storedCredentialsItem(ctx))
 	// The journal is reported as what it is: a resume marker, never an
 	// inventory. It costs one read of the same small file already read
-	// above; the extra read is what separates "absent" (setup finished)
+	// above; the extra read is what separates "absent" (no resume record)
 	// from "present but at the first stage" (setup interrupted), which the
 	// journal contents alone cannot distinguish.
 	section.Items = append(section.Items, setupJournalItem(fs, stateDir, journal, err))
@@ -554,10 +554,15 @@ func (d Diagnostics) storedCredentialsItem(ctx context.Context) DiagnosticItem {
 		}
 		status = DiagnosticOK
 	}
-	if len(stored) == 0 {
+	if len(stored) == 0 && len(unreadable) == 0 {
 		detail = "the store holds none of the known kinds; store one with 'just-code auth add albert' or run 'just-code setup'"
 	}
 	if len(unreadable) > 0 {
+		if len(stored) == 0 {
+			value = "unknown"
+		} else {
+			value += " (partial)"
+		}
 		return DiagnosticItem{
 			Name: "Stored credentials", Value: value, Status: DiagnosticWarn,
 			Detail: fmt.Sprintf("%s; unreadable: %s (the store refused the read, which is not proof of absence)", detail, strings.Join(unreadable, ", ")),
@@ -567,15 +572,14 @@ func (d Diagnostics) storedCredentialsItem(ctx context.Context) DiagnosticItem {
 }
 
 // setupJournalItem reports the wizard's progress record as what it is: a
-// resume marker. An absent journal means setup finished (or was cancelled),
-// not that no credential exists.
+// resume marker. Its absence proves neither setup history nor credential absence.
 func setupJournalItem(fs FS, stateDir string, journal SetupJournal, readErr error) DiagnosticItem {
 	if readErr != nil {
 		return DiagnosticItem{Name: "Setup journal", Value: "error", Detail: readErr.Error(), Status: DiagnosticFailed}
 	}
 	if _, err := fs.ReadFile(SetupJournalPath(stateDir)); err != nil {
 		if os.IsNotExist(err) {
-			return DiagnosticItem{Name: "Setup journal", Value: "absent", Detail: "setup completed or was cancelled; the journal is not a record of stored credentials", Status: DiagnosticInfo}
+			return DiagnosticItem{Name: "Setup journal", Value: "absent", Detail: "no setup resume record is present; the journal is not a record of stored credentials", Status: DiagnosticInfo}
 		}
 		return DiagnosticItem{Name: "Setup journal", Value: "unreadable", Detail: "the journal file could not be read", Status: DiagnosticWarn}
 	}

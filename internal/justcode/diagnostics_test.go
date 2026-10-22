@@ -250,8 +250,48 @@ func TestDiagnosticsReportsUnreadableCredentialKindSeparately(t *testing.T) {
 		t.Fatalf("a refused read must be named as unreadable: %q", text)
 	}
 	got := diagnosticItemFrom(t, report, "Credentials and storage", "Stored credentials")
-	if got.Status != DiagnosticWarn {
-		t.Fatalf("an unreadable kind must warn, not pass as a clean inventory: %+v", got)
+	if got.Status != DiagnosticWarn || got.Value != "unknown" || strings.Contains(got.Detail, "none of the known kinds") {
+		t.Fatalf("an unreadable kind must leave the inventory unknown, not empty: %+v", got)
+	}
+}
+
+func TestDiagnosticsPartialCredentialInventoryPreservesKnownKinds(t *testing.T) {
+	for _, unreadableKind := range KnownCredentialKinds() {
+		t.Run(string(unreadableKind), func(t *testing.T) {
+			d := Diagnostics{ReadCredential: func(_ context.Context, kind CredentialKind) (string, string, error) {
+				if kind == unreadableKind {
+					return "", "", errors.New("read refused: secret-error-canary")
+				}
+				return "secret-value-canary", "native", nil
+			}}
+			got := d.storedCredentialsItem(context.Background())
+			if got.Status != DiagnosticWarn || !strings.HasSuffix(got.Value, " (partial)") {
+				t.Fatalf("an incomplete inventory must be marked partial: %+v", got)
+			}
+			for _, kind := range KnownCredentialKinds() {
+				if kind != unreadableKind && !strings.Contains(got.Value, string(kind)) {
+					t.Fatalf("confirmed kind %s missing: %+v", kind, got)
+				}
+			}
+			if strings.Contains(got.Value, string(unreadableKind)) || !strings.Contains(got.Detail, "unreadable: "+string(unreadableKind)) {
+				t.Fatalf("unreadable kind must not be counted as stored: %+v", got)
+			}
+			if strings.Contains(got.Value+got.Detail, "canary") {
+				t.Fatalf("inventory exposed a value or raw error: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDiagnosticsAbsentJournalDoesNotInventSetupHistory(t *testing.T) {
+	state := t.TempDir()
+	journal, err := ReadSetupJournal(DefaultFS, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := setupJournalItem(DefaultFS, state, journal, nil)
+	if got.Value != "absent" || got.Status != DiagnosticInfo || got.Detail != "no setup resume record is present; the journal is not a record of stored credentials" {
+		t.Fatalf("missing journal on a fresh host must not imply setup ran: %+v", got)
 	}
 }
 
