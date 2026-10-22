@@ -164,6 +164,14 @@ func TestValidateBaseTemplateImageAttributesFailureOnDefaultImage(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "is not a Lima image") {
 		t.Fatalf("a missing default template must be attributed to the image: %v", err)
 	}
+	// Recommending the default to someone who already configured it is a
+	// circle. The message has to point at the template store instead.
+	if strings.Contains(err.Error(), "for example "+DefaultAgentVMImage) {
+		t.Errorf("must not recommend the value that already failed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "template store is incomplete") {
+		t.Errorf("the remedy must explain what is actually wrong: %v", err)
+	}
 }
 
 // The default image is the one most installs actually configure, so the

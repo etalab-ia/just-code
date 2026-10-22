@@ -81,8 +81,16 @@ func ValidateBaseTemplateImage(ctx context.Context, r Runner, image string) erro
 		return fmt.Errorf("AGENT_VM_IMAGE=%q could not be checked: limactl failed to run its own diagnostic (exit %d): %s; validating the image also failed: %s",
 			image, witness.ExitCode, commandDiagnostic(witness), commandDiagnostic(res))
 	}
-	return fmt.Errorf("AGENT_VM_IMAGE=%q is not a Lima image this limactl can resolve: %s; set AGENT_VM_IMAGE to a resolvable image (for example %s)",
-		image, commandDiagnostic(res), DefaultAgentVMImage)
+	// The remedy has to make sense for the value that failed. Telling someone
+	// to set the variable to the built-in default when it is already the
+	// default sends them in a circle; the useful fact is that this limactl's
+	// own template store is incomplete.
+	remedy := fmt.Sprintf("set AGENT_VM_IMAGE to a resolvable image (for example %s)", DefaultAgentVMImage)
+	if image == DefaultAgentVMImage {
+		remedy = "this is the built-in default, so this limactl's template store is incomplete; set AGENT_VM_IMAGE to another resolvable image, or repair the Lima template store"
+	}
+	return fmt.Errorf("AGENT_VM_IMAGE=%q is not a Lima image this limactl can resolve: %s; %s",
+		image, commandDiagnostic(res), remedy)
 }
 
 // commandDiagnostic returns the most useful explanation a failed command left
