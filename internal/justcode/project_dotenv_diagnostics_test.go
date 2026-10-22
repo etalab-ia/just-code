@@ -464,6 +464,36 @@ func TestImportRefusalReachesTheFaultyCarriageReturnBeyondLegalOnes(t *testing.T
 	}
 }
 
+// TestImportRefusalNamesTheVariableOnANearCapLine: the attribution reparses
+// run under the same limits as the main parse, so a line just under the 1 MiB
+// import cap still gets its variable named — both on the byte-attribution
+// path (a NUL in a long value) and on the carriage-return split path (the
+// prefix reparse must accept the same long line the main parse accepted).
+// The library's default line cap currently equals the importer's cap, so the
+// un-fixed code also passes today; the contract pin on the default is what
+// notices a version bump that breaks that equality.
+func TestImportRefusalNamesTheVariableOnANearCapLine(t *testing.T) {
+	long := strings.Repeat("v", MaxProjectDotenvBytes-600)
+
+	in := "K=" + long + "\x00tail\n"
+	_, err := ParseProjectDotenv([]byte(in))
+	if err == nil {
+		t.Fatal("a NUL in a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("the refusal must name K even on a near-cap line: %v", err)
+	}
+
+	in = "A=" + long + "\rK=bad\rtail\n"
+	_, err = ParseProjectDotenv([]byte(in))
+	if err == nil {
+		t.Fatal("a carriage return splitting a value must be refused")
+	}
+	if !strings.Contains(err.Error(), "K:") {
+		t.Errorf("the split must be attributed to K, not lost to the long line: %v", err)
+	}
+}
+
 // TestImportSizeLimitStillReportsSize pins the one fault that really is about
 // size: it must say so rather than fall into the encoding wording.
 func TestImportSizeLimitStillReportsSize(t *testing.T) {
@@ -1060,5 +1090,13 @@ func TestDotenvParserContractPinnedToRotini(t *testing.T) {
 	// name rule is reported, never the backtick rule.
 	if _, err := dotenv.Parse([]byte("MY-KEY=`X`\n")); err == nil || !strings.Contains(err.Error(), "expected '=' or ':' after key") {
 		t.Errorf("contract: a key-scan failure must take precedence over the backtick rule: %v", err)
+	}
+	// The default line cap equals the importer's 1 MiB cap. The attribution
+	// reparses set it explicitly, but a version bump that changes the default
+	// is exactly the divergence the explicit option guards against, so it
+	// must be noticed here.
+	longLine := "K=\"" + strings.Repeat("v", MaxProjectDotenvBytes-16) + "\"\n"
+	if _, err := dotenv.Parse([]byte(longLine)); err != nil {
+		t.Errorf("contract: a line just under the 1 MiB cap must parse with default options: %v", err)
 	}
 }

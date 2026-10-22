@@ -139,7 +139,10 @@ func attributeByteToKey(data []byte, off int) string {
 	if off < 0 || off >= len(data) {
 		return ""
 	}
-	f, err := dotenv.Parse(data, dotenv.WithMaxFileSize(MaxProjectDotenvBytes))
+	// Same limits as the main parse: an attribution that reparses under
+	// different caps would lose the variable name on lines the main parse
+	// accepts.
+	f, err := dotenv.Parse(data, dotenv.WithMaxFileSize(MaxProjectDotenvBytes), dotenv.WithMaxLineLength(MaxProjectDotenvBytes))
 	if err != nil {
 		return ""
 	}
@@ -204,7 +207,9 @@ func crSplitName(data []byte, pe *dotenv.ParseError) (string, bool) {
 		return "", false
 	}
 	prefix := data[:sep]
-	pf, err := dotenv.Parse(prefix, dotenv.WithMaxFileSize(MaxProjectDotenvBytes))
+	// Same limits as the main parse, for the same reason as in
+	// attributeByteToKey.
+	pf, err := dotenv.Parse(prefix, dotenv.WithMaxFileSize(MaxProjectDotenvBytes), dotenv.WithMaxLineLength(MaxProjectDotenvBytes))
 	if err != nil {
 		return "", true
 	}
