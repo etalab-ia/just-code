@@ -55,19 +55,20 @@ func ValidateBaseTemplateImage(ctx context.Context, r Runner, image string) erro
 	}
 	// A failed check does not yet say the image is wrong: limactl refuses to
 	// run at all for some callers (`must not run as the root user`), and that
-	// refusal arrives on this same command. Probing the default image
-	// separates the two without matching Lima's message text, which differs
-	// across versions. Only paid on the failure path, and only when the
-	// configured image is not itself the reference.
-	if image != DefaultAgentVMImage {
-		reference, refErr := r.Run(ctx, "limactl", "template", "validate", DefaultAgentVMImage)
-		if refErr != nil {
-			return refErr
-		}
-		if reference.ExitCode != 0 {
-			return fmt.Errorf("limactl cannot validate template images here, so AGENT_VM_IMAGE=%q was not checked: %s",
-				image, commandDiagnostic(res))
-		}
+	// refusal arrives on this same command. Lima gates that on the whole CLI —
+	// a PersistentPreRunE on the root command — so a subcommand that takes no
+	// image of its own fails identically and serves as a witness. Re-validating
+	// the default image instead would leave this undiagnosed whenever the
+	// configured image IS the default, which is the common case. No message
+	// text is matched, so the attribution does not depend on Lima's wording.
+	// Only paid on the failure path.
+	witness, witnessErr := r.Run(ctx, "limactl", "list", "--format", "{{.Name}}")
+	if witnessErr != nil {
+		return witnessErr
+	}
+	if witness.ExitCode != 0 {
+		return fmt.Errorf("limactl cannot run here, so AGENT_VM_IMAGE=%q was not checked: %s",
+			image, commandDiagnostic(witness))
 	}
 	return fmt.Errorf("AGENT_VM_IMAGE=%q is not a Lima image this limactl can resolve: %s; set AGENT_VM_IMAGE to a resolvable image (for example %s)",
 		image, commandDiagnostic(res), DefaultAgentVMImage)

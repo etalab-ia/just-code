@@ -155,13 +155,60 @@ func TestValidateBaseTemplateImageDistinguishesLimaRefusal(t *testing.T) {
 	}
 }
 
-// When the configured image IS the default, a failure needs no probe to be
-// attributed, and the message stays the plain "not resolvable" one.
+// When limactl runs but rejects the image, the witness passes and the message
+// stays the plain "not resolvable" one. This is the shape of a genuinely bad
+// AGENT_VM_IMAGE.
 func TestValidateBaseTemplateImageAttributesFailureOnDefaultImage(t *testing.T) {
 	runner := imageRunner(0, 1, `level=fatal msg="template \"debian-12.yaml\" not found"`)
 	err := ValidateBaseTemplateImage(context.Background(), runner, DefaultAgentVMImage)
 	if err == nil || !strings.Contains(err.Error(), "is not a Lima image") {
 		t.Fatalf("a missing default template must be attributed to the image: %v", err)
+	}
+}
+
+// The default image is the one most installs actually configure, so the
+// witness must not depend on the configured image differing from it. Lima's
+// root refusal arrives on every subcommand, including ones that take no image,
+// which is what makes `limactl list` a usable witness here.
+func TestValidateBaseTemplateImageDistinguishesRefusalOnDefaultImage(t *testing.T) {
+	refusal := `time="2026-10-22T14:51:44Z" level=fatal msg="must not run as the root user"`
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		if len(args) >= 3 && args[0] == "template" && args[2] == "--help" {
+			return ExecResult{ExitCode: 0}
+		}
+		// Every real subcommand refuses, including the image-free witness.
+		return ExecResult{ExitCode: 1, Stderr: refusal}
+	}}
+	err := ValidateBaseTemplateImage(context.Background(), runner, DefaultAgentVMImage)
+	if err == nil {
+		t.Fatal("an unvalidatable image must not be silently accepted")
+	}
+	if strings.Contains(err.Error(), "is not a Lima image") {
+		t.Errorf("must not blame AGENT_VM_IMAGE when limactl could not run: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cannot run here") {
+		t.Errorf("the message must say the check could not run: %v", err)
+	}
+	if !strings.Contains(err.Error(), "must not run as the root user") {
+		t.Errorf("the limactl refusal must be surfaced: %v", err)
+	}
+}
+
+// A healthy limactl that rejects only the image must still be attributed to
+// the image, so the witness cannot swallow a real rejection.
+func TestValidateBaseTemplateImageAttributesWhenWitnessSucceeds(t *testing.T) {
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		switch {
+		case len(args) >= 3 && args[0] == "template" && args[2] == "--help":
+			return ExecResult{ExitCode: 0}
+		case len(args) > 0 && args[0] == "list":
+			return ExecResult{ExitCode: 0, Stdout: "agent-vm-base|Running\n"}
+		}
+		return ExecResult{ExitCode: 1, Stderr: `level=fatal msg="template \"debian-13.yaml\" not found"`}
+	}}
+	err := ValidateBaseTemplateImage(context.Background(), runner, "template://debian-13")
+	if err == nil || !strings.Contains(err.Error(), "is not a Lima image") {
+		t.Fatalf("a witness that runs proves the image itself is at fault: %v", err)
 	}
 }
 
