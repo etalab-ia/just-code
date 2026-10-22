@@ -136,9 +136,16 @@ différents ne partagent pas leurs secrets implicitement. Le manifeste projet
 ne reçoit ni valeurs ni références locales. Les fichiers sources ne sont pas
 modifiés.
 
-Le parseur utilise le dialecte `godotenv` sans expansion : `$VAR`, `${VAR}` et
+Le parseur utilise le dialecte `go-rotini` sans expansion : `$VAR`, `${VAR}` et
 `$(...)` restent des valeurs littérales ; aucune variable d'environnement
-n'est lue et aucune commande exécutée. La taille d'un fichier est plafonnée à
+n'est lue et aucune commande exécutée. Les affectations `KEY=value` et la forme
+YAML `KEY: value` sont acceptées, avec le préfixe `export` et des valeurs
+entre guillemets doubles ou simples ; les fins de ligne LF, CRLF et CR isolé
+séparent les affectations, et un BOM UTF-8 en tête de fichier est accepté.
+Chaque refus nomme la variable et la règle en cause : un retour chariot isolé
+au milieu d'une valeur, une valeur entre backticks, ou un nom de variable hors
+lettres, chiffres et tiret bas (chiffre initial interdit, 128 caractères au
+plus). La taille d'un fichier est plafonnée à
 1 MiB ; chaque valeur à 951 octets UTF-8 pour que son enveloppe base64, encodée
 en UTF-16 par Windows Credential Manager, reste dans sa limite de 2 560 octets.
 
