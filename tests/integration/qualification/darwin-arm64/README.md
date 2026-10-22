@@ -56,12 +56,14 @@ fonctionne avec l'initialisation lente documentée.
   immédiat échoue (connexion refusée) puis réussit une fois le serveur
   prêt (`{"healthy":true,"version":"1.19.3"}`). À documenter pour les
   utilisateurs (et éventuellement délai d'attente côté produit).
-- **Laboratoire identifiants** : `pin.json` exigeait msb 0.7.3 alors que
-  la release embarque 0.7.6 ; avec le pin corrigé, 7/15 échouaient à
-  cause du REFUSED AAAA de `lab/dns.py` (busybox wget abandonne) ;
-  avec le correctif NODATA, **14/15**. Reste T6 : en 0.7.6 un marqueur
-  en query est **livré** (placeholder littéral, sans valeur) au lieu
-  d'être bloqué comme violation. Détail et preuves : #205.
+- **Laboratoire identifiants (#205, requalifié le 2026-10-22)** : le pin
+  v0.7.3 et la réponse REFUSED aux AAAA sont corrigés. T6 reflète désormais
+  le comportement documenté depuis msb v0.7.5 : un placeholder non substitué
+  peut être livré littéralement à l'hôte autorisé. Les matrices macOS
+  passent 16/16 sur v0.7.6 (runtime embarqué) et 16/16 sur v0.7.8
+  (candidat amont). Transcripts :
+  `tests/integration/credentials/evidence/darwin-arm64-msb-0.7.6.txt` et
+  `tests/integration/credentials/evidence/darwin-arm64-msb-0.7.8.txt`.
 
 ## Hôte
 

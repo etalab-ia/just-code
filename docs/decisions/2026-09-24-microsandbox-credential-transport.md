@@ -271,3 +271,39 @@ explicites), le rejeu complet sur macOS (msb 0.7.3) donne **15/15**
 deux fois de suite, y compris avec un journal volontairement pollué
 avant la seconde exécution. La matrice des capacités invité reste 16/16.
 Le transport des identifiants est qualifié sur v0.7.3.
+
+## Requalification transport des identifiants (#205, 2026-10-22)
+
+Le harnais épinglait encore `msb` v0.7.3 alors que just-code embarque
+v0.7.6. Il répondait aussi REFUSED aux requêtes AAAA pour les deux noms
+du laboratoire, ce qui faisait abandonner les requêtes par le `wget`
+BusyBox de l'invité Alpine.
+
+**Corrections et interprétation de T6 :**
+
+- `pin.json` suit maintenant le runtime embarqué v0.7.6.
+- Le DNS du laboratoire répond NODATA (NOERROR, aucune réponse) aux
+  requêtes AAAA de `p02lab.test` et `evil.test`. Les autres noms restent
+  refusés pour déclencher le repli DNS.
+- La substitution query reste désactivée par défaut. Depuis v0.7.5, un
+  placeholder peut être transmis littéralement à un hôte autorisé quand
+  cette zone n'est pas activée. T6 vérifie ce comportement : le serveur
+  reçoit `$MSB_P02_CANARY` dans la query, tandis que l'en-tête du même
+  appel contient le canari substitué. Le canari est synthétique ; aucune
+  vraie valeur n'est placée dans la query.
+- Ce résultat ne signifie pas que la requête est bloquée. Il confirme que
+  le secret réel n'est pas substitué dans la query ; le placeholder, lui,
+  est visible par le serveur autorisé.
+
+**Résultats macOS arm64 :**
+
+- Runtime v0.7.6, celui actuellement embarqué : 16/16 assertions.
+- Runtime amont v0.7.8, testé à part comme candidat : 16/16 assertions.
+
+Les deux transcripts sont dans
+`tests/integration/credentials/evidence/`. L'application reste épinglée
+sur v0.7.6 : v0.7.8 n'apporte pas de correction documentée à ce cas T6,
+et ce ticket ne constitue pas une requalification des autres parcours SDK.
+La suite est qualifiée sur le runtime livré v0.7.6 ; le test sur v0.7.8
+confirme que le comportement documenté persiste dans la release amont
+récente.
