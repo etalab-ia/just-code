@@ -94,6 +94,17 @@ identified in the preview. Native-store portability limits each value to
 capped at 2,560 bytes); a dotenv file is capped at 1 MiB. These constraints are surfaced
 before storage, never by truncation.
 
+> **Addendum 22 October 2026.** The import parser now uses
+> `go-rotini/dotenv` (v1.0.3) instead of `godotenv`; the no-expansion contract
+> and the size caps are unchanged. Two input forms changed with it: a leading
+> UTF-8 BOM is now accepted, and backtick-quoted values are now refused (the
+> previous parser kept the backticks literally inside the value). Parser
+> errors are no longer merely redacted: a refusal names the variable and the
+> rule whenever the name can be identified and echoed safely (#208); otherwise
+> it names the rule alone or stays generic, and never the value. The
+> user-facing dialect is
+> documented in `docs/credentials.md`.
+
 The command only stores values under the current canonical-root scope. It
 does not create a project manifest entry, approve a binding, or deliver
 anything to a guest. The user documentation is in `docs/credentials.md`.
