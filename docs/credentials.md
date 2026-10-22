@@ -142,10 +142,14 @@ n'est lue et aucune commande exécutée. Les affectations `KEY=value` et la form
 YAML `KEY: value` sont acceptées, avec le préfixe `export` et des valeurs
 entre guillemets doubles ou simples ; les fins de ligne LF, CRLF et CR isolé
 séparent les affectations, et un BOM UTF-8 en tête de fichier est accepté.
-Chaque refus nomme la variable et la règle en cause : un retour chariot isolé
-au milieu d'une valeur, une valeur entre backticks, ou un nom de variable hors
-lettres, chiffres et tiret bas (chiffre initial interdit, 128 caractères au
-plus). La taille d'un fichier est plafonnée à
+Un refus nomme la variable et la règle en cause dès que la variable peut être
+identifiée et répétée sans risque : un retour chariot isolé au milieu d'une
+valeur, une valeur entre backticks, ou un nom de variable hors lettres,
+chiffres et tiret bas (chiffre initial interdit, 128 caractères au plus).
+Quand le nom ne peut pas être répété sans risque — trop long, ou susceptible
+d'être du texte collé plutôt qu'un nom — ou quand la faute n'appartient à
+aucune variable identifiable, le refus nomme la règle seule ou reste générique ;
+aucun refus ne cite jamais une valeur. La taille d'un fichier est plafonnée à
 1 MiB ; chaque valeur à 951 octets UTF-8 pour que son enveloppe base64, encodée
 en UTF-16 par Windows Credential Manager, reste dans sa limite de 2 560 octets.
 

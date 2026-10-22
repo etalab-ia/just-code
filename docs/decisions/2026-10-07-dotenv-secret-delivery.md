@@ -99,8 +99,10 @@ before storage, never by truncation.
 > and the size caps are unchanged. Two input forms changed with it: a leading
 > UTF-8 BOM is now accepted, and backtick-quoted values are now refused (the
 > previous parser kept the backticks literally inside the value). Parser
-> errors are no longer merely redacted: each refusal names the variable and
-> the rule (#208), still never the value. The user-facing dialect is
+> errors are no longer merely redacted: a refusal names the variable and the
+> rule whenever the name can be identified and echoed safely (#208); otherwise
+> it names the rule alone or stays generic, and never the value. The
+> user-facing dialect is
 > documented in `docs/credentials.md`.
 
 The command only stores values under the current canonical-root scope. It
