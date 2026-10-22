@@ -868,15 +868,56 @@ func TestImportRefusalNamesHyphenatedNameAsUnsupported(t *testing.T) {
 // backtick as an ordinary character, so `K=` + backtick-quoted text imported
 // with the backticks inside the value. go-rotini refuses backtick-quoted
 // values unless explicitly enabled. Refusing is deliberate: a silent value
-// change would be worse than a loud refusal, and the message must not quote
-// the value.
+// change would be worse than a loud refusal. The refusal names the variable
+// and the rule, and never quotes the value.
 func TestImportRefusalRefusesBacktickValues(t *testing.T) {
-	_, err := ParseProjectDotenv([]byte("K=`SUPERSECRET`\n"))
-	if err == nil {
-		t.Fatal("a backtick-quoted value must be refused")
+	cases := []struct {
+		name  string
+		in    string
+		named string // empty when the attempted name is not safe to echo
+	}{
+		{"quoted", "K=`SUPERSECRET`\n", "K"},
+		{"unterminated", "K=`X\n", "K"},
+		{"export-prefixed", "export K=`X`\n", "K"},
+		{"yaml-delimiter", "K: `X`\n", "K"},
+		{"second-line", "A=1\nK=`SECRET2`\n", "K"},
+		{"oversized-name", strings.Repeat("N", 200) + "=`X`\n", ""},
 	}
-	if strings.Contains(err.Error(), "SUPERSECRET") {
-		t.Errorf("the refusal must not quote the value: %v", err)
+	for _, c := range cases {
+		_, err := ParseProjectDotenv([]byte(c.in))
+		if err == nil {
+			t.Fatalf("%s: a backtick-quoted value must be refused", c.name)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "SUPERSECRET") || strings.Contains(msg, "SECRET2") {
+			t.Errorf("%s: the refusal must not quote the value: %v", c.name, err)
+		}
+		if !strings.Contains(msg, "backtick") {
+			t.Errorf("%s: the refusal must state the rule: %v", c.name, err)
+		}
+		if c.named != "" && !strings.Contains(msg, c.named+":") {
+			t.Errorf("%s: the refusal must name the variable %q: %v", c.name, c.named, err)
+		}
+		if c.named == "" && strings.Contains(msg, strings.Repeat("N", 20)) {
+			t.Errorf("%s: a name that is not safe to echo must not be quoted: %v", c.name, err)
+		}
+	}
+	// A bad name fails its key scan before the value is reached, so the name
+	// rule is reported, not the backtick rule.
+	_, err := ParseProjectDotenv([]byte("MY-KEY=`X`\n"))
+	if err == nil || strings.Contains(err.Error(), "backtick") {
+		t.Errorf("a key-scan failure must take precedence over the backtick rule: %v", err)
+	}
+	// A backtick that does not open the value is literal content, not a
+	// refusal: mid-value in a raw value, and anywhere inside quotes.
+	for _, in := range []string{"K=va`lue\n", "K=\"a`b\"\n", "K='a`b'\n"} {
+		got, err := ParseProjectDotenv([]byte(in))
+		if err != nil {
+			t.Errorf("%q must import with the backtick as literal content: %v", in, err)
+		}
+		if err == nil && strings.Contains(got.Values["K"], "`") == false {
+			t.Errorf("%q must keep the backtick in the value: %q", in, got.Values["K"])
+		}
 	}
 }
 
@@ -957,5 +998,31 @@ func TestDotenvParserContractPinnedToRotini(t *testing.T) {
 	}
 	if pe.Pos.Offset != 7 {
 		t.Errorf("contract: an unterminated quote must be reported at the quote (offset 7), got %d", pe.Pos.Offset)
+	}
+	// A value that opens with a backtick fails with this exact message,
+	// positioned ON the backtick — backtickRefusal classifies on the prefix
+	// and names the variable left of the delimiter on that line.
+	_, err = dotenv.Parse([]byte("K=`X`\n"))
+	if err == nil || !errors.As(err, &pe) {
+		t.Fatalf("contract: a backtick-quoted value must fail with a positioned error, got %v", err)
+	}
+	if !strings.HasPrefix(pe.Message, "backtick-quoted value not allowed") {
+		t.Errorf("contract: the backtick refusal must carry the pinned prefix, got %q", pe.Message)
+	}
+	if pe.Pos.Offset != 2 {
+		t.Errorf("contract: the backtick refusal must be positioned on the backtick (offset 2), got %d", pe.Pos.Offset)
+	}
+	// A backtick that does not open the value is literal content: mid-value
+	// in a raw value, and anywhere inside quotes. The refusal boundary is
+	// the value's first byte only.
+	for _, in := range []string{"K=va`lue\n", "K=\"a`b\"\n", "K='a`b'\n"} {
+		if _, err := dotenv.Parse([]byte(in)); err != nil {
+			t.Errorf("contract: %q must keep a non-opening backtick as content: %v", in, err)
+		}
+	}
+	// A bad name fails its key scan before the value is reached, so the
+	// name rule is reported, never the backtick rule.
+	if _, err := dotenv.Parse([]byte("MY-KEY=`X`\n")); err == nil || !strings.Contains(err.Error(), "expected '=' or ':' after key") {
+		t.Errorf("contract: a key-scan failure must take precedence over the backtick rule: %v", err)
 	}
 }

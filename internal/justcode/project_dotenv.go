@@ -72,6 +72,9 @@ func ParseProjectDotenv(data []byte) (ProjectDotenv, error) {
 			if rerr := nameScanRefusal(data, pe); rerr != nil {
 				return ProjectDotenv{}, rerr
 			}
+			if rerr := backtickRefusal(data, pe); rerr != nil {
+				return ProjectDotenv{}, rerr
+			}
 		}
 		return ProjectDotenv{}, fmt.Errorf("dotenv syntax is invalid or unsupported; the offending line is not quoted here because it may contain a secret value")
 	}
@@ -210,6 +213,32 @@ func crSplitName(data []byte, pe *dotenv.ParseError) (string, bool) {
 	return "", true
 }
 
+// statementName extracts the attempted variable name from the statement line
+// containing off: the text left of the first '=' or ':' delimiter, with an
+// "export " prefix consumed the way the library consumes it. The boolean is
+// false when the line carries no delimiter, i.e. it is not an assignment
+// attempt at all.
+func statementName(data []byte, off int) (string, bool) {
+	lineStart := off
+	for lineStart > 0 && data[lineStart-1] != '\n' && data[lineStart-1] != '\r' {
+		lineStart--
+	}
+	lineEnd := lineStart
+	for lineEnd < len(data) && data[lineEnd] != '\n' && data[lineEnd] != '\r' {
+		lineEnd++
+	}
+	line := data[lineStart:lineEnd]
+	delim := bytes.IndexAny(line, "=:")
+	if delim < 0 {
+		return "", false
+	}
+	name := strings.TrimSpace(string(line[:delim]))
+	if after, ok := strings.CutPrefix(name, "export "); ok {
+		name = strings.TrimSpace(after)
+	}
+	return name, true
+}
+
 // nameScanRefusal classifies the key-scan failures go-rotini reports — the
 // shapes earlier loaders silently accepted as assignments with exotic names.
 //
@@ -230,34 +259,41 @@ func nameScanRefusal(data []byte, pe *dotenv.ParseError) error {
 	if off < 0 || off > len(data) {
 		return nil
 	}
-	// A key scan runs at the start of a statement, so the statement's line is
-	// the span between the surrounding separators.
-	lineStart := off
-	for lineStart > 0 && data[lineStart-1] != '\n' && data[lineStart-1] != '\r' {
-		lineStart--
-	}
-	lineEnd := lineStart
-	for lineEnd < len(data) && data[lineEnd] != '\n' && data[lineEnd] != '\r' {
-		lineEnd++
-	}
-	line := data[lineStart:lineEnd]
-	delim := bytes.IndexAny(line, "=:")
-	if delim < 0 {
-		return fmt.Errorf("the dotenv file contains text that is not a named assignment; every entry must be an assignment like KEY=value")
-	}
-	name := strings.TrimSpace(string(line[:delim]))
-	// The library consumes an "export " prefix before scanning the key, so
-	// mirror exactly that shape (the keyword followed by whitespace).
-	if after, ok := strings.CutPrefix(name, "export "); ok {
-		name = strings.TrimSpace(after)
-	}
-	if name == "" {
+	// A key scan runs at the start of a statement, so the name is the text
+	// left of the statement's delimiter.
+	name, hasDelim := statementName(data, off)
+	if !hasDelim || name == "" {
 		return fmt.Errorf("the dotenv file contains text that is not a named assignment; every entry must be an assignment like KEY=value")
 	}
 	if safeNameToEcho(name) {
 		return fmt.Errorf("variable name %q is not supported; names may use letters, digits and underscore, may not start with a digit, and are limited to 128 characters", name)
 	}
 	return fmt.Errorf("the dotenv file contains a variable name that is not supported; names may use letters, digits and underscore, may not start with a digit, and are limited to 128 characters")
+}
+
+// backtickRefusal classifies go-rotini's backtick-value refusal: the library
+// rejects a value that opens with a backtick unless backticks are enabled,
+// and they stay disabled here deliberately — the previous loader imported the
+// backticks literally inside the value, which is a silent value change. The
+// message names the variable and the rule, and never the value.
+func backtickRefusal(data []byte, pe *dotenv.ParseError) error {
+	if pe == nil {
+		return nil
+	}
+	if !strings.HasPrefix(pe.Message, "backtick-quoted value not allowed") {
+		return nil
+	}
+	off := pe.Pos.Offset
+	if off < 0 || off > len(data) {
+		return nil
+	}
+	// The failure is positioned on the backtick that opens the value, after a
+	// key scan that succeeded, so the statement always carries a delimiter.
+	name, _ := statementName(data, off)
+	if safeNameToEcho(name) {
+		return fmt.Errorf("%s: the value starts with a backtick, which is not a supported quoting form; use double or single quotes, or remove the backticks", name)
+	}
+	return fmt.Errorf("the dotenv file contains a value that starts with a backtick, which is not a supported quoting form; use double or single quotes, or remove the backticks")
 }
 
 // safeNameToEcho reports whether a rejected secret name is safe to include in a
