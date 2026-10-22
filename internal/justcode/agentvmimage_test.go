@@ -116,20 +116,23 @@ func TestValidateBaseTemplateImagePropagatesRunnerError(t *testing.T) {
 
 // The default must be a locator Lima can resolve. `template:debian-13` looked
 // similar and was rejected by `limactl create`, so the form itself is pinned
-// here rather than only the value.
+// here rather than only the value. The two-slash spelling is pinned rather
+// than required of users: it is the one form Lima 1.x accepts, and Lima 2.0
+// accepts both, so a default in this form works on every supported release.
 func TestDefaultAgentVMImageIsAResolvableLocator(t *testing.T) {
 	if DefaultAgentVMImage != "template://debian-12" {
 		t.Errorf("DefaultAgentVMImage = %q, want the pinned template://debian-12", DefaultAgentVMImage)
 	}
 	if !strings.HasPrefix(DefaultAgentVMImage, "template://") {
-		t.Errorf("DefaultAgentVMImage = %q: a template locator needs the template:// scheme", DefaultAgentVMImage)
+		t.Errorf("DefaultAgentVMImage = %q: the default must name a built-in template in the form Lima 1.x also accepts", DefaultAgentVMImage)
 	}
 }
 
 // A user who copies the `.env.example` template into `.env` gets whatever
 // locator that file advertises, so a stale sample silently overrides the
 // corrected default. Keep the two from drifting: the documented value must be
-// the default, and it must use the `template://` form a built-in template needs.
+// the default, and it must use the same two-slash form, which is the one every
+// supported Lima release accepts.
 func TestEnvExampleAGENTVMImageMatchesDefault(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", ".env.example"))
 	if err != nil {
