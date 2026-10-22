@@ -392,6 +392,17 @@ while time.time() < deadline:
     # writes is the condition the assertions depend on; the deadline above
     # stays as the backstop.
     if os.path.exists(setup_log): break
+# The assertions grep the captured output, so the marker alone is not enough:
+# bytes printed before it (the profile warning, the banner) can still be
+# sitting unread in the pty buffer. Drain until the pty goes quiet.
+quiet_deadline = time.time() + 2
+while time.time() < quiet_deadline:
+    r, _, _ = select.select([fd], [], [], 0.2)
+    if not r: break
+    try: chunk = os.read(fd, 4096)
+    except OSError: break
+    if not chunk: break
+    out += chunk
 sys.stdout.write(out.decode("utf-8", "replace"))
 PY
 	# The banner is still worth asserting: it is what the user sees. It just
