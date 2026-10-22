@@ -69,16 +69,22 @@ func ValidateBaseTemplateImage(ctx context.Context, r Runner, image string) erro
 	// which is the common case and the one that reported the bug.
 	//
 	// A failing witness is inconclusive rather than proof of a shared cause,
-	// so the image diagnostic is reported alongside it instead of replaced:
-	// the check is reported as not performed, and neither failure is
-	// attributed to AGENT_VM_IMAGE. No message text is matched, so the
-	// attribution does not depend on Lima's wording. Only paid on failure.
+	// so neither failure is attributed to AGENT_VM_IMAGE and both diagnostics
+	// are reported. The witness can indeed fail for a reason that has nothing
+	// to do with the configured image — `info` reads the template store,
+	// `default.yaml` and LimaHome, so a broken store fails it while a
+	// genuinely bad image also fails the validation. Nothing cheap separates
+	// those two: Lima exits 1 in both cases, and matching the refusal text
+	// would tie the attribution to Lima's wording, which is exactly the
+	// fragility the witness exists to avoid. The result therefore reports
+	// that no verdict is available rather than asserting either cause.
+	// Only paid on failure.
 	witness, witnessErr := r.Run(ctx, "limactl", "info")
 	if witnessErr != nil {
 		return witnessErr
 	}
 	if witness.ExitCode != 0 {
-		return fmt.Errorf("AGENT_VM_IMAGE=%q could not be checked: limactl failed to run its own diagnostic (exit %d): %s; validating the image also failed: %s",
+		return fmt.Errorf("cannot validate AGENT_VM_IMAGE=%q: limactl failed its own diagnostic too (exit %d): %s; the image check reported: %s",
 			image, witness.ExitCode, commandDiagnostic(witness), commandDiagnostic(res))
 	}
 	// The remedy has to make sense for the value that failed. Telling someone
