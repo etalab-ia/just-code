@@ -365,11 +365,12 @@ PY
 	python3 - "$ro_home" "$installer" "$fake_bin" "$asset" "$good_sums" "$release_url" "$fake_binary" "$real_mv" <<'PY' > "$temp_root/readonly.out" 2>&1
 import os, pty, sys, time, select
 home, installer, fake_bin, asset, sums, relurl, binary, real_mv = sys.argv[1:9]
+setup_log = os.path.join(home, "setup-called")
 env = {
     "HOME": home, "PATH": f"{fake_bin}:/usr/bin:/bin", "SHELL": "/bin/zsh", "TERM": "xterm",
     "FAKE_OS": "Linux", "FAKE_ARCH": "x86_64", "FAKE_ASSET": asset, "FAKE_BINARY": binary,
     "FAKE_SUMS": sums, "FAKE_URL_LOG": os.path.join(home, "urls"),
-    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": os.path.join(home, "setup-called"),
+    "FAKE_RELEASE_URL": relurl, "FAKE_SETUP_LOG": setup_log,
     "FAKE_TARGET": os.path.join(home, ".local/bin/just-code"), "REAL_MV": real_mv,
 }
 pid, fd = pty.fork()
@@ -386,9 +387,27 @@ while time.time() < deadline:
         except OSError: break
         if not chunk: break
         out += chunk
-    if b"configuration" in out: break
+    # This block asserts that setup RAN, so the banner is not a completion
+    # signal: it is printed before setup is exec'd. The marker the fake setup
+    # writes is the condition the assertions depend on; the deadline above
+    # stays as the backstop.
+    if os.path.exists(setup_log): break
+# The assertions grep the captured output, so the marker alone is not enough:
+# bytes printed before it (the profile warning, the banner) can still be
+# sitting unread in the pty buffer. Drain until the pty goes quiet.
+quiet_deadline = time.time() + 2
+while time.time() < quiet_deadline:
+    r, _, _ = select.select([fd], [], [], 0.2)
+    if not r: break
+    try: chunk = os.read(fd, 4096)
+    except OSError: break
+    if not chunk: break
+    out += chunk
 sys.stdout.write(out.decode("utf-8", "replace"))
 PY
+	# The banner is still worth asserting: it is what the user sees. It just
+	# cannot double as a completion signal, since it precedes setup.
+	grep -F 'Lancement de la configuration' "$temp_root/readonly.out" >/dev/null || { printf 'setup launch line missing\n' >&2; exit 1; }
 	grep -F "Le profil ~/.zshenv n'a pas pu être modifié." "$temp_root/readonly.out" >/dev/null || { printf 'an unwritable profile must be reported, not fatal\n' >&2; exit 1; }
 	[ -e "$ro_home/setup-called" ] || { printf 'an unwritable profile must not prevent the wizard from running\n' >&2; exit 1; }
 
