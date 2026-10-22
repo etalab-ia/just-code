@@ -75,13 +75,27 @@ func readRecordedCredentialStores(fs FS, stateDir string) (recordedCredentialSto
 // is storeKind. It is written after a successful write, by the same callers that
 // bump the rotation generation.
 func RecordCredentialStore(stateDir string, kind CredentialKind, storeKind string) error {
-	return writeRecordedCredentialStore(DefaultFS, stateDir, kind, storeKind)
+	return writeRecordedCredentialStoreLocked(DefaultFS, stateDir, kind, storeKind)
 }
 
 func writeRecordedCredentialStore(fs FS, stateDir string, kind CredentialKind, storeKind string) error {
+	return writeRecordedCredentialStoreLocked(fs, stateDir, kind, storeKind)
+}
+
+// writeRecordedCredentialStoreLocked performs the read-modify-write under a
+// cross-process lock. Atomic rename protects a single write, not a transaction:
+// two concurrent `auth add --fallback` runs for different kinds would each read
+// the same map and each write it back, so the second would drop the first kind's
+// record and silently unpin a credential that is still stored.
+func writeRecordedCredentialStoreLocked(fs FS, stateDir string, kind CredentialKind, storeKind string) error {
 	if storeKind == "" {
 		return nil
 	}
+	release, err := lockRecordedCredentialStores(fs, stateDir)
+	if err != nil {
+		return err
+	}
+	defer release()
 	data, err := readRecordedCredentialStores(fs, stateDir)
 	if err != nil {
 		return err
@@ -97,6 +111,13 @@ func writeRecordedCredentialStore(fs FS, stateDir string, kind CredentialKind, s
 	return atomicWrite(fs, recordedCredentialStoreFile(stateDir), append(raw, '\n'), 0o600)
 }
 
+// lockRecordedCredentialStores serializes the record's read-modify-write
+// transaction. It reuses ProjectLock, whose exclusivity comes from an
+// O_CREATE|O_EXCL lockfile rather than a check-then-write sequence.
+func lockRecordedCredentialStores(fs FS, stateDir string) (func(), error) {
+	return (&ProjectLock{Path: recordedCredentialStoreFile(stateDir) + ".lock", FS: fs}).Acquire()
+}
+
 // ForgetCredentialStore drops the record for kind, but only when it names the
 // store being edited. Removing an entry from the native store must not erase the
 // record of a consented file-store value that removal did not touch.
@@ -105,6 +126,21 @@ func ForgetCredentialStore(stateDir string, kind CredentialKind, storeKind strin
 }
 
 func forgetRecordedCredentialStore(fs FS, stateDir string, kind CredentialKind, storeKind string) error {
+	// Check before locking: taking the lock creates the state directory, and a
+	// removal from a store the record never named must not leave one behind on a
+	// host that never wrote a record. The lock is still taken for the
+	// read-modify-write itself, so a concurrent writer cannot be lost between
+	// this read and the update.
+	if before, err := readRecordedCredentialStores(fs, stateDir); err != nil {
+		return err
+	} else if recorded, ok := before.Stores[string(kind)]; !ok || recorded != storeKind {
+		return nil
+	}
+	release, err := lockRecordedCredentialStores(fs, stateDir)
+	if err != nil {
+		return err
+	}
+	defer release()
 	data, err := readRecordedCredentialStores(fs, stateDir)
 	if err != nil {
 		return err
@@ -133,6 +169,22 @@ func forgetRecordedCredentialStore(fs FS, stateDir string, kind CredentialKind, 
 // same reason — it describes a store that is not on this machine.
 func recordedFileStorePin(stateDir string, kind CredentialKind) bool {
 	return RecordedCredentialStoreForKind(stateDir, kind) == "file"
+}
+
+// CredentialStoreForRead reports the store a start will actually read kind from
+// given the current record, and whether that answer is authoritative.
+//
+// It exists because the record is not the whole answer: a record naming a native
+// store says nothing about whether that entry still exists, so resolution still
+// falls through to the file on not-found. Printing the record as "read from the
+// native store" would then contradict what `start` does. Only a file-store
+// record is a definite answer; otherwise this reports "" and false and callers
+// describe the value as the last write rather than a pin.
+func CredentialStoreForRead(stateDir string, kind CredentialKind) (string, bool) {
+	if recordedFileStorePin(stateDir, kind) {
+		return "file", true
+	}
+	return "", false
 }
 
 // credentialStoreReaders are the two store adapters the read chain uses, so the

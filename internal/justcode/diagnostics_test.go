@@ -544,6 +544,13 @@ func setupDiagnosticsEnv(t *testing.T) string {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	// Windows resolves os.UserConfigDir() from APPDATA, not from HOME or
+	// XDG_CONFIG_HOME. Without this the credential tests read the runner's real
+	// AppData\just-code\credentials.json, so a test that expects "nothing is
+	// stored" fails on any machine that has a fallback file — an environmental
+	// failure, not a defect in the code under test.
+	t.Setenv("APPDATA", filepath.Join(home, "appdata"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "localappdata"))
 	t.Setenv("ALBERT_API_KEY", "")
 	t.Setenv("MSB_PATH", "")
 	t.Setenv("MSB_LIBKRUNFW_PATH", "")

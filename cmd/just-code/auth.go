@@ -149,18 +149,15 @@ func authAddCmd(args []string) (int, error) {
 	// host whose native adapter exists but cannot answer. The write also
 	// repoints the record: storing natively after a fallback write must not
 	// leave reads pinned to the older file value.
-	recordCredentialStoreBestEffort(kind, store.Kind())
+	if err := justcode.RecordCredentialStore(justcode.DefaultStateDir(), kind, store.Kind()); err != nil {
+		// The value is stored but the choice is not, so the next start would
+		// fall back to the native-first chain and — on a host without a D-Bus
+		// session — fail to reach the credential just written. Reporting
+		// success here would be exactly the false reassurance #201 is about.
+		return 1, fmt.Errorf("stored the %q credential in the %s store, but could not record that choice (%w); the next start may look in the native store instead", kind, store.Kind(), err)
+	}
 	fmt.Printf("Stored credential %q in the %s store. It is referenced by name (credentialRef), never written to a project file.\n", kind, store.Kind())
 	return 0, nil
-}
-
-// recordCredentialStoreBestEffort persists the store kind that answered a write.
-// It is best-effort for the same reason the generation bump is: the credential
-// is already stored, and a host-state write failure must not turn a successful
-// `auth add` into an error. Losing the record degrades to the documented
-// native-then-fallback chain, which is the behaviour before this record existed.
-func recordCredentialStoreBestEffort(kind justcode.CredentialKind, storeKind string) {
-	_ = justcode.RecordCredentialStore(justcode.DefaultStateDir(), kind, storeKind)
 }
 
 // authUseFallbackCmd records that an already-stored credential lives in the
@@ -198,9 +195,18 @@ func authStatusCmd() (int, error) {
 	// --fallback.
 	defer func() {
 		for _, kind := range justcode.KnownCredentialKinds() {
-			if recorded := justcode.RecordedCredentialStoreForKind(justcode.DefaultStateDir(), kind); recorded != "" {
-				fmt.Printf("%s: read from the %s store\n", kind, recorded)
+			recorded := justcode.RecordedCredentialStoreForKind(justcode.DefaultStateDir(), kind)
+			if recorded == "" {
+				continue
 			}
+			if store, definite := justcode.CredentialStoreForRead(justcode.DefaultStateDir(), kind); definite {
+				fmt.Printf("%s: read from the %s store\n", kind, store)
+				continue
+			}
+			// A native record is where the value was last written, not a pin:
+			// resolution still falls through to the file when the native entry
+			// is gone, so promising the native store would contradict `start`.
+			fmt.Printf("%s: last written to the %s store (a start falls through to the file store if it is missing there)\n", kind, recorded)
 		}
 	}()
 	native := justcode.DefaultCredentialStore()

@@ -5,8 +5,66 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// TestRecordCredentialStoreRoundTrips pins the record itself: a write records
+// the store kind, a read returns it, and nothing about the value is stored.
+// TestRecordCredentialStoreKeepsConcurrentKinds is the review's P2: two
+// concurrent writes for different kinds must both survive. Atomic rename alone
+// protects a single write, not the read-modify-write; without the lock the last
+// writer drops the other kind's record and silently unpins a stored credential.
+func TestRecordCredentialStoreKeepsConcurrentKinds(t *testing.T) {
+	dir := t.TempDir()
+	kinds := []CredentialKind{CredentialAlbert, CredentialGithub, CredentialContext7}
+	var wg sync.WaitGroup
+	errs := make(chan error, len(kinds)*4)
+	for _, kind := range kinds {
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func(kind CredentialKind) {
+				defer wg.Done()
+				errs <- RecordCredentialStore(dir, kind, "file")
+			}(kind)
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent record: %v", err)
+		}
+	}
+	for _, kind := range kinds {
+		if got := RecordedCredentialStoreForKind(dir, kind); got != "file" {
+			t.Fatalf("%s lost its record under concurrency: %q", kind, got)
+		}
+	}
+}
+
+// TestCredentialStoreForReadDistinguishesPinFromLastWrite is the review's third
+// P2: a native record says where the value was last written, not where a start
+// will read it, because resolution still falls through to the file on not-found.
+// Reporting it as a pin would contradict the behaviour `auth status` describes.
+func TestCredentialStoreForReadDistinguishesPinFromLastWrite(t *testing.T) {
+	dir := t.TempDir()
+	if store, definite := CredentialStoreForRead(dir, CredentialAlbert); store != "" || definite {
+		t.Fatalf("no record must not be a definite answer: %q, %v", store, definite)
+	}
+	if err := RecordCredentialStore(dir, CredentialAlbert, "keychain"); err != nil {
+		t.Fatal(err)
+	}
+	if store, definite := CredentialStoreForRead(dir, CredentialAlbert); store != "" || definite {
+		t.Fatalf("a native record must not claim a definite read store: %q, %v", store, definite)
+	}
+	if err := RecordCredentialStore(dir, CredentialAlbert, "file"); err != nil {
+		t.Fatal(err)
+	}
+	if store, definite := CredentialStoreForRead(dir, CredentialAlbert); store != "file" || !definite {
+		t.Fatalf("a file record is a definite answer: %q, %v", store, definite)
+	}
+}
 
 // TestRecordCredentialStoreRoundTrips pins the record itself: a write records
 // the store kind, a read returns it, and nothing about the value is stored.
