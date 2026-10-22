@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -124,6 +126,33 @@ func TestDefaultAgentVMImageIsAResolvableLocator(t *testing.T) {
 	}
 }
 
+// A user who copies the `.env.example` template into `.env` gets whatever
+// locator that file advertises, so a stale sample silently overrides the
+// corrected default. Keep the two from drifting: the documented value must be
+// the default, and it must use the `template://` form a built-in template needs.
+func TestEnvExampleAGENTVMImageMatchesDefault(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", ".env.example"))
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+	var documented []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		value, ok := strings.CutPrefix(line, "AGENT_VM_IMAGE=")
+		if ok {
+			documented = append(documented, strings.TrimSpace(value))
+		}
+	}
+	if len(documented) == 0 {
+		t.Fatal(".env.example no longer documents AGENT_VM_IMAGE")
+	}
+	for _, value := range documented {
+		if value != DefaultAgentVMImage {
+			t.Errorf(".env.example sets AGENT_VM_IMAGE=%q, want the default %q", value, DefaultAgentVMImage)
+		}
+	}
+}
+
 // createBaseTemplate is the step that resolves the image, so its failure must
 // carry Lima's explanation.
 // A failed validate does not always mean a bad image: limactl refuses to run
@@ -194,8 +223,10 @@ func TestValidateBaseTemplateImageDistinguishesRefusalOnDefaultImage(t *testing.
 	if strings.Contains(err.Error(), "is not a Lima image") {
 		t.Errorf("must not blame AGENT_VM_IMAGE when limactl could not run: %v", err)
 	}
-	if !strings.Contains(err.Error(), "could not be checked") {
-		t.Errorf("the message must say the check was not performed: %v", err)
+	// The witness can fail for reasons unrelated to the image, so the message
+	// must not claim the image was fine — only that no verdict is available.
+	if !strings.Contains(err.Error(), "cannot validate AGENT_VM_IMAGE") {
+		t.Errorf("the message must say no verdict is available: %v", err)
 	}
 	if !strings.Contains(err.Error(), "must not run as the root user") {
 		t.Errorf("the limactl refusal must be surfaced: %v", err)
@@ -203,7 +234,7 @@ func TestValidateBaseTemplateImageDistinguishesRefusalOnDefaultImage(t *testing.
 	// Both failures are reported: a non-zero witness is not proof that the
 	// image check failed for the same reason, so its own diagnostic must not
 	// be discarded.
-	if !strings.Contains(err.Error(), "validating the image also failed") {
+	if !strings.Contains(err.Error(), "the image check reported") {
 		t.Errorf("the image diagnostic must be preserved alongside the witness: %v", err)
 	}
 	// This fake refuses every command, so a witness built from an image would
@@ -277,7 +308,7 @@ func TestValidateBaseTemplateImageAttributesMissingDefaultImage(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unresolvable default image must be refused")
 	}
-	if strings.Contains(err.Error(), "could not be checked") {
+	if strings.Contains(err.Error(), "cannot validate AGENT_VM_IMAGE") {
 		t.Errorf("the check ran, so it must not be reported as not performed: %v", err)
 	}
 	if !strings.Contains(err.Error(), "is not a Lima image") {
