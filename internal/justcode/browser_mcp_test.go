@@ -23,7 +23,6 @@ func TestBrowserMCPOverlayUsesPinnedGuestLocalCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string][]string{
-		"playwright":      {"playwright-mcp", "--headless", "--browser", "chromium", "--executable-path", "/usr/bin/chromium"},
 		"chrome-devtools": {"chrome-devtools-mcp", "--browserUrl", "http://127.0.0.1:9222"},
 	}
 	for name, command := range want {
@@ -31,6 +30,9 @@ func TestBrowserMCPOverlayUsesPinnedGuestLocalCommands(t *testing.T) {
 		if !ok || got.Type != "local" || !got.Enabled || strings.Join(got.Command, "\x00") != strings.Join(command, "\x00") {
 			t.Errorf("%s config = %+v", name, got)
 		}
+	}
+	if _, ok := config.MCP["playwright"]; ok {
+		t.Fatal("withdrawn playwright must stay inactive: no managed entry")
 	}
 	if strings.Contains(content, "latest") {
 		t.Fatal("browser MCP config contains a floating package reference")
@@ -51,8 +53,8 @@ func TestDefaultMicrosandboxImageIsDigestPinned(t *testing.T) {
 }
 
 func TestMCPSelectionCombinesRemoteAndBrowserWithoutInstallingUnselectedTools(t *testing.T) {
-	ids, err := ValidateMCPConnectorIDs([]string{"playwright", "data-gouv"})
-	if err != nil || strings.Join(ids, ",") != "data-gouv,playwright" {
+	ids, err := ValidateMCPNewSelection([]string{"chrome-devtools", "data-gouv"})
+	if err != nil || strings.Join(ids, ",") != "chrome-devtools,data-gouv" {
 		t.Fatalf("mixed MCP selection = %v, %v", ids, err)
 	}
 	content, err := ComposeConfigContent(ManagedOverlay{MCPConnectors: ids})
@@ -65,7 +67,7 @@ func TestMCPSelectionCombinesRemoteAndBrowserWithoutInstallingUnselectedTools(t 
 	if err := json.Unmarshal([]byte(content), &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.MCP) != 2 || config.MCP["playwright"]["type"] != "local" || config.MCP["data-gouv"]["type"] != "remote" {
+	if len(config.MCP) != 2 || config.MCP["chrome-devtools"]["type"] != "local" || config.MCP["data-gouv"]["type"] != "remote" {
 		t.Fatalf("mixed MCP overlay = %#v", config.MCP)
 	}
 }
@@ -103,13 +105,13 @@ func TestBrowserSelectionUsesPinnedGuestProfileAndLoopbackDevTools(t *testing.T)
 	if strings.Contains(spec.StartScript, "latest") {
 		t.Fatal("browser guest start script contains a floating version")
 	}
-	m.OpenCodeOverlay.MCPConnectors = []string{"playwright"}
-	playwrightSpec := m.sandboxSpec(nil)
-	if playwrightSpec.Env[msbBrowserMCPIDsEnv] != "playwright" || playwrightSpec.Env[msbBrowserMCPPackagesEnv] != "@playwright/mcp@0.0.82" {
-		t.Fatalf("Playwright-only selection should install only its package: env=%v", playwrightSpec.Env)
+	m.OpenCodeOverlay.MCPConnectors = nil
+	defaultSpec := m.sandboxSpec(nil)
+	if defaultSpec.Image == msbBrowserImage {
+		t.Fatal("a selection without a browser MCP must keep the default guest image")
 	}
-	if !strings.Contains(playwrightSpec.StartScript, "*,chrome-devtools,*)") {
-		t.Fatal("the creation-persisted start script must gate DevTools on the current selection env")
+	if defaultSpec.Env[msbBrowserMCPIDsEnv] != "" || defaultSpec.Env[msbBrowserMCPPackagesEnv] != "" {
+		t.Fatalf("a selection without a browser MCP must not install browser packages: env=%v", defaultSpec.Env)
 	}
 }
 
@@ -119,7 +121,7 @@ func TestBrowserGuestProfileChangeRequiresExplicitRecreation(t *testing.T) {
 		m.Probe = func(context.Context, string, string, string) HealthProbe { return HealthProbe{Healthy: true} }
 	}
 	applied := m.desiredState(true, nil, nil).toState()
-	m.OpenCodeOverlay.MCPConnectors = []string{"playwright"}
+	m.OpenCodeOverlay.MCPConnectors = []string{"chrome-devtools"}
 	desired := m.desiredState(true, nil, nil)
 	if desired.Image != msbBrowserImage || desired.GuestProfile == "" {
 		t.Fatalf("browser desired profile = image %q, profile %q", desired.Image, desired.GuestProfile)
@@ -137,9 +139,9 @@ func TestBrowserReadinessRequiresMatchingToolInstallFingerprint(t *testing.T) {
 	if !strings.Contains(msbGuestPrepareProbe, msbBrowserMCPMarker) || !strings.Contains(msbGuestPrepareProbe, msbBrowserMCPFingerprintEnv) {
 		t.Fatal("guest readiness probe must compare browser install marker with desired fingerprint")
 	}
-	playwright := browserMCPFingerprint([]string{"playwright"})
-	both := browserMCPFingerprint([]string{"playwright", "chrome-devtools"})
-	if playwright == "" || both == "" || playwright == both {
-		t.Fatalf("browser install fingerprints must be nonempty and selection-sensitive: %q / %q", playwright, both)
+	remoteOnly := browserMCPFingerprint([]string{"data-gouv"})
+	both := browserMCPFingerprint([]string{"data-gouv", "chrome-devtools"})
+	if remoteOnly != "" || both == "" {
+		t.Fatalf("browser install fingerprint must be empty without a browser selection and nonempty with one: %q / %q", remoteOnly, both)
 	}
 }

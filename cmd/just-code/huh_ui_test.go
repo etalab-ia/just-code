@@ -193,6 +193,34 @@ func TestRetainedSkillOptions(t *testing.T) {
 	}
 }
 
+func TestRetainedMCPOptions(t *testing.T) {
+	options := []huh.Option[string]{
+		huh.NewOption("data-gouv — rechercher les données", "data-gouv"),
+		huh.NewOption("chrome-devtools — navigateur", "chrome-devtools"),
+	}
+	// A withdrawn id still referenced by the manifest is appended as a
+	// retained option labelled with its withdrawal reason; offered ids are
+	// not duplicated and the input slice is not mutated.
+	got := retainedMCPOptions(options, []string{"data-gouv", "context7"})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 options, got %d", len(got))
+	}
+	if got[2].Value != "context7" {
+		t.Fatalf("expected retained option value context7, got %q", got[2].Value)
+	}
+	if !strings.Contains(got[2].Key, "n'est plus proposé par just-code") {
+		t.Fatalf("retained option label must name the withdrawal, got %q", got[2].Key)
+	}
+	if len(options) != 2 {
+		t.Fatalf("input options mutated: %d", len(options))
+	}
+	// An unknown id (typo in a hand-edited manifest) is not offered for
+	// re-selection: only currently or previously offered ids come back.
+	if got = retainedMCPOptions(options, []string{"mcp/memory"}); len(got) != 2 {
+		t.Fatalf("unknown id must not gain an option, got %d", len(got))
+	}
+}
+
 func TestEqualStringSets(t *testing.T) {
 	cases := []struct {
 		name string

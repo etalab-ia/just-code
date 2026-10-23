@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"charm.land/huh/v2"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -601,6 +602,96 @@ func TestAskInitQuestionsHuhOffersGitHubOnlyWhenUsable(t *testing.T) {
 	}
 }
 
+// huhRun is stubbed, so this pins the construction and write-back logic the
+// form runs: a fresh initialization (no manifest) preselects the curated
+// default exactly like the line wizard, and a manifest holding withdrawn ids
+// (context7, playwright) survives the form instead of being silently wiped —
+// huh rebuilds a MultiSelect's value from its options on submit, so the
+// withdrawn ids must come back as retained options (#242 review).
+func TestAskInitQuestionsHuhMCPSeedingAndWithdrawnRetention(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalRun := huhRun
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() { huhRun = originalRun })
+	opts := initOptions{
+		Root: root, Set: map[string]bool{"root": true},
+		hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384,
+	}
+
+	// Fresh project: the default selection is the seeded baseline, so an
+	// accepted form submission keeps it implicit (MCPsSet false).
+	answers, err := askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh: %v", err)
+	}
+	if !equalStringSlices(answers.MCPConnectors, justcode.DefaultFreshMCPIDs) {
+		t.Fatalf("fresh init must preselect %v, got %v", justcode.DefaultFreshMCPIDs, answers.MCPConnectors)
+	}
+	if answers.MCPsSet {
+		t.Fatal("an accepted default must stay implicit (MCPsSet false)")
+	}
+
+	// Existing manifest with withdrawn ids: the selection survives the form
+	// unchanged, and stays implicit so --replace preserves the manifest.
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		MCPConnectors:   []string{"context7", "playwright"},
+		SkillsLocalOnly: true,
+	}); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	answers, err = askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh with manifest: %v", err)
+	}
+	if !equalStringSlices(answers.MCPConnectors, []string{"context7", "playwright"}) {
+		t.Fatalf("withdrawn manifest ids must be retained through the form, got %v", answers.MCPConnectors)
+	}
+	if answers.MCPsSet {
+		t.Fatal("an unchanged legacy selection must not be flagged as a new selection (MCPsSet false)")
+	}
+
+	// A manifest deliberately written with zero MCPs triggers the
+	// zero-selection confirmation before any write-back. The main form's
+	// stub must succeed once so the write-back runs, then the confirmation
+	// form's stub fails: the wizard asks instead of silently keeping or
+	// re-defaulting the empty set.
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		MCPConnectors:   []string{},
+		SkillsLocalOnly: true,
+	}); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	formCalls := 0
+	huhRun = func(*huh.Form) error {
+		formCalls++
+		if formCalls > 1 {
+			return huh.ErrUserAborted
+		}
+		return nil
+	}
+	if _, err = askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root}); !errors.Is(err, huh.ErrUserAborted) {
+		t.Fatalf("a zero-MCP manifest must trigger the confirmation and an abort must surface, got %v", err)
+	}
+}
+
+// The zero-selection confirmation must read through the wizard's buffered
+// reader: wrapping it in a fresh bufio.Reader prefetches the queued answers
+// and the init aborted with "no answer" right after `none` (#242 review).
+func TestPromptNoMCPConfirmationSharesWizardReader(t *testing.T) {
+	input := bufio.NewReader(strings.NewReader("none\ny\nroot\n"))
+	if _, ok := promptLine(input, "mcps: "); !ok {
+		t.Fatal("expected the mcps answer to be consumed first")
+	}
+	if !promptNoMCPConfirmation(input) {
+		t.Fatal("expected the confirmation to accept the queued y")
+	}
+	next, ok := promptLine(input, "next: ")
+	if !ok || strings.TrimSpace(next) != "root" {
+		t.Fatalf("the answer queued behind the confirmation must survive, got %q (ok=%v)", next, ok)
+	}
+}
+
 // TestInitNonTTYNamesWhatIsMissing pins the P12 acceptance item: with no
 // terminal the command must never wait. It fails and says which input is
 // missing, so a script can supply it next time.
@@ -662,7 +753,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 		code, err := initRun(initOptions{
 			Root: root, Isolation: "backend", CPUs: 4, MemoryMB: 2048,
 			Replace: true, Yes: true,
-			MCPConnectors: []string{"context7", "data-gouv"},
+			MCPConnectors: []string{"chrome-devtools", "data-gouv"},
 			Set:           map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true, "mcps": true},
 		}, bufio.NewReader(strings.NewReader("")), false)
 		if code != 0 || err != nil {
@@ -679,7 +770,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 	if pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.Isolation != string(justcode.IsolationBackend) {
 		t.Fatalf("manifest = %+v", pm)
 	}
-	if strings.Join(pm.MCPConnectors, ",") != "context7,data-gouv" {
+	if strings.Join(pm.MCPConnectors, ",") != "chrome-devtools,data-gouv" {
 		t.Fatalf("MCP connectors = %v", pm.MCPConnectors)
 	}
 }
@@ -903,6 +994,9 @@ func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	if pm.CPUs != 0 || pm.MemoryMB != 0 {
 		t.Fatalf("the default sizing must be left unset in the manifest, got %d/%d", pm.CPUs, pm.MemoryMB)
 	}
+	if strings.Join(pm.MCPConnectors, ",") != "data-gouv" {
+		t.Fatalf("a fresh project must default to the data-gouv MCP, got %v", pm.MCPConnectors)
+	}
 }
 
 func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
@@ -915,7 +1009,7 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 	input := strings.Join([]string{
-		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "context7", "versioned",
+		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "chrome-devtools", "versioned",
 		"edit",
 		"", "", "", "", "", "", "", "", "", "", "", "",
 	}, "\n")
@@ -927,8 +1021,52 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "context7" {
+	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
 		t.Fatalf("edit/back lost prior choices: %+v", manifest)
+	}
+}
+
+// TestInitNonTTYAcceptsFreshDefaultMCPWithoutPrompt pins that supplying --mcp
+// data-gouv keeps the scriptable path at the original answer count: the MCP
+// question is skipped, so the remaining prompts line up without an extra
+// newline.
+func TestInitNonTTYAcceptsFreshDefaultMCPWithoutPrompt(t *testing.T) {
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
+	root := initTestProject(t)
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{
+			Root: root, Isolation: "backend", CPUs: 4, MemoryMB: 2048,
+			Replace: true, Yes: true,
+			MCPConnectors: []string{"data-gouv"},
+			Set:           map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true, "mcps": true},
+		}, bufio.NewReader(strings.NewReader("")), false)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "Review the project setup") {
+		t.Fatalf("the review must be printed even without a terminal: %q", out)
+	}
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatalf("the manifest must be written and readable: %v", err)
+	}
+	if strings.Join(pm.MCPConnectors, ",") != "data-gouv" {
+		t.Fatalf("MCP connectors = %v", pm.MCPConnectors)
+	}
+}
+
+// TestInitRefusesWithdrawnMCPFlagValue pins that a withdrawn connector passed
+// on the command line is rejected before any question runs.
+func TestInitRefusesWithdrawnMCPFlagValue(t *testing.T) {
+	root := initTestProject(t)
+	code, err := initRun(initOptions{
+		Root:          root,
+		MCPConnectors: []string{"context7"},
+		Set:           map[string]bool{"root": true, "mcps": true},
+	}, bufio.NewReader(strings.NewReader("")), false)
+	if code != 2 || err == nil {
+		t.Fatalf("initRun with a withdrawn --mcp value: code=%d err=%v, want refusal before the first prompt", code, err)
 	}
 }
 
@@ -940,7 +1078,7 @@ func TestBrowserResourceGuidanceRefreshesAfterResourceChanges(t *testing.T) {
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 
 	answers := justcode.InitAnswers{
-		MCPConnectors:           []string{"playwright"},
+		MCPConnectors:           []string{"chrome-devtools"},
 		CPUs:                    2,
 		MemoryMB:                4096,
 		BrowserResourceGuidance: "stale guidance for 2 vCPU and 4096 MiB RAM",
@@ -1024,7 +1162,7 @@ func TestInitSeedsUnspecifiedAnswersFromExistingManifest(t *testing.T) {
 	plan, err := wizard.Plan(justcode.InitAnswers{
 		Root: root, Runtime: justcode.RuntimeMicrosandbox, Isolation: justcode.IsolationBackend,
 		Model: "test-model", CPUs: 3, MemoryMB: 2048, CredentialRef: "work",
-		MCPConnectors: []string{"context7"}, MCPsSet: true,
+		MCPConnectors: []string{"data-gouv"}, MCPsSet: true,
 	})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1033,7 +1171,7 @@ func TestInitSeedsUnspecifiedAnswersFromExistingManifest(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, justcode.InitAnswers{Root: root})
-	if got.Runtime != justcode.RuntimeMicrosandbox || got.Isolation != justcode.IsolationBackend || got.Model != "test-model" || got.CPUs != 3 || got.MemoryMB != 2048 || got.CredentialRef != "work" || strings.Join(got.MCPConnectors, ",") != "context7" {
+	if got.Runtime != justcode.RuntimeMicrosandbox || got.Isolation != justcode.IsolationBackend || got.Model != "test-model" || got.CPUs != 3 || got.MemoryMB != 2048 || got.CredentialRef != "work" || strings.Join(got.MCPConnectors, ",") != "data-gouv" {
 		t.Fatalf("seeded answers = %+v", got)
 	}
 }

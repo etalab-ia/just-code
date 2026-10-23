@@ -386,16 +386,22 @@ L'approbation est liée au **contenu** (hachage par fichier) : un fichier modifi
 
 ## MCP distants
 
-`just-code init --mcp data-gouv --mcp context7` sélectionne les connecteurs
-distants gérés ; `--clear-mcps` les désélectionne tous. Le manifeste ne contient
+`just-code init --mcp data-gouv` sélectionne les connecteurs distants gérés ;
+`--clear-mcps` les désélectionne tous. À l'initialisation d'un nouveau projet,
+`data-gouv` est présélectionné ; valider l'écran MCP sans aucune sélection
+déclenche une confirmation « Continuer sans MCP ? ». Le manifeste ne contient
 que leurs identifiants et la configuration générée est injectée dans OpenCode
 sans modifier les fichiers du projet. Les entrées personnalisées portant un
 nom différent restent intactes.
 
-Les destinations sont `https://mcp.data.gouv.fr/mcp` et
-`https://mcp.context7.com/mcp`. data.gouv.fr est public. Context7 accepte les
-appels anonymes avec une limite plus basse ; le connecteur géré utilise ce
-mode et `init` n'exige ni ne transmet de clé.
+La destination gérée est `https://mcp.data.gouv.fr/mcp` (service public, appels
+anonymes ; `init` n'exige ni ne transmet de clé).
+
+Les connecteurs retirés du catalogue (`context7`) restent tolérés dans un
+manifeste existant mais y restent inactifs : l'assistant `init` les affiche
+comme non repris au récapitulatif, `mcp status` les liste sans les sonder, et
+l'import depuis Albert Code les signale comme non repris au lieu de les
+importer. Une nouvelle sélection (`--mcp` ou l'écran interactif) les refuse.
 
 `just-code mcp status` envoie un MCP `initialize` depuis l'hôte et distingue la
 configuration, la vérification du protocole, l'authentification requise, un
@@ -406,27 +412,30 @@ depuis OpenCode.
 
 ## MCP navigateur
 
-`playwright` et `chrome-devtools` sont des processus locaux au guest, distincts
-des destinations distantes :
+`chrome-devtools` est un processus local au guest, distinct des destinations
+distantes :
 
 ```bash
-just-code init --root . --mcp playwright --mcp chrome-devtools --yes
+just-code init --root . --mcp chrome-devtools --yes
 ```
 
-La sélection compose ces outils dans OpenCode sans démarrer de navigateur sur
-l'hôte. Playwright utilise Chromium headless installé dans le guest ;
-Chrome DevTools se connecte au serveur de débogage lié à `127.0.0.1:9222`
-dans ce même guest. Le statut MCP sur l'hôte ne sonde pas ces processus.
+La sélection compose cet outil dans OpenCode sans démarrer de navigateur sur
+l'hôte. Chrome DevTools se connecte au serveur de débogage lié à
+`127.0.0.1:9222` dans ce même guest. Le statut MCP sur l'hôte ne sonde pas ce
+processus.
 
 Le profil navigateur est séparé du guest léger : Debian bookworm-slim est
 épinglé par digest, avec Chromium `154.0.8037.92` (amd64) / `154.0.8037.57`
 (arm64), `fonts-liberation` `1:1.07.4-11`, Node.js
-`22.14.0`, Playwright MCP `0.0.82` et Chrome DevTools MCP `1.10.1`. Le
+`22.14.0` et Chrome DevTools MCP `1.10.1`. Le
 provisionnement vérifie les empreintes et marqueurs avant de déclarer le profil
 prêt. Les paquets navigateur sont téléchargés lors du premier démarrage du
 profil ; l'initialisation n'installe ni ne redémarre rien dans un guest en
 cours. Un changement de profil d'image demande une recréation explicite, qui
 efface l'état invité : exporter d'abord les éventuels changements non exportés.
+
+`playwright` a été retiré du catalogue : présent dans un manifeste existant, il
+reste inactif (non repris) et n'est plus proposé ni installé.
 
 L'accès au serveur local de développement est possible seulement si ce serveur
 est joignable depuis le guest. Aucun tunnel automatique vers `localhost` de

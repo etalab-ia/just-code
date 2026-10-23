@@ -32,21 +32,19 @@ func TestComposeConfigContentAddsOnlySelectedRemoteMCPs(t *testing.T) {
 		t.Fatal(err)
 	}
 	servers := config["mcp"].(map[string]any)
-	for name, endpoint := range map[string]string{
-		"data-gouv": "https://mcp.data.gouv.fr/mcp",
-		"context7":  "https://mcp.context7.com/mcp",
-	} {
-		entry := servers[name].(map[string]any)
-		if entry["type"] != "remote" || entry["url"] != endpoint || entry["enabled"] != true {
-			t.Errorf("unexpected %s entry: %#v", name, entry)
-		}
+	entry := servers["data-gouv"].(map[string]any)
+	if entry["type"] != "remote" || entry["url"] != "https://mcp.data.gouv.fr/mcp" || entry["enabled"] != true {
+		t.Errorf("unexpected data-gouv entry: %#v", entry)
+	}
+	if _, ok := servers["context7"]; ok {
+		t.Fatal("withdrawn context7 must stay inactive: no managed entry")
 	}
 	if strings.Contains(content, "playwright") || strings.Contains(content, "chrome-devtools") {
 		t.Fatal("P15 configuration included unrelated browser tooling")
 	}
 }
 
-func TestDeselectedMCPIsAbsentFromOverlay(t *testing.T) {
+func TestWithdrawnMCPSelectionStaysInactiveInOverlay(t *testing.T) {
 	content, err := ComposeConfigContent(ManagedOverlay{MCPConnectors: []string{"context7"}})
 	if err != nil {
 		t.Fatal(err)
@@ -55,19 +53,17 @@ func TestDeselectedMCPIsAbsentFromOverlay(t *testing.T) {
 	if err := json.Unmarshal([]byte(content), &config); err != nil {
 		t.Fatal(err)
 	}
-	servers := config["mcp"].(map[string]any)
-	if _, ok := servers["context7"]; !ok {
-		t.Fatal("selected Context7 entry missing")
-	}
-	if _, ok := servers["data-gouv"]; ok {
-		t.Fatal("deselected data.gouv entry remains")
+	if servers, ok := config["mcp"].(map[string]any); ok {
+		if _, active := servers["context7"]; active {
+			t.Fatal("withdrawn context7 became an active managed entry")
+		}
 	}
 }
 
 func TestDetectOverlayConflictsForManagedMCPName(t *testing.T) {
-	project := map[string]any{"mcp": map[string]any{"context7": map[string]any{"type": "remote", "url": "https://other.example/mcp"}}}
-	conflicts := DetectOverlayConflicts(project, ManagedOverlay{MCPConnectors: []string{"context7"}})
-	if len(conflicts) != 1 || conflicts[0].Field != "mcp.context7" {
+	project := map[string]any{"mcp": map[string]any{"data-gouv": map[string]any{"type": "remote", "url": "https://other.example/mcp"}}}
+	conflicts := DetectOverlayConflicts(project, ManagedOverlay{MCPConnectors: []string{"data-gouv"}})
+	if len(conflicts) != 1 || conflicts[0].Field != "mcp.data-gouv" {
 		t.Fatalf("conflicts = %#v", conflicts)
 	}
 }
@@ -112,6 +108,27 @@ func TestProbeRemoteMCPReportsUnavailableEndpoint(t *testing.T) {
 	result := ProbeRemoteMCP(context.Background(), nil, MCPConnector{ID: "offline", Endpoint: endpoint})
 	if result.State != MCPOffline {
 		t.Fatalf("state = %q, want offline", result.State)
+	}
+}
+
+// The review screen reads this func's verdict as the reachability line: a
+// successful handshake must be a pass, and configured is only a probe's
+// initial state — accepting it there turned every reachable endpoint into a
+// false access failure (#242 review).
+func TestProbeRemoteMCPFuncDistinguishesVerifiedFromFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`))
+	}))
+	defer server.Close()
+	if err := ProbeRemoteMCPFunc(context.Background(), MCPConnector{ID: "test", Endpoint: server.URL}); err != nil {
+		t.Fatalf("a verified handshake must pass the review probe: %v", err)
+	}
+	offline := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	endpoint := offline.URL
+	offline.Close()
+	if err := ProbeRemoteMCPFunc(context.Background(), MCPConnector{ID: "offline", Endpoint: endpoint}); err == nil {
+		t.Fatal("an unreachable endpoint must fail the review probe")
 	}
 }
 

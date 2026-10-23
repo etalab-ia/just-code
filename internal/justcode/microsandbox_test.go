@@ -1542,7 +1542,7 @@ func TestMicrosandboxFullModeSpecUsesProxySecret(t *testing.T) {
 
 func TestMCPOverlayPropagatesToInitialAndNextStartGuestConfig(t *testing.T) {
 	m := newTestMicrosandbox(t, &fakeMSBClient{})
-	m.OpenCodeOverlay.MCPConnectors = []string{"context7"}
+	m.OpenCodeOverlay.MCPConnectors = []string{"data-gouv"}
 	for name, content := range map[string]string{
 		"initial":    m.sandboxEnv()["OPENCODE_CONFIG_CONTENT"],
 		"next start": m.nextStartEnv()["OPENCODE_CONFIG_CONTENT"],
@@ -1557,8 +1557,8 @@ func TestMCPOverlayPropagatesToInitialAndNextStartGuestConfig(t *testing.T) {
 		if err := json.Unmarshal([]byte(content), &config); err != nil {
 			t.Fatalf("%s config: %v", name, err)
 		}
-		connector, ok := config.MCP["context7"]
-		if !ok || connector.Type != "remote" || connector.URL != "https://mcp.context7.com/mcp" || !connector.Enabled {
+		connector, ok := config.MCP["data-gouv"]
+		if !ok || connector.Type != "remote" || connector.URL != "https://mcp.data.gouv.fr/mcp" || !connector.Enabled {
 			t.Fatalf("%s MCP config = %+v", name, config.MCP)
 		}
 	}
