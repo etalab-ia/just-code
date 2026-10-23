@@ -15,6 +15,7 @@ func newTestAgentVM(t *testing.T, runner Runner) *AgentVM {
 	return &AgentVM{
 		Config: Config{
 			AgentVMTemplate: DefaultAgentVMTemplate,
+			AgentVMImage:    DefaultAgentVMImage,
 			AgentVMVM:       DefaultAgentVMVM,
 			Username:        "opencode",
 			Password:        "pw",

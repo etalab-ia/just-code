@@ -63,6 +63,23 @@ func DeleteBaseTemplate(ctx context.Context, r Runner, name string) error {
 	return nil
 }
 
+// createBaseTemplate runs `limactl create` for the base template and keeps
+// Lima's own diagnostic on failure.
+//
+// `limactl create` is the step that resolves the image, so it is the step whose
+// explanation a user needs when AGENT_VM_IMAGE is wrong. runOK discards the
+// captured output, which leaves "failed (exit 1)" and nothing to act on.
+func createBaseTemplate(ctx context.Context, r Runner, spec BaseTemplateSpec) error {
+	res, err := r.Run(ctx, "limactl", baseTemplateCreateArgs(spec)...)
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("limactl create failed for %s (exit %d): %s", spec.Name, res.ExitCode, commandDiagnostic(res))
+	}
+	return nil
+}
+
 // BuildBaseTemplate creates, boots, provisions and stops the Lima base
 // template, then records a completion marker. It is not resumable: any
 // existing instance with this name is removed first, so calling it on a
@@ -83,8 +100,8 @@ func BuildBaseTemplate(ctx context.Context, r Runner, spec BaseTemplateSpec, mar
 	}
 	_ = os.Remove(markerPath)
 
-	if err := runOK(r, ctx, "limactl", baseTemplateCreateArgs(spec)...); err != nil {
-		return fmt.Errorf("limactl create failed for %s: %w", spec.Name, err)
+	if err := createBaseTemplate(ctx, r, spec); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(out, "Starting %s...\n", spec.Name)
