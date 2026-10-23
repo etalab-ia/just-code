@@ -158,18 +158,33 @@ func keepEmptyInitSkillsForRetry(answers *justcode.InitAnswers) {
 // storage mode. huh rebuilds a MultiSelect's value in its own option
 // order, so it compares as sets: a reordered-but-identical selection is
 // not a change. Sibling choices are committed before the caller acts on
-// the skills decision, so a refused empty-skills retry keeps them. It
-// reports whether the submission needs the zero-skills confirmation.
-func commitInitHuhSubmission(opts initOptions, answers *justcode.InitAnswers, skills, mcps []string, skillsLocalOnly bool, skillOptions []huh.Option[string], skipSkills bool) bool {
-	needsEmptyConfirm := false
+// the skills decision, so a refused empty-skills retry keeps them.
+// The zero-MCP confirmation runs before the MCP and storage write-backs,
+// so declining it reopens the form with those answers unchanged, like
+// the line wizard. It reports whether the submission needs the
+// zero-skills confirmation, and whether the user declined the zero-MCP
+// confirmation.
+func commitInitHuhSubmission(opts initOptions, answers *justcode.InitAnswers, skills, mcps []string, skillsLocalOnly bool, skillOptions []huh.Option[string], skipSkills bool) (bool, bool, error) {
+	needsSkillsConfirm := false
 	if !skipSkills {
 		selectedSkills := append([]string(nil), skills...)
 		answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, selectedSkills)
 		answers.Skills = selectedSkills
 		answers.RetainedSkills = retainedInitSkillIDs(selectedSkills, skillOptions)
-		needsEmptyConfirm = len(skills) == 0
+		needsSkillsConfirm = len(skills) == 0
 	}
 	if !opts.Set["mcps"] {
+		if len(mcps) == 0 {
+			// Same zero-selection confirmation as the line wizard;
+			// declining reopens the form with the answers unchanged.
+			keep, confirmErr := confirmNoMCPsHuh()
+			if confirmErr != nil {
+				return false, false, confirmErr
+			}
+			if !keep {
+				return needsSkillsConfirm, true, nil
+			}
+		}
 		answers.MCPsSet = answers.MCPsSet || !equalStringSets(answers.MCPConnectors, mcps)
 		answers.MCPConnectors = mcps
 	}
@@ -177,7 +192,7 @@ func commitInitHuhSubmission(opts initOptions, answers *justcode.InitAnswers, sk
 		answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet || answers.SkillsLocalOnly != skillsLocalOnly
 		answers.SkillsLocalOnly = skillsLocalOnly
 	}
-	return needsEmptyConfirm
+	return needsSkillsConfirm, false, nil
 }
 
 func newInitSkillsGroup(skillOptions []huh.Option[string], skills *[]string, skillsLocalOnly *bool, includeSkills, includeStorage bool, stepPrefix string) *huh.Group {
@@ -205,6 +220,43 @@ func newProjectMCPsMultiSelect(mcpOptions []huh.Option[string], value *[]string)
 		Filterable(true).
 		Options(mcpOptions...).
 		Value(value)
+}
+
+// retainedMCPOptions appends non-selectable options for withdrawn MCP ids
+// still referenced by the project's manifest. huh rebuilds a MultiSelect's
+// value from its options on submit, so without them a legacy context7 or
+// playwright entry would silently vanish and the write-back would flag a
+// selection change (--replace rewriting the manifest). The label names the
+// withdrawal, matching the review screen's « non repris » row.
+func retainedMCPOptions(options []huh.Option[string], selected []string) []huh.Option[string] {
+	retained := append([]huh.Option[string](nil), options...)
+	for _, id := range selected {
+		reason, removed := justcode.RemovedMCPIDs[id]
+		if !removed {
+			continue
+		}
+		retained = append(retained, huh.NewOption(id+" — "+reason, id))
+	}
+	return retained
+}
+
+// confirmNoMCPsHuh asks the zero-selection confirmation through huh, matching
+// the line wizard's « Continuer sans MCP ? » (O/n, Enter keeps the MCP-less
+// project).
+func confirmNoMCPsHuh() (bool, error) {
+	var keep bool
+	err := huhRun(huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Aucun MCP sélectionné. Continuer sans MCP ?").
+				Description("L'agent n'aura accès à aucun service distant ni outil de navigateur géré ; un MCP restera ajoutable plus tard.").
+				Value(&keep),
+		),
+	))
+	if err != nil {
+		return false, err
+	}
+	return keep, nil
 }
 
 // stdoutIsTTY reports whether standard output is a terminal, using the same
@@ -349,6 +401,11 @@ func huhReviewDescription(plan justcode.InitPlan) string {
 				}
 			}
 			t.Row("MCP · "+choice.ID, detail)
+		}
+		for _, id := range a.MCPConnectors {
+			if reason, removed := justcode.RemovedMCPIDs[id]; removed {
+				t.Row("MCP · "+id, "non repris — "+reason)
+			}
 		}
 	}
 	if len(a.Skills) == 0 {
@@ -516,6 +573,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		githubWorkflow := answers.GitHubWorkflow
 		skills := append([]string(nil), answers.Skills...)
 		mcps := append([]string(nil), answers.MCPConnectors...)
+		haveManifestMCPs := false
 		skillsLocalOnly := answers.SkillsLocalOnly
 
 		if !answers.SkillsSet {
@@ -538,9 +596,19 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
 					mcps = append([]string(nil), manifest.MCPConnectors...)
 					answers.MCPConnectors = append([]string(nil), manifest.MCPConnectors...)
+					haveManifestMCPs = true
 				}
 			}
 		}
+		if len(mcps) == 0 && !haveManifestMCPs && !answers.MCPsSet {
+			// Mirror the line wizard: a fresh initialization (no manifest,
+			// no flag) preselects the curated default, while a manifest
+			// deliberately written with zero MCPs stays empty, and so does
+			// an explicitly confirmed empty selection from a prior pass.
+			mcps = append([]string(nil), justcode.DefaultFreshMCPIDs...)
+			answers.MCPConnectors = append([]string(nil), justcode.DefaultFreshMCPIDs...)
+		}
+		mcpOptionsPass := retainedMCPOptions(mcpOptions, mcps)
 
 		var rootGroup *huh.Group
 		if !opts.Set["root"] {
@@ -656,7 +724,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 
 		mcpFields := make([]huh.Field, 0, 2)
 		if !opts.Set["mcps"] {
-			mcpFields = append(mcpFields, newProjectMCPsMultiSelect(mcpOptions, &mcps))
+			mcpFields = append(mcpFields, newProjectMCPsMultiSelect(mcpOptionsPass, &mcps))
 		}
 		var mcpGroup *huh.Group
 		if len(mcpFields) > 0 {
@@ -728,7 +796,14 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		}
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
 		answers.GitHubWorkflow = githubWorkflow
-		if commitInitHuhSubmission(opts, &answers, skills, mcps, skillsLocalOnly, skillOptions, skipSkills) {
+		needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, skills, mcps, skillsLocalOnly, skillOptions, skipSkills)
+		if err != nil {
+			return answers, err
+		}
+		if retryMCPs {
+			continue
+		}
+		if needsSkillsConfirm {
 			proceed, err := huhConfirm("Aucune skill sélectionnée. Continuer sans skill ? (O/n)", "Appuyez sur Entrée pour continuer, ou choisissez non pour revenir à la sélection.", true)
 			if err != nil {
 				return answers, err

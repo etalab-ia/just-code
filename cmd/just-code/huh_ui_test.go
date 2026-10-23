@@ -142,7 +142,14 @@ func TestCommitInitHuhSubmissionKeepsSiblingChoicesForEmptySkillsRetry(t *testin
 		SkillsLocalOnly: false,
 	}
 	opts := initOptions{Set: map[string]bool{}}
-	if !commitInitHuhSubmission(opts, &answers, nil, []string{"github", "browser"}, true, options, false) {
+	needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, nil, []string{"github", "browser"}, true, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryMCPs {
+		t.Fatal("a non-empty MCP submission must not reopen the form")
+	}
+	if !needsSkillsConfirm {
 		t.Fatal("an empty skills submission must request the zero-skills confirmation")
 	}
 	if !answers.SkillsSet || len(answers.Skills) != 0 {
@@ -159,15 +166,57 @@ func TestCommitInitHuhSubmissionKeepsSiblingChoicesForEmptySkillsRetry(t *testin
 func TestCommitInitHuhSubmissionRecordsRetainedSkills(t *testing.T) {
 	options := initSkillOptions(initSkillFixtureCatalogue())
 	answers := justcode.InitAnswers{Skills: []string{"official/rgaa", "official/ancienne"}}
-	opts := initOptions{Set: map[string]bool{}}
-	if commitInitHuhSubmission(opts, &answers, []string{"official/rgaa", "official/ancienne"}, nil, false, options, false) {
-		t.Fatal("a non-empty skills submission must not request the zero-skills confirmation")
+	// The MCP answer is flag-provided so the zero-MCP confirmation cannot
+	// run: this test pins the skills write-back, not the MCP gate.
+	opts := initOptions{Set: map[string]bool{"mcps": true}}
+	needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, []string{"official/rgaa", "official/ancienne"}, nil, false, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if needsSkillsConfirm || retryMCPs {
+		t.Fatal("a non-empty skills submission must not request any confirmation")
 	}
 	if answers.SkillsSet {
 		t.Fatalf("an unchanged submission must not mark the selection explicit: %+v", answers)
 	}
 	if !equalStringSlices(answers.RetainedSkills, []string{"official/ancienne"}) {
 		t.Fatalf("retained skills = %v, want the out-of-catalogue selection", answers.RetainedSkills)
+	}
+}
+
+// Declining the zero-MCP confirmation must reopen the form without writing
+// the empty MCP selection back and without committing the storage choice
+// submitted in the same pass: the next pass reseeds from answers, like the
+// line wizard.
+func TestCommitInitHuhSubmissionDeclinedMCPConfirmationKeepsPreviousSelection(t *testing.T) {
+	originalHuhRun := huhRun
+	// confirmNoMCPsHuh binds a false keep value, so a no-op stub declines.
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() { huhRun = originalHuhRun })
+	options := initSkillOptions(initSkillFixtureCatalogue())
+	answers := justcode.InitAnswers{
+		Skills:        []string{"official/rgaa"},
+		MCPConnectors: []string{"github"},
+	}
+	opts := initOptions{Set: map[string]bool{}}
+	needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, []string{"official/rgaa"}, nil, true, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retryMCPs {
+		t.Fatal("declining the zero-MCP confirmation must reopen the form")
+	}
+	if needsSkillsConfirm {
+		t.Fatal("a non-empty skills submission must not request the zero-skills confirmation")
+	}
+	if !equalStringSlices(answers.MCPConnectors, []string{"github"}) {
+		t.Fatalf("declining must keep the previous MCP selection: %+v", answers)
+	}
+	if answers.MCPsSet {
+		t.Fatalf("declining must not mark the MCP selection explicit: %+v", answers)
+	}
+	if answers.SkillsLocalOnlySet || answers.SkillsLocalOnly {
+		t.Fatalf("declining must not commit the storage choice: %+v", answers)
 	}
 }
 
@@ -319,6 +368,34 @@ func TestDecliningNoSkillsConfirmationKeepsTheReselectionEmpty(t *testing.T) {
 	keepEmptyInitSkillsForRetry(&answers)
 	if !answers.SkillsSet || len(answers.Skills) != 0 {
 		t.Fatalf("retry state = SkillsSet:%v Skills:%v; want explicit empty selection", answers.SkillsSet, answers.Skills)
+	}
+}
+
+func TestRetainedMCPOptions(t *testing.T) {
+	options := []huh.Option[string]{
+		huh.NewOption("data-gouv — rechercher les données", "data-gouv"),
+		huh.NewOption("chrome-devtools — navigateur", "chrome-devtools"),
+	}
+	// A withdrawn id still referenced by the manifest is appended as a
+	// retained option labelled with its withdrawal reason; offered ids are
+	// not duplicated and the input slice is not mutated.
+	got := retainedMCPOptions(options, []string{"data-gouv", "context7"})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 options, got %d", len(got))
+	}
+	if got[2].Value != "context7" {
+		t.Fatalf("expected retained option value context7, got %q", got[2].Value)
+	}
+	if !strings.Contains(got[2].Key, "n'est plus proposé par just-code") {
+		t.Fatalf("retained option label must name the withdrawal, got %q", got[2].Key)
+	}
+	if len(options) != 2 {
+		t.Fatalf("input options mutated: %d", len(options))
+	}
+	// An unknown id (typo in a hand-edited manifest) is not offered for
+	// re-selection: only currently or previously offered ids come back.
+	if got = retainedMCPOptions(options, []string{"mcp/memory"}); len(got) != 2 {
+		t.Fatalf("unknown id must not gain an option, got %d", len(got))
 	}
 }
 

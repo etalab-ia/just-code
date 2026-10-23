@@ -24,6 +24,22 @@ func TestMSBRuntimeVersionMatchesSDK(t *testing.T) {
 	}
 }
 
+func TestRuntimeDownloadProgressReportsBytes(t *testing.T) {
+	var progress *runtimeDownloadProgress
+	out := captureStderr(t, func() {
+		progress = &runtimeDownloadProgress{total: 2 << 20, enabled: true}
+		if n, err := progress.Write(make([]byte, 1<<20)); err != nil || n != 1<<20 {
+			t.Fatalf("progress write = %d, %v", n, err)
+		}
+		progress.finish()
+	})
+	for _, want := range []string{"[1/3] Téléchargement", "█████░░░░░", "1.0 MiB / 2.0 MiB"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("progress output %q does not contain %q", out, want)
+		}
+	}
+}
+
 func TestMSBRuntimeArtifacts(t *testing.T) {
 	tests := []struct {
 		goos, goarch string

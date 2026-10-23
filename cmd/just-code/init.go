@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,12 +40,118 @@ func initCmd(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	in := bufio.NewReader(os.Stdin)
-	tty := isTTY()
-	if tty && !opts.Yes && !stdoutIsTTY() {
+	if err := validateInitOptions(opts); err != nil {
+		return 2, err
+	}
+	tty := initTTYFn()
+	if tty && !opts.Yes && !initStdoutTTYFn() {
 		return 1, fmt.Errorf("interactive init requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
 	}
-	return initRun(opts, in, tty)
+	if tty && !opts.Yes {
+		opts = initOptionsWithDisplayedRoot(opts)
+		// Keep the preflight offer's reader from consuming input intended for
+		// setup's own raw-terminal intro. A one-byte buffer avoids read-ahead.
+		in := bufio.NewReaderSize(os.Stdin, 1)
+		proceed, code, err := ensureInitSetup(in)
+		if err != nil || !proceed {
+			return code, err
+		}
+		if !printInitIntro(opts.Root, in) {
+			return 1, fmt.Errorf("cancelled; nothing was written")
+		}
+		return initRun(opts, in, tty)
+	}
+	return initRun(opts, bufio.NewReader(os.Stdin), tty)
+}
+
+func initOptionsWithDisplayedRoot(opts initOptions) initOptions {
+	if opts.Root == "" {
+		opts.Root, _ = os.Getwd()
+	}
+	if opts.Set == nil {
+		opts.Set = make(map[string]bool)
+	}
+	opts.Set["root"] = true
+	return opts
+}
+
+var initAlbertCredentialCheckFn = func() error {
+	_, err := resolveAlbertKeyForDefaultCatalogue()
+	return err
+}
+
+var runInitSetupFn = setupRunCmd
+
+var initTTYFn = isTTY
+
+var initStdoutTTYFn = stdoutIsTTY
+
+func initSetupNeeded() (bool, error) {
+	// Global setup owns the account credential and default settings. A
+	// project's credentialRef is not evidence that global setup is missing.
+	err := initAlbertCredentialCheckFn()
+	if errors.Is(err, justcode.ErrCredentialNotFound) {
+		return true, nil
+	}
+	// A store/keychain failure does not prove setup is missing. Leave the
+	// existing init path available rather than converting an uncertain probe
+	// into a new blocker.
+	return false, nil
+}
+
+func ensureInitSetup(in *bufio.Reader) (bool, int, error) {
+	needed, err := initSetupNeeded()
+	if err != nil || !needed {
+		return true, 0, err
+	}
+	answer, ok := promptLine(in, "La configuration initiale n'a pas été faite. Lancer 'just-code setup' d'abord ? [Y/n]: ")
+	if !ok || strings.EqualFold(strings.TrimSpace(answer), "n") {
+		fmt.Println("Vous pourrez lancer 'just-code setup' avant de configurer ce projet.")
+		return false, 0, nil
+	}
+	code, err := runInitSetupFn(false)
+	if err != nil || code != 0 {
+		return false, code, err
+	}
+	return true, 0, nil
+}
+
+func printInitIntro(root string, in *bufio.Reader) bool {
+	if root == "" {
+		root, _ = os.Getwd()
+	}
+	project := filepath.Base(filepath.Clean(root))
+	if project == "." || project == string(filepath.Separator) || project == "" {
+		project = root
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		if rel, err := filepath.Rel(home, root); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			root = filepath.Join("~", rel)
+		}
+	}
+	fmt.Printf(`Configuration du projet : %s
+Dossier : %s
+
+just-code va préparer une machine isolée pour ce projet.
+Par défaut, Microsandbox travaille sur une copie filtrée : vos fichiers .env
+et les fichiers ignorés par git ne sont pas copiés.
+Avec Tart et agent-vm, le dossier du projet est monté dans la machine :
+l'agent peut lire et modifier les fichiers qui s'y trouvent.
+
+3 étapes :
+  1. Skills (facultatif) : des savoir-faire pour l'agent (sécurité, accessibilité…).
+  2. MCP (facultatif) : des services que l'agent peut interroger (data.gouv.fr, documentation…).
+  3. GitHub (facultatif) : autoriser l'agent à proposer ses modifications sur ce dépôt.
+
+Les réglages techniques (ressources, isolation…) ont des valeurs par défaut,
+modifiables depuis le récapitulatif.
+
+Rien n'est enregistré avant le récapitulatif final.
+Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.
+`, project, root)
+	_, ok := promptLine(in, "")
+	return ok
 }
 
 // initOptions is the flag surface, and doubles as the answers already supplied
@@ -602,7 +709,7 @@ func validateInitOptions(opts initOptions) error {
 		return fmt.Errorf("--memory-mb must be 1 to %d, got %d", justcode.MaxSandboxMemoryMB, opts.MemoryMB)
 	}
 	if opts.Set["mcps"] {
-		if _, err := justcode.ValidateMCPConnectorIDs(opts.MCPConnectors); err != nil {
+		if _, err := justcode.ValidateMCPNewSelection(opts.MCPConnectors); err != nil {
 			return err
 		}
 	}
@@ -855,33 +962,73 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		answers.SkillsLocalOnlySet = true
 	}
 	if !opts.Set["mcps"] {
-		fmt.Println("\nMCPs — curated remote services and optional guest-local browser tools:")
-		for _, choice := range justcode.MCPSelections() {
-			fmt.Printf("  %-16s %s\n", choice.ID, choice.Description)
-		}
+		fmt.Printf("\n%s\n", justcode.MCPStepTitle)
+		fmt.Println("Un MCP donne à l'agent l'accès à un service ou à un outil.")
 		current := append([]string(nil), answers.MCPConnectors...)
+		haveManifest := false
 		if !answers.MCPsSet {
 			current = nil
 			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
 				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
 					current = manifest.MCPConnectors
+					haveManifest = true
 				}
 			}
-			answers.MCPConnectors = append([]string(nil), current...)
 		}
-		currentLabel := strings.Join(current, ",")
-		if currentLabel == "" {
-			currentLabel = "none"
+		if len(current) == 0 && !haveManifest && !answers.MCPsSet {
+			current = append([]string(nil), justcode.DefaultFreshMCPIDs...)
 		}
-		answer, ok := promptLine(in, "  MCP IDs ["+currentLabel+"] (comma-separated; Enter keeps, `none` clears): ")
-		if ok && strings.TrimSpace(answer) != "" {
+		answers.MCPConnectors = append([]string(nil), current...)
+		for {
+			for _, choice := range justcode.MCPSelections() {
+				marker := "[ ]"
+				if containsString(current, choice.ID) {
+					marker = "[x]"
+				}
+				fmt.Printf("  %s %-14s %s\n", marker, choice.ID, choice.Description)
+			}
+			currentLabel := strings.Join(current, ",")
+			if currentLabel == "" {
+				currentLabel = "none"
+			}
+			answer, ok := promptLine(in, "  MCP IDs ["+currentLabel+"] (IDs séparés par des virgules ; Entrée garde la sélection, `none` efface tout) : ")
+			if !ok {
+				break
+			}
+			trimmed := strings.TrimSpace(answer)
+			if trimmed == "" {
+				break
+			}
+			if strings.EqualFold(trimmed, "none") {
+				if !promptNoMCPConfirmation(in) {
+					continue
+				}
+				answers.MCPsSet = true
+				answers.MCPConnectors = nil
+				current = nil
+				break
+			}
+			var ids []string
+			for _, id := range strings.Split(trimmed, ",") {
+				ids = append(ids, strings.TrimSpace(id))
+			}
+			validated, err := justcode.ValidateMCPNewSelection(ids)
+			if err != nil {
+				fmt.Printf("  %s\n", err)
+				continue
+			}
 			answers.MCPsSet = true
-			answers.MCPConnectors = nil
-			if !strings.EqualFold(strings.TrimSpace(answer), "none") {
-				for _, id := range strings.Split(answer, ",") {
-					answers.MCPConnectors = append(answers.MCPConnectors, strings.TrimSpace(id))
-				}
+			answers.MCPConnectors = validated
+			current = validated
+			break
+		}
+		for _, id := range answers.MCPConnectors {
+			if reason, removed := justcode.RemovedMCPIDs[id]; removed {
+				fmt.Printf("  %s : %s.\n", id, reason)
 			}
+		}
+		if justcode.HasBrowserMCPSelection(answers.MCPConnectors) {
+			fmt.Println(justcode.BrowserDownloadNote)
 		}
 	}
 	if justcode.HasBrowserMCPSelection(answers.MCPConnectors) {
@@ -890,6 +1037,20 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		fmt.Println("\n" + answers.BrowserResourceGuidance)
 	}
 	return answers, nil
+}
+
+// promptNoMCPConfirmation asks the zero-selection confirmation and returns
+// true when the user keeps an empty MCP set. It reads through the wizard's
+// own buffered reader: wrapping `in` in a fresh bufio.Reader here would
+// prefetch and discard the answers queued behind this one.
+func promptNoMCPConfirmation(in *bufio.Reader) bool {
+	fmt.Print("Aucun MCP sélectionné. Continuer sans MCP ? (O/n) ")
+	answer, err := in.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "" || answer == "o" || answer == "oui" || answer == "y" || answer == "yes"
 }
 
 func printProjectSkills(skills []justcode.ProjectSkill) {

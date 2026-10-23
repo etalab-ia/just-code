@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -237,6 +238,14 @@ func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
 	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	gitConfig := filepath.Join(home, ".gitconfig")
+	if err := os.WriteFile(gitConfig, []byte("[user]\n\tname = Test User\n\temail = test@example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	previousIdentity := hostGitIdentityFn
+	hostGitIdentityFn = func() (string, string) { return "", "" }
+	t.Cleanup(func() { hostGitIdentityFn = previousIdentity })
 	// msbRuntimeHome reads HOME; an empty dir means "not installed", which
 	// keeps the primitive probe path deterministic.
 	return justcode.DefaultStateDir(), ""
@@ -535,7 +544,7 @@ func TestSetupWizardShowsIntroBeforeAnyPrompt(t *testing.T) {
 	// defaults. The empty line after the key is the model answer, so the "n"
 	// that follows is the GitHub answer, not the model one: the order is key ->
 	// models -> GitHub.
-	input := "\ntest-key\n\nn\n\n\n\ny\n"
+	input := "\ntest-key\n\nn\nTest User\ntest@example.test\ny\n"
 	// The same reader feeds both the intro's Enter and the wizard body, so the
 	// leading empty line is consumed exactly once.
 	in := bufio.NewReader(strings.NewReader(input))
@@ -573,7 +582,7 @@ func TestSetupWizardResumeSkipsIntro(t *testing.T) {
 	out := captureStdout(t, func() {
 		// key, model, no GitHub, defaults: the empty line is the model answer,
 		// so the "n" that follows answers the GitHub question.
-		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\n\nn\n\n\n\ny\n")),
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("test-key\n\nn\nTest User\ntest@example.test\ny\n")),
 			func(context.Context, string) error { return nil },
 			func(context.Context) error { return nil },
 			func(string) string { return "" })
@@ -604,7 +613,7 @@ func TestSetupWizardNoIntroWithoutTerminal(t *testing.T) {
 	// No leading Enter: the first line is the key. If the wizard waited for an
 	// intro keypress, the key would be swallowed and validation would fail.
 	// key, model, no GitHub, defaults.
-	input := "test-key\n\nn\n\n\n\ny\n"
+	input := "test-key\n\nn\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -659,11 +668,27 @@ func TestSetupWizardRejectedKeyStoresNothing(t *testing.T) {
 
 func TestSetupCompletionMessageDescribesFullDefault(t *testing.T) {
 	message := setupCompletionMessage()
-	if !strings.Contains(message, "Microsandbox/full") || !strings.Contains(message, "TUI running inside the guest") {
-		t.Fatalf("setup completion message = %q, want full-mode default guidance", message)
+	for _, want := range []string{"Configuration terminée.", "cd mon-projet", "just-code setup doctor"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("setup completion message = %q, want %q", message, want)
+		}
 	}
-	if strings.Contains(message, "start the backend and attach the TUI") {
-		t.Fatalf("setup completion message still describes the legacy backend flow: %q", message)
+	if strings.Contains(message, "Microsandbox/full") {
+		t.Fatalf("setup completion message exposes internal runtime details: %q", message)
+	}
+}
+
+func TestSetupRuntimeSummaryDescribesReuseWithoutDownload(t *testing.T) {
+	message := setupRuntimeSummary(justcode.SetupPreflight{RuntimeInstalled: true})
+	if !strings.Contains(message, "déjà installée") || !strings.Contains(message, "réutilisera") {
+		t.Fatalf("runtime reuse summary = %q", message)
+	}
+	if strings.Contains(message, "2 Go") || strings.Contains(message, "téléchargera") {
+		t.Fatalf("reused runtime summary must not promise a download or disk use: %q", message)
+	}
+	conditional := setupRuntimeSummary(justcode.SetupPreflight{})
+	if !strings.Contains(conditional, "si aucune installation valide n'est disponible") || !strings.Contains(conditional, "2 Go") || !strings.Contains(conditional, "1 Gio libre") {
+		t.Fatalf("missing-runtime summary should qualify the download estimate: %q", conditional)
 	}
 }
 
@@ -672,8 +697,8 @@ func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
 	// Piped answers in wizard order: key with a trailing newline (the raw
-	// pipe line), empty model, no GitHub, empty identity (defaults), apply.
-	input := "test-key\n\nn\n\n\n\ny\n"
+	// pipe line), empty model, no GitHub, explicit identity, apply.
+	input := "test-key\n\nn\nTest User\ntest@example.test\ny\n"
 	var seenKey string
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(_ context.Context, key string) error {
@@ -694,15 +719,14 @@ func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	}
 }
 
-// TestSetupWizardEmptyNameFallsBackToDefault pins the documented default:
-// an empty name input must persist "Albert Code Agent", not an empty
-// gitName that would print as a blank author in the review.
-func TestSetupWizardEmptyNameFallsBackToDefault(t *testing.T) {
+// TestSetupWizardUsesHostGitIdentity keeps the host's configured commit
+// identity instead of attributing commits to a generic just-code account.
+func TestSetupWizardUsesHostGitIdentity(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
+	hostGitIdentityFn = func() (string, string) { return "Test User", "test@example.test" }
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
-	// Wizard order: key, empty model, no GitHub, empty name, empty email
-	// (both default), apply.
+	// The host identity is present, so the wizard skips both identity prompts.
 	input := "test-key\n\nn\n\n\n\ny\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
@@ -715,11 +739,27 @@ func TestSetupWizardEmptyNameFallsBackToDefault(t *testing.T) {
 	if m == nil {
 		t.Fatal("settings file must exist after a completed setup")
 	}
-	if got, _ := m["gitName"].(string); got != "Albert Code Agent" {
-		t.Fatalf("empty name must fall back to the documented default, got %q", got)
+	if got, _ := m["gitName"].(string); got != "Test User" {
+		t.Fatalf("git name = %q, want host identity", got)
 	}
-	if got, _ := m["gitEmail"].(string); got != "albert-code@noreply.etalab.gouv.fr" {
-		t.Fatalf("empty email must fall back to the documented default, got %q", got)
+	if got, _ := m["gitEmail"].(string); got != "test@example.test" {
+		t.Fatalf("git email = %q, want host identity", got)
+	}
+}
+
+func TestSetupIdentityFormSkipsEmptyFieldList(t *testing.T) {
+	previousRun := huhRun
+	called := false
+	huhRun = func(*huh.Form) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { huhRun = previousRun })
+	if err := runSetupIdentityForm(nil); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("identity form should not run when host git config supplied both values")
 	}
 }
 
@@ -731,7 +771,7 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 		t.Fatal("precondition: no user settings file may exist")
 	}
 	// Wizard order: key, model, no GitHub, name, email, then cancel at apply.
-	input := "test-key\nsome-model\nn\n\n\nn\n"
+	input := "test-key\nsome-model\nn\nTest User\ntest@example.test\nn\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
 		func(context.Context) error { return nil },
@@ -740,12 +780,176 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 		t.Fatalf("cancel at apply must exit non-zero: code=%d err=%v", code, err)
 	}
 	m := readUserSettingsFile(t)
-	// The identity is persisted at its own stage (durable by design); the
-	// model must NOT be written by a cancelled apply.
 	if m != nil {
-		if _, ok := m["defaultModel"]; ok {
-			t.Fatalf("a cancelled apply must not write the model setting, got %v", m)
+		t.Fatalf("a cancelled setup must not write user settings, got %v", m)
+	}
+	journal, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || !justcode.ContainsCredentialKind(journal.CredentialKinds, "albert") {
+		t.Fatalf("quitting should preserve credentials and the resume journal: journal=%+v err=%v", journal, err)
+	}
+}
+
+func TestSetupWizardReviewEOFQuitsWithoutApplying(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	installed := false
+	input := "test-key\n\nn\nTest User\ntest@example.test\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error { return nil },
+		func(context.Context) error { installed = true; return nil },
+		func(string) string { return "" })
+	if code == 0 || err == nil {
+		t.Fatalf("EOF at the review must quit: code=%d err=%v", code, err)
+	}
+	if installed || readUserSettingsFile(t) != nil {
+		t.Fatal("EOF at the review must not apply settings or install the runtime")
+	}
+	journal, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || !justcode.ContainsCredentialKind(journal.CredentialKinds, "albert") {
+		t.Fatalf("EOF quit should preserve the resume journal and credentials: journal=%+v err=%v", journal, err)
+	}
+}
+
+func TestSetupWizardAbandonedGitHubReplacementResumes(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified := true
+	j.CredentialKinds = []string{"albert", "github"}
+	j.AlbertVerified = &verified
+	j.GitHubLogin = "old-account"
+	j.GitHubVerified = &verified
+	j.GitName, j.GitEmail = "Test User", "test@example.test"
+	j.DefaultModel = defaultSetupModel()
+	j.Models = defaultSetupModelIDs()
+	j.ModelChosen = true
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+
+	firstInput := "\nm\ng\n\nr\na\n\n\n\nq\n"
+	_ = captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(firstInput)), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code == 0 || err == nil {
+			t.Fatalf("first run should quit after abandoning replacement: code=%d err=%v", code, err)
 		}
+	})
+	j, err = justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || !j.GitHubReplacePending || j.GitHubLogin != "old-account" {
+		t.Fatalf("abandoned replacement state was not preserved: journal=%+v err=%v", j, err)
+	}
+
+	forceGitHubProbe(t, func(string) justcode.CredentialProbe {
+		return justcode.CredentialProbe{Login: "replacement-account"}
+	})
+	secondInput := "\na\ngithub_pat_replacement\nq\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(secondInput)), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code == 0 || err == nil {
+			t.Fatalf("second run should allow replacement then quit: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "✅ Jeton valide : compte replacement-account.") {
+		t.Fatalf("resumed setup did not offer the pending GitHub replacement:\n%s", out)
+	}
+	j, err = justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || j.GitHubReplacePending || j.GitHubLogin != "replacement-account" {
+		t.Fatalf("successful replacement did not clear pending state: journal=%+v err=%v", j, err)
+	}
+}
+
+func TestSetupWizardApplyCancelsPendingGitHubReplacement(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	verified := true
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.CredentialKinds = []string{"albert", "github"}
+	j.AlbertVerified = &verified
+	j.GitHubLogin = "old-account"
+	j.GitHubVerified = &verified
+	j.GitHubReplacePending = true
+	j.GitName, j.GitEmail = "Test User", "test@example.test"
+	j.DefaultModel = defaultSetupModel()
+	j.Models = defaultSetupModelIDs()
+	j.ModelChosen = true
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("\n\na\n")), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("apply with the existing token: code=%d err=%v", code, err)
+		}
+	})
+	for _, want := range []string{"jeton actuel @old-account conservé ; remplacement en attente", "Remplacement GitHub annulé ; le jeton existant sera conservé."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("apply recap is missing %q; output:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(justcode.SetupJournalPath(stateDir)); !os.IsNotExist(err) {
+		t.Fatalf("completed setup must remove its journal, err=%v", err)
+	}
+}
+
+func TestLegacySetupJournalRecapReportsUnknownCredentialVerification(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Stage = justcode.StageCredential
+	j.CredentialKinds = []string{"albert", "github"}
+	j.GitName, j.GitEmail = "Test User", "test@example.test"
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("\nq\n")), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code == 0 || err == nil {
+			t.Fatalf("quit result: code=%d err=%v", code, err)
+		}
+	})
+	for _, want := range []string{"état inconnu (journal historique)", "état de vérification inconnu (journal historique)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("legacy recap should report unknown status %q; output:\n%s", want, out)
+		}
+	}
+}
+
+func TestSetupWizardModifyReturnsToFirstStepWithExistingValues(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	input := "test-key\n\nn\nTest User\ntest@example.test\nm\n\n\n\n\n\na\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	if strings.Count(out, "Récapitulatif") != 2 || !strings.Contains(out, "[G]arder  [R]emplacer") {
+		t.Fatalf("Modify should return to the first step with saved answers available:\n%s", out)
+	}
+	if settings := readUserSettingsFile(t); settings == nil {
+		t.Fatal("settings should be written after applying the edited setup")
 	}
 }
 
@@ -817,7 +1021,7 @@ func TestSetupWizardRejectedKeyReasksInsteadOfExiting(t *testing.T) {
 	var attempts []string
 	// First key refused, second accepted; then no GitHub and defaults.
 	// key, key (re-ask), model, GitHub, name, email, apply.
-	input := "bad-key\ngood-key\n\nn\n\n\n\ny\n"
+	input := "bad-key\ngood-key\n\nn\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(_ context.Context, key string) error {
@@ -851,7 +1055,7 @@ func TestSetupWizardUnreachableOffersRetryAndContinue(t *testing.T) {
 	calls := 0
 	// key -> unreachable -> R (retry) -> key again -> reachable -> defaults.
 	// key, R (retry), key, model, GitHub, name, email, apply.
-	input := "first-key\nr\nsecond-key\n\nn\n\n\n\ny\n"
+	input := "first-key\nr\nsecond-key\n\nn\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error {
@@ -884,7 +1088,7 @@ func TestSetupWizardUnreachableContinueStoresUnvalidated(t *testing.T) {
 	calls := 0
 	// key -> unreachable -> c (continue) -> defaults.
 	// key, C (continue), model, GitHub, name, email, apply.
-	input := "only-key\nc\n\nn\n\n\n\ny\n"
+	input := "only-key\nc\n\nn\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error {
@@ -921,7 +1125,7 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
 	// key, model, GitHub, name, email, apply.
-	input := "test-key\n\nn\n\n\n\ny\n"
+	input := "test-key\n\nn\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -973,7 +1177,7 @@ func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) 
 	// Run 1: key -> Enter (preserve the legacy custom model) -> skip GitHub ->
 	// identities -> refuse at the recap.
 	_ = captureStdout(t, func() {
-		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader("the-key\n\n\n\n\nn\n")),
+		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader("the-key\n\n\n\nTest User\ntest@example.test\nn\n")),
 			func(context.Context, string) error { return nil },
 			func(context.Context) error { return nil },
 			func(string) string { return "" })
@@ -1060,7 +1264,7 @@ func TestEmptyModelAnswerPreservesLegacyCustomChoice(t *testing.T) {
 	}
 	// key -> Enter (keep the current model) -> skip GitHub -> identities
 	// -> apply.
-	input := "the-key\n\n\n\n\n\ny\n"
+	input := "the-key\n\n\nTest User\ntest@example.test\ny\n"
 	_ = captureStdout(t, func() {
 		code, rerr := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -1129,7 +1333,7 @@ func TestSetupUnreachableTypoReasksInsteadOfExiting(t *testing.T) {
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
 	// key -> unreachable -> typo -> C (continue) -> model, no GitHub, defaults.
-	input := "only-key\nz\nc\n\nn\n\n\n\ny\n"
+	input := "only-key\nz\nc\n\nn\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error {
@@ -1285,7 +1489,7 @@ func TestSetupWizardGitHubDefaultsToLater(t *testing.T) {
 		return justcode.CredentialProbe{}
 	})
 	// key, model (empty = keep), GitHub (empty = Plus tard), name, email, apply.
-	input := "the-key\n\n\n\n\n\ny\n"
+	input := "the-key\n\n\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -1317,7 +1521,7 @@ func TestSetupWizardGitHubLegacyNoAnswerKeepsLater(t *testing.T) {
 		return justcode.CredentialProbe{}
 	})
 	// key, model, GitHub ("n" = Plus tard), name, email, apply.
-	input := "the-key\n\nn\n\n\n\ny\n"
+	input := "the-key\n\nn\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -1343,7 +1547,7 @@ func TestSetupWizardGitHubValidFineGrainedToken(t *testing.T) {
 		return justcode.CredentialProbe{Login: "moncompte"}
 	})
 	// key, model, GitHub (a = add), token, name, email, apply.
-	input := "the-key\n\na\ngithub_pat_secretvalue\n\n\n\ny\n"
+	input := "the-key\n\na\ngithub_pat_secretvalue\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -1358,6 +1562,11 @@ func TestSetupWizardGitHubValidFineGrainedToken(t *testing.T) {
 	}
 	if strings.Contains(out, "github_pat_secretvalue") {
 		t.Errorf("the token must never be displayed; output:\n%s", out)
+	}
+	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton vérifié, compte @moncompte", "Espace recommandé : environ 2 Go ; le contrôle bloque sous 1 Gio libre", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("recap is missing %q; output:\n%s", want, out)
+		}
 	}
 	if len(*calls) != 1 {
 		t.Errorf("expected exactly one probe call, got %d", len(*calls))
@@ -1381,7 +1590,7 @@ func TestSetupWizardGitHubRefusedTokenReasks(t *testing.T) {
 		return justcode.CredentialProbe{Login: "moncompte"}
 	})
 	// key, model, add, refused token, valid token, name, email, apply.
-	input := "the-key\n\na\nbad-token\ngithub_pat_good\n\n\n\ny\n"
+	input := "the-key\n\na\nbad-token\ngithub_pat_good\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -1428,11 +1637,11 @@ func TestSetupWizardGitHubClassicTokenWarning(t *testing.T) {
 			})
 			// key, model, add, classic token, warning answer, [replacement
 			// token], name, email, apply.
-			input := "the-key\n\na\nghp_classic\n" + tc.answer + "\ngithub_pat_fine\n\n\n\ny\n"
+			input := "the-key\n\na\nghp_classic\n" + tc.answer + "\ngithub_pat_fine\nTest User\ntest@example.test\ny\n"
 			if tc.answer == "c" {
 				// No replacement token is prompted for; the empty line is the
 				// name answer.
-				input = "the-key\n\na\nghp_classic\nc\n\n\n\ny\n"
+				input = "the-key\n\na\nghp_classic\nc\nTest User\ntest@example.test\ny\n"
 			}
 			out := captureStdout(t, func() {
 				code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
@@ -1467,7 +1676,7 @@ func TestSetupWizardGitHubUnreachable(t *testing.T) {
 		return justcode.CredentialProbe{Login: "moncompte"}
 	})
 	// key, model, add, unreachable token, R (retry), valid token, name, email, apply.
-	input := "the-key\n\na\ntok-offline\nr\ngithub_pat_good\n\n\n\ny\n"
+	input := "the-key\n\na\ntok-offline\nr\ngithub_pat_good\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },
@@ -1495,7 +1704,7 @@ func TestSetupWizardGitHubUnreachableContinueStoresUnvalidated(t *testing.T) {
 		return justcode.CredentialProbe{Unreachable: true, Detail: "dial tcp: connection refused"}
 	})
 	// key, model, add, unreachable token, C (continue), name, email, apply.
-	input := "the-key\n\na\ntok-offline\nc\n\n\n\ny\n"
+	input := "the-key\n\na\ntok-offline\nc\nTest User\ntest@example.test\ny\n"
 	out := captureStdout(t, func() {
 		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 			func(context.Context, string) error { return nil },

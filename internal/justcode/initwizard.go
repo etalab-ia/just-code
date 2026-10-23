@@ -91,6 +91,10 @@ type InitWizard struct {
 	// VerifySkills checks that each selected skill has a valid cached artifact.
 	// Nil selects the normal verified-cache loader.
 	VerifySkills func([]string, map[string]SkillLock) error
+	// ProbeRemoteMCP probes a selected remote connector for the review
+	// screen. Nil selects the production MCP initialize handshake; a probe
+	// failure becomes a review warning, not an error.
+	ProbeRemoteMCP func(context.Context, MCPConnector) error
 }
 
 // Note on the FS seam: it carries the manifest and lockfile. Path validation
@@ -395,11 +399,33 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 	}
 	if answers.MCPsSet {
-		connectors, err := ValidateMCPConnectorIDs(answers.MCPConnectors)
+		connectors, err := ValidateMCPNewSelection(answers.MCPConnectors)
 		if err != nil {
 			return plan, err
 		}
 		plan.Answers.MCPConnectors = connectors
+	}
+	// The review screen verifies the data.gouv.fr endpoint answers an MCP
+	// initialize handshake before the user confirms (#168). A nil probe
+	// (tests) or a probe failure keeps the review usable: the failure is a
+	// warning line, not an abort, because the endpoint may simply be down
+	// right now.
+	for _, connector := range MCPConnectors() {
+		if !containsMCPConnector(plan.Answers.MCPConnectors, connector.ID) {
+			continue
+		}
+		probe := w.ProbeRemoteMCP
+		if probe == nil {
+			probe = ProbeRemoteMCPFunc
+		}
+		if probe == nil {
+			break
+		}
+		if err := probe(context.Background(), connector); err != nil {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+				"le test d'accès à %s a échoué : %v", connector.Endpoint, err))
+		}
+		break
 	}
 	if answers.SkillsLocalOnlySet {
 		localOnly = answers.SkillsLocalOnly
@@ -561,6 +587,13 @@ func FormatInitReview(plan InitPlan) string {
 		b.WriteString("  MCPs         none selected\n")
 	} else {
 		fmt.Fprintf(&b, "  MCPs         %s\n", strings.Join(a.MCPConnectors, ", "))
+		for _, id := range a.MCPConnectors {
+			reason, removed := RemovedMCPIDs[id]
+			if !removed {
+				continue
+			}
+			fmt.Fprintf(&b, "               %s : %s\n", id, reason)
+		}
 		for _, choice := range MCPSelections() {
 			if !containsMCPConnector(a.MCPConnectors, choice.ID) {
 				continue
@@ -619,7 +652,7 @@ func FormatInitReview(plan InitPlan) string {
 		b.WriteString("  The digest-pinned Debian browser profile and selected MCP packages download inside the guest on first launch; no host browser is used.\n")
 		b.WriteString("  DevTools listens only on guest loopback. Changing to or from this image on an existing guest requires explicit recreation; init never recreates a guest.\n")
 	}
-	b.WriteString("  Init does not boot or restart a VM. Clearing Context7 also revokes its host approval and guest binding before project files change.\n")
+	b.WriteString("  Init does not boot or restart a VM.\n")
 	b.WriteString("  Managed MCP changes apply on the next launch, which may restart a running guest non-destructively.\n")
 	if a.Runtime == RuntimeMicrosandbox {
 		b.WriteString("\nThe guest receives a filtered copy of the project: .env files, ignored files,\n" +
