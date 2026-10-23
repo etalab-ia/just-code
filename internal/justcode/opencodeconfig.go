@@ -29,9 +29,22 @@ type ManagedOverlay struct {
 	Model string
 	// SmallModel is the model for background tasks. Defaults to Model.
 	SmallModel string
+	// Models replaces the managed Albert provider model map when non-empty.
+	Models []AlbertModelConfig
 	// MCPConnectors selects managed remote and guest-local entries. User-owned
 	// entries with other names remain untouched.
 	MCPConnectors []string
+}
+
+// AlbertModelConfig is one curated model exposed by the managed Albert provider.
+type AlbertModelConfig struct {
+	ID          string
+	ModelID     string
+	Name        string
+	Context     int
+	Output      int
+	RequestBody map[string]any
+	Vision      bool
 }
 
 // opencodeManagedField describes one top-level field the overlay may set.
@@ -62,7 +75,7 @@ func (o ManagedOverlay) EffectiveOverlay() ManagedOverlay {
 // defaultOpencodeModel mirrors assets/opencode-config.json's "model" field.
 // The embedded asset stays the baseline; this constant is what the composer
 // writes when the user selected nothing.
-const defaultOpencodeModel = "albert/deepseek-v4-flash"
+const defaultOpencodeModel = "albert/qwen3-coder"
 
 // ComposeConfigContent builds the full OPENCODE_CONFIG_CONTENT from the
 // embedded base and the managed overlay by deep-merging them host-side: the
@@ -82,6 +95,13 @@ func ComposeConfigContent(o ManagedOverlay) (string, error) {
 	var overlay map[string]any
 	if err := json.Unmarshal([]byte(overlayJSON), &overlay); err != nil {
 		return "", fmt.Errorf("parse rendered overlay: %w", err)
+	}
+	if len(o.Models) > 0 {
+		provider, _ := base["provider"].(map[string]any)
+		albert, _ := provider["albert"].(map[string]any)
+		if albert != nil {
+			albert["models"] = map[string]any{}
+		}
 	}
 	merged := deepMergeMaps(base, overlay)
 	out, err := json.Marshal(merged)
@@ -120,6 +140,39 @@ func renderOverlayJSON(o ManagedOverlay) (string, error) {
 		if v := f.value(o); v != "" {
 			fields[f.name] = v
 		}
+	}
+	if len(o.Models) > 0 {
+		models := make(map[string]any, len(o.Models))
+		for _, model := range o.Models {
+			definition := map[string]any{"name": model.Name}
+			if model.ModelID != "" {
+				definition["modelID"] = model.ModelID
+			}
+			inputs := []string{"text"}
+			if model.Vision {
+				inputs = append(inputs, "image")
+			}
+			definition["capabilities"] = map[string]any{
+				"tools":  true,
+				"input":  inputs,
+				"output": []string{"text"},
+			}
+			limit := map[string]any{}
+			if model.Context > 0 {
+				limit["context"] = model.Context
+			}
+			if model.Output > 0 {
+				limit["output"] = model.Output
+			}
+			if len(limit) > 0 {
+				definition["limit"] = limit
+			}
+			if len(model.RequestBody) > 0 {
+				definition["body"] = model.RequestBody
+			}
+			models[model.ID] = definition
+		}
+		fields["provider"] = map[string]any{"albert": map[string]any{"models": models}}
 	}
 	if len(o.MCPConnectors) > 0 {
 		mcp, err := managedMCPOverlay(o.MCPConnectors)

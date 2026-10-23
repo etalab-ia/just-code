@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,8 +12,51 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
+
+func TestPromptSetupModelsKeepsDefaultsWhenCatalogueIsUnavailable(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, huhRun
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		return justcode.Catalogue{}, false, errors.New("catalogue offline")
+	}
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() {
+		setupModelCatalogueFn, huhRun = previousCatalogue, previousRun
+	})
+
+	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if !sameStrings(selected, defaultSetupModelIDs()) {
+		t.Fatalf("catalogue outage changed default selections: %v", selected)
+	}
+	if defaultModel != "albert/qwen3-coder" {
+		t.Fatalf("default model = %q, want albert/qwen3-coder", defaultModel)
+	}
+}
+
+func TestPromptSetupModelsDropsUnavailableDefaults(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, huhRun
+	choices := justcode.CuratedAlbertModels()
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		return justcode.Catalogue{Models: []justcode.CatalogueModel{{ID: choices[0].ID, Type: "text-generation"}}}, true, nil
+	}
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() {
+		setupModelCatalogueFn, huhRun = previousCatalogue, previousRun
+	})
+
+	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if !sameStrings(selected, []string{choices[0].ID}) || defaultModel != choices[0].Ref() {
+		t.Fatalf("unavailable default remained selected: selected=%v default=%q", selected, defaultModel)
+	}
+}
 
 // setupTestEnv isolates HOME and returns the state dir and settings path.
 func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
@@ -722,7 +766,7 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 		}
 	})
 	keyAt := strings.Index(out, "[1/3] Clé Albert API")
-	modelAt := strings.Index(out, "Default model")
+	modelAt := strings.Index(out, "Models (comma-separated")
 	githubAt := strings.Index(out, "GitHub credential (optional")
 	if keyAt < 0 || modelAt < 0 || githubAt < 0 {
 		t.Fatalf("flow markers missing (key=%d model=%d github=%d); output:\n%s", keyAt, modelAt, githubAt, out)
@@ -772,8 +816,9 @@ func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !j.ModelChosen || j.DefaultModel != "" {
-		t.Fatalf("run 1 must journal the answered-empty choice: chosen=%v model=%q", j.ModelChosen, j.DefaultModel)
+	defaultModel := "albert/qwen3-coder"
+	if !j.ModelChosen || j.DefaultModel != defaultModel || len(j.Models) != 2 {
+		t.Fatalf("run 1 must journal the default model set: chosen=%v model=%q models=%v", j.ModelChosen, j.DefaultModel, j.Models)
 	}
 
 	// Run 2: resume. The key is already stored, so the MODEL prompt is the
@@ -788,8 +833,8 @@ func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.DefaultModel != "" {
-		t.Fatalf("an explicit default choice must not be undone by an unanswered resume; got %q", after.DefaultModel)
+	if after.DefaultModel != defaultModel {
+		t.Fatalf("the journaled default choice must survive an unanswered resume; got %q", after.DefaultModel)
 	}
 }
 
@@ -859,13 +904,7 @@ func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
 			t.Fatalf("run: code=%d err=%v", code, rerr)
 		}
 	})
-	after, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	if after.DefaultModel != "" {
-		t.Fatalf("an empty answer must clear the journaled model; got %q", after.DefaultModel)
-	}
+	defaultModel := "albert/qwen3-coder"
 	path, perr := justcode.UserSettingsPath()
 	if perr != nil {
 		t.Fatal(perr)
@@ -874,8 +913,8 @@ func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
 	if uerr != nil {
 		t.Fatal(uerr)
 	}
-	if us.DefaultModel != "" {
-		t.Fatalf("an empty answer must clear the stored model; got %q", us.DefaultModel)
+	if us.DefaultModel != defaultModel || len(us.Models) != 2 {
+		t.Fatalf("an empty answer must save the default model set; got model=%q models=%v", us.DefaultModel, us.Models)
 	}
 }
 

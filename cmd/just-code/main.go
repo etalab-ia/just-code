@@ -221,7 +221,8 @@ func run(args []string) (int, error) {
 		}
 		fmt.Fprintf(os.Stderr, "Warning: the project's managed MCP selection cannot be read (%v); continuing without it\n", mcpErr)
 	}
-	overlay := justcode.ManagedOverlay{Model: resolveModelSelection(projectRoot), MCPConnectors: mcpSelection}
+	modelSelection := resolveModelSelection(projectRoot)
+	overlay := justcode.ManagedOverlay{Model: modelSelection, Models: resolveEnabledAlbertModels(modelSelection), MCPConnectors: mcpSelection}
 	conflictMsg, err := opencodeConfigReview(projectRoot, overlay)
 	startPath := isLaunchAction(parsed.action)
 	if err != nil {
@@ -689,6 +690,63 @@ func resolveModelSelection(projectRoot string) string {
 		}
 	}
 	return ""
+}
+
+func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig {
+	path, err := justcode.UserSettingsPath()
+	var ids []string
+	if err == nil {
+		if settings, readErr := justcode.ReadUserSettings(justcode.DefaultFS, path); readErr == nil {
+			ids = append(ids, settings.Models...)
+		}
+	}
+	if len(ids) == 0 {
+		if activeModel == "" || activeModel == "albert/qwen3-coder" {
+			return nil
+		}
+		for _, choice := range justcode.CuratedAlbertModels() {
+			if choice.Default {
+				ids = append(ids, choice.ID)
+			}
+		}
+	}
+	var configured []justcode.AlbertModelConfig
+	choices := justcode.CuratedAlbertModels()
+	for _, id := range ids {
+		found := false
+		for _, choice := range choices {
+			if id == choice.ID {
+				configured = append(configured, choice.AlbertModelConfig())
+				found = true
+				break
+			}
+		}
+		if !found {
+			configured = append(configured, justcode.AlbertModelConfig{ID: id, Name: id})
+		}
+	}
+	if activeModel != "" {
+		activeID := strings.TrimPrefix(activeModel, "albert/")
+		activeConfigured := false
+		for _, choice := range choices {
+			if choice.Ref() == activeModel {
+				activeConfigured = containsString(ids, choice.ID)
+				if !activeConfigured {
+					configured = append(configured, choice.AlbertModelConfig())
+				}
+				break
+			}
+		}
+		for _, model := range configured {
+			if model.ID == activeID {
+				activeConfigured = true
+			}
+		}
+		if !activeConfigured {
+			configured = append(configured, justcode.AlbertModelConfig{ID: activeID, Name: activeID})
+		}
+	}
+	return configured
 }
 
 // opencodeConfigReview surfaces managed-field conflicts between the overlay

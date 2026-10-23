@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"charm.land/huh/v2"
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 	"golang.org/x/term"
 )
@@ -400,42 +401,47 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	// so an unanswered prompt must not look like "clear the model".
 	model := j.DefaultModel
 	modelAnswered := j.ModelChosen
+	models := append([]string(nil), j.Models...)
 	if !modelAnswered {
-		if saved := currentUserModel(); saved != "" {
-			model = saved
+		if settings, ok := currentUserSettings(); ok {
+			model = settings.DefaultModel
+			models = append([]string(nil), settings.Models...)
 		}
 	}
-	{
-		fmt.Println()
-		fmt.Println("Default model (leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue):")
-		if wizardHuhFn() {
-			var chosen string
-			err := huhRun(huh.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Default model").Description("Leave empty for albert/deepseek-v4-flash; 'just-code models' lists the catalogue.").Value(&chosen),
-				),
-			))
-			if errors.Is(err, huh.ErrUserAborted) {
-				fmt.Println("Setup cancelled.")
-				return 1, nil
+	if len(models) == 0 {
+		models = defaultSetupModelIDs()
+	}
+	if model == "" {
+		model = defaultSetupModel()
+	}
+	if !setupModelEnabled(model, models) {
+		model = setupModelRef(models[0])
+	}
+	fmt.Println()
+	if wizardHuhFn() {
+		selected, defaultModel, ok, err := promptSetupModels(models, model)
+		if errors.Is(err, huh.ErrUserAborted) {
+			fmt.Println("Setup cancelled.")
+			return 1, nil
+		}
+		if err != nil {
+			return 1, err
+		}
+		if ok {
+			models, model, modelAnswered = selected, defaultModel, true
+		}
+	} else {
+		fmt.Println("Models (comma-separated Albert model IDs; Enter keeps the current selection):")
+		chosen, answered := promptLine(in, "Models: ")
+		if answered {
+			if strings.TrimSpace(chosen) != "" {
+				models = parseSetupModelIDs(chosen)
+				if len(models) == 0 {
+					return 1, fmt.Errorf("select at least one model")
+				}
+				model = setupModelRef(models[0])
 			}
-			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-				return 1, err
-			}
-			chosen = strings.TrimSpace(chosen)
-			// An answered empty value is an explicit choice of the built-in
-			// default, so it must CLEAR a journaled model: otherwise a resumed
-			// run keeps the interrupted choice and there is no way back to the
-			// default through setup.
-			model = chosen
 			modelAnswered = true
-		} else {
-			chosen, answered := promptLine(in, "Model: ")
-			chosen = strings.TrimSpace(chosen)
-			if answered {
-				model = chosen
-				modelAnswered = true
-			}
 		}
 	}
 	// Validate against the P10 catalogue when it is reachable; an
@@ -446,8 +452,11 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		if catalogue != nil {
 			validateModel = catalogue
 		}
-		if warn := validateModel(model); warn != "" {
-			fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
+		for _, id := range models {
+			ref := "albert/" + id
+			if warn := validateModel(ref); warn != "" {
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
+			}
 		}
 	}
 	// Record the choice immediately. The GitHub and git-identity stages come
@@ -460,11 +469,11 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	// Only an ANSWERED choice is journaled. An unanswered prompt (EOF, Ctrl-D)
 	// leaves the saved setting alone: resetting it would silently undo a
 	// configuration the user never asked to change.
-	// Record answered-ness, not just the value: an answered EMPTY choice leaves
-	// the value unchanged ("" equals ""), and without the flag a resumed run
-	// could not tell that choice from an interruption.
-	if modelAnswered && (j.DefaultModel != model || !j.ModelChosen) {
+	// Preserve answered-ness separately so a resumed run can distinguish an
+	// explicit selection from an interruption before the prompt was answered.
+	if modelAnswered && (j.DefaultModel != model || !sameStrings(j.Models, models) || !j.ModelChosen) {
 		j.DefaultModel = model
+		j.Models = append([]string(nil), models...)
 		j.ModelChosen = true
 		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
 			return 1, err
@@ -585,7 +594,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		// recap must not announce a change the run will not make.
 		fmt.Println("  Default model: unchanged")
 	} else {
-		fmt.Println("  Default model: albert/deepseek-v4-flash (built-in)")
+		fmt.Println("  Default model: albert/qwen3-coder (built-in)")
 	}
 	fmt.Println("  Managed runtime: will be downloaded and verified (or reused if trusted)")
 	apply := true
@@ -605,7 +614,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 	// Apply: write the settings (only now — a cancelled apply must leave
 	// the settings untouched), then install the runtime.
-	if err := w.SaveSettings(model, modelAnswered); err != nil {
+	if err := w.SaveSettings(model, models, modelAnswered); err != nil {
 		return 1, err
 	}
 	fmt.Println()
@@ -630,20 +639,229 @@ func storeLabel(fallback bool) string {
 	return "native"
 }
 
-// currentUserModel reads the model saved in the user settings, if any. It is
-// the wizard's starting value when there is no journal (a completed install
-// being reconfigured), so that an unanswered prompt is distinguishable from a
-// deliberate "go back to the built-in default".
-func currentUserModel() string {
+func currentUserSettings() (justcode.UserSettings, bool) {
 	path, err := justcode.UserSettingsPath()
 	if err != nil {
-		return ""
+		return justcode.UserSettings{}, false
 	}
 	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
 	if err != nil {
-		return ""
+		return justcode.UserSettings{}, false
 	}
-	return us.DefaultModel
+	return us, true
+}
+
+func defaultSetupModelIDs() []string {
+	var ids []string
+	for _, model := range justcode.CuratedAlbertModels() {
+		if model.Default {
+			ids = append(ids, model.ID)
+		}
+	}
+	return ids
+}
+
+func defaultSetupModel() string {
+	for _, model := range justcode.CuratedAlbertModels() {
+		if model.Default {
+			return model.Ref()
+		}
+	}
+	return ""
+}
+
+func setupModelEnabled(model string, ids []string) bool {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if choice.Ref() == model && containsString(ids, choice.ID) {
+			return true
+		}
+	}
+	id := strings.TrimPrefix(model, "albert/")
+	return containsString(ids, id)
+}
+
+func setupModelRef(id string) string {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if choice.ID == id {
+			return choice.Ref()
+		}
+	}
+	return "albert/" + id
+}
+
+func parseSetupModelIDs(input string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(input, ",") {
+		id := strings.TrimSpace(raw)
+		for _, choice := range justcode.CuratedAlbertModels() {
+			if id == choice.Ref() {
+				id = choice.ID
+				break
+			}
+		}
+		id = strings.TrimPrefix(id, "albert/")
+		if id != "" && !seen[id] {
+			ids = append(ids, id)
+			seen[id] = true
+		}
+	}
+	return ids
+}
+
+var setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+	apiKey, err := resolveAlbertKeyForCatalogue()
+	if err != nil {
+		return justcode.Catalogue{}, false, err
+	}
+	cache := justcode.CatalogueCache{
+		FS:  justcode.DefaultFS,
+		Dir: justcode.DefaultStateDir(),
+		Fetch: func(ctx context.Context) (justcode.Catalogue, error) {
+			return justcode.FetchCatalogue(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
+		},
+	}
+	return cache.Load(context.Background())
+}
+
+func promptSetupModels(current []string, currentDefault string) ([]string, string, bool, error) {
+	choices := justcode.CuratedAlbertModels()
+	catalogue, fresh, catalogueErr := setupModelCatalogueFn()
+	available := map[string]bool{}
+	if catalogueErr == nil {
+		for _, choice := range choices {
+			_, available[choice.ID] = catalogue.Find(choice.ID)
+		}
+		if !fresh {
+			fmt.Println("Catalogue indisponible : sélection par défaut conservée.")
+		}
+	} else {
+		fmt.Println("Catalogue indisponible : sélection par défaut conservée.")
+	}
+	if len(current) == 0 {
+		current = defaultSetupModelIDs()
+	}
+	var curatedSelection []string
+	for _, choice := range choices {
+		if containsString(current, choice.ID) {
+			curatedSelection = append(curatedSelection, choice.ID)
+		}
+	}
+	if len(curatedSelection) > 0 {
+		current = curatedSelection
+	} else {
+		current = defaultSetupModelIDs()
+	}
+	if catalogueErr == nil {
+		availableCount := 0
+		for _, choice := range choices {
+			if available[choice.ID] {
+				availableCount++
+			}
+		}
+		if availableCount > 0 {
+			var availableSelection []string
+			for _, id := range current {
+				if available[id] {
+					availableSelection = append(availableSelection, id)
+				}
+			}
+			if len(availableSelection) == 0 {
+				for _, choice := range choices {
+					if available[choice.ID] {
+						availableSelection = append(availableSelection, choice.ID)
+						break
+					}
+				}
+			}
+			current = availableSelection
+		}
+	}
+	selected := append([]string(nil), current...)
+	var selectedDefault string
+	for _, choice := range choices {
+		if choice.Ref() == currentDefault && containsString(selected, choice.ID) {
+			selectedDefault = choice.Ref()
+			break
+		}
+	}
+	if selectedDefault == "" && len(selected) > 0 {
+		selectedDefault = setupModelRef(selected[0])
+	}
+	if selectedDefault == "" {
+		selectedDefault = defaultSetupModel()
+	}
+	options := make([]huh.Option[string], 0, len(choices))
+	labels := make(map[string]string, len(choices))
+	for _, choice := range choices {
+		label := fmt.Sprintf("%-20s %s", choice.Name, choice.Description)
+		if choice.Ref() == selectedDefault {
+			label += " (par défaut)"
+		}
+		if catalogueErr == nil && !available[choice.ID] {
+			label = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(label + " (indisponible)")
+		}
+		labels[choice.ID] = label
+		isSelected := containsString(selected, choice.ID)
+		options = append(options, huh.NewOption(label, choice.ID).Selected(isSelected))
+	}
+	fmt.Println("[2/3] Sélection des modèles à utiliser")
+	fmt.Println("Choisissez les modèles Albert API que l'agent pourra utiliser.")
+	fmt.Println("Vous pourrez passer de l'un à l'autre pendant une session, avec la commande /models.")
+	fmt.Println("Détails : https://guides.ia.numerique.gouv.fr/albert-api/modeles/available-models")
+	if err := huhRun(huh.NewForm(huh.NewGroup(
+		huh.NewMultiSelect[string]().
+			Title("Modèles disponibles").
+			Description("Espace : cocher ou décocher. Entrée : valider la liste. Vous pourrez modifier ce choix avec just-code setup.").
+			Options(options...).
+			Value(&selected).
+			Validate(func(values []string) error {
+				if len(values) == 0 {
+					return fmt.Errorf("sélectionnez au moins un modèle")
+				}
+				if catalogueErr == nil {
+					for _, value := range values {
+						if !available[value] {
+							return fmt.Errorf("ce modèle est indisponible dans le catalogue Albert API")
+						}
+					}
+				}
+				return nil
+			}),
+	))); err != nil {
+		return nil, "", false, err
+	}
+	if len(selected) == 0 {
+		return nil, "", false, fmt.Errorf("sélectionnez au moins un modèle")
+	}
+	if !setupModelEnabled(selectedDefault, selected) {
+		selectedDefault = setupModelRef(selected[0])
+	}
+	defaults := make([]huh.Option[string], 0, len(selected))
+	for _, choice := range choices {
+		if containsString(selected, choice.ID) {
+			defaults = append(defaults, huh.NewOption(labels[choice.ID], choice.Ref()).Selected(choice.Ref() == selectedDefault))
+		}
+	}
+	if err := huhRun(huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Modèle par défaut").
+			Description("↑ ↓ : choisir le modèle utilisé par défaut.").
+			Options(defaults...).
+			Value(&selectedDefault),
+	))); err != nil {
+		return nil, "", false, err
+	}
+	return selected, selectedDefault, true, nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // validateModelAgainstCatalogue checks the chosen model against the P10

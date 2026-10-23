@@ -9,8 +9,26 @@
         "apiKey": "{env:ALBERT_API_KEY}"
       },
       "models": {
+        "qwen3-coder": {
+          "name": "Qwen3 Coder",
+          "modelID": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 262144
+          }
+        },
         "deepseek-v4-flash": {
-          "name": "DeepSeek V4 Flash (Albert)",
+          "name": "DeepSeek V4 Flash",
+          "modelID": "deepseek-ai/DeepSeek-V4-Flash-0731",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
           "limit": {
             "context": 131072,
             "output": 65536
@@ -19,8 +37,8 @@
       }
     }
   },
-  "model": "albert/deepseek-v4-flash",
-  "small_model": "albert/deepseek-v4-flash",
+  "model": "albert/qwen3-coder",
+  "small_model": "albert/qwen3-coder",
   "permission": {
     "edit": "allow",
     "external_directory": "allow",

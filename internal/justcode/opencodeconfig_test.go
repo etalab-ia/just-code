@@ -53,6 +53,60 @@ func TestComposeConfigContentDefaults(t *testing.T) {
 	}
 }
 
+func TestComposeConfigContentRestrictsAlbertModelsToSelection(t *testing.T) {
+	choice := CuratedAlbertModels()[1]
+	content, err := ComposeConfigContent(ManagedOverlay{
+		Model:  choice.Ref(),
+		Models: []AlbertModelConfig{choice.AlbertModelConfig()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	provider := parsed["provider"].(map[string]any)["albert"].(map[string]any)
+	models := provider["models"].(map[string]any)
+	if len(models) != 1 {
+		t.Fatalf("models = %v; unselected base models must not remain visible", models)
+	}
+	deepseek := models[choice.OpenCodeID].(map[string]any)
+	if deepseek["name"] != choice.Name || deepseek["limit"].(map[string]any)["context"] != float64(choice.Context) {
+		t.Fatalf("selected model definition = %v", deepseek)
+	}
+	if deepseek["modelID"] != choice.ID {
+		t.Fatalf("Albert API model ID = %v, want %s", deepseek["modelID"], choice.ID)
+	}
+	if deepseek["body"].(map[string]any)["tool_choice"] != "auto" {
+		t.Fatalf("DeepSeek tool_choice must be forced to auto: %v", deepseek)
+	}
+	if deepseek["capabilities"].(map[string]any)["input"].([]any)[0] != "text" {
+		t.Fatalf("text model input capabilities = %v", deepseek["capabilities"])
+	}
+}
+
+func TestComposeConfigContentMarksGemmaAsVisionCapable(t *testing.T) {
+	choice := CuratedAlbertModels()[3]
+	content, err := ComposeConfigContent(ManagedOverlay{
+		Model:  choice.Ref(),
+		Models: []AlbertModelConfig{choice.AlbertModelConfig()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	provider := parsed["provider"].(map[string]any)["albert"].(map[string]any)
+	gemma := provider["models"].(map[string]any)[choice.OpenCodeID].(map[string]any)
+	inputs := gemma["capabilities"].(map[string]any)["input"].([]any)
+	if len(inputs) != 2 || inputs[0] != "text" || inputs[1] != "image" {
+		t.Fatalf("Gemma input capabilities = %v", inputs)
+	}
+}
+
 func TestDetectOverlayConflicts(t *testing.T) {
 	overlay := ManagedOverlay{Model: "albert/gpt-oss-120b"}
 	project := map[string]any{

@@ -411,7 +411,7 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	// Exact argv for the secrets subcommand: __guest-secrets <username> <model>.
 	// The consumer (main.go) reads Username at position 1 and Model at
 	// position 2; a position drift scrambles the in-guest env file.
-	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand + " opencode albert/deepseek-v4-flash") {
+	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand + " opencode albert/qwen3-coder") {
 		t.Fatalf("secrets argv must be __guest-secrets <username> <model>; calls: %v", r.calls)
 	}
 	for _, c := range r.calls {

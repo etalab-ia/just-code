@@ -54,6 +54,30 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestResolveEnabledAlbertModelsKeepsActiveModelAvailable(t *testing.T) {
+	setupTestEnv(t)
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	choices := justcode.CuratedAlbertModels()
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, justcode.UserSettings{
+		SchemaVersion: 1,
+		DefaultModel:  choices[1].Ref(),
+		Models:        []string{choices[1].ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveEnabledAlbertModels(choices[0].Ref())
+	var ids []string
+	for _, model := range got {
+		ids = append(ids, model.ID)
+	}
+	if len(ids) != 2 || ids[0] != choices[1].OpenCodeID || ids[1] != choices[0].OpenCodeID {
+		t.Fatalf("configured model keys = %v; selected and active default models must both be available", ids)
+	}
+}
+
 func TestParsePortsArgs(t *testing.T) {
 	parsed, err := parseArgs([]string{"ports", "add", "8080:80"})
 	if err != nil {

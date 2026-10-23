@@ -116,6 +116,9 @@ type UserSettings struct {
 
 	// DefaultModel is the preferred OpenCode model (provider/model-id).
 	DefaultModel string `json:"defaultModel,omitempty"`
+	// Models is the set of Albert models enabled in OpenCode's model picker.
+	// Empty preserves the built-in model set for settings written by older versions.
+	Models []string `json:"models,omitempty"`
 
 	// GitName and GitEmail are the git identity for guest commits (P11).
 	// Non-secret; the guest bootstrap configures git with them.
