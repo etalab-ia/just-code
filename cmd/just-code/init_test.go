@@ -180,6 +180,30 @@ func TestInitSetupCheckUsesDefaultAlbertCredentialNotNamedReferences(t *testing.
 	}
 }
 
+func TestInitCmdRejectsInvalidOptionsBeforeOfferingSetup(t *testing.T) {
+	originalTTY, originalStdoutTTY := initTTYFn, initStdoutTTYFn
+	originalCredentialCheck := initAlbertCredentialCheckFn
+	initTTYFn = func() bool { return true }
+	initStdoutTTYFn = func() bool { return true }
+	setupCheckCalled := false
+	initAlbertCredentialCheckFn = func() error {
+		setupCheckCalled = true
+		return justcode.ErrCredentialNotFound
+	}
+	t.Cleanup(func() {
+		initTTYFn, initStdoutTTYFn = originalTTY, originalStdoutTTY
+		initAlbertCredentialCheckFn = originalCredentialCheck
+	})
+
+	code, err := initCmd([]string{"--runtime", "unknown"})
+	if code != 2 || err == nil || !strings.Contains(err.Error(), "--microsandbox") {
+		t.Fatalf("initCmd invalid runtime = %d, %v; want validation error before interaction", code, err)
+	}
+	if setupCheckCalled {
+		t.Fatal("invalid options must be rejected before the global setup offer")
+	}
+}
+
 // stubWizardHuh forces the line-based wizard path. The scripted tests drive
 // initRun with tty=true and a string reader; the seam's production probe
 // would be false there (stdout is a pipe), but pinning it keeps the tests

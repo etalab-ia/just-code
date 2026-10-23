@@ -39,8 +39,11 @@ func initCmd(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	tty := isTTY()
-	if tty && !opts.Yes && !stdoutIsTTY() {
+	if err := validateInitOptions(opts); err != nil {
+		return 2, err
+	}
+	tty := initTTYFn()
+	if tty && !opts.Yes && !initStdoutTTYFn() {
 		return 1, fmt.Errorf("interactive init requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
 	}
 	if tty && !opts.Yes {
@@ -77,6 +80,10 @@ var initAlbertCredentialCheckFn = func() error {
 }
 
 var runInitSetupFn = setupRunCmd
+
+var initTTYFn = isTTY
+
+var initStdoutTTYFn = stdoutIsTTY
 
 func initSetupNeeded() (bool, error) {
 	// Global setup owns the account credential and default settings. A
