@@ -416,11 +416,20 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			return 1, err
 		}
 		if answers.GitHubWorkflow {
-			remote, err := githubInitPreflightFn(answers.Root)
-			if err != nil {
-				return 1, err
+			// Re-verify immediately before writing, with the same check the
+			// question used: an origin, a stored token, and the rights the
+			// workflow needs. A token revoked between the question and this
+			// point is refused here, before anything is written (#169).
+			status := githubInitProbeFn(answers.Root)
+			switch {
+			case !status.HasOrigin:
+				return 1, fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the GitHub workflow")
+			case !status.HasToken:
+				return 1, fmt.Errorf("no GitHub token is stored on this machine; add one with 'just-code auth add github'")
+			case status.Rights != justcode.GitHubRepoRightsOK:
+				return 1, fmt.Errorf("%s", gitHubRightsMessage(status))
 			}
-			answers.GitHubRemote = remote
+			answers.GitHubRemote = status.Remote
 		}
 		plan, err = wizard.Plan(answers)
 		if err != nil {
@@ -832,71 +841,6 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			}
 		}
 	}
-	if !opts.Set["github"] {
-		// The GitHub step verifies on this screen and renders one distinct
-		// screen per situation (#169): an approved repo+token, a project not
-		// linked to GitHub, a project with no stored token, or a token
-		// without the needed rights. Nothing is decided here that the later
-		// review could reject, so a refusal never throws away the other
-		// answers (#155).
-	githubStep:
-		for {
-			probe := githubInitProbeFn(answers.Root)
-			switch {
-			case !probe.HasOrigin:
-				fmt.Println(gitHubNoOriginScreen())
-				quit, err := gitHubContinueLoop(in)
-				if err != nil {
-					return answers, err
-				}
-				if quit {
-					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
-				}
-				answers.GitHubWorkflow = false
-				answers.GitHubRemote = justcode.GitHubRemote{}
-				break githubStep
-			case !probe.HasToken:
-				fmt.Println(gitHubNoTokenScreen(probe))
-				addNow, err := gitHubTokenLoop(in)
-				if err != nil {
-					return answers, err
-				}
-				if addNow {
-					stored, _, _, err := githubTokenStage(context.Background(), initGitHubAddWizard(), in)
-					if err != nil {
-						return answers, err
-					}
-					if stored {
-						continue
-					}
-				}
-				answers.GitHubWorkflow = false
-				answers.GitHubRemote = justcode.GitHubRemote{}
-				break githubStep
-			case probe.Rights == justcode.GitHubRepoRightsOK:
-				fmt.Println(gitHubApprovedScreen(probe))
-				yes, err := gitHubYesDefault(in)
-				if err != nil {
-					return answers, err
-				}
-				answers.GitHubRemote = probe.Remote
-				answers.GitHubWorkflow = yes
-				break githubStep
-			default:
-				fmt.Println(gitHubInsufficientScreen(probe))
-				reverify, err := gitHubRightsLoop(in)
-				if err != nil {
-					return answers, err
-				}
-				if reverify {
-					continue
-				}
-				answers.GitHubWorkflow = false
-				answers.GitHubRemote = justcode.GitHubRemote{}
-				break githubStep
-			}
-		}
-	}
 	if !opts.Set["skills"] {
 		fmt.Println("\nProject skills — selected artifacts are pinned and installed inside the Microsandbox guest.")
 		catalogue, err := projectSkillCatalogueFn(context.Background())
@@ -1066,6 +1010,75 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			}
 		}
 		answers.SkillsLocalOnlySet = true
+	}
+	if !opts.Set["github"] {
+		// The GitHub step verifies on this screen and renders one distinct
+		// screen per situation (#169): an approved repo+token, a project not
+		// linked to GitHub, a project with no stored token, or a token
+		// without the needed rights. Nothing is decided here that the later
+		// review could reject, so a refusal never throws away the other
+		// answers (#155).
+	githubStep:
+		for {
+			probe := githubInitProbeFn(answers.Root)
+			switch {
+			case !probe.HasOrigin:
+				fmt.Println(gitHubNoOriginScreen())
+				quit, err := gitHubContinueLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if quit {
+					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
+			case probe.TokenError != nil:
+				// A locked or unavailable store must not be reported as "no
+				// token yet": the remedy is to unlock it, not to add a token.
+				return answers, fmt.Errorf("the GitHub credential store could not be read: %w", probe.TokenError)
+			case !probe.HasToken:
+				fmt.Println(gitHubNoTokenScreen(probe))
+				addNow, err := gitHubTokenLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if addNow {
+					stored, _, _, err := githubTokenStage(context.Background(), initGitHubAddWizard(), in)
+					if err != nil {
+						return answers, err
+					}
+					if stored {
+						continue
+					}
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
+			case probe.Rights == justcode.GitHubRepoRightsOK:
+				fmt.Println(gitHubApprovedScreen(probe))
+				yes, err := gitHubYesDefault(in)
+				if err != nil {
+					return answers, err
+				}
+				answers.GitHubRemote = probe.Remote
+				answers.GitHubWorkflow = yes
+				break githubStep
+			default:
+				fmt.Println(gitHubInsufficientScreen(probe))
+				reverify, err := gitHubRightsLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if reverify {
+					continue
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
+			}
+		}
 	}
 	return answers, nil
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,6 +146,12 @@ type GitHubProjectStatus struct {
 	HasOrigin bool
 	// HasToken is true when a GitHub credential is stored on this host.
 	HasToken bool
+	// TokenError is set when the store could not be read at all (locked,
+	// denied, unavailable). It is NOT set when simply no token is stored:
+	// that is the ordinary "no token yet" situation, reported by HasToken
+	// being false with no error. The distinction matters because the remedy
+	// differs — unlock the store, versus add a token.
+	TokenError error
 	// Login is the account the stored credential authenticates as. Empty when
 	// unknown (no token, or GitHub did not report it).
 	Login string
@@ -160,16 +167,35 @@ type GitHubProjectStatus struct {
 // situations (the project is not linked, or no token is stored), and they are
 // returned as such.
 func ProbeGitHubForProject(ctx context.Context, root string, client *http.Client) GitHubProjectStatus {
+	return probeGitHubForProjectWith(ctx, root, client, GitHubOriginForProject, ReadStoredCredential)
+}
+
+// probeGitHubForProjectWith is ProbeGitHubForProject over injected origin and
+// credential readers, so the classification is testable without a Git checkout
+// or a real credential store — the same shape resolveAlbertWith uses.
+func probeGitHubForProjectWith(
+	ctx context.Context,
+	root string,
+	client *http.Client,
+	origin func(context.Context, string) (GitHubRemote, error),
+	read func(context.Context, CredentialKind) (string, error),
+) GitHubProjectStatus {
 	st := GitHubProjectStatus{}
-	remote, err := GitHubOriginForProject(ctx, root)
+	remote, err := origin(ctx, root)
 	if err != nil {
 		return st
 	}
 	st.Remote = remote
 	st.HasOrigin = true
 
-	token, err := ReadStoredCredential(ctx, CredentialGithub)
+	token, err := read(ctx, CredentialGithub)
 	if err != nil {
+		// A missing credential is the normal "Plus tard" situation; any
+		// other error (locked, denied, unavailable) is a real problem the
+		// caller must surface instead of offering to add a token.
+		if !errors.Is(err, ErrCredentialNotFound) {
+			st.TokenError = err
+		}
 		return st
 	}
 	st.HasToken = true

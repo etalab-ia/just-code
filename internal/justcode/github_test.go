@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,43 +47,43 @@ func TestProbeGitHubProjectAt(t *testing.T) {
 		wantRights GitHubRepoRights
 	}{
 		{
-			name: "read and push is OK",
+			name:       "read and push is OK",
 			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
 			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
 			wantLogin: "kai", wantRights: GitHubRepoRightsOK,
 		},
 		{
-			name: "read without push is insufficient",
+			name:       "read without push is insufficient",
 			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
 			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":false}}`,
 			wantLogin: "kai", wantRights: GitHubRepoRightsInsufficient,
 		},
 		{
-			name: "404 is no access",
+			name:       "404 is no access",
 			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
 			repoStatus: http.StatusNotFound, repoBody: `{"message":"Not Found"}`,
 			wantLogin: "kai", wantRights: GitHubRepoRightsNoAccess,
 		},
 		{
-			name: "401 is invalid",
+			name:       "401 is invalid",
 			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
 			repoStatus: http.StatusUnauthorized, repoBody: `{"message":"Bad credentials"}`,
 			wantLogin: "kai", wantRights: GitHubRepoRightsInvalid,
 		},
 		{
-			name: "403 with organization hint is org pending",
+			name:       "403 with organization hint is org pending",
 			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
 			repoStatus: http.StatusForbidden, repoBody: `{"message":"the organization has not approved access"}`,
 			wantLogin: "kai", wantRights: GitHubRepoRightsOrgPending,
 		},
 		{
-			name: "403 without organization hint is insufficient",
+			name:       "403 without organization hint is insufficient",
 			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
 			repoStatus: http.StatusForbidden, repoBody: `{"message":"Resource not accessible by personal access token"}`,
 			wantLogin: "kai", wantRights: GitHubRepoRightsInsufficient,
 		},
 		{
-			name: "user endpoint failure still classifies from the repo",
+			name:       "user endpoint failure still classifies from the repo",
 			userStatus: http.StatusInternalServerError, userBody: ``,
 			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
 			wantLogin: "", wantRights: GitHubRepoRightsOK,
@@ -577,5 +578,54 @@ func runGitTest(t *testing.T, root string, args ...string) {
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+filepath.Join(root, "empty-gitconfig"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestProbeGitHubForProjectDistinguishesStoreFailure pins that a store that
+// cannot be read is NOT reported as "no token stored": the two situations have
+// different remedies (unlock the store, versus add a token), so the init screen
+// must not guess. A missing credential stays the ordinary case.
+func TestProbeGitHubForProjectDistinguishesStoreFailure(t *testing.T) {
+	remote := GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}
+	origin := func(context.Context, string) (GitHubRemote, error) { return remote, nil }
+
+	// Not found: an ordinary "no token yet" project.
+	notFound := func(context.Context, CredentialKind) (string, error) { return "", ErrCredentialNotFound }
+	st := probeGitHubForProjectWith(context.Background(), "/p", nil, origin, notFound)
+	if st.TokenError != nil || st.HasToken {
+		t.Fatalf("a missing credential must read as no token, got %+v", st)
+	}
+	if !st.HasOrigin || st.Remote != remote {
+		t.Fatalf("the origin must still be reported, got %+v", st)
+	}
+
+	// Locked store: a real problem, not an invitation to add a token.
+	locked := func(context.Context, CredentialKind) (string, error) {
+		return "", &StoreError{Op: "get", Kind: string(CredentialGithub), State: "locked"}
+	}
+	st = probeGitHubForProjectWith(context.Background(), "/p", nil, origin, locked)
+	if st.TokenError == nil || st.HasToken {
+		t.Fatalf("a locked store must surface as a store error, got %+v", st)
+	}
+}
+
+// TestProbeGitHubForProjectWithoutOrigin skips the credential read entirely:
+// a project with no GitHub link is its own situation, and asking for a token
+// there would offer a step the origin cannot support.
+func TestProbeGitHubForProjectWithoutOrigin(t *testing.T) {
+	read := false
+	noOrigin := func(context.Context, string) (GitHubRemote, error) {
+		return GitHubRemote{}, errors.New("no readable origin remote")
+	}
+	readFn := func(context.Context, CredentialKind) (string, error) {
+		read = true
+		return "tok", nil
+	}
+	st := probeGitHubForProjectWith(context.Background(), "/p", nil, noOrigin, readFn)
+	if st.HasOrigin || st.HasToken || st.TokenError != nil {
+		t.Fatalf("an unlinked project must be reported as such, got %+v", st)
+	}
+	if read {
+		t.Fatal("the credential store must not be read when the project has no origin")
 	}
 }

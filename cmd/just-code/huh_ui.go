@@ -435,18 +435,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		haveManifestMCPs := false
 		skillsLocalOnly := answers.SkillsLocalOnly
 
-		// The GitHub step is a distinct screen, not a field of the main
-		// form: it renders one of the four situations and verifies on that
-		// screen (#169). It runs before the form so a refusal or a re-verify
-		// never throws away the other answers (#155).
-		if !opts.Set["github"] {
-			var err error
-			answers, err = askGitHubStepHuh(answers)
-			if err != nil {
-				return answers, err
-			}
-		}
-
 		if !answers.SkillsSet {
 			current, err := currentProjectSkillSelection(answers.Root)
 			if err != nil {
@@ -685,6 +673,18 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet || answers.SkillsLocalOnly != skillsLocalOnly
 			answers.SkillsLocalOnly = skillsLocalOnly
 		}
+		// The GitHub step is a distinct screen, not a field of the main
+		// form: it renders one of the four situations and verifies on that
+		// screen (#169). It runs after the main form so the [1/3]..[3/3]
+		// order on screen matches the flow, and its own screens never throw
+		// away the answers already collected (#155).
+		if !opts.Set["github"] {
+			var err error
+			answers, err = askGitHubStepHuh(answers)
+			if err != nil {
+				return answers, err
+			}
+		}
 		return answers, nil
 	}
 }
@@ -784,6 +784,11 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 			answers.GitHubWorkflow = false
 			answers.GitHubRemote = justcode.GitHubRemote{}
 			return answers, nil
+		case probe.TokenError != nil:
+			// Same rule as the line wizard: a store that cannot be read is
+			// not the same situation as having no token, and its remedy is
+			// different.
+			return answers, fmt.Errorf("the GitHub credential store could not be read: %w", probe.TokenError)
 		case !probe.HasToken:
 			choice := "later"
 			err := huhRun(huh.NewForm(
