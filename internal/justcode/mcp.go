@@ -76,7 +76,11 @@ const MCPStepTitle = "[2/3] MCP (facultatif)"
 // endpoint answered the handshake, a descriptive error otherwise.
 var ProbeRemoteMCPFunc = func(ctx context.Context, connector MCPConnector) error {
 	health := ProbeRemoteMCP(ctx, nil, connector)
-	if health.State != MCPConfigured {
+	// MCPConfigured is only the initial state of a probe; a handshake that
+	// succeeded always ends at MCPVerified. Every other terminal state
+	// (offline, authentication-required, access-denied, drift) is a failure
+	// worth showing on the review screen.
+	if health.State != MCPVerified {
 		return fmt.Errorf("%s (%s)", health.State, health.Detail)
 	}
 	return nil

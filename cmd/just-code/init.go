@@ -930,11 +930,12 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 }
 
 // promptNoMCPConfirmation asks the zero-selection confirmation and returns
-// true when the user keeps an empty MCP set.
-func promptNoMCPConfirmation(in io.Reader) bool {
+// true when the user keeps an empty MCP set. It reads through the wizard's
+// own buffered reader: wrapping `in` in a fresh bufio.Reader here would
+// prefetch and discard the answers queued behind this one.
+func promptNoMCPConfirmation(in *bufio.Reader) bool {
 	fmt.Print("Aucun MCP sélectionné. Continuer sans MCP ? (O/n) ")
-	reader := bufio.NewReader(in)
-	answer, err := reader.ReadString('\n')
+	answer, err := in.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false
 	}

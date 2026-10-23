@@ -111,6 +111,27 @@ func TestProbeRemoteMCPReportsUnavailableEndpoint(t *testing.T) {
 	}
 }
 
+// The review screen reads this func's verdict as the reachability line: a
+// successful handshake must be a pass, and configured is only a probe's
+// initial state — accepting it there turned every reachable endpoint into a
+// false access failure (#242 review).
+func TestProbeRemoteMCPFuncDistinguishesVerifiedFromFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`))
+	}))
+	defer server.Close()
+	if err := ProbeRemoteMCPFunc(context.Background(), MCPConnector{ID: "test", Endpoint: server.URL}); err != nil {
+		t.Fatalf("a verified handshake must pass the review probe: %v", err)
+	}
+	offline := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	endpoint := offline.URL
+	offline.Close()
+	if err := ProbeRemoteMCPFunc(context.Background(), MCPConnector{ID: "offline", Endpoint: endpoint}); err == nil {
+		t.Fatal("an unreachable endpoint must fail the review probe")
+	}
+}
+
 func TestMCPResponseJSONReadsMultilineAndLongSSEData(t *testing.T) {
 	multiline := []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":1,\"result\":{\"protocolVersion\":\"2025-03-26\"}}\n\n")
 	for name, input := range map[string][]byte{

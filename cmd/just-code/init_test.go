@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"charm.land/huh/v2"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -430,6 +431,96 @@ func TestAskInitQuestionsHuhOffersGitHubOnlyWhenUsable(t *testing.T) {
 	}
 	if answers.GitHubRemote.Repo != "owner/repo" {
 		t.Fatalf("a usable origin must be stashed for the review, got %+v", answers)
+	}
+}
+
+// huhRun is stubbed, so this pins the construction and write-back logic the
+// form runs: a fresh initialization (no manifest) preselects the curated
+// default exactly like the line wizard, and a manifest holding withdrawn ids
+// (context7, playwright) survives the form instead of being silently wiped —
+// huh rebuilds a MultiSelect's value from its options on submit, so the
+// withdrawn ids must come back as retained options (#242 review).
+func TestAskInitQuestionsHuhMCPSeedingAndWithdrawnRetention(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalRun := huhRun
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() { huhRun = originalRun })
+	opts := initOptions{
+		Root: root, Set: map[string]bool{"root": true},
+		hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384,
+	}
+
+	// Fresh project: the default selection is the seeded baseline, so an
+	// accepted form submission keeps it implicit (MCPsSet false).
+	answers, err := askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh: %v", err)
+	}
+	if !equalStringSlices(answers.MCPConnectors, justcode.DefaultFreshMCPIDs) {
+		t.Fatalf("fresh init must preselect %v, got %v", justcode.DefaultFreshMCPIDs, answers.MCPConnectors)
+	}
+	if answers.MCPsSet {
+		t.Fatal("an accepted default must stay implicit (MCPsSet false)")
+	}
+
+	// Existing manifest with withdrawn ids: the selection survives the form
+	// unchanged, and stays implicit so --replace preserves the manifest.
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		MCPConnectors:   []string{"context7", "playwright"},
+		SkillsLocalOnly: true,
+	}); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	answers, err = askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh with manifest: %v", err)
+	}
+	if !equalStringSlices(answers.MCPConnectors, []string{"context7", "playwright"}) {
+		t.Fatalf("withdrawn manifest ids must be retained through the form, got %v", answers.MCPConnectors)
+	}
+	if answers.MCPsSet {
+		t.Fatal("an unchanged legacy selection must not be flagged as a new selection (MCPsSet false)")
+	}
+
+	// A manifest deliberately written with zero MCPs triggers the
+	// zero-selection confirmation before any write-back. The main form's
+	// stub must succeed once so the write-back runs, then the confirmation
+	// form's stub fails: the wizard asks instead of silently keeping or
+	// re-defaulting the empty set.
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		MCPConnectors:   []string{},
+		SkillsLocalOnly: true,
+	}); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	formCalls := 0
+	huhRun = func(*huh.Form) error {
+		formCalls++
+		if formCalls > 1 {
+			return huh.ErrUserAborted
+		}
+		return nil
+	}
+	if _, err = askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root}); !errors.Is(err, huh.ErrUserAborted) {
+		t.Fatalf("a zero-MCP manifest must trigger the confirmation and an abort must surface, got %v", err)
+	}
+}
+
+// The zero-selection confirmation must read through the wizard's buffered
+// reader: wrapping it in a fresh bufio.Reader prefetches the queued answers
+// and the init aborted with "no answer" right after `none` (#242 review).
+func TestPromptNoMCPConfirmationSharesWizardReader(t *testing.T) {
+	input := bufio.NewReader(strings.NewReader("none\ny\nroot\n"))
+	if _, ok := promptLine(input, "mcps: "); !ok {
+		t.Fatal("expected the mcps answer to be consumed first")
+	}
+	if !promptNoMCPConfirmation(input) {
+		t.Fatal("expected the confirmation to accept the queued y")
+	}
+	next, ok := promptLine(input, "next: ")
+	if !ok || strings.TrimSpace(next) != "root" {
+		t.Fatalf("the answer queued behind the confirmation must survive, got %q (ok=%v)", next, ok)
 	}
 }
 
