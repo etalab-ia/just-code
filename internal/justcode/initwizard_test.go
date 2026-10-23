@@ -473,7 +473,7 @@ func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T)
 	if !strings.Contains(FormatInitReview(plan), "AGENTS.md managed-zone diff") || !plan.InstructionsChanged {
 		t.Fatalf("review omitted the generated instruction diff: %+v", plan)
 	}
-	if err := wizard.Apply(plan, false); err != nil {
+	if err := wizard.Apply(plan, true); err != nil {
 		t.Fatal(err)
 	}
 	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
@@ -530,6 +530,139 @@ func TestInitPinsVersionedSkillsAndManagedInstructionsIdempotently(t *testing.T)
 	clearedAgents := readFileForTest(t, filepath.Join(root, "AGENTS.md"))
 	if !bytes.HasPrefix(clearedAgents, []byte(userText)) || bytes.Contains(clearedAgents, []byte("official/rgaa")) {
 		t.Fatalf("clearing skills damaged user instructions or kept a managed skill: %q", clearedAgents)
+	}
+}
+
+func TestInitPlanPreservesRetainedSkillPinsWithoutResolvingThem(t *testing.T) {
+	root := initTestRoot(t)
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	// The resolver records every call: a retained skill must never reach
+	// it, because resolving it again is exactly what drops its pin.
+	base := fixtureSkillResolver(t)
+	var resolved []string
+	resolver := func(ctx context.Context, ids []string) ([]ProjectSkill, map[string]SkillLock, error) {
+		resolved = append(resolved, strings.Join(ids, ","))
+		return base(ctx, ids)
+	}
+	wizard := InitWizard{StateDir: state, ResolveSkills: resolver}
+	plan, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/ancienne"}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	oldLock, err := ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPin := oldLock.Skills["official/ancienne"]
+	if oldPin.SHA256 == "" {
+		t.Fatal("fixture did not pin the older skill")
+	}
+
+	// The catalogue rotated: the new selection keeps the older pin and
+	// adds a resolvable skill. Plan must resolve only the resolvable ID
+	// and merge the retained pin verbatim.
+	resolved = nil
+	plan, err = wizard.Plan(InitAnswers{
+		Root:           root,
+		Skills:         []string{"official/rgaa", "official/ancienne"},
+		SkillsSet:      true,
+		RetainedSkills: []string{"official/ancienne"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0] != "official/rgaa" {
+		t.Fatalf("resolver calls = %v, want exactly [official/rgaa]", resolved)
+	}
+	if pin := plan.SkillLocks["official/ancienne"]; pin != oldPin {
+		t.Fatalf("retained pin = %+v, want the existing pin verbatim: %+v", pin, oldPin)
+	}
+	if got := strings.Join(plan.Answers.Skills, ","); got != "official/rgaa,official/ancienne" {
+		t.Fatalf("selection must still list the retained skill, got %q", got)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || strings.Join(manifest.Skills, ",") != "official/rgaa,official/ancienne" {
+		t.Fatalf("manifest after the mixed selection = %+v, err = %v", manifest, err)
+	}
+	lock, err := ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil || lock.Skills["official/ancienne"] != oldPin {
+		t.Fatalf("retained pin changed on apply: %+v, err = %v", lock.Skills, err)
+	}
+
+	// A retained-only selection resolves nothing at all and still keeps
+	// the pin.
+	resolved = nil
+	plan, err = wizard.Plan(InitAnswers{
+		Root:           root,
+		Skills:         []string{"official/ancienne"},
+		SkillsSet:      true,
+		RetainedSkills: []string{"official/ancienne"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 0 {
+		t.Fatalf("a retained-only selection must not resolve anything, got %v", resolved)
+	}
+	if pin := plan.SkillLocks["official/ancienne"]; pin != oldPin {
+		t.Fatalf("retained-only pin = %+v, want %+v", pin, oldPin)
+	}
+	if err := wizard.Apply(plan, true); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err = ReadProjectManifest(DefaultFS, ProjectManifestPath(root))
+	if err != nil || strings.Join(manifest.Skills, ",") != "official/ancienne" {
+		t.Fatalf("manifest after the retained-only selection = %+v, err = %v", manifest, err)
+	}
+	lock, err = ReadLockfile(DefaultFS, ProjectLockPath(root))
+	if err != nil || len(lock.Skills) != 1 || lock.Skills["official/ancienne"] != oldPin {
+		t.Fatalf("retained-only lock = %+v, err = %v", lock.Skills, err)
+	}
+}
+
+func TestInitPlanRejectsRetainedSkillWithoutExistingPin(t *testing.T) {
+	root := initTestRoot(t)
+	cache, state := t.TempDir(), t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	wizard := InitWizard{StateDir: state, ResolveSkills: fixtureSkillResolver(t)}
+	// Fresh project: nothing was ever pinned, so there is no pin to
+	// preserve and the plan must fail closed.
+	_, err := wizard.Plan(InitAnswers{
+		Root:           root,
+		Skills:         []string{"official/rgaa", "official/fantome"},
+		SkillsSet:      true,
+		RetainedSkills: []string{"official/fantome"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `retained skill "official/fantome" has no existing pin`) {
+		t.Fatalf("retaining an unpinned skill on a fresh project must fail, got %v", err)
+	}
+	// A pinned project must reject a retained ID it never pinned.
+	plan, err := wizard.Plan(InitAnswers{Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wizard.Apply(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	_, err = wizard.Plan(InitAnswers{
+		Root:           root,
+		Skills:         []string{"official/rgaa", "official/fantome"},
+		SkillsSet:      true,
+		RetainedSkills: []string{"official/fantome"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `retained skill "official/fantome" has no existing pin`) {
+		t.Fatalf("retaining a never-pinned skill must fail, got %v", err)
 	}
 }
 

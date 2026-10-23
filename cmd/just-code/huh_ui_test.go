@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -55,13 +56,168 @@ func TestInitMultiSelectsAnnounceSelectionKeys(t *testing.T) {
 	}
 	skillsValue := []string{}
 	assertHint("Project skills", newProjectSkillsMultiSelect(
-		[]huh.Option[string]{huh.NewOption("pdf", "pdf")}, &skillsValue))
+		[]huh.Option[string]{huh.NewOption("pdf", "pdf")}, &skillsValue, "[1/3] "))
 	mcpValue := []string{}
 	assertHint("MCPs", newProjectMCPsMultiSelect(
 		[]huh.Option[string]{huh.NewOption("data-gouv", "data-gouv")}, &mcpValue))
 	dotenvValue := []string{}
 	assertHint("Dotenv files", newDotenvFilesMultiSelect(
 		[]huh.Option[string]{huh.NewOption(".env", ".env")}, &dotenvValue))
+}
+
+func TestInitSkillsAreTheSixDescribedOfficialEntries(t *testing.T) {
+	catalogue := []justcode.ProjectSkill{
+		{ID: "experimental/presentation-docs", Experimental: true},
+		{ID: "official/datagouv-apis"},
+		{ID: "official/lasuite-ui-kit"},
+		{ID: "official/react-dsfr"},
+		{ID: "official/rgaa"},
+		{ID: "official/anssi-guides"},
+		{ID: "official/securite-developpement"},
+	}
+	options := initSkillOptions(catalogue)
+	if len(options) != 6 {
+		t.Fatalf("skill option count = %d, want 6", len(options))
+	}
+	for i, option := range options {
+		if option.Value != initSkillOrder[i] || !strings.Contains(option.Key, initSkillDescriptions[option.Value]) {
+			t.Errorf("option %d = %q (%q), want %q with its short description", i, option.Key, option.Value, initSkillOrder[i])
+		}
+	}
+	selected := []string{"official/securite-developpement"}
+	localOnly := false
+	content := newInitSkillsGroup(options, &selected, &localOnly, true, true, "[1/3] ").Content()
+	for _, want := range []string{"Space or x toggles", "Enter confirms", "règles, références, exemples"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("skills screen missing %q: %s", want, content)
+		}
+	}
+	if got := initSkillsTitle(1, "[1/3] "); got != "[1/3] Skills (facultatif) — 1 skill sélectionnée" {
+		t.Errorf("one-skill title = %q", got)
+	}
+	if got := initSkillsTitle(0, ""); !strings.Contains(got, "0 skills sélectionnées") {
+		t.Errorf("zero-skill title = %q", got)
+	}
+	for _, want := range []string{"Où enregistrer les skills ?", "Avec le projet", "Sur ce poste uniquement", "rien n'est ajouté au dépôt"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("skills screen missing storage detail %q: %s", want, content)
+		}
+	}
+}
+
+func TestInitHuhWizardDefaultsSecuritySkillForNewProject(t *testing.T) {
+	root := initTestProject(t)
+	originalCatalogue, originalHuhRun := projectSkillCatalogueFn, huhRun
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return initSkillFixtureCatalogue(), nil
+	}
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() {
+		projectSkillCatalogueFn, huhRun = originalCatalogue, originalHuhRun
+	})
+	set := map[string]bool{
+		"root": true, "runtime": true, "isolation": true, "model": true,
+		"cpus": true, "memory-mb": true, "credential-ref": true,
+		"github": true, "mcps": true, "skills-storage": true,
+	}
+	opts := initOptions{Set: set, hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 8192}
+	got, err := askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh: %v", err)
+	}
+	if !got.SkillsSet || !equalStringSlices(got.Skills, []string{"official/securite-developpement"}) {
+		t.Fatalf("new-project default selection = %+v", got)
+	}
+}
+
+// Regression test for the zero-skills retry loop: the MCP and storage
+// choices submitted in the same pass as an empty skill selection must be
+// committed before the user declines the confirmation, because the next
+// form pass reseeds from answers and would otherwise reset them.
+func TestCommitInitHuhSubmissionKeepsSiblingChoicesForEmptySkillsRetry(t *testing.T) {
+	options := initSkillOptions(initSkillFixtureCatalogue())
+	answers := justcode.InitAnswers{
+		Skills:          []string{"official/rgaa"},
+		MCPConnectors:   []string{"github"},
+		SkillsLocalOnly: false,
+	}
+	opts := initOptions{Set: map[string]bool{}}
+	needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, nil, []string{"github", "browser"}, true, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryMCPs {
+		t.Fatal("a non-empty MCP submission must not reopen the form")
+	}
+	if !needsSkillsConfirm {
+		t.Fatal("an empty skills submission must request the zero-skills confirmation")
+	}
+	if !answers.SkillsSet || len(answers.Skills) != 0 {
+		t.Fatalf("empty submission = %+v", answers)
+	}
+	if !answers.MCPsSet || !equalStringSlices(answers.MCPConnectors, []string{"github", "browser"}) {
+		t.Fatalf("sibling MCP choice lost before the retry: %+v", answers)
+	}
+	if !answers.SkillsLocalOnlySet || !answers.SkillsLocalOnly {
+		t.Fatalf("sibling storage choice lost before the retry: %+v", answers)
+	}
+}
+
+func TestCommitInitHuhSubmissionRecordsRetainedSkills(t *testing.T) {
+	options := initSkillOptions(initSkillFixtureCatalogue())
+	answers := justcode.InitAnswers{Skills: []string{"official/rgaa", "official/ancienne"}}
+	// The MCP answer is flag-provided so the zero-MCP confirmation cannot
+	// run: this test pins the skills write-back, not the MCP gate.
+	opts := initOptions{Set: map[string]bool{"mcps": true}}
+	needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, []string{"official/rgaa", "official/ancienne"}, nil, false, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if needsSkillsConfirm || retryMCPs {
+		t.Fatal("a non-empty skills submission must not request any confirmation")
+	}
+	if answers.SkillsSet {
+		t.Fatalf("an unchanged submission must not mark the selection explicit: %+v", answers)
+	}
+	if !equalStringSlices(answers.RetainedSkills, []string{"official/ancienne"}) {
+		t.Fatalf("retained skills = %v, want the out-of-catalogue selection", answers.RetainedSkills)
+	}
+}
+
+// Declining the zero-MCP confirmation must reopen the form without writing
+// the empty MCP selection back and without committing the storage choice
+// submitted in the same pass: the next pass reseeds from answers, like the
+// line wizard.
+func TestCommitInitHuhSubmissionDeclinedMCPConfirmationKeepsPreviousSelection(t *testing.T) {
+	originalHuhRun := huhRun
+	// confirmNoMCPsHuh binds a false keep value, so a no-op stub declines.
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() { huhRun = originalHuhRun })
+	options := initSkillOptions(initSkillFixtureCatalogue())
+	answers := justcode.InitAnswers{
+		Skills:        []string{"official/rgaa"},
+		MCPConnectors: []string{"github"},
+	}
+	opts := initOptions{Set: map[string]bool{}}
+	needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, []string{"official/rgaa"}, nil, true, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retryMCPs {
+		t.Fatal("declining the zero-MCP confirmation must reopen the form")
+	}
+	if needsSkillsConfirm {
+		t.Fatal("a non-empty skills submission must not request the zero-skills confirmation")
+	}
+	if !equalStringSlices(answers.MCPConnectors, []string{"github"}) {
+		t.Fatalf("declining must keep the previous MCP selection: %+v", answers)
+	}
+	if answers.MCPsSet {
+		t.Fatalf("declining must not mark the MCP selection explicit: %+v", answers)
+	}
+	if answers.SkillsLocalOnlySet || answers.SkillsLocalOnly {
+		t.Fatalf("declining must not commit the storage choice: %+v", answers)
+	}
 }
 
 func TestHuhDiagnosticsPreservesLiteralPaths(t *testing.T) {
@@ -169,27 +325,49 @@ func TestIsTTYFileRejectsDevNull(t *testing.T) {
 	}
 }
 
-func TestRetainedSkillOptions(t *testing.T) {
-	catalogue := []justcode.ProjectSkill{{ID: "official/rgaa"}, {ID: "official/react-dsfr"}}
-	options := []huh.Option[string]{
-		huh.NewOption("official/rgaa", "official/rgaa"),
-		huh.NewOption("official/react-dsfr", "official/react-dsfr"),
+func TestRetainedSkillOptionsPreserveUnavailablePins(t *testing.T) {
+	catalogue := []justcode.ProjectSkill{{ID: "official/securite-developpement"}}
+	options := retainedSkillOptions(initSkillOptions(catalogue), []string{
+		"official/securite-developpement", "official/rgaa", "experimental/rag-parse",
+	})
+	if len(options) != 3 {
+		t.Fatalf("options = %d, want one offered and two retained", len(options))
 	}
-	// A pinned ID missing from today's catalogue is appended as a
-	// retained option; catalogue IDs are not duplicated.
-	got := retainedSkillOptions(options, catalogue, []string{"official/rgaa", "official/ghost-skill"})
-	if len(got) != 3 {
-		t.Fatalf("expected 3 options, got %d", len(got))
+	if options[0].Value != "official/securite-developpement" ||
+		options[1].Value != "official/rgaa" || options[2].Value != "experimental/rag-parse" {
+		t.Fatalf("retained option values = %v, %v, %v", options[0].Value, options[1].Value, options[2].Value)
 	}
-	if got[2].Value != "official/ghost-skill" {
-		t.Fatalf("expected retained option value official/ghost-skill, got %q", got[2].Value)
+	for _, option := range options[1:] {
+		if !strings.Contains(option.Key, "déjà configurée, non proposée") {
+			t.Errorf("retained option %q is not distinguished from new choices", option.Key)
+		}
 	}
-	if got[2].Key != "official/ghost-skill (pinned at an older revision)" {
-		t.Fatalf("unexpected retained option label %q", got[2].Key)
+	selected := []string{"official/securite-developpement", "official/rgaa", "experimental/rag-parse"}
+	localOnly := false
+	content := newInitSkillsGroup(options, &selected, &localOnly, true, false, "").Content()
+	for _, id := range []string{"official/rgaa (déjà configurée, non proposée)", "experimental/rag-parse (déjà configurée, non proposée)"} {
+		if !strings.Contains(content, id) {
+			t.Errorf("retained option is missing from the form: %s", content)
+		}
 	}
-	// The input options slice must not be mutated.
-	if len(options) != 2 {
-		t.Fatalf("input options mutated: %d", len(options))
+}
+
+func TestInitSkillsStepPrefixIsOmittedForPartialWizard(t *testing.T) {
+	if got := initSkillsStepPrefix(initOptions{}); got != "[1/3] " {
+		t.Fatalf("full wizard prefix = %q", got)
+	}
+	for _, field := range []string{"root", "runtime", "isolation", "model", "cpus", "memory-mb", "credential-ref", "github"} {
+		if got := initSkillsStepPrefix(initOptions{Set: map[string]bool{field: true}}); got != "" {
+			t.Errorf("prefix with %q supplied = %q", field, got)
+		}
+	}
+}
+
+func TestDecliningNoSkillsConfirmationKeepsTheReselectionEmpty(t *testing.T) {
+	answers := justcode.InitAnswers{Skills: []string{"official/securite-developpement"}}
+	keepEmptyInitSkillsForRetry(&answers)
+	if !answers.SkillsSet || len(answers.Skills) != 0 {
+		t.Fatalf("retry state = SkillsSet:%v Skills:%v; want explicit empty selection", answers.SkillsSet, answers.Skills)
 	}
 }
 

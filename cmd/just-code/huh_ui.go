@@ -58,13 +58,160 @@ var huhRun = func(form *huh.Form) error {
 // nothing (#156).
 const multiSelectKeyHint = "Space or x toggles an item; Enter confirms the list; / filters."
 
-func newProjectSkillsMultiSelect(skillOptions []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
+var initSkillDescriptions = map[string]string{
+	"official/securite-developpement": "règles de sécurité de l'État, issues des guides ANSSI",
+	"official/anssi-guides":           "trouver le bon guide ANSSI et le citer",
+	"official/rgaa":                   "accessibilité numérique (RGAA)",
+	"official/react-dsfr":             "interfaces React au Design System de l'État (DSFR)",
+	"official/lasuite-ui-kit":         "interfaces des applications La Suite (Docs, Drive…)",
+	"official/datagouv-apis":          "utiliser les API de data.gouv.fr",
+}
+
+var initSkillOrder = []string{
+	"official/securite-developpement", "official/anssi-guides", "official/rgaa",
+	"official/react-dsfr", "official/lasuite-ui-kit", "official/datagouv-apis",
+}
+
+func initSkillOptions(catalogue []justcode.ProjectSkill) []huh.Option[string] {
+	known := make(map[string]bool, len(catalogue))
+	for _, skill := range catalogue {
+		known[skill.ID] = true
+	}
+	options := make([]huh.Option[string], 0, len(initSkillOrder))
+	for _, id := range initSkillOrder {
+		if known[id] {
+			options = append(options, huh.NewOption(strings.TrimPrefix(id, "official/")+"   "+initSkillDescriptions[id], id))
+		}
+	}
+	return options
+}
+
+func initSkillInCatalogue(catalogue []justcode.ProjectSkill, id string) bool {
+	for _, skill := range catalogue {
+		if skill.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func retainedInitSkillIDs(selected []string, options []huh.Option[string]) []string {
+	offered := make(map[string]bool, len(options))
+	for _, option := range options {
+		offered[option.Value] = true
+	}
+	var retained []string
+	for _, id := range selected {
+		if !offered[id] {
+			retained = append(retained, id)
+		}
+	}
+	return retained
+}
+
+func retainedSkillOptions(options []huh.Option[string], selected []string) []huh.Option[string] {
+	retained := append([]huh.Option[string](nil), options...)
+	seen := make(map[string]bool, len(options)+len(selected))
+	for _, option := range options {
+		seen[option.Value] = true
+	}
+	for _, id := range selected {
+		if !seen[id] {
+			retained = append(retained, huh.NewOption(id+" (déjà configurée, non proposée)", id))
+			seen[id] = true
+		}
+	}
+	return retained
+}
+
+func initSkillsStepPrefix(opts initOptions) string {
+	for _, field := range []string{"root", "runtime", "isolation", "model", "cpus", "memory-mb", "credential-ref", "github"} {
+		if opts.Set[field] {
+			return ""
+		}
+	}
+	return "[1/3] "
+}
+
+func newProjectSkillsMultiSelect(skillOptions []huh.Option[string], value *[]string, stepPrefix string) *huh.MultiSelect[string] {
 	return huh.NewMultiSelect[string]().
-		Title("Project skills").
-		Description("Selected artifacts are pinned and installed inside the Microsandbox guest. " + multiSelectKeyHint).
+		TitleFunc(func() string { return initSkillsTitle(len(*value), stepPrefix) }, value).
+		Description("Une skill apporte à l'agent un savoir-faire de l'État : règles, références, exemples. Il s'en sert quand votre demande s'y rapporte. " + multiSelectKeyHint).
+		Height(len(skillOptions) + 10).
 		Filterable(true).
 		Options(skillOptions...).
 		Value(value)
+}
+
+func initSkillsTitle(count int, stepPrefix string) string {
+	return fmt.Sprintf("%sSkills (facultatif) — %s", stepPrefix, strings.TrimSuffix(initSkillsCountLabel(count), "."))
+}
+
+func keepEmptyInitSkillsForRetry(answers *justcode.InitAnswers) {
+	answers.Skills = nil
+	answers.SkillsSet = true
+}
+
+// commitInitHuhSubmission copies the submitted form values into answers.
+// It matches the line wizard's "Enter keeps" semantics: a submission only
+// marks a value explicit when it differs from the seeded value, so
+// accepting the defaults preserves the project's existing skill pins and
+// storage mode. huh rebuilds a MultiSelect's value in its own option
+// order, so it compares as sets: a reordered-but-identical selection is
+// not a change. Sibling choices are committed before the caller acts on
+// the skills decision, so a refused empty-skills retry keeps them.
+// The zero-MCP confirmation runs before the MCP and storage write-backs,
+// so declining it reopens the form with those answers unchanged, like
+// the line wizard. It reports whether the submission needs the
+// zero-skills confirmation, and whether the user declined the zero-MCP
+// confirmation.
+func commitInitHuhSubmission(opts initOptions, answers *justcode.InitAnswers, skills, mcps []string, skillsLocalOnly bool, skillOptions []huh.Option[string], skipSkills bool) (bool, bool, error) {
+	needsSkillsConfirm := false
+	if !skipSkills {
+		selectedSkills := append([]string(nil), skills...)
+		answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, selectedSkills)
+		answers.Skills = selectedSkills
+		answers.RetainedSkills = retainedInitSkillIDs(selectedSkills, skillOptions)
+		needsSkillsConfirm = len(skills) == 0
+	}
+	if !opts.Set["mcps"] {
+		if len(mcps) == 0 {
+			// Same zero-selection confirmation as the line wizard;
+			// declining reopens the form with the answers unchanged.
+			keep, confirmErr := confirmNoMCPsHuh()
+			if confirmErr != nil {
+				return false, false, confirmErr
+			}
+			if !keep {
+				return needsSkillsConfirm, true, nil
+			}
+		}
+		answers.MCPsSet = answers.MCPsSet || !equalStringSets(answers.MCPConnectors, mcps)
+		answers.MCPConnectors = mcps
+	}
+	if !opts.Set["skills-storage"] {
+		answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet || answers.SkillsLocalOnly != skillsLocalOnly
+		answers.SkillsLocalOnly = skillsLocalOnly
+	}
+	return needsSkillsConfirm, false, nil
+}
+
+func newInitSkillsGroup(skillOptions []huh.Option[string], skills *[]string, skillsLocalOnly *bool, includeSkills, includeStorage bool, stepPrefix string) *huh.Group {
+	fields := make([]huh.Field, 0, 2)
+	if includeSkills {
+		fields = append(fields, newProjectSkillsMultiSelect(skillOptions, skills, stepPrefix))
+	}
+	if includeStorage {
+		fields = append(fields, huh.NewSelect[bool]().
+			Title("Où enregistrer les skills ?").
+			Description("Avec le projet : elles sont versionnées et un coéquipier qui clone le projet les retrouve. Sur ce poste uniquement : rien n'est ajouté au dépôt.").
+			Options(huh.NewOption("Avec le projet", false), huh.NewOption("Sur ce poste uniquement", true)).
+			Value(skillsLocalOnly))
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return huh.NewGroup(fields...).Title("Skills")
 }
 
 func newProjectMCPsMultiSelect(mcpOptions []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
@@ -398,14 +545,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 	// instead and leave the answers untouched.
 	skipSkills := shouldSkipSkillsField(opts, catalogueErr)
 
-	skillOptions := make([]huh.Option[string], 0, len(catalogue))
-	for _, skill := range catalogue {
-		label := skill.ID
-		if skill.Experimental {
-			label += " [experimental]"
-		}
-		skillOptions = append(skillOptions, huh.NewOption(label, skill.ID))
-	}
+	skillOptions := initSkillOptions(catalogue)
 	mcpOptions := make([]huh.Option[string], 0)
 	for _, choice := range justcode.MCPSelections() {
 		mcpOptions = append(mcpOptions, huh.NewOption(choice.ID+" — "+choice.Description, choice.ID))
@@ -446,8 +586,11 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			// actually shows: an unchanged submission must not look
 			// like a new selection and re-resolve existing pins.
 			answers.Skills = append([]string(nil), current...)
+			if len(current) == 0 && !projectManifestExists(answers.Root) && initSkillInCatalogue(catalogue, "official/securite-developpement") {
+				skills = []string{"official/securite-developpement"}
+			}
 		}
-		skillOptionsPass := retainedSkillOptions(skillOptions, catalogue, skills)
+		skillOptionsPass := retainedSkillOptions(skillOptions, skills)
 		if !answers.MCPsSet {
 			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
 				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
@@ -555,26 +698,12 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			credentialGroup = huh.NewGroup(credentialFields...).Title("Credentials")
 		}
 
-		var skillsGroup *huh.Group
-		if !opts.Set["skills"] && !skipSkills {
-			skillsGroup = huh.NewGroup(
-				newProjectSkillsMultiSelect(skillOptionsPass, &skills),
-			).Title("Skills")
-		}
+		skillsGroup := newInitSkillsGroup(skillOptionsPass, &skills, &skillsLocalOnly,
+			!opts.Set["skills"] && !skipSkills, !opts.Set["skills-storage"], initSkillsStepPrefix(opts))
 
 		mcpFields := make([]huh.Field, 0, 2)
 		if !opts.Set["mcps"] {
 			mcpFields = append(mcpFields, newProjectMCPsMultiSelect(mcpOptionsPass, &mcps))
-		}
-		if !opts.Set["skills-storage"] {
-			mcpFields = append(mcpFields, huh.NewSelect[bool]().
-				Title("Skill storage").
-				Description("Versioned skills are committed with the project; local-only skills stay on this host.").
-				Options(
-					huh.NewOption("versioned", false),
-					huh.NewOption("local-only", true),
-				).
-				Value(&skillsLocalOnly))
 		}
 		var mcpGroup *huh.Group
 		if len(mcpFields) > 0 {
@@ -645,34 +774,24 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			answers.MemoryMB = memoryMB
 		}
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
-		// Match the line wizard's "Enter keeps" semantics: a form
-		// submission only marks the value explicit when it differs from
-		// the seeded value, so accepting the defaults preserves the
-		// project's existing skill pins and storage mode. huh rebuilds a
-		// MultiSelect's value in its own option order, so compare as
-		// sets: a reordered-but-identical selection is not a change.
-		if !skipSkills {
-			answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, skills)
-			answers.Skills = skills
+		needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, skills, mcps, skillsLocalOnly, skillOptions, skipSkills)
+		if err != nil {
+			return answers, err
 		}
-		if !opts.Set["mcps"] {
-			if len(mcps) == 0 {
-				// Same zero-selection confirmation as the line wizard;
-				// aborting reopens the wizard with the answers unchanged.
-				keep, err := confirmNoMCPsHuh()
-				if err != nil {
-					return answers, err
-				}
-				if !keep {
-					continue
-				}
+		if retryMCPs {
+			continue
+		}
+		if needsSkillsConfirm {
+			proceed, err := huhConfirm("Aucune skill sélectionnée. Continuer sans skill ? (O/n)", "Appuyez sur Entrée pour continuer, ou choisissez non pour revenir à la sélection.", true)
+			if err != nil {
+				return answers, err
 			}
-			answers.MCPsSet = answers.MCPsSet || !equalStringSets(answers.MCPConnectors, mcps)
-			answers.MCPConnectors = mcps
-		}
-		if !opts.Set["skills-storage"] {
-			answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet || answers.SkillsLocalOnly != skillsLocalOnly
-			answers.SkillsLocalOnly = skillsLocalOnly
+			if !proceed {
+				keepEmptyInitSkillsForRetry(&answers)
+				continue
+			}
+			answers.Skills = nil
+			answers.SkillsSet = true
 		}
 		// The GitHub step is a distinct screen, not a field of the main
 		// form: it renders one of the four situations and verifies on that
@@ -729,28 +848,6 @@ func equalStringSets(a, b []string) bool {
 // project's existing skills on submit.
 func shouldSkipSkillsField(opts initOptions, catalogueErr error) bool {
 	return opts.Set["skills"] || catalogueErr != nil
-}
-
-// retainedSkillOptions appends the project's pinned skill IDs that are
-// absent from today's catalogue as retained options. A MultiSelect
-// rebuilds its value from its options on submit, so an ID missing from
-// the current options would be silently dropped; a retained option keeps
-// the pin unless the user explicitly deselects it.
-func retainedSkillOptions(options []huh.Option[string], catalogue []justcode.ProjectSkill, selected []string) []huh.Option[string] {
-	retained := append([]huh.Option[string](nil), options...)
-	for _, id := range selected {
-		known := false
-		for _, skill := range catalogue {
-			if skill.ID == id {
-				known = true
-				break
-			}
-		}
-		if !known {
-			retained = append(retained, huh.NewOption(id+" (pinned at an older revision)", id))
-		}
-	}
-	return retained
 }
 
 // askGitHubStepHuh renders the GitHub step (3.9) as its own screen with one

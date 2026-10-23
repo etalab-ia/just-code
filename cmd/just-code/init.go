@@ -337,13 +337,18 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// and it resolves the root the same way the engine will (a path inside a
 	// worktree refers to the worktree's manifest).
 	wizardHostResources := justcode.HostResources{}
-	wizard := justcode.InitWizard{HostResources: &wizardHostResources, ValidateModel: func(model string) (string, error) {
-		root := answers.Root
-		if pc, err := justcode.DiscoverProject(root); err == nil {
-			root = pc.Root
-		}
-		return catalogueModelWarningFn(root, model)
-	}}
+	wizard := justcode.InitWizard{
+		HostResources: &wizardHostResources,
+		ResolveSkills: resolveInitProjectSkillsFn,
+		VerifySkills:  verifyInitProjectSkillsFn,
+		ValidateModel: func(model string) (string, error) {
+			root := answers.Root
+			if pc, err := justcode.DiscoverProject(root); err == nil {
+				root = pc.Root
+			}
+			return catalogueModelWarningFn(root, model)
+		},
+	}
 	// Flags are validated before any question: a typo on the command line must
 	// not send the user through six prompts to learn about it.
 	if err := validateInitOptions(opts); err != nil {
@@ -665,6 +670,11 @@ func containsConnector(ids []string, wanted string) bool {
 }
 
 var projectSkillCatalogueFn = justcode.ProjectSkillCatalogue
+var resolveInitProjectSkillsFn = justcode.ResolveProjectSkills
+var verifyInitProjectSkillsFn = func(ids []string, locks map[string]justcode.SkillLock) error {
+	_, err := justcode.LoadLockedSkillPackages(ids, locks)
+	return err
+}
 var detectHostResourcesFn = justcode.DetectHostResources
 
 func currentProjectSkillSelection(root string) ([]string, error) {
@@ -855,12 +865,9 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 	if !opts.Set["skills"] {
-		fmt.Println("\nProject skills — selected artifacts are pinned and installed inside the Microsandbox guest.")
-		catalogue, err := projectSkillCatalogueFn(context.Background())
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", err)
-		} else {
-			printProjectSkills(catalogue)
+		catalogue, catalogueErr := projectSkillCatalogueFn(context.Background())
+		if catalogueErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", catalogueErr)
 		}
 		if !answers.SkillsSet {
 			current, err := currentProjectSkillSelection(answers.Root)
@@ -868,59 +875,83 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 				return answers, fmt.Errorf("read current project skills: %w", err)
 			}
 			answers.Skills = current
-		}
-	skillInput:
-		for {
-			current := "none"
-			if len(answers.Skills) > 0 {
-				current = strings.Join(answers.Skills, ",")
-			}
-			answer, ok := promptLine(in, "  skills ["+current+"] (IDs, `search <term>`, `list`, `describe <id>`, `none`; Enter keeps): ")
-			if !ok || strings.TrimSpace(answer) == "" {
-				break
-			}
-			value := strings.TrimSpace(answer)
-			lower := strings.ToLower(value)
-			switch {
-			case lower == "none":
-				answers.Skills = nil
+			if catalogueErr == nil && len(current) == 0 && !projectManifestExists(answers.Root) && initSkillInCatalogue(catalogue, "official/securite-developpement") {
+				answers.Skills = []string{"official/securite-developpement"}
 				answers.SkillsSet = true
-				break skillInput
-			case lower == "list":
-				printProjectSkills(catalogue)
-			case strings.HasPrefix(lower, "search "):
-				matches := justcode.SearchProjectSkills(catalogue, strings.TrimSpace(value[len("search "):]))
-				if len(matches) == 0 {
-					fmt.Println("  No matching skills.")
-					continue
+			}
+		}
+		if catalogueErr == nil {
+			for {
+				printInitProjectSkills(answers.Skills, catalogue, initSkillsStepPrefix(opts))
+				current := strings.Join(initSkillNames(answers.Skills), ",")
+				if current == "" {
+					current = "aucune"
 				}
-				printProjectSkills(matches)
-			case strings.HasPrefix(lower, "describe "):
-				want := strings.TrimSpace(value[len("describe "):])
-				found := false
-				for _, skill := range catalogue {
-					if skill.ID == want {
-						label := skill.ID
-						if skill.Experimental {
-							label += " [experimental]"
+				answer, ok := promptLine(in, fmt.Sprintf("  Skills sélectionnées (%d) [%s] (noms séparés par des virgules; Entrée garde, `none` efface): ", len(answers.Skills), current))
+				if ok && strings.TrimSpace(answer) != "" {
+					value := strings.TrimSpace(answer)
+					if strings.EqualFold(value, "none") {
+						answers.Skills = nil
+						answers.SkillsSet = true
+					} else {
+						selected, err := parseInitSkillSelection(value)
+						if err != nil {
+							fmt.Printf("  %v. Corrigez votre sélection et réessayez.\n", err)
+							continue
 						}
-						fmt.Printf("  %s\n    %s\n", label, skill.Description)
-						found = true
-						break
+						selected = append(selected, retainedInitSkillIDs(answers.Skills, initSkillOptions(catalogue))...)
+						answers.Skills = selected
+						answers.SkillsSet = true
 					}
 				}
-				if !found {
-					fmt.Printf("  Unknown skill ID %q.\n", want)
+				if len(answers.Skills) > 0 {
+					break
 				}
-			default:
-				answers.Skills = nil
-				for _, id := range strings.Split(value, ",") {
-					answers.Skills = append(answers.Skills, strings.TrimSpace(id))
+				proceed, err := confirmNoInitSkills(in)
+				if err != nil {
+					return answers, err
 				}
-				answers.SkillsSet = true
-				break skillInput
+				if proceed {
+					answers.SkillsSet = true
+					break
+				}
+			}
+			// Skills absent from the catalogue cannot be resolved again:
+			// record them so Plan preserves their existing pins verbatim.
+			answers.RetainedSkills = retainedInitSkillIDs(answers.Skills, initSkillOptions(catalogue))
+		} else {
+			fmt.Println("La sélection actuelle est conservée. Relancez `just-code init` lorsque le catalogue est accessible pour modifier les skills.")
+		}
+	}
+	if !opts.Set["skills-storage"] {
+		localOnly := answers.SkillsLocalOnly
+		if !answers.SkillsLocalOnlySet {
+			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
+				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
+					localOnly = manifest.SkillsLocalOnly
+				}
 			}
 		}
+		defaultStorage := "Avec le projet"
+		if localOnly {
+			defaultStorage = "Sur ce poste uniquement"
+		}
+		fmt.Println("Où enregistrer les skills ?")
+		fmt.Println("  Avec le projet : elles sont versionnées, un coéquipier qui clone le projet les retrouve.")
+		fmt.Println("  Sur ce poste uniquement : rien n'est ajouté au dépôt.")
+		answer, ok := promptLine(in, "  stockage ["+defaultStorage+"]: ")
+		answers.SkillsLocalOnly = localOnly
+		if ok && strings.TrimSpace(answer) != "" {
+			switch strings.ToLower(strings.TrimSpace(answer)) {
+			case "projet", "avec le projet", "versioned":
+				answers.SkillsLocalOnly = false
+			case "poste", "sur ce poste uniquement", "local-only":
+				answers.SkillsLocalOnly = true
+			default:
+				return answers, fmt.Errorf("storage must be 'projet' or 'poste'")
+			}
+		}
+		answers.SkillsLocalOnlySet = true
 	}
 	if !opts.Set["mcps"] {
 		fmt.Printf("\n%s\n", justcode.MCPStepTitle)
@@ -996,33 +1027,6 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		host, detectErr := detectHostResourcesFn()
 		answers.BrowserResourceGuidance = justcode.BrowserResourceGuidance(host, answers.CPUs, answers.MemoryMB, detectErr)
 		fmt.Println("\n" + answers.BrowserResourceGuidance)
-	}
-	if !opts.Set["skills-storage"] {
-		localOnly := answers.SkillsLocalOnly
-		if !answers.SkillsLocalOnlySet {
-			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
-				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
-					localOnly = manifest.SkillsLocalOnly
-				}
-			}
-		}
-		defaultStorage := "versioned"
-		if localOnly {
-			defaultStorage = "local-only"
-		}
-		answer, ok := promptLine(in, "  skill storage (versioned or local-only) ["+defaultStorage+"]: ")
-		answers.SkillsLocalOnly = localOnly
-		if ok && strings.TrimSpace(answer) != "" {
-			switch strings.ToLower(strings.TrimSpace(answer)) {
-			case "versioned":
-				answers.SkillsLocalOnly = false
-			case "local-only":
-				answers.SkillsLocalOnly = true
-			default:
-				return answers, fmt.Errorf("skill storage must be versioned or local-only")
-			}
-		}
-		answers.SkillsLocalOnlySet = true
 	}
 	if !opts.Set["github"] {
 		// The GitHub step verifies on this screen and renders one distinct
@@ -1135,6 +1139,96 @@ func printProjectSkills(skills []justcode.ProjectSkill) {
 		desc := strings.Join(strings.Fields(skill.Description), " ")
 		fmt.Println(truncateLine(fmt.Sprintf("  %-36s %s", label, desc), 78))
 	}
+}
+
+func printInitProjectSkills(selected []string, catalogue []justcode.ProjectSkill, stepPrefix string) {
+	selectedSet := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		selectedSet[id] = true
+	}
+	fmt.Println("\n" + initSkillsTitle(len(selected), stepPrefix))
+	fmt.Println("Une skill apporte à l'agent un savoir-faire de l'État : règles, références, exemples.")
+	fmt.Println("Il s'en sert quand votre demande s'y rapporte.")
+	for _, id := range initSkillOrder {
+		check := " "
+		if selectedSet[id] {
+			check = "x"
+		}
+		name := strings.TrimPrefix(id, "official/")
+		line := fmt.Sprintf("  [%s] %s %s", check, name, initSkillDescriptions[id])
+		if ansi.StringWidth(line) > 80 {
+			fmt.Printf("  [%s] %s\n      %s\n", check, name, initSkillDescriptions[id])
+		} else {
+			fmt.Println(line)
+		}
+	}
+	fmt.Println("Saisissez un ou plusieurs noms séparés par des virgules. Entrée garde la sélection.")
+	fmt.Println(initSkillsCountLabel(len(selected)))
+	retained := retainedInitSkillIDs(selected, initSkillOptions(catalogue))
+	if len(retained) > 0 {
+		fmt.Printf("Skills déjà configurées hors de la liste conservées si vous saisissez de nouveaux noms : %s. `none` efface tout.\n",
+			strings.Join(initSkillNames(retained), ", "))
+	}
+}
+
+func initSkillsCountLabel(count int) string {
+	if count == 1 {
+		return "1 skill sélectionnée."
+	}
+	return fmt.Sprintf("%d skills sélectionnées.", count)
+}
+
+func initSkillNames(ids []string) []string {
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if strings.HasPrefix(id, "official/") {
+			names = append(names, strings.TrimPrefix(id, "official/"))
+		} else {
+			names = append(names, id)
+		}
+	}
+	return names
+}
+
+func parseInitSkillSelection(input string) ([]string, error) {
+	byName := make(map[string]string, len(initSkillOrder))
+	for _, id := range initSkillOrder {
+		byName[strings.TrimPrefix(id, "official/")] = id
+		byName[id] = id
+	}
+	var selected []string
+	seen := make(map[string]bool)
+	for _, name := range strings.Split(input, ",") {
+		name = strings.TrimSpace(name)
+		id, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown skill %q; choose one of the six listed names", name)
+		}
+		if !seen[id] {
+			selected = append(selected, id)
+			seen[id] = true
+		}
+	}
+	return selected, nil
+}
+
+func confirmNoInitSkills(in *bufio.Reader) (bool, error) {
+	fmt.Println("Aucune skill sélectionnée. Continuer sans skill ? (O/n)")
+	answer, ok := promptLine(in, "  ")
+	if !ok {
+		return false, errors.New("no answer for the empty skill selection confirmation")
+	}
+	answer = strings.TrimSpace(answer)
+	return answer == "" || strings.EqualFold(answer, "o") || strings.EqualFold(answer, "oui") || strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes"), nil
+}
+
+func projectManifestExists(root string) bool {
+	pc, err := justcode.DiscoverProject(root)
+	if err != nil {
+		return false
+	}
+	_, err = justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root))
+	return err == nil
 }
 
 // truncateLine caps the composed line at n terminal cells, so one catalogue
