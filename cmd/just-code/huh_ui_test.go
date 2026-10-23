@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -101,6 +102,31 @@ func TestInitSkillsAreTheSixDescribedOfficialEntries(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("skills screen missing storage detail %q: %s", want, content)
 		}
+	}
+}
+
+func TestInitHuhWizardDefaultsSecuritySkillForNewProject(t *testing.T) {
+	root := initTestProject(t)
+	originalCatalogue, originalHuhRun := projectSkillCatalogueFn, huhRun
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return initSkillFixtureCatalogue(), nil
+	}
+	huhRun = func(*huh.Form) error { return nil }
+	t.Cleanup(func() {
+		projectSkillCatalogueFn, huhRun = originalCatalogue, originalHuhRun
+	})
+	set := map[string]bool{
+		"root": true, "runtime": true, "isolation": true, "model": true,
+		"cpus": true, "memory-mb": true, "credential-ref": true,
+		"github": true, "mcps": true, "skills-storage": true,
+	}
+	opts := initOptions{Set: set, hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 8192}
+	got, err := askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
+	if err != nil {
+		t.Fatalf("askInitQuestionsHuh: %v", err)
+	}
+	if !got.SkillsSet || !equalStringSlices(got.Skills, []string{"official/securite-developpement"}) {
+		t.Fatalf("new-project default selection = %+v", got)
 	}
 }
 
@@ -209,27 +235,13 @@ func TestIsTTYFileRejectsDevNull(t *testing.T) {
 	}
 }
 
-func TestRetainedSkillOptions(t *testing.T) {
-	catalogue := []justcode.ProjectSkill{{ID: "official/rgaa"}, {ID: "official/react-dsfr"}}
-	options := []huh.Option[string]{
-		huh.NewOption("official/rgaa", "official/rgaa"),
-		huh.NewOption("official/react-dsfr", "official/react-dsfr"),
+func TestSplitInitSkillSelectionsKeepsNonOfferedSkillsWithoutDisplayingThem(t *testing.T) {
+	visible, retained := splitInitSkillSelections([]string{"experimental/rag-parse", "official/rgaa", "official/ghost-skill"})
+	if !equalStringSlices(visible, []string{"official/rgaa"}) {
+		t.Fatalf("visible selections = %v", visible)
 	}
-	// A pinned ID missing from today's catalogue is appended as a
-	// retained option; catalogue IDs are not duplicated.
-	got := retainedSkillOptions(options, catalogue, []string{"official/rgaa", "official/ghost-skill"})
-	if len(got) != 3 {
-		t.Fatalf("expected 3 options, got %d", len(got))
-	}
-	if got[2].Value != "official/ghost-skill" {
-		t.Fatalf("expected retained option value official/ghost-skill, got %q", got[2].Value)
-	}
-	if got[2].Key != "official/ghost-skill (pinned at an older revision)" {
-		t.Fatalf("unexpected retained option label %q", got[2].Key)
-	}
-	// The input options slice must not be mutated.
-	if len(options) != 2 {
-		t.Fatalf("input options mutated: %d", len(options))
+	if !equalStringSlices(retained, []string{"experimental/rag-parse", "official/ghost-skill"}) {
+		t.Fatalf("retained selections = %v", retained)
 	}
 }
 

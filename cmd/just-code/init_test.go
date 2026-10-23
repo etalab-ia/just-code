@@ -36,6 +36,28 @@ func stubProjectSkills(t *testing.T) {
 	t.Cleanup(func() { projectSkillCatalogueFn = original })
 }
 
+func stubInitSkillResolver(t *testing.T) {
+	t.Helper()
+	originalResolve, originalVerify := resolveInitProjectSkillsFn, verifyInitProjectSkillsFn
+	resolveInitProjectSkillsFn = func(_ context.Context, ids []string) ([]justcode.ProjectSkill, map[string]justcode.SkillLock, error) {
+		entries := make([]justcode.ProjectSkill, 0, len(ids))
+		locks := make(map[string]justcode.SkillLock, len(ids))
+		for _, id := range ids {
+			entries = append(entries, justcode.ProjectSkill{ID: id, Name: strings.TrimPrefix(id, "official/")})
+			locks[id] = justcode.SkillLock{
+				Repository: "https://github.com/etalab-ia/skills.git",
+				Revision:   strings.Repeat("a", 40),
+				SHA256:     strings.Repeat("b", 64),
+			}
+		}
+		return entries, locks, nil
+	}
+	verifyInitProjectSkillsFn = func([]string, map[string]justcode.SkillLock) error { return nil }
+	t.Cleanup(func() {
+		resolveInitProjectSkillsFn, verifyInitProjectSkillsFn = originalResolve, originalVerify
+	})
+}
+
 // stubWizardHuh forces the line-based wizard path. The scripted tests drive
 // initRun with tty=true and a string reader; the seam's production probe
 // would be false there (stdout is a pipe), but pinning it keeps the tests
@@ -207,7 +229,7 @@ func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 		return justcode.HostResources{CPUs: 1, MemoryMB: 6000}, nil
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
-	input := strings.Join([]string{"", "", "", "", "", "n", "", "", "", "y"}, "\n")
+	input := strings.Join([]string{"", "", "", "", "", "n", "", "", "", "", "y"}, "\n")
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -312,7 +334,7 @@ func TestInitSkipsGitHubQuestionWhenOriginUnusable(t *testing.T) {
 	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
 	// runtime, isolation, model, cpus, memory, credential-ref, skills, MCPs,
 	// skill storage, apply — the GitHub question is absent by design.
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -349,7 +371,7 @@ func TestInitGitHubQuestionResolvesOriginUpfront(t *testing.T) {
 	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
 	// runtime, isolation, model, cpus, memory, credential-ref, github=y,
 	// skills, MCPs, skill storage, apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "y", "", "", "", ""}, "\n") + "\n"
+	input := strings.Join([]string{"", "", "", "", "", "", "y", "", "", "", "", ""}, "\n") + "\n"
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -715,7 +737,7 @@ func TestClearingContext7WhenControlPlaneUnreachableProceedsWithWarning(t *testi
 func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
-	input := root + "\n\n\n\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, skills, storage, MCPs, apply
+	input := root + "\n\n\n\n\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, skills, no-skill confirmation, storage, MCPs, apply
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -740,6 +762,12 @@ func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
+	stubInitSkillResolver(t)
+	originalCatalogue := projectSkillCatalogueFn
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return initSkillFixtureCatalogue(), nil
+	}
+	t.Cleanup(func() { projectSkillCatalogueFn = originalCatalogue })
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	originalHostResources := detectHostResourcesFn
 	detectHostResourcesFn = func() (justcode.HostResources, error) {
@@ -747,7 +775,7 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 	input := strings.Join([]string{
-		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "context7", "versioned",
+		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "versioned", "context7",
 		"edit",
 		"", "", "", "", "", "", "", "", "", "", "", "",
 	}, "\n")
@@ -793,11 +821,17 @@ func TestBrowserResourceGuidanceRefreshesAfterResourceChanges(t *testing.T) {
 	}
 }
 
-func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
+func TestInitSkillPromptShowsSixChoicesAndConfirmsEmptySelection(t *testing.T) {
 	root := initTestProject(t)
 	originalCatalogue := projectSkillCatalogueFn
 	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
 		return []justcode.ProjectSkill{
+			{ID: "official/securite-developpement"},
+			{ID: "official/anssi-guides"},
+			{ID: "official/rgaa"},
+			{ID: "official/react-dsfr"},
+			{ID: "official/lasuite-ui-kit"},
+			{ID: "official/datagouv-apis"},
 			{ID: "experimental/example", Name: "example", Description: "fixture", Experimental: true},
 			{ID: "experimental/un-identifiant-vraiment-tres-long", Name: "long", Experimental: true,
 				Description: "Rechercher sémantiquement dans une base de connaissances indexée — description volontairement très longue et accentuée pour dépasser quatre-vingts colonnes."},
@@ -808,9 +842,9 @@ func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
 	set := map[string]bool{
 		"root": true, "runtime": true, "isolation": true, "model": true,
 		"cpus": true, "memory-mb": true, "credential-ref": true, "github": true,
-		"mcps": true, "skills-storage": true,
+		"mcps": true,
 	}
-	input := "search fixture\nexperimental/example\n"
+	input := "none\nn\nrgaa\nversioned\n"
 	var got justcode.InitAnswers
 	out := captureStdout(t, func() {
 		var err error
@@ -819,12 +853,72 @@ func TestInitSkillPromptSearchesCatalogueBeforeSelection(t *testing.T) {
 			t.Fatalf("askInitQuestions: %v", err)
 		}
 	})
-	if !got.SkillsSet || len(got.Skills) != 1 || got.Skills[0] != "experimental/example" {
-		t.Fatalf("searched selection = %+v", got)
+	if !got.SkillsSet || len(got.Skills) != 1 || got.Skills[0] != "official/rgaa" {
+		t.Fatalf("selected skills = %+v", got)
 	}
-	if strings.Count(out, "[experimental]") < 2 {
-		t.Fatalf("experimental entries must stay marked in catalogue and search results: %q", out)
+	for _, want := range []string{
+		"[1/3] Skills (facultatif)", "[x] securite-developpement", "[ ] anssi-guides",
+		"[ ] rgaa", "[ ] react-dsfr", "[ ] lasuite-ui-kit", "[ ] datagouv-apis",
+		"Aucune skill sélectionnée. Continuer sans skill ? (O/n)",
+		"Où enregistrer les skills ?", "règles de sécurité de l'État, issues des guides ANSSI",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("skills flow missing %q: %s", want, out)
+		}
 	}
+	for _, unwanted := range []string{"experimental/presentation-docs", "experimental/example", "usage-ia-agents-etat"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("skills screen must not offer %q: %s", unwanted, out)
+		}
+	}
+}
+
+func TestInitLineWizardDefaultsSecuritySkillForNewProject(t *testing.T) {
+	root := initTestProject(t)
+	originalCatalogue := projectSkillCatalogueFn
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return initSkillFixtureCatalogue(), nil
+	}
+	t.Cleanup(func() { projectSkillCatalogueFn = originalCatalogue })
+	set := map[string]bool{
+		"root": true, "runtime": true, "isolation": true, "model": true,
+		"cpus": true, "memory-mb": true, "credential-ref": true, "github": true,
+		"mcps": true, "skills-storage": true,
+	}
+	var got justcode.InitAnswers
+	out := captureStdout(t, func() {
+		var err error
+		got, err = askInitQuestions(bufio.NewReader(strings.NewReader("\n")), initOptions{Set: set}, justcode.InitAnswers{Root: root})
+		if err != nil {
+			t.Fatalf("askInitQuestions: %v", err)
+		}
+	})
+	if !got.SkillsSet || !equalStringSlices(got.Skills, []string{"official/securite-developpement"}) {
+		t.Fatalf("new-project default selection = %+v", got)
+	}
+	if !strings.Contains(out, "[x] securite-developpement") || !strings.Contains(out, "1 skill sélectionnée.") {
+		t.Fatalf("default skill and count not shown: %s", out)
+	}
+}
+
+func TestConfirmNoInitSkillsRequiresAnAnswer(t *testing.T) {
+	if proceed, err := confirmNoInitSkills(bufio.NewReader(strings.NewReader("\n"))); err != nil || !proceed {
+		t.Fatalf("empty answer should accept the default yes: proceed=%v err=%v", proceed, err)
+	}
+	if proceed, err := confirmNoInitSkills(bufio.NewReader(strings.NewReader("n\n"))); err != nil || proceed {
+		t.Fatalf("no answer should return to selection: proceed=%v err=%v", proceed, err)
+	}
+	if proceed, err := confirmNoInitSkills(bufio.NewReader(strings.NewReader(""))); err == nil || proceed {
+		t.Fatalf("EOF must not count as confirmation: proceed=%v err=%v", proceed, err)
+	}
+}
+
+func initSkillFixtureCatalogue() []justcode.ProjectSkill {
+	catalogue := make([]justcode.ProjectSkill, 0, len(initSkillOrder))
+	for _, id := range initSkillOrder {
+		catalogue = append(catalogue, justcode.ProjectSkill{ID: id})
+	}
+	return catalogue
 }
 
 func TestPrintProjectSkillsFitsEightyColumns(t *testing.T) {
@@ -1138,7 +1232,7 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	stubProjectSkills(t)
 	root := initTestProject(t)
 	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, skills, storage, MCPs, apply
-	input := "\n\nbackend\n\n\n\n\n\n\n\n\n\n"
+	input := "\n\nbackend\n\n\n\n\n\n\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.
