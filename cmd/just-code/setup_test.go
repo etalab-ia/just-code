@@ -682,7 +682,7 @@ func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
 	// Piped answers in wizard order: key with a trailing newline (the raw
-	// pipe line), empty model, no GitHub, empty identity (defaults), apply.
+	// pipe line), empty model, no GitHub, explicit identity, apply.
 	input := "test-key\n\nn\nTest User\ntest@example.test\ny\n"
 	var seenKey string
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
@@ -711,8 +711,7 @@ func TestSetupWizardUsesHostGitIdentity(t *testing.T) {
 	hostGitIdentityFn = func() (string, string) { return "Test User", "test@example.test" }
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
-	// Wizard order: key, empty model, no GitHub, empty name, empty email
-	// (both default), apply.
+	// The host identity is present, so the wizard skips both identity prompts.
 	input := "test-key\n\nn\n\n\n\ny\n"
 	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
 		func(context.Context, string) error { return nil },
@@ -750,12 +749,30 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 		t.Fatalf("cancel at apply must exit non-zero: code=%d err=%v", code, err)
 	}
 	m := readUserSettingsFile(t)
-	// The identity is persisted at its own stage (durable by design); the
-	// model must NOT be written by a cancelled apply.
 	if m != nil {
-		if _, ok := m["defaultModel"]; ok {
-			t.Fatalf("a cancelled apply must not write the model setting, got %v", m)
+		t.Fatalf("a cancelled setup must not write user settings, got %v", m)
+	}
+}
+
+func TestSetupWizardModifyReturnsToFirstStepWithExistingValues(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	input := "test-key\n\nn\nTest User\ntest@example.test\nm\n\n\n\n\n\na\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("wizard run: code=%d err=%v", code, err)
 		}
+	})
+	if strings.Count(out, "Récapitulatif") != 2 || !strings.Contains(out, "[G]arder  [R]emplacer") {
+		t.Fatalf("Modify should return to the first step with saved answers available:\n%s", out)
+	}
+	if settings := readUserSettingsFile(t); settings == nil {
+		t.Fatal("settings should be written after applying the edited setup")
 	}
 }
 
@@ -1368,6 +1385,11 @@ func TestSetupWizardGitHubValidFineGrainedToken(t *testing.T) {
 	}
 	if strings.Contains(out, "github_pat_secretvalue") {
 		t.Errorf("the token must never be displayed; output:\n%s", out)
+	}
+	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton enregistré, compte @moncompte", "Espace requis : environ 2 Go", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("recap is missing %q; output:\n%s", want, out)
+		}
 	}
 	if len(*calls) != 1 {
 		t.Errorf("expected exactly one probe call, got %d", len(*calls))

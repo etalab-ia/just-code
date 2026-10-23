@@ -134,7 +134,7 @@ func ensureMSBRuntime(ctx context.Context, client *http.Client) error {
 		_ = os.Remove(msbRuntimeMarker(home))
 	}
 
-	fmt.Printf("Downloading the verified Microsandbox runtime v%s...\n", msbRuntimeVersion)
+	fmt.Printf("[1/3] Téléchargement de la machine isolée v%s…\n", msbRuntimeVersion)
 	if client == nil {
 		client = &http.Client{Timeout: msbRuntimeHTTPTimeout}
 	}

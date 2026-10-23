@@ -317,8 +317,19 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		EnsureRuntime:  ensure,
 	}
 
+	editing := false
+setupStages:
 	// Stage: Albert credential (skipped when already stored this run).
-	if !justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
+	keepAlbert := false
+	if editing && justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
+		fmt.Println("Clé Albert API déjà enregistrée.")
+		choice, err := setupExistingCredentialChoice(in, "Garder la clé enregistrée", "Remplacer la clé")
+		if err != nil {
+			return 1, err
+		}
+		keepAlbert = choice == "keep"
+	}
+	if !keepAlbert && (editing || !justcode.ContainsCredentialKind(j.CredentialKinds, "albert")) {
 		fmt.Println(albertKeyScreenHeader(fallback))
 		// Resolve and verify the store BEFORE prompting: a locked or
 		// unavailable store must fail before the user types anything (the
@@ -375,6 +386,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			if err := w.PutCredential(ctx, justcode.CredentialAlbert, key); err != nil {
 				return 1, err
 			}
+			j.AlbertVerified = !probe.Unreachable
 			if probe.Unreachable {
 				// "Continuer sans vérifier": stored, but unvalidated.
 				fmt.Println("Clé enregistrée sans vérification.")
@@ -383,7 +395,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			}
 			break
 		}
-		j.CredentialKinds = append(j.CredentialKinds, "albert")
+		j.CredentialKinds = addCredentialKind(j.CredentialKinds, "albert")
 		if j.StoreKind == "" {
 			if store, err := w.ResolveStore(ctx); err == nil {
 				j.StoreKind = store.Kind()
@@ -489,7 +501,23 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	// blocks nothing: an unreadable answer (EOF, aborted form) anywhere in
 	// the stage is treated as "Plus tard", never as a cancellation — the
 	// stage exists to help, not to gate the rest of setup.
-	if !justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
+	hasGitHub := justcode.ContainsCredentialKind(j.CredentialKinds, "github")
+	keepGitHub := false
+	if editing && hasGitHub {
+		label := "Garder le jeton enregistré"
+		if j.GitHubLogin != "" {
+			label = "Garder le jeton enregistré (@" + j.GitHubLogin + ")"
+		}
+		choice, err := setupExistingCredentialChoice(in, label, "Remplacer le jeton")
+		if err != nil {
+			return 1, err
+		}
+		keepGitHub = choice == "keep"
+	}
+	if !keepGitHub && (editing || !justcode.ContainsCredentialKind(j.CredentialKinds, "github")) {
+		if editing {
+			j.SkipGitHub = false
+		}
 		if j.SkipGitHub {
 			// A resumed run keeps the earlier "no" without re-asking.
 		} else {
@@ -516,18 +544,25 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 				addGitHub = githubAddChoice(in)
 			}
 			stored := false
+			githubLogin := ""
 			if addGitHub {
 				var err error
-				stored, err = githubTokenStage(ctx, w, in)
+				stored, githubLogin, err = githubTokenStage(ctx, w, in)
 				if err != nil {
 					return 1, err
 				}
 			}
 			if stored {
-				j.CredentialKinds = append(j.CredentialKinds, "github")
+				j.CredentialKinds = addCredentialKind(j.CredentialKinds, "github")
+				j.GitHubLogin = githubLogin
 			} else {
-				fmt.Println(githubLaterMessage)
-				j.SkipGitHub = true
+				if hasGitHub {
+					fmt.Println("Le jeton déjà enregistré est conservé.")
+					j.SkipGitHub = true
+				} else {
+					fmt.Println(githubLaterMessage)
+					j.SkipGitHub = true
+				}
 			}
 			if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
 				return 1, err
@@ -536,18 +571,27 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	}
 
 	// Stage: git identity (editable, defaulting to the host git config).
-	if j.GitName == "" || j.GitEmail == "" {
+	if editing || j.GitName == "" || j.GitEmail == "" {
 		fmt.Println()
-		name, email := hostGitIdentityFn()
+		name, email := j.GitName, j.GitEmail
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(email) == "" {
+			hostName, hostEmail := hostGitIdentityFn()
+			if strings.TrimSpace(name) == "" {
+				name = hostName
+			}
+			if strings.TrimSpace(email) == "" {
+				email = hostEmail
+			}
+		}
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(email) == "" {
 			fmt.Println("L'agent signe ses commits à votre nom. Votre git config n'en contient pas : indiquez-les.")
 		}
 		if wizardHuhFn() {
 			var fields []huh.Field
-			if strings.TrimSpace(name) == "" {
+			if editing || strings.TrimSpace(name) == "" {
 				fields = append(fields, huh.NewInput().Title("Prénom et nom").Value(&name))
 			}
-			if strings.TrimSpace(email) == "" {
+			if editing || strings.TrimSpace(email) == "" {
 				fields = append(fields, huh.NewInput().Title("Adresse e-mail").Value(&email))
 			}
 			err := huhRun(huh.NewForm(huh.NewGroup(fields...)))
@@ -561,20 +605,26 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 				return 1, err
 			}
 		} else {
-			if strings.TrimSpace(name) == "" {
-				name, _ = promptLine(in, "Prénom et nom : ")
+			if editing || strings.TrimSpace(name) == "" {
+				prompted, _ := promptLine(in, identityPrompt("Prénom et nom", name))
+				if strings.TrimSpace(prompted) != "" {
+					name = prompted
+				}
 			}
-			if strings.TrimSpace(email) == "" {
-				email, _ = promptLine(in, "Adresse e-mail : ")
+			if editing || strings.TrimSpace(email) == "" {
+				prompted, _ := promptLine(in, identityPrompt("Adresse e-mail", email))
+				if strings.TrimSpace(prompted) != "" {
+					email = prompted
+				}
 			}
 		}
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(email) == "" {
 			return 1, fmt.Errorf("le nom et l'adresse e-mail sont nécessaires pour signer les commits")
 		}
-		if err := w.SaveIdentity(strings.TrimSpace(name), strings.TrimSpace(email)); err != nil {
+		j.GitName, j.GitEmail = strings.TrimSpace(name), strings.TrimSpace(email)
+		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
 			return 1, err
 		}
-		j.GitName, j.GitEmail = name, email
 	}
 
 	// Review.
@@ -584,12 +634,20 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	if fallback {
 		albertStore = "un fichier protégé"
 	}
-	fmt.Printf("  Clé Albert API      enregistrée dans %s\n", albertStore)
+	keyStatus := "vérifiée"
+	if !j.AlbertVerified {
+		keyStatus = "enregistrée, non vérifiée"
+	}
+	fmt.Printf("  Clé Albert API      enregistrée dans %s (%s)\n", albertStore, keyStatus)
 	if j.Preflight.DiskFreeBytes > 0 {
 		fmt.Printf("  Espace disque       %s disponibles\n", humanBytes(j.Preflight.DiskFreeBytes))
 	}
 	if justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
-		fmt.Println("  GitHub              jeton enregistré")
+		if j.GitHubLogin != "" {
+			fmt.Printf("  GitHub              jeton enregistré, compte @%s\n", j.GitHubLogin)
+		} else {
+			fmt.Println("  GitHub              jeton enregistré, compte non vérifié")
+		}
 	} else {
 		fmt.Println("  GitHub              plus tard")
 	}
@@ -608,24 +666,24 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		fmt.Println("  Modèles             Qwen3 Coder (par défaut)")
 	}
 	fmt.Println("\nÀ l'étape suivante, just-code télécharge et vérifie la machine isolée.")
-	fmt.Println("Environ 2 Go et quelques minutes selon votre connexion.")
-	apply := true
-	if wizardHuhFn() {
-		proceed, err := huhConfirm("Appliquer", "Installer et vérifier la machine isolée.", true)
-		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-			return 1, err
-		}
-		apply = err == nil && proceed
-	} else {
-		answer, _ := promptLine(in, "Appliquer ? [O/n] : ")
-		apply = !strings.EqualFold(strings.TrimSpace(answer), "n")
+	fmt.Println("Espace requis : environ 2 Go. Durée : quelques minutes selon votre connexion.")
+	choice, err := setupReviewChoice(in)
+	if err != nil {
+		return 1, err
 	}
-	if !apply {
-		return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+	switch choice {
+	case "edit":
+		editing = true
+		goto setupStages
+	case "quit":
+		return 1, fmt.Errorf("configuration non appliquée; aucun paramètre ni runtime n'a été appliqué")
 	}
 
 	// Apply: write the settings (only now — a cancelled apply must leave
 	// the settings untouched), then install the runtime.
+	if err := w.SaveIdentity(j.GitName, j.GitEmail); err != nil {
+		return 1, err
+	}
 	if err := w.SaveSettings(model, models, modelAnswered); err != nil {
 		return 1, err
 	}
@@ -642,6 +700,86 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 func setupCompletionMessage() string {
 	return "Configuration terminée.\n\nÉtape suivante, dans le dossier d'un projet :\n  cd mon-projet\n  just-code\n\nVérifier l'installation à tout moment : just-code setup doctor"
+}
+
+func setupReviewChoice(in *bufio.Reader) (string, error) {
+	if wizardHuhFn() {
+		choice := "apply"
+		err := huhRun(huh.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Que souhaitez-vous faire ?").
+				Options(
+					huh.NewOption("Appliquer", "apply"),
+					huh.NewOption("Modifier (retour à l'étape 1)", "edit"),
+					huh.NewOption("Quitter sans appliquer la configuration", "quit"),
+				).
+				Value(&choice),
+		)))
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "quit", nil
+		}
+		return choice, err
+	}
+	for {
+		answer, ok := promptLine(in, "[A] Appliquer  [M] Modifier  [Q] Quitter : ")
+		if !ok {
+			return "quit", nil
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "a", "appliquer", "o", "y", "yes":
+			return "apply", nil
+		case "m", "modifier":
+			return "edit", nil
+		case "q", "quitter", "n":
+			return "quit", nil
+		default:
+			fmt.Println("Réponse non reconnue.")
+		}
+	}
+}
+
+func setupExistingCredentialChoice(in *bufio.Reader, keepLabel, replaceLabel string) (string, error) {
+	if wizardHuhFn() {
+		choice := "keep"
+		err := huhRun(huh.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Identifiant déjà enregistré").
+				Options(huh.NewOption(keepLabel, "keep"), huh.NewOption(replaceLabel, "replace")).
+				Value(&choice),
+		)))
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "keep", nil
+		}
+		return choice, err
+	}
+	for {
+		answer, ok := promptLine(in, "[G]arder  [R]emplacer : ")
+		if !ok {
+			return "keep", nil
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "g", "garder":
+			return "keep", nil
+		case "r", "remplacer":
+			return "replace", nil
+		default:
+			fmt.Println("Réponse non reconnue.")
+		}
+	}
+}
+
+func identityPrompt(title, current string) string {
+	if strings.TrimSpace(current) == "" {
+		return title + " : "
+	}
+	return title + " [" + current + "] : "
+}
+
+func addCredentialKind(kinds []string, kind string) []string {
+	if !justcode.ContainsCredentialKind(kinds, kind) {
+		return append(kinds, kind)
+	}
+	return kinds
 }
 
 func hostGitIdentity() (string, string) {
@@ -1262,40 +1400,40 @@ const (
 // a refusal, warn on a broad-scope token. It returns stored=true once a
 // token is in the store. Every exit that stores nothing (empty answer,
 // aborted form, EOF) is the penalty-free "Plus tard" outcome.
-func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader) (bool, error) {
+func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader) (bool, string, error) {
 	// Resolve and verify the store BEFORE prompting: a locked or
 	// unavailable store must fail before the user types a secret (the same
 	// contract the Albert stage keeps).
 	if _, err := w.ResolveStore(ctx); err != nil {
-		return false, err
+		return false, "", err
 	}
 	for {
 		var token string
 		if wizardHuhFn() {
 			value, err := huhSecret("Jeton GitHub", "L'entrée est masquée. Laissez vide pour passer cette étape.")
 			if errors.Is(err, huh.ErrUserAborted) {
-				return false, nil
+				return false, "", nil
 			}
 			if err != nil {
-				return false, err
+				return false, "", err
 			}
 			token = value
 		} else {
 			value, ok := promptSecret(in, githubTokenPrompt)
 			if !ok {
-				return false, nil
+				return false, "", nil
 			}
 			token = value
 		}
 		if token == "" {
-			return false, nil
+			return false, "", nil
 		}
 		// Validate BEFORE writing: a token the user has not accepted (or
 		// GitHub has not accepted) must not reach the store, or a later
 		// setup would skip this screen and use it.
 		probe, err := w.ValidateCredential(ctx, justcode.CredentialGithub, token)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if probe.Rejected {
 			fmt.Println(githubRefusedMessage)
@@ -1306,7 +1444,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			fmt.Printf("%s (%s)\n", githubUnreachableMessage, probe.Detail)
 			retry, abort := credentialRetryChoice(in, githubUnreachableMessage)
 			if abort {
-				return false, nil
+				return false, "", nil
 			}
 			if retry {
 				fmt.Println()
@@ -1316,7 +1454,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 		if probe.BroadScope {
 			replace, abort := githubClassicChoice(in)
 			if abort {
-				return false, nil
+				return false, "", nil
 			}
 			if replace {
 				fmt.Println()
@@ -1324,7 +1462,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			}
 		}
 		if err := w.PutCredential(ctx, justcode.CredentialGithub, token); err != nil {
-			return false, err
+			return false, "", err
 		}
 		switch {
 		case probe.Unreachable:
@@ -1335,7 +1473,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 		default:
 			fmt.Println("✅ Jeton valide.")
 		}
-		return true, nil
+		return true, probe.Login, nil
 	}
 }
 

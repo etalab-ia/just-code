@@ -39,13 +39,15 @@ func TestSetupJournalRoundTrip(t *testing.T) {
 	}
 	j.Stage = StageCredential
 	j.CredentialKinds = []string{"albert"}
+	j.AlbertVerified = true
+	j.GitHubLogin = "kaaloo"
 	j.GitName = "N"
 	j.DefaultModel = "m"
 	if err := WriteSetupJournal(DefaultFS, dir, j); err != nil {
 		t.Fatal(err)
 	}
 	got, err := ReadSetupJournal(DefaultFS, dir)
-	if err != nil || got.Stage != StageCredential || len(got.CredentialKinds) != 1 || got.GitName != "N" {
+	if err != nil || got.Stage != StageCredential || len(got.CredentialKinds) != 1 || got.GitName != "N" || !got.AlbertVerified || got.GitHubLogin != "kaaloo" {
 		t.Fatalf("round trip: %+v, %v", got, err)
 	}
 	if err := RemoveSetupJournal(DefaultFS, dir); err != nil {
