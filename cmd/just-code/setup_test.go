@@ -12,18 +12,82 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/huh/v2"
+	tea "charm.land/bubbletea/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
+func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T) {
+	choices := justcode.CuratedAlbertModels()
+	picker := setupModelPicker{
+		choices: choices,
+		selected: map[string]bool{
+			choices[0].ID: true,
+			choices[1].ID: true,
+		},
+		available:    map[string]bool{},
+		defaultModel: choices[0].Ref(),
+	}
+	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	accepted := updated.(setupModelPicker)
+	if !accepted.done || accepted.defaultModel != choices[0].Ref() {
+		t.Fatalf("Enter should accept the preselected defaults: %+v", accepted)
+	}
+
+	picker.done = false
+	picker.cursor = 2
+	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	picker = updated.(setupModelPicker)
+	if !picker.selected[choices[2].ID] {
+		t.Fatal("Space should add the highlighted model")
+	}
+	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	picker = updated.(setupModelPicker)
+	if picker.defaultModel != choices[2].Ref() {
+		t.Fatalf("right arrow should mark the cursor model as default: %q", picker.defaultModel)
+	}
+	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	accepted = updated.(setupModelPicker)
+	if !accepted.done || accepted.defaultModel != choices[2].Ref() || !accepted.selected[choices[2].ID] {
+		t.Fatal("Enter should submit the model set and its default together")
+	}
+}
+
+func TestSetupModelPickerRefusesUnavailableModel(t *testing.T) {
+	choices := justcode.CuratedAlbertModels()
+	picker := setupModelPicker{
+		choices: choices,
+		selected: map[string]bool{
+			choices[0].ID: true,
+		},
+		available: map[string]bool{
+			choices[0].ID: true,
+			choices[1].ID: false,
+		},
+		catalogueChecked: true,
+		defaultModel:     choices[0].Ref(),
+		cursor:           1,
+	}
+	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	picker = updated.(setupModelPicker)
+	if picker.selected[choices[1].ID] {
+		t.Fatal("unavailable model must not be added to the selection")
+	}
+	if picker.errorMessage == "" {
+		t.Fatal("unavailable selection should explain why it cannot be toggled")
+	}
+}
+
 func TestPromptSetupModelsKeepsDefaultsWhenCatalogueIsUnavailable(t *testing.T) {
-	previousCatalogue, previousRun := setupModelCatalogueFn, huhRun
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
 	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
 		return justcode.Catalogue{}, false, errors.New("catalogue offline")
 	}
-	huhRun = func(*huh.Form) error { return nil }
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		picker.done = true
+		return picker, nil
+	}
 	t.Cleanup(func() {
-		setupModelCatalogueFn, huhRun = previousCatalogue, previousRun
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
 	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
@@ -39,14 +103,17 @@ func TestPromptSetupModelsKeepsDefaultsWhenCatalogueIsUnavailable(t *testing.T) 
 }
 
 func TestPromptSetupModelsDropsUnavailableDefaults(t *testing.T) {
-	previousCatalogue, previousRun := setupModelCatalogueFn, huhRun
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
 	choices := justcode.CuratedAlbertModels()
 	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
 		return justcode.Catalogue{Models: []justcode.CatalogueModel{{ID: choices[0].ID, Type: "text-generation"}}}, true, nil
 	}
-	huhRun = func(*huh.Form) error { return nil }
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		picker.done = true
+		return picker, nil
+	}
 	t.Cleanup(func() {
-		setupModelCatalogueFn, huhRun = previousCatalogue, previousRun
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
 	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())

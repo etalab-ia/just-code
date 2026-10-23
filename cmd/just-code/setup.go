@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
@@ -724,6 +725,164 @@ var setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
 	return cache.Load(context.Background())
 }
 
+type setupModelPicker struct {
+	choices          []justcode.AlbertModelChoice
+	selected         map[string]bool
+	available        map[string]bool
+	catalogueChecked bool
+	cursor           int
+	defaultModel     string
+	errorMessage     string
+	cancelled        bool
+	done             bool
+}
+
+func (m setupModelPicker) Init() tea.Cmd { return nil }
+
+func (m setupModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(tea.InterruptMsg); ok {
+		m.cancelled = true
+		return m, tea.Quit
+	}
+	key, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return m, nil
+	}
+	if (key.Mod&tea.ModCtrl != 0 && key.Code == 'c') || key.Code == tea.KeyEscape {
+		m.cancelled = true
+		return m, tea.Quit
+	}
+	choice := m.choices[m.cursor]
+	switch key.Code {
+	case tea.KeyUp:
+		m.cursor = (m.cursor + len(m.choices) - 1) % len(m.choices)
+		m.errorMessage = ""
+	case tea.KeyDown:
+		m.cursor = (m.cursor + 1) % len(m.choices)
+		m.errorMessage = ""
+	case tea.KeySpace:
+		if !m.isAvailable(choice.ID) {
+			m.errorMessage = "Ce modèle est indisponible dans le catalogue Albert API."
+			break
+		}
+		if m.selected[choice.ID] {
+			if m.selectedCount() == 1 {
+				m.errorMessage = "Sélectionnez au moins un modèle."
+				break
+			}
+			delete(m.selected, choice.ID)
+			if m.defaultModel == choice.Ref() {
+				m.defaultModel = m.firstSelectedRef()
+			}
+		} else {
+			m.selected[choice.ID] = true
+		}
+		m.errorMessage = ""
+	case tea.KeyLeft, tea.KeyRight:
+		if !m.selected[choice.ID] {
+			m.errorMessage = "Cochez d'abord le modèle choisi par défaut."
+			break
+		}
+		if !m.isAvailable(choice.ID) {
+			m.errorMessage = "Ce modèle est indisponible dans le catalogue Albert API."
+			break
+		}
+		m.defaultModel = choice.Ref()
+		m.errorMessage = ""
+	case tea.KeyEnter:
+		if m.selectedCount() == 0 {
+			m.errorMessage = "Sélectionnez au moins un modèle."
+			break
+		}
+		if m.defaultModel == "" || !m.defaultModelSelected() {
+			m.defaultModel = m.firstSelectedRef()
+		}
+		m.done = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m setupModelPicker) View() tea.View {
+	var b strings.Builder
+	b.WriteString("[2/3] Sélection des modèles à utiliser\n\n")
+	b.WriteString("Choisissez les modèles Albert API que l'agent pourra utiliser.\n")
+	b.WriteString("Vous pourrez passer de l'un à l'autre pendant une session avec /models.\n\n")
+	for index, choice := range m.choices {
+		cursor := "  "
+		if index == m.cursor {
+			cursor = "> "
+		}
+		mark := "[ ]"
+		if m.selected[choice.ID] {
+			mark = "[x]"
+		}
+		line := fmt.Sprintf("%s%s %-19s %s", cursor, mark, choice.Name, choice.Description)
+		if m.defaultModel == choice.Ref() {
+			line += " (par défaut)"
+		}
+		if !m.isAvailable(choice.ID) {
+			line += " (indisponible)"
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\nEspace : cocher ou décocher.  ← → : choisir le modèle par défaut.  Entrée : valider.\n")
+	b.WriteString("Détails : https://guides.ia.numerique.gouv.fr/albert-api/modeles/available-models\n")
+	b.WriteString("Vous pourrez modifier ce choix plus tard avec : just-code setup")
+	if m.errorMessage != "" {
+		b.WriteString("\n\n" + m.errorMessage)
+	}
+	return tea.NewView(b.String())
+}
+
+func (m setupModelPicker) isAvailable(id string) bool {
+	return !m.catalogueChecked || m.available[id]
+}
+
+func (m setupModelPicker) selectedCount() int {
+	count := 0
+	for id, selected := range m.selected {
+		if selected && m.isAvailable(id) {
+			count++
+		}
+	}
+	return count
+}
+
+func (m setupModelPicker) firstSelectedRef() string {
+	for _, choice := range m.choices {
+		if m.selected[choice.ID] && m.isAvailable(choice.ID) {
+			return choice.Ref()
+		}
+	}
+	return ""
+}
+
+func (m setupModelPicker) defaultModelSelected() bool {
+	for _, choice := range m.choices {
+		if choice.Ref() == m.defaultModel {
+			return m.selected[choice.ID] && m.isAvailable(choice.ID)
+		}
+	}
+	return false
+}
+
+var setupModelPickerRun = func(initial setupModelPicker) (setupModelPicker, error) {
+	result, err := tea.NewProgram(initial, tea.WithOutput(os.Stdout)).Run()
+	if err != nil {
+		return initial, err
+	}
+	final, ok := result.(setupModelPicker)
+	if !ok {
+		return initial, fmt.Errorf("model picker returned an unexpected state")
+	}
+	if final.cancelled {
+		return final, huh.ErrUserAborted
+	}
+	return final, nil
+}
+
 func promptSetupModels(current []string, currentDefault string) ([]string, string, bool, error) {
 	choices := justcode.CuratedAlbertModels()
 	catalogue, fresh, catalogueErr := setupModelCatalogueFn()
@@ -741,118 +900,52 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 	if len(current) == 0 {
 		current = defaultSetupModelIDs()
 	}
-	var curatedSelection []string
+	var selectedIDs []string
 	for _, choice := range choices {
-		if containsString(current, choice.ID) {
-			curatedSelection = append(curatedSelection, choice.ID)
+		if containsString(current, choice.ID) && (catalogueErr != nil || available[choice.ID]) {
+			selectedIDs = append(selectedIDs, choice.ID)
 		}
 	}
-	if len(curatedSelection) > 0 {
-		current = curatedSelection
-	} else {
-		current = defaultSetupModelIDs()
-	}
-	if catalogueErr == nil {
-		availableCount := 0
+	if len(selectedIDs) == 0 {
 		for _, choice := range choices {
-			if available[choice.ID] {
-				availableCount++
+			if catalogueErr != nil || available[choice.ID] {
+				selectedIDs = append(selectedIDs, choice.ID)
+				break
 			}
 		}
-		if availableCount > 0 {
-			var availableSelection []string
-			for _, id := range current {
-				if available[id] {
-					availableSelection = append(availableSelection, id)
-				}
-			}
-			if len(availableSelection) == 0 {
-				for _, choice := range choices {
-					if available[choice.ID] {
-						availableSelection = append(availableSelection, choice.ID)
-						break
-					}
-				}
-			}
-			current = availableSelection
-		}
 	}
-	selected := append([]string(nil), current...)
-	var selectedDefault string
-	for _, choice := range choices {
-		if choice.Ref() == currentDefault && containsString(selected, choice.ID) {
-			selectedDefault = choice.Ref()
-			break
-		}
+	if len(selectedIDs) == 0 {
+		return nil, "", false, fmt.Errorf("aucun modèle sélectionné n'est disponible dans le catalogue Albert API")
 	}
-	if selectedDefault == "" && len(selected) > 0 {
-		selectedDefault = setupModelRef(selected[0])
+	selected := make(map[string]bool, len(selectedIDs))
+	for _, id := range selectedIDs {
+		selected[id] = true
 	}
-	if selectedDefault == "" {
-		selectedDefault = defaultSetupModel()
+	defaultModel := currentDefault
+	if !setupModelEnabled(defaultModel, selectedIDs) {
+		defaultModel = setupModelRef(selectedIDs[0])
 	}
-	options := make([]huh.Option[string], 0, len(choices))
-	labels := make(map[string]string, len(choices))
-	for _, choice := range choices {
-		label := fmt.Sprintf("%-20s %s", choice.Name, choice.Description)
-		if choice.Ref() == selectedDefault {
-			label += " (par défaut)"
-		}
-		if catalogueErr == nil && !available[choice.ID] {
-			label = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(label + " (indisponible)")
-		}
-		labels[choice.ID] = label
-		isSelected := containsString(selected, choice.ID)
-		options = append(options, huh.NewOption(label, choice.ID).Selected(isSelected))
+	initial := setupModelPicker{
+		choices:          choices,
+		selected:         selected,
+		available:        available,
+		catalogueChecked: catalogueErr == nil,
+		defaultModel:     defaultModel,
 	}
-	fmt.Println("[2/3] Sélection des modèles à utiliser")
-	fmt.Println("Choisissez les modèles Albert API que l'agent pourra utiliser.")
-	fmt.Println("Vous pourrez passer de l'un à l'autre pendant une session, avec la commande /models.")
-	fmt.Println("Détails : https://guides.ia.numerique.gouv.fr/albert-api/modeles/available-models")
-	if err := huhRun(huh.NewForm(huh.NewGroup(
-		huh.NewMultiSelect[string]().
-			Title("Modèles disponibles").
-			Description("Espace : cocher ou décocher. Entrée : valider la liste. Vous pourrez modifier ce choix avec just-code setup.").
-			Options(options...).
-			Value(&selected).
-			Validate(func(values []string) error {
-				if len(values) == 0 {
-					return fmt.Errorf("sélectionnez au moins un modèle")
-				}
-				if catalogueErr == nil {
-					for _, value := range values {
-						if !available[value] {
-							return fmt.Errorf("ce modèle est indisponible dans le catalogue Albert API")
-						}
-					}
-				}
-				return nil
-			}),
-	))); err != nil {
+	picked, err := setupModelPickerRun(initial)
+	if err != nil {
 		return nil, "", false, err
 	}
-	if len(selected) == 0 {
-		return nil, "", false, fmt.Errorf("sélectionnez au moins un modèle")
+	if !picked.done || picked.selectedCount() == 0 {
+		return nil, "", false, fmt.Errorf("sélectionnez au moins un modèle disponible")
 	}
-	if !setupModelEnabled(selectedDefault, selected) {
-		selectedDefault = setupModelRef(selected[0])
-	}
-	defaults := make([]huh.Option[string], 0, len(selected))
+	var modelIDs []string
 	for _, choice := range choices {
-		if containsString(selected, choice.ID) {
-			defaults = append(defaults, huh.NewOption(labels[choice.ID], choice.Ref()).Selected(choice.Ref() == selectedDefault))
+		if picked.selected[choice.ID] && picked.isAvailable(choice.ID) {
+			modelIDs = append(modelIDs, choice.ID)
 		}
 	}
-	if err := huhRun(huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Modèle par défaut").
-			Description("↑ ↓ : choisir le modèle utilisé par défaut.").
-			Options(defaults...).
-			Value(&selectedDefault),
-	))); err != nil {
-		return nil, "", false, err
-	}
-	return selected, selectedDefault, true, nil
+	return modelIDs, picked.defaultModel, true, nil
 }
 
 func containsString(values []string, want string) bool {
