@@ -94,3 +94,23 @@ func TestResolveCredentialRefReadsTheProjectRoot(t *testing.T) {
 		t.Fatalf("env override = %q", got)
 	}
 }
+
+func TestResolveGlobalCredentialRefIgnoresProjectManifest(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("JUST_CODE_CREDENTIAL_REF", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := os.MkdirAll(justcode.ProjectStateDir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(justcode.ProjectManifestPath(root), []byte(`{"schemaVersion":1,"credentialRef":"project-only"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	if got := resolveGlobalCredentialRef(); got != "" {
+		t.Fatalf("global credential ref = %q; project manifest must not affect it", got)
+	}
+	if got := resolveCredentialRef(root); got != "project-only" {
+		t.Fatalf("project credential ref = %q; project-specific resolution should remain intact", got)
+	}
+}

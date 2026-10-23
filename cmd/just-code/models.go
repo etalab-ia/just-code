@@ -101,10 +101,15 @@ func resolveAlbertKeyForCatalogue() (string, error) {
 // so a command configuring one directory does not read another's
 // credentialRef (the reference lives in the project manifest).
 func resolveAlbertKeyForCatalogueAt(projectRoot string) (string, error) {
-	cfg := justcode.Config{
-		CredentialRef: resolveCredentialRef(projectRoot),
-		APIKey:        os.Getenv("ALBERT_API_KEY"),
-	}
+	return resolveAlbertKeyForCredentialRef(resolveCredentialRef(projectRoot))
+}
+
+func resolveAlbertKeyForGlobalCatalogue() (string, error) {
+	return resolveAlbertKeyForCredentialRef(resolveGlobalCredentialRef())
+}
+
+func resolveAlbertKeyForCredentialRef(credentialRef string) (string, error) {
+	cfg := justcode.Config{CredentialRef: credentialRef, APIKey: os.Getenv("ALBERT_API_KEY")}
 	v, _, _, _, err := justcode.ResolveAlbert(ctxForCatalogue(), cfg, "")
 	if err != nil {
 		return "", fmt.Errorf("an Albert credential is needed to fetch the model catalogue: %w", err)
