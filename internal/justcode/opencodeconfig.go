@@ -38,13 +38,13 @@ type ManagedOverlay struct {
 
 // AlbertModelConfig is one curated model exposed by the managed Albert provider.
 type AlbertModelConfig struct {
-	ID          string
-	ModelID     string
-	Name        string
-	Context     int
-	Output      int
-	RequestBody map[string]any
-	Vision      bool
+	ID          string         `json:"id"`
+	ModelID     string         `json:"modelID,omitempty"`
+	Name        string         `json:"name"`
+	Context     int            `json:"context,omitempty"`
+	Output      int            `json:"output,omitempty"`
+	RequestBody map[string]any `json:"requestBody,omitempty"`
+	Vision      bool           `json:"vision,omitempty"`
 }
 
 // opencodeManagedField describes one top-level field the overlay may set.

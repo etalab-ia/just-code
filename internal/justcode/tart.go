@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -289,30 +290,36 @@ func (t *Tart) guestRun(ctx context.Context, args ...string) error {
 	return runOK(t.Runner, ctx, "tart", full...)
 }
 
-// BackendArgs returns the argv for the detached bootstrap invocation:
-// `tart exec -i <vm> <local binary> __guest-bootstrap <port> <username> <mtu> <model> <gitName> <gitEmail>`.
-// Secrets are deliberately absent: they travel on stdin only. The model
-// selection (P10) and the git identity (P11) ride argv: both are non-secret
-// managed configuration.
-func BackendArgs(vm, localBinary, port, username, mtu, model, gitName, gitEmail string, mcps ...string) []string {
+// BackendArgs returns the argv for the detached bootstrap invocation. The
+// enabled model definitions and MCP selection are non-secret configuration;
+// credentials remain on stdin.
+func BackendArgs(vm, localBinary, port, username, mtu, model string, models []AlbertModelConfig, gitName, gitEmail string, mcps ...string) ([]string, error) {
+	modelsJSON, err := json.Marshal(models)
+	if err != nil {
+		return nil, fmt.Errorf("encode guest Albert model configuration: %w", err)
+	}
 	args := []string{"exec", "-i", vm, localBinary}
-	return append(args, guestBootstrapArgs(port, username, mtu, model, gitName, gitEmail, mcps)...)
+	return append(args, guestBootstrapArgs(port, username, mtu, model, string(modelsJSON), gitName, gitEmail, mcps)...), nil
 }
 
-func guestBootstrapArgs(port, username, mtu, model, gitName, gitEmail string, mcps []string) []string {
-	args := []string{GuestBootstrapCommand, port, username, mtu, model, gitName, gitEmail}
+func guestBootstrapArgs(port, username, mtu, model, modelsJSON, gitName, gitEmail string, mcps []string) []string {
+	args := []string{GuestBootstrapCommand, port, username, mtu, model, modelsJSON, gitName, gitEmail}
 	if len(mcps) > 0 {
 		args = append(args, strings.Join(mcps, ","))
 	}
 	return args
 }
 
-func guestSecretsArgs(username, model string, mcps []string) []string {
-	args := []string{GuestSecretsCommand, username, model}
+func guestSecretsArgs(username, model string, models []AlbertModelConfig, mcps []string) ([]string, error) {
+	modelsJSON, err := json.Marshal(models)
+	if err != nil {
+		return nil, fmt.Errorf("encode guest Albert model configuration: %w", err)
+	}
+	args := []string{GuestSecretsCommand, username, model, string(modelsJSON)}
 	if len(mcps) > 0 {
 		args = append(args, strings.Join(mcps, ","))
 	}
-	return args
+	return args, nil
 }
 
 // hostGitIdentity reads the git identity (P11, written by setup) from the
@@ -368,7 +375,10 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 	}
 	stdin := SecretsReader(cfg.Password, key)
 	name, email := hostGitIdentity()
-	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model, name, email, t.OpenCodeOverlay.MCPConnectors...)
+	args, err := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model, t.OpenCodeOverlay.Models, name, email, t.OpenCodeOverlay.MCPConnectors...)
+	if err != nil {
+		return err
+	}
 	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
 }
 
@@ -816,7 +826,11 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 		return err
 	}
 	model := t.OpenCodeOverlay.EffectiveOverlay().Model
-	secretArgs := append([]string{"tart", "exec", "-i", vm, guestLocalBinary}, guestSecretsArgs(cfg.Username, model, t.OpenCodeOverlay.MCPConnectors)...)
+	guestArgs, err := guestSecretsArgs(cfg.Username, model, t.OpenCodeOverlay.Models, t.OpenCodeOverlay.MCPConnectors)
+	if err != nil {
+		return err
+	}
+	secretArgs := append([]string{"tart", "exec", "-i", vm, guestLocalBinary}, guestArgs...)
 	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key), secretArgs[0], secretArgs[1:]...); err != nil {
 		return err
 	}

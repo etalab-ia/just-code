@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -36,6 +37,10 @@ func run(args []string) (int, error) {
 	// The in-VM bootstrap is a hidden subcommand of this same binary. It runs
 	// inside the Tart guest and must not touch host config or load .env.
 	if len(args) > 0 && args[0] == justcode.GuestBootstrapCommand {
+		models, err := parseGuestAlbertModels(argOr(args, justcode.GuestBootstrapModelsArgIndex, ""))
+		if err != nil {
+			return 2, fmt.Errorf("invalid guest bootstrap model configuration: %w", err)
+		}
 		mcps, err := parseGuestMCPIDs(argOr(args, justcode.GuestBootstrapMCPArgIndex, ""))
 		if err != nil {
 			return 2, fmt.Errorf("invalid guest bootstrap MCP selection: %w", err)
@@ -46,11 +51,11 @@ func run(args []string) (int, error) {
 			MTU:      argOr(args, 3, ""),
 			// The model selection (P10) is non-secret managed configuration
 			// and rides argv; secrets never do.
-			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), MCPConnectors: mcps},
+			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), Models: models, MCPConnectors: mcps},
 			// The git identity (P11) rides argv the same way: the guest
 			// cannot read the host settings file.
-			GitName:  argOr(args, 5, ""),
-			GitEmail: argOr(args, 6, ""),
+			GitName:  argOr(args, 6, ""),
+			GitEmail: argOr(args, 7, ""),
 		}
 		return 0, justcode.RunGuestBootstrap(context.Background(), cfg)
 	}
@@ -63,6 +68,10 @@ func run(args []string) (int, error) {
 		return exitCodeOf(nil), justcode.RunGuestPrepare(context.Background(), cfg)
 	}
 	if len(args) > 0 && args[0] == justcode.GuestSecretsCommand {
+		models, err := parseGuestAlbertModels(argOr(args, justcode.GuestSecretsModelsArgIndex, ""))
+		if err != nil {
+			return 2, fmt.Errorf("invalid guest model configuration: %w", err)
+		}
 		mcps, err := parseGuestMCPIDs(argOr(args, justcode.GuestSecretsMCPArgIndex, ""))
 		if err != nil {
 			return 2, fmt.Errorf("invalid guest MCP selection: %w", err)
@@ -70,7 +79,7 @@ func run(args []string) (int, error) {
 		// The model selection (P10) is the one managed field the in-guest
 		// secrets file must reflect; argv carries no secrets, and the
 		// overlay is non-secret configuration.
-		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), MCPConnectors: mcps}
+		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), Models: models, MCPConnectors: mcps}
 		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: overlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
@@ -354,6 +363,22 @@ func run(args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
 	}
+}
+
+func parseGuestAlbertModels(raw string) ([]justcode.AlbertModelConfig, error) {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "null" {
+		return nil, nil
+	}
+	var models []justcode.AlbertModelConfig
+	if err := json.Unmarshal([]byte(raw), &models); err != nil {
+		return nil, err
+	}
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) == "" || strings.TrimSpace(model.Name) == "" {
+			return nil, fmt.Errorf("model IDs and names must be non-empty")
+		}
+	}
+	return models, nil
 }
 
 func runtimeUsesMicrosandbox(runtimeFlag string, manifestRuntime justcode.Runtime) bool {
