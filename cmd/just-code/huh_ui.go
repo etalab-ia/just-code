@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -809,7 +810,11 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 				return answers, err
 			}
 			if choice == "add" {
-				stored, _, _, err := githubTokenStage(context.Background(), initGitHubAddWizard(), nil)
+				// The stage reads the terminal directly when the TUI renders,
+				// but the same code path also serves the line prompt: give it
+				// a reader so it can never dereference nil if the renderer
+				// changes under it.
+				stored, _, _, err := githubTokenStage(context.Background(), initGitHubAddWizard(), bufio.NewReader(os.Stdin))
 				if err != nil {
 					return answers, err
 				}
