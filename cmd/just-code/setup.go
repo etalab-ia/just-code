@@ -674,8 +674,8 @@ setupStages:
 	} else {
 		fmt.Println("  Modèles             Qwen3 Coder (par défaut)")
 	}
-	fmt.Println("\nÀ l'étape suivante, just-code télécharge et vérifie la machine isolée.")
-	fmt.Println("Espace requis : environ 2 Go. Durée : quelques minutes selon votre connexion.")
+	fmt.Println()
+	fmt.Println(setupRuntimeSummary(j.Preflight))
 	choice, err := setupReviewChoice(in)
 	if err != nil {
 		return 1, err
@@ -709,6 +709,13 @@ setupStages:
 
 func setupCompletionMessage() string {
 	return "Configuration terminée.\n\nÉtape suivante, dans le dossier d'un projet :\n  cd mon-projet\n  just-code\n\nVérifier l'installation à tout moment : just-code setup doctor"
+}
+
+func setupRuntimeSummary(preflight justcode.SetupPreflight) string {
+	if preflight.RuntimeInstalled {
+		return "La machine isolée est déjà installée. just-code la vérifiera et la réutilisera, sans téléchargement."
+	}
+	return "just-code téléchargera et vérifiera la machine isolée si aucune installation valide n'est disponible.\nDans ce cas, espace requis : environ 2 Go. Durée estimée : quelques minutes selon votre connexion."
 }
 
 func setupReviewChoice(in *bufio.Reader) (string, error) {

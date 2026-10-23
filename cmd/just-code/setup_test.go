@@ -677,6 +677,20 @@ func TestSetupCompletionMessageDescribesFullDefault(t *testing.T) {
 	}
 }
 
+func TestSetupRuntimeSummaryDescribesReuseWithoutDownload(t *testing.T) {
+	message := setupRuntimeSummary(justcode.SetupPreflight{RuntimeInstalled: true})
+	if !strings.Contains(message, "déjà installée") || !strings.Contains(message, "réutilisera") {
+		t.Fatalf("runtime reuse summary = %q", message)
+	}
+	if strings.Contains(message, "2 Go") || strings.Contains(message, "téléchargera") {
+		t.Fatalf("reused runtime summary must not promise a download or disk use: %q", message)
+	}
+	conditional := setupRuntimeSummary(justcode.SetupPreflight{})
+	if !strings.Contains(conditional, "si aucune installation valide n'est disponible") || !strings.Contains(conditional, "2 Go") {
+		t.Fatalf("missing-runtime summary should qualify the download estimate: %q", conditional)
+	}
+}
+
 func TestSetupWizardNonTTYAnswersTrimNewlines(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
@@ -1417,7 +1431,7 @@ func TestSetupWizardGitHubValidFineGrainedToken(t *testing.T) {
 	if strings.Contains(out, "github_pat_secretvalue") {
 		t.Errorf("the token must never be displayed; output:\n%s", out)
 	}
-	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton vérifié, compte @moncompte", "Espace requis : environ 2 Go", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
+	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton vérifié, compte @moncompte", "Dans ce cas, espace requis : environ 2 Go", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("recap is missing %q; output:\n%s", want, out)
 		}
