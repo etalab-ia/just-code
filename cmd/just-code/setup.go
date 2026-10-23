@@ -386,7 +386,8 @@ setupStages:
 			if err := w.PutCredential(ctx, justcode.CredentialAlbert, key); err != nil {
 				return 1, err
 			}
-			j.AlbertVerified = !probe.Unreachable
+			verified := !probe.Unreachable
+			j.AlbertVerified = &verified
 			if probe.Unreachable {
 				// "Continuer sans vérifier": stored, but unvalidated.
 				fmt.Println("Clé enregistrée sans vérification.")
@@ -545,9 +546,10 @@ setupStages:
 			}
 			stored := false
 			githubLogin := ""
+			githubVerified := false
 			if addGitHub {
 				var err error
-				stored, githubLogin, err = githubTokenStage(ctx, w, in)
+				stored, githubLogin, githubVerified, err = githubTokenStage(ctx, w, in)
 				if err != nil {
 					return 1, err
 				}
@@ -555,6 +557,7 @@ setupStages:
 			if stored {
 				j.CredentialKinds = addCredentialKind(j.CredentialKinds, "github")
 				j.GitHubLogin = githubLogin
+				j.GitHubVerified = &githubVerified
 			} else {
 				if hasGitHub {
 					fmt.Println("Le jeton déjà enregistré est conservé.")
@@ -634,19 +637,25 @@ setupStages:
 	if fallback {
 		albertStore = "un fichier protégé"
 	}
-	keyStatus := "vérifiée"
-	if !j.AlbertVerified {
-		keyStatus = "enregistrée, non vérifiée"
+	keyStatus := "état inconnu (journal historique)"
+	if j.AlbertVerified != nil && !*j.AlbertVerified {
+		keyStatus = "non vérifiée"
+	} else if j.AlbertVerified != nil {
+		keyStatus = "vérifiée"
 	}
 	fmt.Printf("  Clé Albert API      enregistrée dans %s (%s)\n", albertStore, keyStatus)
 	if j.Preflight.DiskFreeBytes > 0 {
 		fmt.Printf("  Espace disque       %s disponibles\n", humanBytes(j.Preflight.DiskFreeBytes))
 	}
 	if justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
-		if j.GitHubLogin != "" {
-			fmt.Printf("  GitHub              jeton enregistré, compte @%s\n", j.GitHubLogin)
+		if j.GitHubVerified == nil {
+			fmt.Println("  GitHub              jeton enregistré, état de vérification inconnu (journal historique)")
+		} else if !*j.GitHubVerified {
+			fmt.Println("  GitHub              jeton enregistré, non vérifié")
+		} else if j.GitHubLogin != "" {
+			fmt.Printf("  GitHub              jeton vérifié, compte @%s\n", j.GitHubLogin)
 		} else {
-			fmt.Println("  GitHub              jeton enregistré, compte non vérifié")
+			fmt.Println("  GitHub              jeton vérifié, compte non disponible")
 		}
 	} else {
 		fmt.Println("  GitHub              plus tard")
@@ -1400,40 +1409,40 @@ const (
 // a refusal, warn on a broad-scope token. It returns stored=true once a
 // token is in the store. Every exit that stores nothing (empty answer,
 // aborted form, EOF) is the penalty-free "Plus tard" outcome.
-func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader) (bool, string, error) {
+func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader) (bool, string, bool, error) {
 	// Resolve and verify the store BEFORE prompting: a locked or
 	// unavailable store must fail before the user types a secret (the same
 	// contract the Albert stage keeps).
 	if _, err := w.ResolveStore(ctx); err != nil {
-		return false, "", err
+		return false, "", false, err
 	}
 	for {
 		var token string
 		if wizardHuhFn() {
 			value, err := huhSecret("Jeton GitHub", "L'entrée est masquée. Laissez vide pour passer cette étape.")
 			if errors.Is(err, huh.ErrUserAborted) {
-				return false, "", nil
+				return false, "", false, nil
 			}
 			if err != nil {
-				return false, "", err
+				return false, "", false, err
 			}
 			token = value
 		} else {
 			value, ok := promptSecret(in, githubTokenPrompt)
 			if !ok {
-				return false, "", nil
+				return false, "", false, nil
 			}
 			token = value
 		}
 		if token == "" {
-			return false, "", nil
+			return false, "", false, nil
 		}
 		// Validate BEFORE writing: a token the user has not accepted (or
 		// GitHub has not accepted) must not reach the store, or a later
 		// setup would skip this screen and use it.
 		probe, err := w.ValidateCredential(ctx, justcode.CredentialGithub, token)
 		if err != nil {
-			return false, "", err
+			return false, "", false, err
 		}
 		if probe.Rejected {
 			fmt.Println(githubRefusedMessage)
@@ -1444,7 +1453,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			fmt.Printf("%s (%s)\n", githubUnreachableMessage, probe.Detail)
 			retry, abort := credentialRetryChoice(in, githubUnreachableMessage)
 			if abort {
-				return false, "", nil
+				return false, "", false, nil
 			}
 			if retry {
 				fmt.Println()
@@ -1454,7 +1463,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 		if probe.BroadScope {
 			replace, abort := githubClassicChoice(in)
 			if abort {
-				return false, "", nil
+				return false, "", false, nil
 			}
 			if replace {
 				fmt.Println()
@@ -1462,7 +1471,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			}
 		}
 		if err := w.PutCredential(ctx, justcode.CredentialGithub, token); err != nil {
-			return false, "", err
+			return false, "", false, err
 		}
 		switch {
 		case probe.Unreachable:
@@ -1473,7 +1482,7 @@ func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 		default:
 			fmt.Println("✅ Jeton valide.")
 		}
-		return true, probe.Login, nil
+		return true, probe.Login, !probe.Unreachable, nil
 	}
 }
 

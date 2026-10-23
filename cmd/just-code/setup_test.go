@@ -752,6 +752,37 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 	if m != nil {
 		t.Fatalf("a cancelled setup must not write user settings, got %v", m)
 	}
+	journal, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || !justcode.ContainsCredentialKind(journal.CredentialKinds, "albert") {
+		t.Fatalf("quitting should preserve credentials and the resume journal: journal=%+v err=%v", journal, err)
+	}
+}
+
+func TestLegacySetupJournalRecapReportsUnknownCredentialVerification(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Stage = justcode.StageCredential
+	j.CredentialKinds = []string{"albert", "github"}
+	j.GitName, j.GitEmail = "Test User", "test@example.test"
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("\nq\n")), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code == 0 || err == nil {
+			t.Fatalf("quit result: code=%d err=%v", code, err)
+		}
+	})
+	for _, want := range []string{"état inconnu (journal historique)", "état de vérification inconnu (journal historique)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("legacy recap should report unknown status %q; output:\n%s", want, out)
+		}
+	}
 }
 
 func TestSetupWizardModifyReturnsToFirstStepWithExistingValues(t *testing.T) {
@@ -1386,7 +1417,7 @@ func TestSetupWizardGitHubValidFineGrainedToken(t *testing.T) {
 	if strings.Contains(out, "github_pat_secretvalue") {
 		t.Errorf("the token must never be displayed; output:\n%s", out)
 	}
-	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton enregistré, compte @moncompte", "Espace requis : environ 2 Go", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
+	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton vérifié, compte @moncompte", "Espace requis : environ 2 Go", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("recap is missing %q; output:\n%s", want, out)
 		}

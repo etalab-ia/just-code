@@ -39,11 +39,14 @@ type SetupJournal struct {
 	Preflight SetupPreflight `json:"preflight,omitempty"`
 	// CredentialKinds lists the kinds stored so far (never values).
 	CredentialKinds []string `json:"credentialKinds,omitempty"`
-	// AlbertVerified records that the stored Albert key passed endpoint
-	// validation. False also covers an accepted-but-unverified offline key.
-	AlbertVerified bool `json:"albertVerified,omitempty"`
+	// AlbertVerified records whether the stored Albert key passed endpoint
+	// validation. Nil means an older journal did not record the outcome.
+	AlbertVerified *bool `json:"albertVerified,omitempty"`
 	// GitHubLogin is the account returned by GitHub when its token was checked.
 	GitHubLogin string `json:"githubLogin,omitempty"`
+	// GitHubVerified records whether the stored token passed API validation.
+	// Nil means an older journal did not record the outcome.
+	GitHubVerified *bool `json:"githubVerified,omitempty"`
 	// StoreKind records which store the credentials went into (native or
 	// file), so a resumed run reuses the same store instead of silently
 	// switching to the native one.
