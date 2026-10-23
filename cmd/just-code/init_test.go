@@ -36,6 +36,107 @@ func stubProjectSkills(t *testing.T) {
 	t.Cleanup(func() { projectSkillCatalogueFn = original })
 }
 
+func TestPrintInitIntroShowsProjectAndSteps(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "qa-just-code-scratch")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if !printInitIntro(root, bufio.NewReader(strings.NewReader("\n"))) {
+			t.Fatal("empty Enter line should start init")
+		}
+	})
+	for _, want := range []string{
+		"Configuration du projet : qa-just-code-scratch",
+		"Dossier : " + root,
+		"1. Skills (facultatif)",
+		"2. MCP (facultatif)",
+		"3. GitHub (facultatif)",
+		"Rien n'est enregistré avant le récapitulatif final.",
+		"Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("intro is missing %q; output:\n%s", want, out)
+		}
+	}
+}
+
+func TestInitInteractiveUsesDisplayedDirectoryWithoutPrompting(t *testing.T) {
+	got := initOptionsWithDisplayedRoot(initOptions{Set: map[string]bool{}})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Root != cwd || !got.Set["root"] {
+		t.Fatalf("interactive root = %q, root supplied = %v; want %q and true", got.Root, got.Set["root"], cwd)
+	}
+
+	root := t.TempDir()
+	got = initOptionsWithDisplayedRoot(initOptions{Root: root, Set: map[string]bool{}})
+	if got.Root != root || !got.Set["root"] {
+		t.Fatalf("explicit root = %q, root supplied = %v; want %q and true", got.Root, got.Set["root"], root)
+	}
+}
+
+func TestPrintInitIntroEOFStopsBeforeInit(t *testing.T) {
+	out := captureStdout(t, func() {
+		if printInitIntro(t.TempDir(), bufio.NewReader(strings.NewReader(""))) {
+			t.Fatal("EOF must cancel init")
+		}
+	})
+	if !strings.Contains(out, "Rien n'est enregistré avant le récapitulatif final.") {
+		t.Fatalf("intro was not shown before cancellation: %q", out)
+	}
+}
+
+func TestInitSetupOfferRunsSetupBeforeContinuing(t *testing.T) {
+	originalCheck, originalSetup := initAlbertCredentialCheckFn, runInitSetupFn
+	initAlbertCredentialCheckFn = func() error { return justcode.ErrCredentialNotFound }
+	setupCalled := false
+	runInitSetupFn = func(bool) (int, error) {
+		setupCalled = true
+		return 0, nil
+	}
+	t.Cleanup(func() {
+		initAlbertCredentialCheckFn, runInitSetupFn = originalCheck, originalSetup
+	})
+
+	out := captureStdout(t, func() {
+		proceed, code, err := ensureInitSetup(bufio.NewReader(strings.NewReader("\n")))
+		if !proceed || code != 0 || err != nil {
+			t.Fatalf("ensureInitSetup = %v, %d, %v", proceed, code, err)
+		}
+	})
+	if !setupCalled {
+		t.Fatal("missing global configuration must run setup before the project wizard")
+	}
+	if !strings.Contains(out, "Lancer 'just-code setup' d'abord ?") {
+		t.Fatalf("setup offer missing from output: %q", out)
+	}
+}
+
+func TestInitSetupOfferCanBeDeclinedWithoutError(t *testing.T) {
+	originalCheck, originalSetup := initAlbertCredentialCheckFn, runInitSetupFn
+	initAlbertCredentialCheckFn = func() error { return justcode.ErrCredentialNotFound }
+	runInitSetupFn = func(bool) (int, error) {
+		t.Fatal("declining must not launch setup")
+		return 1, nil
+	}
+	t.Cleanup(func() {
+		initAlbertCredentialCheckFn, runInitSetupFn = originalCheck, originalSetup
+	})
+
+	out := captureStdout(t, func() {
+		proceed, code, err := ensureInitSetup(bufio.NewReader(strings.NewReader("n\n")))
+		if proceed || code != 0 || err != nil {
+			t.Fatalf("declined setup = %v, %d, %v; want clean stop", proceed, code, err)
+		}
+	})
+	if !strings.Contains(out, "Vous pourrez lancer 'just-code setup'") {
+		t.Fatalf("decline guidance missing: %q", out)
+	}
+}
+
 // stubWizardHuh forces the line-based wizard path. The scripted tests drive
 // initRun with tty=true and a string reader; the seam's production probe
 // would be false there (stdout is a pipe), but pinning it keeps the tests

@@ -39,12 +39,109 @@ func initCmd(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	in := bufio.NewReader(os.Stdin)
 	tty := isTTY()
 	if tty && !opts.Yes && !stdoutIsTTY() {
 		return 1, fmt.Errorf("interactive init requires stdout to be a terminal; stdout is redirected or points at %s", os.DevNull)
 	}
-	return initRun(opts, in, tty)
+	if tty && !opts.Yes {
+		opts = initOptionsWithDisplayedRoot(opts)
+		// Keep the preflight offer's reader from consuming input intended for
+		// setup's own raw-terminal intro. A one-byte buffer avoids read-ahead.
+		in := bufio.NewReaderSize(os.Stdin, 1)
+		proceed, code, err := ensureInitSetup(in)
+		if err != nil || !proceed {
+			return code, err
+		}
+		if !printInitIntro(opts.Root, in) {
+			return 1, fmt.Errorf("cancelled; nothing was written")
+		}
+		return initRun(opts, in, tty)
+	}
+	return initRun(opts, bufio.NewReader(os.Stdin), tty)
+}
+
+func initOptionsWithDisplayedRoot(opts initOptions) initOptions {
+	if opts.Root == "" {
+		opts.Root, _ = os.Getwd()
+	}
+	if opts.Set == nil {
+		opts.Set = make(map[string]bool)
+	}
+	opts.Set["root"] = true
+	return opts
+}
+
+var initAlbertCredentialCheckFn = func() error {
+	_, err := resolveAlbertKeyForCatalogueAt("")
+	return err
+}
+
+var runInitSetupFn = setupRunCmd
+
+func initSetupNeeded() (bool, error) {
+	// Global setup owns the account credential and default settings. A
+	// project's credentialRef is not evidence that global setup is missing.
+	err := initAlbertCredentialCheckFn()
+	if errors.Is(err, justcode.ErrCredentialNotFound) {
+		return true, nil
+	}
+	// A store/keychain failure does not prove setup is missing. Leave the
+	// existing init path available rather than converting an uncertain probe
+	// into a new blocker.
+	return false, nil
+}
+
+func ensureInitSetup(in *bufio.Reader) (bool, int, error) {
+	needed, err := initSetupNeeded()
+	if err != nil || !needed {
+		return true, 0, err
+	}
+	answer, ok := promptLine(in, "La configuration initiale n'a pas été faite. Lancer 'just-code setup' d'abord ? [Y/n]: ")
+	if !ok || strings.EqualFold(strings.TrimSpace(answer), "n") {
+		fmt.Println("Vous pourrez lancer 'just-code setup' avant de configurer ce projet.")
+		return false, 0, nil
+	}
+	code, err := runInitSetupFn(false)
+	if err != nil || code != 0 {
+		return false, code, err
+	}
+	return true, 0, nil
+}
+
+func printInitIntro(root string, in *bufio.Reader) bool {
+	if root == "" {
+		root, _ = os.Getwd()
+	}
+	project := filepath.Base(filepath.Clean(root))
+	if project == "." || project == string(filepath.Separator) || project == "" {
+		project = root
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		if rel, err := filepath.Rel(home, root); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			root = filepath.Join("~", rel)
+		}
+	}
+	fmt.Printf(`Configuration du projet : %s
+Dossier : %s
+
+just-code va préparer une machine isolée pour ce projet.
+L'agent y travaille sur une copie du projet : vos fichiers .env, vos secrets
+et les fichiers ignorés par git n'y sont jamais copiés.
+
+3 étapes :
+  1. Skills (facultatif) : des savoir-faire pour l'agent (sécurité, accessibilité…).
+  2. MCP (facultatif) : des services que l'agent peut interroger (data.gouv.fr, documentation…).
+  3. GitHub (facultatif) : autoriser l'agent à proposer ses modifications sur ce dépôt.
+
+Les réglages techniques (ressources, isolation…) ont des valeurs par défaut,
+modifiables depuis le récapitulatif.
+
+Rien n'est enregistré avant le récapitulatif final.
+Appuyez sur Entrée pour commencer, ou sur Ctrl+C pour quitter.
+`, project, root)
+	_, ok := promptLine(in, "")
+	return ok
 }
 
 // initOptions is the flag surface, and doubles as the answers already supplied
