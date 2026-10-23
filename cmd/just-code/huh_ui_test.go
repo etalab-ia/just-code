@@ -64,6 +64,46 @@ func TestInitMultiSelectsAnnounceSelectionKeys(t *testing.T) {
 		[]huh.Option[string]{huh.NewOption(".env", ".env")}, &dotenvValue))
 }
 
+func TestInitSkillsAreTheSixDescribedOfficialEntries(t *testing.T) {
+	catalogue := []justcode.ProjectSkill{
+		{ID: "experimental/presentation-docs", Experimental: true},
+		{ID: "official/datagouv-apis"},
+		{ID: "official/lasuite-ui-kit"},
+		{ID: "official/react-dsfr"},
+		{ID: "official/rgaa"},
+		{ID: "official/anssi-guides"},
+		{ID: "official/securite-developpement"},
+	}
+	options := initSkillOptions(catalogue)
+	if len(options) != 6 {
+		t.Fatalf("skill option count = %d, want 6", len(options))
+	}
+	for i, option := range options {
+		if option.Value != initSkillOrder[i] || !strings.Contains(option.Key, initSkillDescriptions[option.Value]) {
+			t.Errorf("option %d = %q (%q), want %q with its short description", i, option.Key, option.Value, initSkillOrder[i])
+		}
+	}
+	selected := []string{"official/securite-developpement"}
+	localOnly := false
+	content := newInitSkillsGroup(options, &selected, &localOnly, true, true).Content()
+	for _, want := range []string{"Space or x toggles", "Enter confirms", "règles, références, exemples"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("skills screen missing %q: %s", want, content)
+		}
+	}
+	if got := initSkillsTitle(1); got != "[1/3] Skills (facultatif) — 1 skill sélectionnée" {
+		t.Errorf("one-skill title = %q", got)
+	}
+	if got := initSkillsTitle(0); !strings.Contains(got, "0 skills sélectionnées") {
+		t.Errorf("zero-skill title = %q", got)
+	}
+	for _, want := range []string{"Où enregistrer les skills ?", "Avec le projet", "Sur ce poste uniquement", "rien n'est ajouté au dépôt"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("skills screen missing storage detail %q: %s", want, content)
+		}
+	}
+}
+
 func TestHuhDiagnosticsPreservesLiteralPaths(t *testing.T) {
 	path := `C:\Users\Luis\project_with_under`
 	got := huhDiagnosticsDescription(justcode.DiagnosticsReport{

@@ -57,13 +57,67 @@ var huhRun = func(form *huh.Form) error {
 // nothing (#156).
 const multiSelectKeyHint = "Space or x toggles an item; Enter confirms the list; / filters."
 
+var initSkillDescriptions = map[string]string{
+	"official/securite-developpement": "règles de sécurité de l'État, issues des guides ANSSI",
+	"official/anssi-guides":           "trouver le bon guide ANSSI et le citer",
+	"official/rgaa":                   "accessibilité numérique (RGAA)",
+	"official/react-dsfr":             "interfaces React au Design System de l'État (DSFR)",
+	"official/lasuite-ui-kit":         "interfaces des applications La Suite (Docs, Drive…)",
+	"official/datagouv-apis":          "utiliser les API de data.gouv.fr",
+}
+
+var initSkillOrder = []string{
+	"official/securite-developpement", "official/anssi-guides", "official/rgaa",
+	"official/react-dsfr", "official/lasuite-ui-kit", "official/datagouv-apis",
+}
+
+func initSkillOptions(catalogue []justcode.ProjectSkill) []huh.Option[string] {
+	known := make(map[string]bool, len(catalogue))
+	for _, skill := range catalogue {
+		known[skill.ID] = true
+	}
+	options := make([]huh.Option[string], 0, len(initSkillOrder))
+	for _, id := range initSkillOrder {
+		if known[id] {
+			options = append(options, huh.NewOption(id+"   "+initSkillDescriptions[id], id))
+		}
+	}
+	return options
+}
+
 func newProjectSkillsMultiSelect(skillOptions []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
 	return huh.NewMultiSelect[string]().
-		Title("Project skills").
-		Description("Selected artifacts are pinned and installed inside the Microsandbox guest. " + multiSelectKeyHint).
+		TitleFunc(func() string { return initSkillsTitle(len(*value)) }, value).
+		Description("Une skill apporte à l'agent un savoir-faire de l'État : règles, références, exemples. Il s'en sert quand votre demande s'y rapporte. " + multiSelectKeyHint).
 		Filterable(true).
 		Options(skillOptions...).
 		Value(value)
+}
+
+func initSkillsTitle(count int) string {
+	label := "skills sélectionnées"
+	if count == 1 {
+		label = "skill sélectionnée"
+	}
+	return fmt.Sprintf("[1/3] Skills (facultatif) — %d %s", count, label)
+}
+
+func newInitSkillsGroup(skillOptions []huh.Option[string], skills *[]string, skillsLocalOnly *bool, includeSkills, includeStorage bool) *huh.Group {
+	fields := make([]huh.Field, 0, 2)
+	if includeSkills {
+		fields = append(fields, newProjectSkillsMultiSelect(skillOptions, skills))
+	}
+	if includeStorage {
+		fields = append(fields, huh.NewSelect[bool]().
+			Title("Où enregistrer les skills ?").
+			Description("Avec le projet : elles sont versionnées et un coéquipier qui clone le projet les retrouve. Sur ce poste uniquement : rien n'est ajouté au dépôt.").
+			Options(huh.NewOption("Avec le projet", false), huh.NewOption("Sur ce poste uniquement", true)).
+			Value(skillsLocalOnly))
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return huh.NewGroup(fields...).Title("Skills")
 }
 
 func newProjectMCPsMultiSelect(mcpOptions []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
@@ -355,14 +409,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 	// instead and leave the answers untouched.
 	skipSkills := shouldSkipSkillsField(opts, catalogueErr)
 
-	skillOptions := make([]huh.Option[string], 0, len(catalogue))
-	for _, skill := range catalogue {
-		label := skill.ID
-		if skill.Experimental {
-			label += " [experimental]"
-		}
-		skillOptions = append(skillOptions, huh.NewOption(label, skill.ID))
-	}
+	skillOptions := initSkillOptions(catalogue)
 	mcpOptions := make([]huh.Option[string], 0)
 	for _, choice := range justcode.MCPSelections() {
 		mcpOptions = append(mcpOptions, huh.NewOption(choice.ID+" — "+choice.Description, choice.ID))
@@ -403,6 +450,10 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			// actually shows: an unchanged submission must not look
 			// like a new selection and re-resolve existing pins.
 			answers.Skills = append([]string(nil), current...)
+			if len(current) == 0 && !projectManifestExists(answers.Root) {
+				skills = []string{"official/securite-developpement"}
+				answers.Skills = append([]string(nil), skills...)
+			}
 		}
 		skillOptionsPass := retainedSkillOptions(skillOptions, catalogue, skills)
 		if !answers.MCPsSet {
@@ -523,26 +574,12 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			credentialGroup = huh.NewGroup(credentialFields...).Title("Credentials")
 		}
 
-		var skillsGroup *huh.Group
-		if !opts.Set["skills"] && !skipSkills {
-			skillsGroup = huh.NewGroup(
-				newProjectSkillsMultiSelect(skillOptionsPass, &skills),
-			).Title("Skills")
-		}
+		skillsGroup := newInitSkillsGroup(skillOptionsPass, &skills, &skillsLocalOnly,
+			!opts.Set["skills"] && !skipSkills, !opts.Set["skills-storage"])
 
 		mcpFields := make([]huh.Field, 0, 2)
 		if !opts.Set["mcps"] {
 			mcpFields = append(mcpFields, newProjectMCPsMultiSelect(mcpOptions, &mcps))
-		}
-		if !opts.Set["skills-storage"] {
-			mcpFields = append(mcpFields, huh.NewSelect[bool]().
-				Title("Skill storage").
-				Description("Versioned skills are committed with the project; local-only skills stay on this host.").
-				Options(
-					huh.NewOption("versioned", false),
-					huh.NewOption("local-only", true),
-				).
-				Value(&skillsLocalOnly))
 		}
 		var mcpGroup *huh.Group
 		if len(mcpFields) > 0 {
@@ -623,6 +660,17 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		if !skipSkills {
 			answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, skills)
 			answers.Skills = skills
+			if len(skills) == 0 {
+				proceed, err := huhConfirm("Aucune skill sélectionnée. Continuer sans skill ? (O/n)", "Appuyez sur Entrée pour continuer, ou choisissez non pour revenir à la sélection.", true)
+				if err != nil {
+					return answers, err
+				}
+				if !proceed {
+					answers.SkillsSet = false
+					continue
+				}
+				answers.SkillsSet = true
+			}
 		}
 		if !opts.Set["mcps"] {
 			answers.MCPsSet = answers.MCPsSet || !equalStringSets(answers.MCPConnectors, mcps)
@@ -634,6 +682,15 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		}
 		return answers, nil
 	}
+}
+
+func projectManifestExists(root string) bool {
+	pc, err := justcode.DiscoverProject(root)
+	if err != nil {
+		return false
+	}
+	_, err = justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root))
+	return err == nil
 }
 
 func parsePositiveInt(s string) int {
