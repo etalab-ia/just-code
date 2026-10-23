@@ -111,6 +111,46 @@ func TestPromptSetupModelsPreservesLegacyCustomDefault(t *testing.T) {
 	}
 }
 
+func TestPromptSetupModelsPreservesExternalProviderDefault(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
+	choices := justcode.CuratedAlbertModels()
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		catalogue := justcode.Catalogue{}
+		for _, choice := range choices {
+			catalogue.Models = append(catalogue.Models, justcode.CatalogueModel{ID: choice.ID, Type: "text-generation"})
+		}
+		return catalogue, true, nil
+	}
+	var sawExternalDefault bool
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		sawExternalDefault = picker.externalDefault && picker.defaultModel == "anthropic/claude"
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+
+	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), "anthropic/claude")
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if !sawExternalDefault || defaultModel != "anthropic/claude" {
+		t.Fatalf("external provider default was not preserved: default=%q sawExternal=%v", defaultModel, sawExternalDefault)
+	}
+}
+
+func TestCanonicalSetupModelRefMapsLegacyCatalogueID(t *testing.T) {
+	choice := justcode.CuratedAlbertModels()[1]
+	legacyRef := "albert/" + choice.ID
+	if got := canonicalSetupModelRef(legacyRef); got != choice.Ref() {
+		t.Fatalf("legacy reference %q mapped to %q, want %q", legacyRef, got, choice.Ref())
+	}
+	if !setupModelEnabled(legacyRef, defaultSetupModelIDs()) {
+		t.Fatalf("legacy full API reference %q should match the selected DeepSeek model", legacyRef)
+	}
+}
+
 func TestPromptSetupModelsKeepsDefaultsWhenCatalogueIsUnavailable(t *testing.T) {
 	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
 	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {

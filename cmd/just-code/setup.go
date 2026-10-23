@@ -414,8 +414,10 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 	}
 	if model == "" {
 		model = defaultSetupModel()
+	} else {
+		model = canonicalSetupModelRef(model)
 	}
-	if !setupModelEnabled(model, models) {
+	if !setupModelEnabled(model, models) && strings.HasPrefix(model, "albert/") {
 		model = setupModelRef(models[0])
 	}
 	fmt.Println()
@@ -664,10 +666,11 @@ func defaultSetupModelIDs() []string {
 
 func setupModelIDsWithLegacyDefault(model string) []string {
 	ids := defaultSetupModelIDs()
-	id := strings.TrimPrefix(model, "albert/")
-	if id == model || id == "" || setupModelEnabled(model, ids) {
+	model = canonicalSetupModelRef(model)
+	if model == "" || !strings.HasPrefix(model, "albert/") || setupModelEnabled(model, ids) {
 		return ids
 	}
+	id := strings.TrimPrefix(model, "albert/")
 	return append(ids, id)
 }
 
@@ -681,6 +684,7 @@ func defaultSetupModel() string {
 }
 
 func setupModelEnabled(model string, ids []string) bool {
+	model = canonicalSetupModelRef(model)
 	for _, choice := range justcode.CuratedAlbertModels() {
 		if choice.Ref() == model && containsString(ids, choice.ID) {
 			return true
@@ -688,6 +692,27 @@ func setupModelEnabled(model string, ids []string) bool {
 	}
 	id := strings.TrimPrefix(model, "albert/")
 	return containsString(ids, id)
+}
+
+func canonicalSetupModelRef(model string) string {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if model == choice.ID || model == choice.OpenCodeID || model == "albert/"+choice.ID || model == choice.Ref() {
+			return choice.Ref()
+		}
+	}
+	if model == "" || strings.HasPrefix(model, "albert/") || strings.Contains(model, "/") {
+		return model
+	}
+	return "albert/" + model
+}
+
+func canonicalSetupModelID(id string) string {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if id == choice.ID || id == choice.OpenCodeID || id == choice.Ref() || id == "albert/"+choice.ID {
+			return choice.ID
+		}
+	}
+	return strings.TrimPrefix(id, "albert/")
 }
 
 func setupModelRef(id string) string {
@@ -741,6 +766,7 @@ type setupModelPicker struct {
 	catalogueChecked bool
 	cursor           int
 	defaultModel     string
+	externalDefault  bool
 	errorMessage     string
 	cancelled        bool
 	done             bool
@@ -797,13 +823,14 @@ func (m setupModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.defaultModel = choice.Ref()
+		m.externalDefault = false
 		m.errorMessage = ""
 	case tea.KeyEnter:
 		if m.selectedCount() == 0 {
 			m.errorMessage = "Sélectionnez au moins un modèle."
 			break
 		}
-		if m.defaultModel == "" || !m.defaultModelSelected() {
+		if !m.externalDefault && (m.defaultModel == "" || !m.defaultModelSelected()) {
 			m.defaultModel = m.firstSelectedRef()
 		}
 		m.done = true
@@ -817,6 +844,9 @@ func (m setupModelPicker) View() tea.View {
 	b.WriteString("[2/3] Sélection des modèles à utiliser\n\n")
 	b.WriteString("Choisissez les modèles Albert API que l'agent pourra utiliser.\n")
 	b.WriteString("Vous pourrez passer de l'un à l'autre pendant une session avec /models.\n\n")
+	if m.externalDefault {
+		b.WriteString("Modèle actuel hors Albert API : " + m.defaultModel + " (conservé avec Entrée).\n\n")
+	}
 	for index, choice := range m.choices {
 		cursor := "  "
 		if index == m.cursor {
@@ -894,6 +924,9 @@ var setupModelPickerRun = func(initial setupModelPicker) (setupModelPicker, erro
 
 func promptSetupModels(current []string, currentDefault string) ([]string, string, bool, error) {
 	choices := justcode.CuratedAlbertModels()
+	for index, id := range current {
+		current[index] = canonicalSetupModelID(id)
+	}
 	for _, id := range current {
 		if !isCuratedAlbertModelID(choices, id) {
 			choices = append(choices, justcode.AlbertModelChoice{
@@ -945,8 +978,9 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 	for _, id := range selectedIDs {
 		selected[id] = true
 	}
-	defaultModel := currentDefault
-	if !setupModelEnabled(defaultModel, selectedIDs) {
+	defaultModel := canonicalSetupModelRef(currentDefault)
+	externalDefault := defaultModel != "" && !strings.HasPrefix(defaultModel, "albert/")
+	if !setupModelEnabled(defaultModel, selectedIDs) && !externalDefault {
 		defaultModel = setupModelRef(selectedIDs[0])
 	}
 	initial := setupModelPicker{
@@ -955,6 +989,7 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 		available:        available,
 		catalogueChecked: catalogueErr == nil,
 		defaultModel:     defaultModel,
+		externalDefault:  externalDefault,
 	}
 	picked, err := setupModelPickerRun(initial)
 	if err != nil {

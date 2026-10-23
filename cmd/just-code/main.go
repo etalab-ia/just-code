@@ -725,11 +725,11 @@ func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig
 			configured = append(configured, justcode.AlbertModelConfig{ID: id, Name: id})
 		}
 	}
-	if activeModel != "" {
+	if strings.HasPrefix(activeModel, "albert/") {
 		activeID := strings.TrimPrefix(activeModel, "albert/")
 		activeConfigured := false
 		for _, choice := range choices {
-			if choice.Ref() == activeModel {
+			if choice.Ref() == activeModel || "albert/"+choice.ID == activeModel || activeID == choice.ID || activeID == choice.OpenCodeID {
 				activeConfigured = containsString(ids, choice.ID)
 				if !activeConfigured {
 					configured = append(configured, choice.AlbertModelConfig())

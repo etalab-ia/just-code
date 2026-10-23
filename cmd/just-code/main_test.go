@@ -78,6 +78,26 @@ func TestResolveEnabledAlbertModelsKeepsActiveModelAvailable(t *testing.T) {
 	}
 }
 
+func TestResolveEnabledAlbertModelsMapsLegacyFullID(t *testing.T) {
+	setupTestEnv(t)
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deepseek := justcode.CuratedAlbertModels()[1]
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, justcode.UserSettings{
+		SchemaVersion: 1,
+		DefaultModel:  "albert/" + deepseek.ID,
+		Models:        []string{deepseek.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveEnabledAlbertModels("albert/" + deepseek.ID)
+	if len(got) != 1 || got[0].ID != deepseek.OpenCodeID || got[0].Output != 65536 || got[0].ModelID != deepseek.ID {
+		t.Fatalf("legacy DeepSeek model config = %+v", got)
+	}
+}
+
 func TestParsePortsArgs(t *testing.T) {
 	parsed, err := parseArgs([]string{"ports", "add", "8080:80"})
 	if err != nil {
