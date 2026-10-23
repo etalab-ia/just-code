@@ -1950,9 +1950,11 @@ func TestInitGitHubStepExplainsUnsupportedRuntime(t *testing.T) {
 			out := captureStdout(t, func() {
 				code, err = initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
 			})
-			if runtime.GOOS == "windows" && runtimeName == "tart" {
-				// tart is macOS-only: the run is refused earlier for that
-				// unrelated reason, so this case asserts nothing about GitHub.
+			// Both runtimes are platform-gated: tart is macOS-only and
+			// agent-vm is macOS/Linux, so on Windows the run is refused before
+			// the GitHub step for an unrelated reason. Asserting here would
+			// only pin that gate, not this screen.
+			if runtime.GOOS == "windows" {
 				return
 			}
 			if code != 0 || err != nil {
