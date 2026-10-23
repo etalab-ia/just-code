@@ -49,6 +49,10 @@ func TestPrintInitIntroShowsProjectAndSteps(t *testing.T) {
 	for _, want := range []string{
 		"Configuration du projet : qa-just-code-scratch",
 		"Dossier : " + root,
+		"Par défaut, Microsandbox travaille sur une copie filtrée",
+		"vos fichiers .env",
+		"Avec Tart et agent-vm, le dossier du projet est monté dans la machine",
+		"l'agent peut lire et modifier les fichiers qui s'y trouvent.",
 		"1. Skills (facultatif)",
 		"2. MCP (facultatif)",
 		"3. GitHub (facultatif)",
@@ -58,6 +62,9 @@ func TestPrintInitIntroShowsProjectAndSteps(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("intro is missing %q; output:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "les fichiers ignorés par git n'y sont jamais copiés") {
+		t.Fatalf("intro overstates workspace filtering for mounted runtimes: %s", out)
 	}
 }
 

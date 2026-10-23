@@ -126,8 +126,10 @@ func printInitIntro(root string, in *bufio.Reader) bool {
 Dossier : %s
 
 just-code va préparer une machine isolée pour ce projet.
-L'agent y travaille sur une copie du projet : vos fichiers .env, vos secrets
-et les fichiers ignorés par git n'y sont jamais copiés.
+Par défaut, Microsandbox travaille sur une copie filtrée : vos fichiers .env
+et les fichiers ignorés par git ne sont pas copiés.
+Avec Tart et agent-vm, le dossier du projet est monté dans la machine :
+l'agent peut lire et modifier les fichiers qui s'y trouvent.
 
 3 étapes :
   1. Skills (facultatif) : des savoir-faire pour l'agent (sécurité, accessibilité…).
