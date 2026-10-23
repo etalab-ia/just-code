@@ -151,6 +151,35 @@ func keepEmptyInitSkillsForRetry(answers *justcode.InitAnswers) {
 	answers.SkillsSet = true
 }
 
+// commitInitHuhSubmission copies the submitted form values into answers.
+// It matches the line wizard's "Enter keeps" semantics: a submission only
+// marks a value explicit when it differs from the seeded value, so
+// accepting the defaults preserves the project's existing skill pins and
+// storage mode. huh rebuilds a MultiSelect's value in its own option
+// order, so it compares as sets: a reordered-but-identical selection is
+// not a change. Sibling choices are committed before the caller acts on
+// the skills decision, so a refused empty-skills retry keeps them. It
+// reports whether the submission needs the zero-skills confirmation.
+func commitInitHuhSubmission(opts initOptions, answers *justcode.InitAnswers, skills, mcps []string, skillsLocalOnly bool, skillOptions []huh.Option[string], skipSkills bool) bool {
+	needsEmptyConfirm := false
+	if !skipSkills {
+		selectedSkills := append([]string(nil), skills...)
+		answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, selectedSkills)
+		answers.Skills = selectedSkills
+		answers.RetainedSkills = retainedInitSkillIDs(selectedSkills, skillOptions)
+		needsEmptyConfirm = len(skills) == 0
+	}
+	if !opts.Set["mcps"] {
+		answers.MCPsSet = answers.MCPsSet || !equalStringSets(answers.MCPConnectors, mcps)
+		answers.MCPConnectors = mcps
+	}
+	if !opts.Set["skills-storage"] {
+		answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet || answers.SkillsLocalOnly != skillsLocalOnly
+		answers.SkillsLocalOnly = skillsLocalOnly
+	}
+	return needsEmptyConfirm
+}
+
 func newInitSkillsGroup(skillOptions []huh.Option[string], skills *[]string, skillsLocalOnly *bool, includeSkills, includeStorage bool, stepPrefix string) *huh.Group {
 	fields := make([]huh.Field, 0, 2)
 	if includeSkills {
@@ -699,36 +728,17 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		}
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
 		answers.GitHubWorkflow = githubWorkflow
-		// Match the line wizard's "Enter keeps" semantics: a form
-		// submission only marks the value explicit when it differs from
-		// the seeded value, so accepting the defaults preserves the
-		// project's existing skill pins and storage mode. huh rebuilds a
-		// MultiSelect's value in its own option order, so compare as
-		// sets: a reordered-but-identical selection is not a change.
-		if !skipSkills {
-			selectedSkills := append([]string(nil), skills...)
-			answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, selectedSkills)
-			answers.Skills = selectedSkills
-			if len(skills) == 0 {
-				proceed, err := huhConfirm("Aucune skill sélectionnée. Continuer sans skill ? (O/n)", "Appuyez sur Entrée pour continuer, ou choisissez non pour revenir à la sélection.", true)
-				if err != nil {
-					return answers, err
-				}
-				if !proceed {
-					keepEmptyInitSkillsForRetry(&answers)
-					continue
-				}
-				answers.Skills = nil
-				answers.SkillsSet = true
+		if commitInitHuhSubmission(opts, &answers, skills, mcps, skillsLocalOnly, skillOptions, skipSkills) {
+			proceed, err := huhConfirm("Aucune skill sélectionnée. Continuer sans skill ? (O/n)", "Appuyez sur Entrée pour continuer, ou choisissez non pour revenir à la sélection.", true)
+			if err != nil {
+				return answers, err
 			}
-		}
-		if !opts.Set["mcps"] {
-			answers.MCPsSet = answers.MCPsSet || !equalStringSets(answers.MCPConnectors, mcps)
-			answers.MCPConnectors = mcps
-		}
-		if !opts.Set["skills-storage"] {
-			answers.SkillsLocalOnlySet = answers.SkillsLocalOnlySet || answers.SkillsLocalOnly != skillsLocalOnly
-			answers.SkillsLocalOnly = skillsLocalOnly
+			if !proceed {
+				keepEmptyInitSkillsForRetry(&answers)
+				continue
+			}
+			answers.Skills = nil
+			answers.SkillsSet = true
 		}
 		return answers, nil
 	}

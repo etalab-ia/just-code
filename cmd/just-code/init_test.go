@@ -929,6 +929,9 @@ func TestInitLineSkillPromptRetriesTyposAndRetainsOlderPins(t *testing.T) {
 	if !equalStringSlices(got.Skills, []string{"official/rgaa", "experimental/old-tool"}) {
 		t.Fatalf("replacement selection = %v", got.Skills)
 	}
+	if !equalStringSlices(got.RetainedSkills, []string{"experimental/old-tool"}) {
+		t.Fatalf("retained skills = %v, want the out-of-catalogue pin", got.RetainedSkills)
+	}
 	for _, want := range []string{"unknown skill \"not-a-skill\"", "experimental/old-tool", "conservées si vous saisissez de nouveaux noms"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("retry or retention message missing %q: %s", want, out)

@@ -817,6 +817,9 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 					break
 				}
 			}
+			// Skills absent from the catalogue cannot be resolved again:
+			// record them so Plan preserves their existing pins verbatim.
+			answers.RetainedSkills = retainedInitSkillIDs(answers.Skills, initSkillOptions(catalogue))
 		} else {
 			fmt.Println("La sélection actuelle est conservée. Relancez `just-code init` lorsque le catalogue est accessible pour modifier les skills.")
 		}

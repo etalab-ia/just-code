@@ -130,6 +130,47 @@ func TestInitHuhWizardDefaultsSecuritySkillForNewProject(t *testing.T) {
 	}
 }
 
+// Regression test for the zero-skills retry loop: the MCP and storage
+// choices submitted in the same pass as an empty skill selection must be
+// committed before the user declines the confirmation, because the next
+// form pass reseeds from answers and would otherwise reset them.
+func TestCommitInitHuhSubmissionKeepsSiblingChoicesForEmptySkillsRetry(t *testing.T) {
+	options := initSkillOptions(initSkillFixtureCatalogue())
+	answers := justcode.InitAnswers{
+		Skills:          []string{"official/rgaa"},
+		MCPConnectors:   []string{"github"},
+		SkillsLocalOnly: false,
+	}
+	opts := initOptions{Set: map[string]bool{}}
+	if !commitInitHuhSubmission(opts, &answers, nil, []string{"github", "browser"}, true, options, false) {
+		t.Fatal("an empty skills submission must request the zero-skills confirmation")
+	}
+	if !answers.SkillsSet || len(answers.Skills) != 0 {
+		t.Fatalf("empty submission = %+v", answers)
+	}
+	if !answers.MCPsSet || !equalStringSlices(answers.MCPConnectors, []string{"github", "browser"}) {
+		t.Fatalf("sibling MCP choice lost before the retry: %+v", answers)
+	}
+	if !answers.SkillsLocalOnlySet || !answers.SkillsLocalOnly {
+		t.Fatalf("sibling storage choice lost before the retry: %+v", answers)
+	}
+}
+
+func TestCommitInitHuhSubmissionRecordsRetainedSkills(t *testing.T) {
+	options := initSkillOptions(initSkillFixtureCatalogue())
+	answers := justcode.InitAnswers{Skills: []string{"official/rgaa", "official/ancienne"}}
+	opts := initOptions{Set: map[string]bool{}}
+	if commitInitHuhSubmission(opts, &answers, []string{"official/rgaa", "official/ancienne"}, nil, false, options, false) {
+		t.Fatal("a non-empty skills submission must not request the zero-skills confirmation")
+	}
+	if answers.SkillsSet {
+		t.Fatalf("an unchanged submission must not mark the selection explicit: %+v", answers)
+	}
+	if !equalStringSlices(answers.RetainedSkills, []string{"official/ancienne"}) {
+		t.Fatalf("retained skills = %v, want the out-of-catalogue selection", answers.RetainedSkills)
+	}
+}
+
 func TestHuhDiagnosticsPreservesLiteralPaths(t *testing.T) {
 	path := `C:\Users\Luis\project_with_under`
 	got := huhDiagnosticsDescription(justcode.DiagnosticsReport{

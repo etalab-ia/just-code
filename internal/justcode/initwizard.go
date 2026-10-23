@@ -52,6 +52,11 @@ type InitAnswers struct {
 	// distinguishes an unchanged empty answer from an explicit deselection.
 	Skills    []string
 	SkillsSet bool
+	// RetainedSkills lists selected IDs that are absent from the current
+	// skill catalogue. Plan preserves their existing pins verbatim instead
+	// of resolving them again, so a catalogue rotation cannot drop a pin
+	// the project already carries. Only meaningful with SkillsSet.
+	RetainedSkills []string
 	// SkillsLocalOnly stores selections and pins outside the checkout. Its
 	// boolean has a separate presence bit so a rerun preserves current mode.
 	SkillsLocalOnly    bool
@@ -199,6 +204,25 @@ func applyManagedFileMutations(fs FS, mutations []managedFileMutation) error {
 	return nil
 }
 
+// subtractSkillIDs returns the elements of ids that do not appear in
+// remove, preserving ids order.
+func subtractSkillIDs(ids, remove []string) []string {
+	if len(remove) == 0 {
+		return ids
+	}
+	excluded := make(map[string]bool, len(remove))
+	for _, id := range remove {
+		excluded[id] = true
+	}
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !excluded[id] {
+			kept = append(kept, id)
+		}
+	}
+	return kept
+}
+
 // Plan validates the answers and resolves what they imply. It reads only the
 // existing manifest; nothing is written here, so a user can see the review and
 // walk away.
@@ -332,6 +356,7 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	localOnly := false
 	oldLocalOnly := false
 	var lock Lockfile
+	var existingPins map[string]SkillLock
 	if plan.ExistingManifest != nil {
 		if !answers.MCPsSet {
 			plan.Answers.MCPConnectors = append([]string(nil), plan.ExistingManifest.MCPConnectors...)
@@ -350,12 +375,23 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			}
 			selected = append([]string(nil), local.Skills...)
 			plan.SkillLocks = local.Pins
+			existingPins = local.Pins
 		} else if len(plan.ExistingManifest.Skills) > 0 && !answers.SkillsSet {
 			lock, err = ReadLockfile(fs, plan.LockPath)
 			if err != nil {
 				return plan, err
 			}
 			plan.SkillLocks = lock.Skills
+			existingPins = lock.Skills
+		} else if answers.SkillsSet && len(answers.RetainedSkills) > 0 {
+			// A selection that retains out-of-catalogue pins needs the
+			// lockfile even though the selection itself changed: the
+			// retained pins are merged below, not resolved.
+			lock, err = ReadLockfile(fs, plan.LockPath)
+			if err != nil {
+				return plan, err
+			}
+			existingPins = lock.Skills
 		}
 	}
 	if answers.MCPsSet {
@@ -370,20 +406,39 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	}
 	if answers.SkillsSet {
 		selected = append([]string(nil), answers.Skills...)
-		if len(selected) > 0 {
-			if err := validateProjectSkillRuntime(plan.Answers.Runtime, selected); err != nil {
+		// Retained skills are absent from the current catalogue, so they
+		// cannot be resolved again: keep their existing pins verbatim and
+		// resolve only the rest. The selection still lists them, so the
+		// manifest, review, and managed instructions keep the pin the
+		// project already carries.
+		resolvable := selected
+		if len(answers.RetainedSkills) > 0 {
+			resolvable = subtractSkillIDs(selected, answers.RetainedSkills)
+		}
+		if len(resolvable) > 0 {
+			if err := validateProjectSkillRuntime(plan.Answers.Runtime, resolvable); err != nil {
 				return plan, err
 			}
 			resolve := w.ResolveSkills
 			if resolve == nil {
 				resolve = ResolveProjectSkills
 			}
-			plan.SkillEntries, plan.SkillLocks, err = resolve(context.Background(), selected)
+			plan.SkillEntries, plan.SkillLocks, err = resolve(context.Background(), resolvable)
 			if err != nil {
 				return plan, err
 			}
 		} else {
 			plan.SkillLocks = map[string]SkillLock{}
+		}
+		for _, id := range answers.RetainedSkills {
+			pin, ok := existingPins[id]
+			if !ok {
+				return plan, fmt.Errorf("retained skill %q has no existing pin to preserve", id)
+			}
+			if plan.SkillLocks == nil {
+				plan.SkillLocks = map[string]SkillLock{}
+			}
+			plan.SkillLocks[id] = pin
 		}
 	}
 	plan.Answers.Skills = selected
