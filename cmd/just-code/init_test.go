@@ -1920,3 +1920,53 @@ func TestInitReopensQuestionsWhenGitHubChangesBeforeWriting(t *testing.T) {
 		t.Fatal("no approval may be recorded when the re-check never approved")
 	}
 }
+
+// TestInitGitHubStepExplainsUnsupportedRuntime pins the #155 class of failure on
+// the runtime axis: the GitHub workflow needs Microsandbox, so choosing Tart or
+// agent-vm and then approving it used to fail only at the end, discarding every
+// answer. The step now states the limitation on its own screen and the run
+// completes without an approval.
+func TestInitGitHubStepExplainsUnsupportedRuntime(t *testing.T) {
+	for _, runtimeName := range []string{"tart", "agent-vm"} {
+		t.Run(runtimeName, func(t *testing.T) {
+			root := initTestProject(t)
+			stubProjectSkills(t)
+			originalApprove := approveGitHubForProjectFn
+			approved := false
+			approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+			t.Cleanup(func() { approveGitHubForProjectFn = originalApprove })
+
+			// runtime, isolation, model, cpus, memory, credential-ref, skills,
+			// MCPs, storage, GitHub (continue), apply.
+			input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+			opts := initOptions{
+				Root: root, Runtime: runtimeName, Replace: true,
+				Set: map[string]bool{"root": true, "runtime": true},
+			}
+			var (
+				code int
+				err  error
+			)
+			out := captureStdout(t, func() {
+				code, err = initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
+			})
+			if runtime.GOOS == "windows" && runtimeName == "tart" {
+				// tart is macOS-only: the run is refused earlier for that
+				// unrelated reason, so this case asserts nothing about GitHub.
+				return
+			}
+			if code != 0 || err != nil {
+				t.Fatalf("choosing %s then continuing must complete the run: code=%d err=%v out=\n%s", runtimeName, code, err, out)
+			}
+			if !strings.Contains(out, "n'est pas disponible avec "+runtimeName) {
+				t.Fatalf("the screen must name the runtime limitation:\n%s", out)
+			}
+			if approved {
+				t.Fatal("no approval may be recorded for a runtime that cannot support it")
+			}
+			if _, statErr := os.Stat(justcode.ProjectManifestPath(root)); statErr != nil {
+				t.Fatalf("the project must still be configured: %v", statErr)
+			}
+		})
+	}
+}

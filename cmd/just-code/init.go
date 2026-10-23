@@ -1035,6 +1035,22 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		for {
 			probe := githubInitProbeFn(answers.Root)
 			switch {
+			case !gitHubAvailableForRuntime(answers.Runtime):
+				// The Guest GitHub workflow is Microsandbox-only. Offering the
+				// approval under Tart or agent-vm would only fail at the end,
+				// after every other answer, which is the #155 symptom. Say so
+				// on this screen and keep the run going.
+				fmt.Println(gitHubRuntimeScreen(answers.Runtime))
+				quit, err := gitHubContinueLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if quit {
+					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
 			case !probe.HasOrigin:
 				fmt.Println(gitHubNoOriginScreen())
 				quit, err := gitHubContinueLoop(in)
@@ -1184,6 +1200,34 @@ dans votre dossier, vous les relirez puis les appliquerez avec : just-code works
   > Continuer
     Quitter, relier le projet à GitHub, puis relancer : just-code init
 `
+}
+
+// gitHubAvailableForRuntime reports whether the chosen runtime can support the
+// GitHub workflow at all. Only Microsandbox seals the workspace and hands the
+// guest a proxied credential; Tart and agent-vm mount the project, so there is
+// no branch to push from a sealed copy.
+func gitHubAvailableForRuntime(runtime justcode.Runtime) bool {
+	if runtime == "" {
+		return true
+	}
+	return runtime == justcode.RuntimeMicrosandbox
+}
+
+func gitHubRuntimeScreen(runtime justcode.Runtime) string {
+	name := string(runtime)
+	if name == "" {
+		name = string(justcode.RuntimeMicrosandbox)
+	}
+	return fmt.Sprintf(`[3/3] GitHub (facultatif)
+
+Le partage de modifications par GitHub n'est pas disponible avec %s.
+Il fonctionne avec Microsandbox, qui travaille sur une copie scellée du projet.
+Avec Tart et agent-vm, le dossier du projet est monté dans la machine : vous
+récupérez les modifications directement dans votre dossier.
+
+  > Continuer sans GitHub
+    Changer de type de machine (Microsandbox) dans les questions précédentes
+`, name)
 }
 
 func gitHubNoTokenScreen(p justcode.GitHubProjectStatus) string {

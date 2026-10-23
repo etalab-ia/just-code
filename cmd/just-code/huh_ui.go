@@ -760,6 +760,34 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 	for {
 		probe := githubInitProbeFn(answers.Root)
 		switch {
+		case !gitHubAvailableForRuntime(answers.Runtime):
+			// Same rule as the line wizard: Microsandbox-only capability, so
+			// the screen states it rather than letting the review fail after
+			// every other answer (#155).
+			choice := "continue"
+			err := huhRun(huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("[3/3] GitHub (facultatif)").
+						Description(fmt.Sprintf("Le partage de modifications par GitHub n'est pas disponible avec %s.\nIl fonctionne avec Microsandbox, qui travaille sur une copie scellée du projet. Avec Tart et agent-vm, le dossier du projet est monté dans la machine : vous récupérez les modifications directement dans votre dossier.", string(answers.Runtime))),
+					huh.NewSelect[string]().
+						Title("GitHub").
+						Options(
+							huh.NewOption("Continuer sans GitHub", "continue"),
+							huh.NewOption("Quitter pour changer de type de machine", "quit"),
+						).
+						Value(&choice),
+				),
+			))
+			if err != nil {
+				return answers, err
+			}
+			if choice == "quit" {
+				return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
+			}
+			answers.GitHubWorkflow = false
+			answers.GitHubRemote = justcode.GitHubRemote{}
+			return answers, nil
 		case !probe.HasOrigin:
 			choice := "continue"
 			err := huhRun(huh.NewForm(
