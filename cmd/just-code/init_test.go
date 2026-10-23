@@ -1841,3 +1841,17 @@ func TestInitRendersGitHubStepAfterSkillsAndMCP(t *testing.T) {
 		t.Fatalf("step order must be skills then MCP then GitHub, got skills %d, MCP %d, GitHub %d", skillsAt, mcpAt, githubAt)
 	}
 }
+
+// TestGitHubApprovedScreenWithoutLogin pins the fallback when GitHub reports a
+// valid token but no login: the screen must still read as a completed check,
+// never as "compte ," with an empty name.
+func TestGitHubApprovedScreenWithoutLogin(t *testing.T) {
+	remote := justcode.GitHubRemote{URL: "https://github.com/etalab-ia/mon-projet.git", Repo: "etalab-ia/mon-projet"}
+	screen := gitHubApprovedScreen(justcode.GitHubProjectStatus{Remote: remote, HasOrigin: true, HasToken: true, Login: "", Rights: justcode.GitHubRepoRightsOK})
+	if strings.Contains(screen, "compte ,") || strings.Contains(screen, "compte  ,") {
+		t.Fatalf("an unknown login must not render an empty account name:\n%s", screen)
+	}
+	if !strings.Contains(screen, "droits vérifiés sur ce dépôt ✅") {
+		t.Fatalf("the verified check must still be stated:\n%s", screen)
+	}
+}

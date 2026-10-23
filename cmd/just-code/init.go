@@ -1143,15 +1143,22 @@ func gitHubRepoDisplay(r justcode.GitHubRemote) string {
 }
 
 func gitHubApprovedScreen(p justcode.GitHubProjectStatus) string {
+	// The account name is what makes the check verifiable by the reader. When
+	// GitHub did not report it, the rights are still verified, so say that
+	// rather than printing an empty "compte ,".
+	account := fmt.Sprintf("compte %s", p.Login)
+	if p.Login == "" {
+		account = "jeton accepté"
+	}
 	return fmt.Sprintf(`[3/3] GitHub (facultatif)
 
 Dépôt détecté : %s
-Jeton GitHub : compte %s, droits vérifiés sur ce dépôt ✅
+Jeton GitHub : %s, droits vérifiés sur ce dépôt ✅
 
 Autoriser l'agent à pousser ses modifications sur une branche
 et à ouvrir une pull request en brouillon sur ce dépôt ? (O/n)
 Vous gardez la main : rien n'est fusionné sans votre accord.
-`, gitHubRepoDisplay(p.Remote), p.Login)
+`, gitHubRepoDisplay(p.Remote), account)
 }
 
 func gitHubNoOriginScreen() string {
