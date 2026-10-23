@@ -152,6 +152,82 @@ func TestStoreCredentialDistinguishesRejectionFromNetwork(t *testing.T) {
 	}
 }
 
+func TestValidateGitHubTokenOutcomes(t *testing.T) {
+	// A 401 (or 403) is a refusal: the token is wrong or revoked.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	probe := validateGitHubTokenAt(context.Background(), nil, "github_pat_x", srv.URL)
+	if !probe.Rejected || probe.Unreachable {
+		t.Fatalf("401 probe = %+v", probe)
+	}
+
+	// A valid fine-grained token reports the account and no scope warning.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"login":"moncompte"}`)
+	}))
+	defer srv2.Close()
+	probe = validateGitHubTokenAt(context.Background(), nil, "github_pat_x", srv2.URL)
+	if probe.Rejected || probe.Unreachable || probe.Login != "moncompte" || probe.BroadScope {
+		t.Fatalf("fine-grained probe = %+v", probe)
+	}
+
+	// A valid token without the fine-grained prefix (classic ghp_, legacy
+	// hex, OAuth) is broad-scope: the wizard warns.
+	for _, token := range []string{"ghp_classic", "0123456789abcdef0123456789abcdef01234567", "gho_oauth"} {
+		probe = validateGitHubTokenAt(context.Background(), nil, token, srv2.URL)
+		if probe.Rejected || probe.Unreachable || !probe.BroadScope {
+			t.Fatalf("classic %q probe = %+v", token, probe)
+		}
+	}
+
+	// A redirect must never be followed: the Authorization header would be
+	// replayed to another host. It reports unreachable, not valid.
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.invalid/", http.StatusFound)
+	}))
+	defer srv3.Close()
+	probe = validateGitHubTokenAt(context.Background(), srv3.Client(), "github_pat_x", srv3.URL)
+	if !probe.Unreachable || probe.Rejected {
+		t.Fatalf("redirect probe = %+v", probe)
+	}
+
+	// A 200 without a login (captive portal, HTML error page) is not a
+	// validated token.
+	srv4 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html>login</html>`)
+	}))
+	defer srv4.Close()
+	probe = validateGitHubTokenAt(context.Background(), nil, "github_pat_x", srv4.URL)
+	if !probe.Unreachable || probe.Rejected {
+		t.Fatalf("non-user probe = %+v", probe)
+	}
+}
+
+func TestStoreCredentialGitHubUsesTheGitHubProbe(t *testing.T) {
+	dir := t.TempDir()
+	called := ""
+	w := SetupWizard{
+		FS: DefaultFS, StateDir: dir,
+		Store: func(context.Context) (SetupStore, error) { return &fakeSetupStore{}, nil },
+		ValidateGitHub: func(_ context.Context, token string) CredentialProbe {
+			called = token
+			return CredentialProbe{Rejected: true, Detail: "HTTP 401"}
+		},
+	}
+	probe, err := w.StoreCredential(context.Background(), CredentialGithub, "tok")
+	if err != nil {
+		t.Fatalf("rejection is a probe, not a hard error: %v", err)
+	}
+	if called != "tok" {
+		t.Fatalf("the GitHub probe was not called with the token: %q", called)
+	}
+	if !probe.Rejected {
+		t.Fatalf("probe = %+v", probe)
+	}
+}
+
 func TestValidateAlbertKeyRejectsRedirectsAndNonCatalogueBodies(t *testing.T) {
 	// A redirect must never be followed: the Authorization header would be
 	// replayed to another host. It reports unreachable, not valid.

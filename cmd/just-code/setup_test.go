@@ -933,7 +933,7 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 	})
 	keyAt := strings.Index(out, "[1/3] Clé Albert API")
 	modelAt := strings.Index(out, "Models (comma-separated")
-	githubAt := strings.Index(out, "GitHub credential (optional")
+	githubAt := strings.Index(out, "[3/3] GitHub (facultatif)")
 	if keyAt < 0 || modelAt < 0 || githubAt < 0 {
 		t.Fatalf("flow markers missing (key=%d model=%d github=%d); output:\n%s", keyAt, modelAt, githubAt, out)
 	}
@@ -1220,5 +1220,295 @@ func TestSetupUnreachableRetryThenAbandonStoresNothing(t *testing.T) {
 	}
 	if negativeCalls == 0 {
 		t.Fatal("precondition: the endpoint was never probed")
+	}
+}
+
+// forceGitHubProbe pins the GitHub token probe for the test; the original is
+// restored on cleanup. The probe records every token it is called with.
+func forceGitHubProbe(t *testing.T, probe func(string) justcode.CredentialProbe) *[]string {
+	t.Helper()
+	calls := &[]string{}
+	orig := githubTokenProbeFn
+	githubTokenProbeFn = func(_ context.Context, token string) justcode.CredentialProbe {
+		*calls = append(*calls, token)
+		return probe(token)
+	}
+	t.Cleanup(func() { githubTokenProbeFn = orig })
+	return calls
+}
+
+func storedGitHubToken(t *testing.T) (string, error) {
+	t.Helper()
+	store, err := justcode.ConsentFileStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.Get(context.Background(), justcode.CredentialGithub)
+}
+
+// TestGitHubScreenText pins the #164 screen: what GitHub is for, what to do
+// without it, which token to create, the two rights, and the store wording —
+// which must not promise a keychain under --fallback.
+func TestGitHubScreenText(t *testing.T) {
+	native := githubScreenText(false)
+	for _, want := range []string{
+		"[3/3] GitHub (facultatif)",
+		"just-code workspace apply",
+		"jeton GitHub « fine-grained »",
+		githubTokenURL,
+		"Contents (lecture et écriture), Pull requests (lecture et écriture)",
+		"elle peut devoir approuver le jeton",
+		"enregistré dans le trousseau de ce poste",
+	} {
+		if !strings.Contains(native, want) {
+			t.Errorf("screen is missing %q", want)
+		}
+	}
+	fallback := githubScreenText(true)
+	if strings.Contains(fallback, "trousseau") {
+		t.Errorf("the fallback screen must not promise a keychain: %q", fallback)
+	}
+	if !strings.Contains(fallback, "lisible par votre seul compte") {
+		t.Errorf("the fallback screen must describe the file store: %q", fallback)
+	}
+}
+
+// TestSetupWizardGitHubDefaultsToLater pins the stage's safe default: an
+// empty answer (and an EOF) is "Plus tard", nothing is probed or stored, and
+// the remedy is printed.
+func TestSetupWizardGitHubDefaultsToLater(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	calls := forceGitHubProbe(t, func(string) justcode.CredentialProbe {
+		t.Fatal("the probe must not run when the user chooses Plus tard")
+		return justcode.CredentialProbe{}
+	})
+	// key, model (empty = keep), GitHub (empty = Plus tard), name, email, apply.
+	input := "the-key\n\n\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	if len(*calls) != 0 {
+		t.Errorf("the probe ran %d times on a Plus tard answer", len(*calls))
+	}
+	if !strings.Contains(out, githubLaterMessage) {
+		t.Errorf("the Plus tard remedy is missing; output:\n%s", out)
+	}
+	if _, err := storedGitHubToken(t); err == nil {
+		t.Error("no token may be stored on a Plus tard answer")
+	}
+}
+
+// TestSetupWizardGitHubLegacyNoAnswerKeepsLater pins that "n" — the answer
+// the previous yes/no prompt took — still means "Plus tard".
+func TestSetupWizardGitHubLegacyNoAnswerKeepsLater(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	forceGitHubProbe(t, func(string) justcode.CredentialProbe {
+		t.Fatal("the probe must not run when the user answers n")
+		return justcode.CredentialProbe{}
+	})
+	// key, model, GitHub ("n" = Plus tard), name, email, apply.
+	input := "the-key\n\nn\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, githubLaterMessage) {
+		t.Errorf("the Plus tard remedy is missing; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardGitHubValidFineGrainedToken covers the happy path: the
+// token is validated before it is stored, the account login is reported, and
+// the token itself never appears in the output.
+func TestSetupWizardGitHubValidFineGrainedToken(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	calls := forceGitHubProbe(t, func(string) justcode.CredentialProbe {
+		return justcode.CredentialProbe{Login: "moncompte"}
+	})
+	// key, model, GitHub (a = add), token, name, email, apply.
+	input := "the-key\n\na\ngithub_pat_secretvalue\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "✅ Jeton valide : compte moncompte.") {
+		t.Errorf("the success line must name the account; output:\n%s", out)
+	}
+	if strings.Contains(out, "github_pat_secretvalue") {
+		t.Errorf("the token must never be displayed; output:\n%s", out)
+	}
+	if len(*calls) != 1 {
+		t.Errorf("expected exactly one probe call, got %d", len(*calls))
+	}
+	stored, err := storedGitHubToken(t)
+	if err != nil || stored != "github_pat_secretvalue" {
+		t.Errorf("stored token = %q, %v", stored, err)
+	}
+}
+
+// TestSetupWizardGitHubRefusedTokenReasks pins the refusal loop: a refused
+// token explains and re-asks; only the second, valid token is stored.
+func TestSetupWizardGitHubRefusedTokenReasks(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	forceGitHubProbe(t, func(token string) justcode.CredentialProbe {
+		if token == "bad-token" {
+			return justcode.CredentialProbe{Rejected: true, Detail: "HTTP 401"}
+		}
+		return justcode.CredentialProbe{Login: "moncompte"}
+	})
+	// key, model, add, refused token, valid token, name, email, apply.
+	input := "the-key\n\na\nbad-token\ngithub_pat_good\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "GitHub a refusé ce jeton. Vérifiez qu'il est complet, ou créez-en un nouveau.") {
+		t.Errorf("the refusal message is missing; output:\n%s", out)
+	}
+	stored, err := storedGitHubToken(t)
+	if err != nil || stored != "github_pat_good" {
+		t.Errorf("stored token = %q, %v", stored, err)
+	}
+	if strings.Contains(out, "bad-token") {
+		t.Errorf("the refused token must never be displayed; output:\n%s", out)
+	}
+}
+
+// TestSetupWizardGitHubClassicTokenWarning pins the broad-scope warning and
+// its two outcomes: [R] re-enters a token, [C] stores the classic one. The
+// message text is the issue's wording, [C]/[R] hint included.
+func TestSetupWizardGitHubClassicTokenWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		answer    string
+		wantStore string
+	}{
+		{"continue stores the classic token", "c", "ghp_classic"},
+		{"replace re-asks", "r", "github_pat_fine"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir, _ := setupTestEnv(t)
+			forceNonTTY(t)
+			journalPastPreflight(t, stateDir)
+			forceGitHubProbe(t, func(token string) justcode.CredentialProbe {
+				probe := justcode.CredentialProbe{Login: "moncompte"}
+				if !strings.HasPrefix(token, "github_pat_") {
+					probe.BroadScope = true
+				}
+				return probe
+			})
+			// key, model, add, classic token, warning answer, [replacement
+			// token], name, email, apply.
+			input := "the-key\n\na\nghp_classic\n" + tc.answer + "\ngithub_pat_fine\n\n\n\ny\n"
+			if tc.answer == "c" {
+				// No replacement token is prompted for; the empty line is the
+				// name answer.
+				input = "the-key\n\na\nghp_classic\nc\n\n\n\ny\n"
+			}
+			out := captureStdout(t, func() {
+				code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+					func(context.Context, string) error { return nil },
+					func(context.Context) error { return nil },
+					func(string) string { return "" })
+				if code != 0 || err != nil {
+					t.Errorf("wizard run: code=%d err=%v", code, err)
+				}
+			})
+			if !strings.Contains(out, githubClassicMessage) {
+				t.Errorf("the classic-token warning is missing; output:\n%s", out)
+			}
+			stored, err := storedGitHubToken(t)
+			if err != nil || stored != tc.wantStore {
+				t.Errorf("stored token = %q, %v; want %q", stored, err, tc.wantStore)
+			}
+		})
+	}
+}
+
+// TestSetupWizardGitHubUnreachableContinue stores the token unvalidated when
+// the user explicitly continues; retry re-enters instead.
+func TestSetupWizardGitHubUnreachable(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	forceGitHubProbe(t, func(token string) justcode.CredentialProbe {
+		if token == "tok-offline" {
+			return justcode.CredentialProbe{Unreachable: true, Detail: "dial tcp: connection refused"}
+		}
+		return justcode.CredentialProbe{Login: "moncompte"}
+	})
+	// key, model, add, unreachable token, R (retry), valid token, name, email, apply.
+	input := "the-key\n\na\ntok-offline\nr\ngithub_pat_good\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, githubUnreachableMessage) {
+		t.Errorf("the unreachable message is missing; output:\n%s", out)
+	}
+	if stored, err := storedGitHubToken(t); err != nil || stored != "github_pat_good" {
+		t.Errorf("a retry must re-enter the token: stored %q, %v", stored, err)
+	}
+}
+
+// TestSetupWizardGitHubUnreachableContinueStoresUnvalidated pins that an
+// explicit C stores the token and says it was not verified.
+func TestSetupWizardGitHubUnreachableContinueStoresUnvalidated(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	forceGitHubProbe(t, func(string) justcode.CredentialProbe {
+		return justcode.CredentialProbe{Unreachable: true, Detail: "dial tcp: connection refused"}
+	})
+	// key, model, add, unreachable token, C (continue), name, email, apply.
+	input := "the-key\n\na\ntok-offline\nc\n\n\n\ny\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+			func(context.Context, string) error { return nil },
+			func(context.Context) error { return nil },
+			func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Errorf("wizard run: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "Jeton enregistré sans vérification.") {
+		t.Errorf("the unverified-storage notice is missing; output:\n%s", out)
+	}
+	if stored, err := storedGitHubToken(t); err != nil || stored != "tok-offline" {
+		t.Errorf("the token must be stored on an explicit continue: stored %q, %v", stored, err)
 	}
 }
