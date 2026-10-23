@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -34,6 +35,9 @@ type SetupWizard struct {
 	// ValidateAlbert probes the Albert endpoint with the candidate key.
 	// Nil skips validation (tests decide the outcome explicitly).
 	ValidateAlbert func(ctx context.Context, key string) error
+	// ValidateGitHub probes the GitHub API with the candidate token. Nil
+	// skips validation (tests decide the outcome explicitly).
+	ValidateGitHub func(ctx context.Context, token string) CredentialProbe
 	// EnsureRuntime installs the managed runtime when needed. Nil uses
 	// ensureMSBRuntime.
 	EnsureRuntime func(ctx context.Context) error
@@ -64,6 +68,13 @@ type CredentialProbe struct {
 	Rejected    bool
 	Unreachable bool
 	Detail      string
+	// Login is the account the credential authenticates as, when the
+	// endpoint reports it (GitHub GET /user). Empty when unknown.
+	Login string
+	// BroadScope marks a valid credential broader than the recommended
+	// kind (a GitHub token without the fine-grained prefix). The caller
+	// decides whether to warn, accept, or re-ask.
+	BroadScope bool
 }
 
 // ValidateAlbertKey probes the models endpoint with the key: a 401/403 is a
@@ -78,25 +89,29 @@ func ValidateAlbertKey(ctx context.Context, client *http.Client, key string) Cre
 	return validateAlbertKeyAt(ctx, client, key, albertCatalogueURL)
 }
 
-// validateAlbertKeyAt is ValidateAlbertKey against an explicit URL (tests).
-func validateAlbertKeyAt(ctx context.Context, client *http.Client, key, url string) CredentialProbe {
+// noRedirectClient returns a client that never follows redirects: the
+// Authorization header must never be replayed to another host. A
+// caller-supplied client is cloned rather than mutated (it is often shared —
+// the CLI reuses one per process), and an explicit caller policy is
+// respected.
+func noRedirectClient(client *http.Client) *http.Client {
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}}
-	} else {
-		// Clone rather than mutate: a caller-supplied client is often
-		// shared (the CLI reuses one per process), and patching its
-		// redirect policy in place would change every other request it
-		// makes. An explicit caller policy is respected.
-		c := *client
-		if c.CheckRedirect == nil {
-			c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			}
-		}
-		client = &c
 	}
+	c := *client
+	if c.CheckRedirect == nil {
+		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+	return &c
+}
+
+// validateAlbertKeyAt is ValidateAlbertKey against an explicit URL (tests).
+func validateAlbertKeyAt(ctx context.Context, client *http.Client, key, url string) CredentialProbe {
+	client = noRedirectClient(client)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return CredentialProbe{Unreachable: true, Detail: err.Error()}
@@ -131,6 +146,68 @@ func validateAlbertKeyAt(ctx context.Context, client *http.Client, key, url stri
 	}
 }
 
+// githubUserURL is the endpoint a candidate token is validated against:
+// GET /user answers the authenticated account, which is all the wizard
+// needs. Checking the account never spends anything on the token's rights.
+const githubUserURL = "https://api.github.com/user"
+
+// githubFineGrainedPrefix marks fine-grained personal access tokens, the
+// only token kind limited to chosen repositories. Every other valid token
+// (classic ghp_, legacy 40-char hex, OAuth) carries broad rights; the
+// wizard's warning and remediation are the same for all of them.
+const githubFineGrainedPrefix = "github_pat_"
+
+// ValidateGitHubToken probes the GitHub API with the candidate token: a
+// 401/403 is a rejection (the token is wrong or revoked), other transport
+// errors are unreachable, and a 200 with a login means the token is valid.
+// Redirects are NOT followed, same contract as ValidateAlbertKey. A valid
+// token without the fine-grained prefix is reported as BroadScope.
+func ValidateGitHubToken(ctx context.Context, client *http.Client, token string) CredentialProbe {
+	return validateGitHubTokenAt(ctx, client, token, githubUserURL)
+}
+
+// validateGitHubTokenAt is ValidateGitHubToken against an explicit URL
+// (tests).
+func validateGitHubTokenAt(ctx context.Context, client *http.Client, token, url string) CredentialProbe {
+	client = noRedirectClient(client)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return CredentialProbe{Unreachable: true, Detail: err.Error()}
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return CredentialProbe{Unreachable: true, Detail: err.Error()}
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		// Sniff the body: /user returns a JSON object with the account
+		// login. A 200 with anything else (a captive portal, an HTML error
+		// page) is not a validated token.
+		var raw struct {
+			Login string `json:"login"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
+			return CredentialProbe{Unreachable: true, Detail: "HTTP 200 with a non-user body (endpoint misconfigured?)"}
+		}
+		if raw.Login == "" {
+			return CredentialProbe{Unreachable: true, Detail: "HTTP 200 with a non-user body (no login)"}
+		}
+		probe := CredentialProbe{Login: raw.Login}
+		if !strings.HasPrefix(token, githubFineGrainedPrefix) {
+			probe.BroadScope = true
+		}
+		return probe
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return CredentialProbe{Unreachable: true, Detail: fmt.Sprintf("HTTP %d (redirect not followed; the Authorization header is never replayed to another host)", resp.StatusCode)}
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return CredentialProbe{Rejected: true, Detail: fmt.Sprintf("HTTP %d: the token was not accepted", resp.StatusCode)}
+	default:
+		return CredentialProbe{Unreachable: true, Detail: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	}
+}
+
 // ValidateCredential probes one candidate credential WITHOUT storing it, so a
 // caller can ask about an unreachable endpoint before anything is written. A
 // refusal is returned as a probe outcome (never an error); an unreachable
@@ -156,17 +233,27 @@ func (w SetupWizard) ValidateCredential(ctx context.Context, kind CredentialKind
 
 // probeCredential is the validation half of StoreCredential: it never writes.
 func (w SetupWizard) probeCredential(ctx context.Context, kind CredentialKind, value string) CredentialProbe {
-	if kind != CredentialAlbert || w.ValidateAlbert == nil {
+	switch kind {
+	case CredentialAlbert:
+		if w.ValidateAlbert == nil {
+			return CredentialProbe{}
+		}
+		if verr := w.ValidateAlbert(ctx, value); verr != nil {
+			var rejected RejectedCredentialError
+			if errors.As(verr, &rejected) {
+				return CredentialProbe{Rejected: true, Detail: rejected.Detail}
+			}
+			return CredentialProbe{Unreachable: true, Detail: verr.Error()}
+		}
+		return CredentialProbe{}
+	case CredentialGithub:
+		if w.ValidateGitHub == nil {
+			return CredentialProbe{}
+		}
+		return w.ValidateGitHub(ctx, value)
+	default:
 		return CredentialProbe{}
 	}
-	if verr := w.ValidateAlbert(ctx, value); verr != nil {
-		var rejected RejectedCredentialError
-		if errors.As(verr, &rejected) {
-			return CredentialProbe{Rejected: true, Detail: rejected.Detail}
-		}
-		return CredentialProbe{Unreachable: true, Detail: verr.Error()}
-	}
-	return CredentialProbe{}
 }
 
 // PutCredential stores one credential and journals its kind (never the value).

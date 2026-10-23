@@ -312,7 +312,8 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 			}
 			return nil
 		},
-		EnsureRuntime: ensure,
+		ValidateGitHub: githubTokenProbeFn,
+		EnsureRuntime:  ensure,
 	}
 
 	// Stage: Albert credential (skipped when already stored this run).
@@ -483,63 +484,53 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		}
 	}
 
-	// Stage: optional GitHub credential. Skipping is penalty-free.
+	// Stage: optional GitHub credential. "Plus tard" is the default and
+	// blocks nothing: an unreadable answer (EOF, aborted form) anywhere in
+	// the stage is treated as "Plus tard", never as a cancellation — the
+	// stage exists to help, not to gate the rest of setup.
 	if !justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
 		if j.SkipGitHub {
 			// A resumed run keeps the earlier "no" without re-asking.
 		} else {
 			fmt.Println()
-			fmt.Println("GitHub credential (optional — used by the guest GitHub workflow; can be added later with 'just-code auth add github').")
+			fmt.Println(githubScreenText(fallback))
 			addGitHub := false
 			if wizardHuhFn() {
-				proceed, err := huhConfirm("Add a GitHub token now?", "Optional — used by the guest GitHub workflow; can be added later with 'just-code auth add github'.", false)
-				if errors.Is(err, huh.ErrUserAborted) {
-					fmt.Println("Setup cancelled.")
-					return 1, nil
-				}
+				choice := "later"
+				err := huhRun(huh.NewForm(
+					huh.NewGroup(
+						huh.NewSelect[string]().
+							Options(
+								huh.NewOption("Ajouter un jeton maintenant", "add"),
+								huh.NewOption("Plus tard (just-code auth add github)", "later"),
+							).
+							Value(&choice),
+					),
+				))
 				if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 					return 1, err
 				}
-				addGitHub = err == nil && proceed
+				addGitHub = err == nil && choice == "add"
 			} else {
-				answer, _ := promptLine(in, "Add a GitHub token now? [y/N]: ")
-				addGitHub = strings.EqualFold(strings.TrimSpace(answer), "y")
+				addGitHub = githubAddChoice(in)
 			}
+			stored := false
 			if addGitHub {
-				var token string
-				if wizardHuhFn() {
-					value, err := huhSecret("GitHub token", "Input hidden; leave empty to skip.")
-					if errors.Is(err, huh.ErrUserAborted) {
-						fmt.Println("Setup cancelled.")
-						return 1, nil
-					}
-					if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-						return 1, err
-					}
-					token = value
-				} else {
-					value, ok := promptSecret(in, "Enter the GitHub token (input hidden; empty to skip): ")
-					if ok {
-						token = value
-					}
+				var err error
+				stored, err = githubTokenStage(ctx, w, in)
+				if err != nil {
+					return 1, err
 				}
-				if token != "" {
-					if _, err := w.StoreCredential(ctx, justcode.CredentialGithub, token); err != nil {
-						return 1, err
-					}
-					j.CredentialKinds = append(j.CredentialKinds, "github")
-					fmt.Println("GitHub credential stored. It is NOT activated for any project; per-project approval comes with the GitHub workflow (bindings approve github).")
-				} else {
-					fmt.Println("Skipped GitHub.")
-					j.SkipGitHub = true
-				}
+			}
+			if stored {
+				j.CredentialKinds = append(j.CredentialKinds, "github")
 			} else {
-				fmt.Println("Skipped GitHub.")
+				fmt.Println(githubLaterMessage)
 				j.SkipGitHub = true
 			}
-		}
-		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
-			return 1, err
+			if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+				return 1, err
+			}
 		}
 	}
 
@@ -1101,14 +1092,19 @@ const albertUnreachableMessage = "Albert API ne répond pas. Vérifiez votre con
 // and any other outcome (abort, end of input) stores nothing.
 const albertRetryPrompt = "[R] Réessayer  [C] Continuer sans vérifier"
 
-// albertRetryChoice asks whether to retry validation. It returns retry=true to
-// re-enter the key, abort=true to stop the wizard, and neither for a
-// continue-without-verifying decision.
-//
-// A typo must not end the run: an answer that is neither R nor C asks again. A
-// missing answer (EOF) or an aborted form does stop the run, because only an
-// explicit choice may authorize storing an unvalidated key.
+// albertRetryChoice asks whether to retry Albert key validation.
 func albertRetryChoice(in *bufio.Reader) (retry, abort bool) {
+	return credentialRetryChoice(in, albertUnreachableMessage)
+}
+
+// credentialRetryChoice asks whether to retry validation. It returns
+// retry=true to re-enter the credential, abort=true to stop, and neither for
+// a continue-without-verifying decision.
+//
+// A typo must not change the course of the run: an answer that is neither R
+// nor C asks again. A missing answer (EOF) or an aborted form stops, because
+// only an explicit choice may authorize storing an unvalidated credential.
+func credentialRetryChoice(in *bufio.Reader, unreachableMessage string) (retry, abort bool) {
 	if wizardHuhFn() {
 		// huh only returns one of the two options (it re-asks on its own for
 		// anything else), so an error here is an abort, never a "continue".
@@ -1116,7 +1112,7 @@ func albertRetryChoice(in *bufio.Reader) (retry, abort bool) {
 		err := huhRun(huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
-					Title(albertUnreachableMessage).
+					Title(unreachableMessage).
 					Options(
 						huh.NewOption("Réessayer", "retry"),
 						huh.NewOption("Continuer sans vérifier", "continue"),
@@ -1149,6 +1145,212 @@ func albertRetryChoice(in *bufio.Reader) (retry, abort bool) {
 		fmt.Printf("Réponse non reconnue. %s\n", albertRetryPrompt)
 	}
 }
+
+// githubTokenProbeFn validates a candidate GitHub token against the API. It
+// is a package variable so tests can decide the probe outcome without the
+// network, the same pattern as setupPreflightFn.
+var githubTokenProbeFn = func(ctx context.Context, token string) justcode.CredentialProbe {
+	return justcode.ValidateGitHubToken(ctx, nil, token)
+}
+
+// githubTokenURL is where a fine-grained token is created. Pinned by tests.
+const githubTokenURL = "https://github.com/settings/personal-access-tokens/new"
+
+// githubScreenText is the [3/3] screen: what GitHub is for, what to do
+// without it, which token to create and with what rights. fallback selects
+// the file-store wording, as on the Albert key screen: the screen must not
+// promise a keychain when --fallback is in use.
+func githubScreenText(fallback bool) string {
+	storeLine := "Le jeton est enregistré dans le trousseau de ce poste."
+	if fallback {
+		storeLine = "Le jeton est enregistré dans un fichier de ce poste, lisible par votre seul compte."
+	}
+	return fmt.Sprintf(`[3/3] GitHub (facultatif)
+
+À quoi ça sert : l'agent travaille dans une machine isolée. Pour récupérer son travail,
+il peut pousser ses modifications sur GitHub et ouvrir une pull request en brouillon,
+que vous relisez avant d'accepter les modifications.
+Sans GitHub, vous récupérez les modifications avec : just-code workspace apply
+
+Il faut un jeton GitHub « fine-grained » :
+  1. Créez-le ici : %s
+  2. Accès aux dépôts : uniquement les dépôts sur lesquels l'agent travaillera.
+  3. Droits : Contents (lecture et écriture), Pull requests (lecture et écriture).
+  4. Si le dépôt appartient à une organisation, elle peut devoir approuver le jeton.
+
+%s Il n'est activé pour un projet
+qu'après votre accord, lors de la configuration de ce projet.
+`, githubTokenURL, storeLine)
+}
+
+// githubChoicePrompt is the line-renderer form of the screen's two options.
+// Enter (empty answer) is the default: "Plus tard". The legacy y/n answers
+// stay accepted: the previous screen asked a yes/no question and users (and
+// scripts) answering out of habit must not be rejected.
+const githubChoicePrompt = "[A] Ajouter un jeton maintenant  [P] Plus tard (just-code auth add github) [P] : "
+
+// githubAddChoice reads the choice between adding a token now and deferring.
+// An unreadable answer (EOF) is "Plus tard": the stage is optional, so the
+// safe default never blocks the rest of setup.
+func githubAddChoice(in *bufio.Reader) bool {
+	for {
+		answer, ok := promptLine(in, githubChoicePrompt)
+		if !ok {
+			return false
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "p", "plus tard", "n", "non":
+			return false
+		case "a", "ajouter", "o", "oui", "y", "yes":
+			return true
+		}
+		fmt.Printf("Réponse non reconnue. %s\n", githubChoicePrompt)
+	}
+}
+
+const (
+	// githubTokenPrompt is the input label; the typed value is never echoed.
+	githubTokenPrompt = "Collez votre jeton (il ne s'affiche pas ; vide pour passer) : "
+	// githubRefusedMessage explains a refused token; the wizard re-asks.
+	githubRefusedMessage = "GitHub a refusé ce jeton. Vérifiez qu'il est complet, ou créez-en un nouveau."
+	// githubUnreachableMessage distinguishes a network or proxy failure from
+	// a refusal: the token may well be valid, so the user chooses.
+	githubUnreachableMessage = "GitHub ne répond pas. Vérifiez votre connexion ou le proxy de votre administration."
+	// githubClassicMessage warns about a broad-scope token and offers to
+	// replace it. The [C]/[R] hint is part of the line-renderer message; the
+	// huh renderer shows its own options with the warning as the title.
+	githubClassicMessage = "Ce jeton est un jeton classique, avec des droits larges. Un jeton fine-grained, limité à vos dépôts, est recommandé. [C] Continuer  [R] Remplacer"
+	// githubLaterMessage confirms the "Plus tard" outcome and the remedy.
+	githubLaterMessage = "Plus tard : l'étape se rattrape avec : just-code auth add github"
+)
+
+// githubTokenStage runs the masked-token loop: validate, explain, re-ask on
+// a refusal, warn on a broad-scope token. It returns stored=true once a
+// token is in the store. Every exit that stores nothing (empty answer,
+// aborted form, EOF) is the penalty-free "Plus tard" outcome.
+func githubTokenStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader) (bool, error) {
+	// Resolve and verify the store BEFORE prompting: a locked or
+	// unavailable store must fail before the user types a secret (the same
+	// contract the Albert stage keeps).
+	if _, err := w.ResolveStore(ctx); err != nil {
+		return false, err
+	}
+	for {
+		var token string
+		if wizardHuhFn() {
+			value, err := huhSecret("Jeton GitHub", "L'entrée est masquée. Laissez vide pour passer cette étape.")
+			if errors.Is(err, huh.ErrUserAborted) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			token = value
+		} else {
+			value, ok := promptSecret(in, githubTokenPrompt)
+			if !ok {
+				return false, nil
+			}
+			token = value
+		}
+		if token == "" {
+			return false, nil
+		}
+		// Validate BEFORE writing: a token the user has not accepted (or
+		// GitHub has not accepted) must not reach the store, or a later
+		// setup would skip this screen and use it.
+		probe, err := w.ValidateCredential(ctx, justcode.CredentialGithub, token)
+		if err != nil {
+			return false, err
+		}
+		if probe.Rejected {
+			fmt.Println(githubRefusedMessage)
+			fmt.Println()
+			continue
+		}
+		if probe.Unreachable {
+			fmt.Printf("%s (%s)\n", githubUnreachableMessage, probe.Detail)
+			retry, abort := credentialRetryChoice(in, githubUnreachableMessage)
+			if abort {
+				return false, nil
+			}
+			if retry {
+				fmt.Println()
+				continue
+			}
+		}
+		if probe.BroadScope {
+			replace, abort := githubClassicChoice(in)
+			if abort {
+				return false, nil
+			}
+			if replace {
+				fmt.Println()
+				continue
+			}
+		}
+		if err := w.PutCredential(ctx, justcode.CredentialGithub, token); err != nil {
+			return false, err
+		}
+		switch {
+		case probe.Unreachable:
+			// "Continuer sans vérifier": stored, but unvalidated.
+			fmt.Println("Jeton enregistré sans vérification.")
+		case probe.Login != "":
+			fmt.Printf("✅ Jeton valide : compte %s.\n", probe.Login)
+		default:
+			fmt.Println("✅ Jeton valide.")
+		}
+		return true, nil
+	}
+}
+
+// githubClassicChoice asks what to do with a valid but broad-scope (classic)
+// token: replace=true re-enters a token, abort=true leaves the stage, and
+// neither accepts the token. The huh renderer shows the warning without the
+// [C]/[R] hint, which belongs to the line renderer.
+func githubClassicChoice(in *bufio.Reader) (replace, abort bool) {
+	if wizardHuhFn() {
+		choice := ""
+		err := huhRun(huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title(githubClassicWarning).
+					Options(
+						huh.NewOption("Continuer", "continue"),
+						huh.NewOption("Remplacer", "replace"),
+					).
+					Value(&choice),
+			),
+		))
+		switch {
+		case err != nil:
+			return false, true
+		case choice == "replace":
+			return true, false
+		default:
+			return false, false
+		}
+	}
+	fmt.Println(githubClassicMessage)
+	for {
+		answer, ok := promptLine(in, "> ")
+		if !ok {
+			return false, true
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "r", "remplacer":
+			return true, false
+		case "c", "continuer":
+			return false, false
+		}
+		fmt.Printf("Réponse non reconnue. %s\n", githubClassicMessage)
+	}
+}
+
+// githubClassicWarning is githubClassicMessage without the line-renderer's
+// [C]/[R] hint, for the huh select title.
+const githubClassicWarning = "Ce jeton est un jeton classique, avec des droits larges. Un jeton fine-grained, limité à vos dépôts, est recommandé."
 
 func printPreflight(res justcode.SetupPreflight) {
 	fmt.Printf("  Platform: %s\n", res.Platform)
