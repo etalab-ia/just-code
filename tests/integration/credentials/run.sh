@@ -30,7 +30,10 @@ if [ ! -x "$MSB" ]; then
   exit 2
 fi
 
-WANT_CLI="$(node -e "console.log(require('$HERE/pin.json').msb_cli_version)")"
+WANT_CLI="${MSB_CLI_VERSION_OVERRIDE:-}"
+if [ -z "$WANT_CLI" ]; then
+  WANT_CLI="$(node -e "console.log(require('$HERE/pin.json').msb_cli_version)")"
+fi
 GOT_CLI="$("$MSB" --version 2>/dev/null | awk '{print $2}')"
 check "CLI msb épinglée" "$WANT_CLI" "$GOT_CLI"
 

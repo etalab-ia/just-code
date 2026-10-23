@@ -20,6 +20,13 @@ substituted header. They contain no real credentials; the test uses a
 synthetic canary. The detailed interpretation and version decision are in
 `docs/decisions/2026-09-24-microsandbox-credential-transport.md`.
 
+The v0.7.8 transcript predates the version-override option. It was captured
+from a temporary test copy whose `pin.json` set `msb_cli_version` to `0.7.8`;
+the Go SDK pin remained at v0.7.6. The runner now supports
+`MSB_CLI_VERSION_OVERRIDE=0.7.8` with `MSB_BIN` pointing to the separately
+installed v0.7.8 CLI, so the candidate check can be repeated without editing
+`pin.json`. This checks CLI/runtime behavior only, not the v0.7.8 Go SDK.
+
 ## What is retained here
 
 Three platform stores are qualified by transcripts in this directory, all
