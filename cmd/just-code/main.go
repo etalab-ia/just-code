@@ -679,25 +679,46 @@ func resolveCredentialRef(projectRoot string) string {
 // embedded default, which the overlay applies itself.
 func resolveModelSelection(projectRoot string) string {
 	if v := strings.TrimSpace(os.Getenv("JUST_CODE_MODEL")); v != "" {
-		return v
+		return canonicalAlbertModelRef(v)
 	}
 	if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil && pm.Model != "" {
-		return pm.Model
+		return canonicalAlbertModelRef(pm.Model)
 	}
 	if path, err := justcode.UserSettingsPath(); err == nil {
 		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil && us.DefaultModel != "" {
-			return us.DefaultModel
+			return canonicalAlbertModelRef(us.DefaultModel)
 		}
 	}
 	return ""
 }
 
+func canonicalAlbertModelRef(model string) string {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if model == "albert/"+choice.ID || model == choice.ID || model == choice.OpenCodeID || model == choice.Ref() {
+			return choice.Ref()
+		}
+	}
+	return model
+}
+
+func canonicalAlbertModelID(id string) string {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if id == choice.ID || id == choice.OpenCodeID || id == choice.Ref() || id == "albert/"+choice.ID {
+			return choice.ID
+		}
+	}
+	return id
+}
+
 func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig {
+	activeModel = canonicalAlbertModelRef(activeModel)
 	path, err := justcode.UserSettingsPath()
 	var ids []string
 	if err == nil {
 		if settings, readErr := justcode.ReadUserSettings(justcode.DefaultFS, path); readErr == nil {
-			ids = append(ids, settings.Models...)
+			for _, id := range settings.Models {
+				ids = append(ids, canonicalAlbertModelID(id))
+			}
 		}
 	}
 	if len(ids) == 0 {

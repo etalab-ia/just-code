@@ -98,6 +98,14 @@ func TestResolveEnabledAlbertModelsMapsLegacyFullID(t *testing.T) {
 	}
 }
 
+func TestResolveModelSelectionCanonicalizesLegacyAlbertReference(t *testing.T) {
+	choice := justcode.CuratedAlbertModels()[1]
+	t.Setenv("JUST_CODE_MODEL", "albert/"+choice.ID)
+	if got := resolveModelSelection(t.TempDir()); got != choice.Ref() {
+		t.Fatalf("legacy model reference = %q, want canonical %q", got, choice.Ref())
+	}
+}
+
 func TestParsePortsArgs(t *testing.T) {
 	parsed, err := parseArgs([]string{"ports", "add", "8080:80"})
 	if err != nil {

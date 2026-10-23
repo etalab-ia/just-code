@@ -199,6 +199,31 @@ func TestPromptSetupModelsDropsUnavailableDefaults(t *testing.T) {
 	}
 }
 
+func TestPromptSetupModelsKeepsSelectionWhenCatalogueCacheIsStale(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
+	choices := justcode.CuratedAlbertModels()
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		return justcode.Catalogue{Models: []justcode.CatalogueModel{{ID: choices[0].ID, Type: "text-generation"}}}, false, nil
+	}
+	var retained bool
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		retained = !picker.catalogueChecked && picker.selected[choices[0].ID] && picker.selected[choices[1].ID]
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+
+	selected, _, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v ok=%v err=%v", selected, ok, err)
+	}
+	if !retained || !sameStrings(selected, defaultSetupModelIDs()) {
+		t.Fatalf("stale cache should not remove a default selection: retained=%v selected=%v", retained, selected)
+	}
+}
+
 // setupTestEnv isolates HOME and returns the state dir and settings path.
 func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
 	t.Helper()

@@ -939,6 +939,7 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 		}
 	}
 	catalogue, fresh, catalogueErr := setupModelCatalogueFn()
+	catalogueUsable := catalogueErr == nil && fresh
 	available := map[string]bool{}
 	if catalogueErr == nil {
 		for _, choice := range choices {
@@ -959,13 +960,13 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 	}
 	var selectedIDs []string
 	for _, choice := range choices {
-		if containsString(current, choice.ID) && (catalogueErr != nil || available[choice.ID]) {
+		if containsString(current, choice.ID) && (!catalogueUsable || available[choice.ID]) {
 			selectedIDs = append(selectedIDs, choice.ID)
 		}
 	}
 	if len(selectedIDs) == 0 {
 		for _, choice := range choices {
-			if catalogueErr != nil || available[choice.ID] {
+			if !catalogueUsable || available[choice.ID] {
 				selectedIDs = append(selectedIDs, choice.ID)
 				break
 			}
@@ -987,7 +988,7 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 		choices:          choices,
 		selected:         selected,
 		available:        available,
-		catalogueChecked: catalogueErr == nil,
+		catalogueChecked: catalogueUsable,
 		defaultModel:     defaultModel,
 		externalDefault:  externalDefault,
 	}
