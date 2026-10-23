@@ -597,7 +597,7 @@ setupStages:
 			if editing || strings.TrimSpace(email) == "" {
 				fields = append(fields, huh.NewInput().Title("Adresse e-mail").Value(&email))
 			}
-			err := huhRun(huh.NewForm(huh.NewGroup(fields...)))
+			err := runSetupIdentityForm(fields)
 			if errors.Is(err, huh.ErrUserAborted) {
 				// Identity is persisted here, not at final apply: an
 				// abort must cancel setup, not save partial values.
@@ -709,6 +709,13 @@ setupStages:
 
 func setupCompletionMessage() string {
 	return "Configuration terminée.\n\nÉtape suivante, dans le dossier d'un projet :\n  cd mon-projet\n  just-code\n\nVérifier l'installation à tout moment : just-code setup doctor"
+}
+
+func runSetupIdentityForm(fields []huh.Field) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return huhRun(huh.NewForm(huh.NewGroup(fields...)))
 }
 
 func setupRuntimeSummary(preflight justcode.SetupPreflight) string {

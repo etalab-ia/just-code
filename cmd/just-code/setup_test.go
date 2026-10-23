@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -743,6 +744,22 @@ func TestSetupWizardUsesHostGitIdentity(t *testing.T) {
 	}
 	if got, _ := m["gitEmail"].(string); got != "test@example.test" {
 		t.Fatalf("git email = %q, want host identity", got)
+	}
+}
+
+func TestSetupIdentityFormSkipsEmptyFieldList(t *testing.T) {
+	previousRun := huhRun
+	called := false
+	huhRun = func(*huh.Form) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { huhRun = previousRun })
+	if err := runSetupIdentityForm(nil); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("identity form should not run when host git config supplied both values")
 	}
 }
 
