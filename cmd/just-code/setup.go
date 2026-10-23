@@ -711,7 +711,7 @@ func setupReviewChoice(in *bufio.Reader) (string, error) {
 				Options(
 					huh.NewOption("Appliquer", "apply"),
 					huh.NewOption("Modifier (retour à l'étape 1)", "edit"),
-					huh.NewOption("Quitter sans appliquer la configuration", "quit"),
+					huh.NewOption("Quitter sans appliquer (identifiants conservés)", "quit"),
 				).
 				Value(&choice),
 		)))
@@ -721,7 +721,7 @@ func setupReviewChoice(in *bufio.Reader) (string, error) {
 		return choice, err
 	}
 	for {
-		answer, ok := promptLine(in, "[A] Appliquer  [M] Modifier  [Q] Quitter : ")
+		answer, ok := promptLine(in, "[A] Appliquer  [M] Modifier  [Q] Quitter sans appliquer (identifiants conservés) : ")
 		if !ok {
 			return "quit", nil
 		}
