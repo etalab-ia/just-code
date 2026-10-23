@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,6 +47,8 @@ type Tart struct {
 	AgentWaitInterval time.Duration
 	AgentWaitPolls    int
 }
+
+var tartHealthProbeFn = ProbeHealth
 
 // NewTart builds a Tart orchestrator with production defaults.
 func NewTart(cfg Config) *Tart {
@@ -379,7 +383,54 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
+	if err := t.Starter.Start(stdin, t.LogPath(), "tart", args...); err != nil {
+		return err
+	}
+	return t.recordBackendOverlayFingerprint()
+}
+
+func (t *Tart) backendOverlayFingerprint() (string, error) {
+	content, err := ComposeConfigContent(t.OpenCodeOverlay)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (t *Tart) backendOverlayFingerprintPath() string {
+	dir := t.StateDir
+	if t.Instance != "" {
+		dir = InstanceStateDir(t.StateDir, t.Instance)
+	}
+	return filepath.Join(dir, "tart-opencode-config.sha256")
+}
+
+func (t *Tart) overlayChangedSinceBackendLaunch() (bool, error) {
+	want, err := t.backendOverlayFingerprint()
+	if err != nil {
+		return false, err
+	}
+	data, err := DefaultFS.ReadFile(t.backendOverlayFingerprintPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("read Tart OpenCode configuration fingerprint: %w", err)
+	}
+	return strings.TrimSpace(string(data)) != want, nil
+}
+
+func (t *Tart) recordBackendOverlayFingerprint() error {
+	fingerprint, err := t.backendOverlayFingerprint()
+	if err != nil {
+		return err
+	}
+	path := t.backendOverlayFingerprintPath()
+	if err := DefaultFS.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return atomicWrite(DefaultFS, path, []byte(fingerprint+"\n"), 0o600)
 }
 
 // waitForAgent polls `tart exec <vm> true` until the guest agent responds, up
@@ -610,7 +661,18 @@ func (t *Tart) Start(ctx context.Context) error {
 		if err == nil && ip != "" {
 			client := &http.Client{Timeout: 5 * time.Second}
 			endpoint := "http://" + ip + ":" + strconv.Itoa(DefaultPort)
-			if ProbeHealth(ctx, client, endpoint, cfg.Username, cfg.Password).Healthy {
+			if tartHealthProbeFn(ctx, client, endpoint, cfg.Username, cfg.Password).Healthy {
+				changed, err := t.overlayChangedSinceBackendLaunch()
+				if err != nil {
+					return err
+				}
+				if changed {
+					fmt.Printf("%s has changed OpenCode configuration; restarting backend...\n", vm)
+					if err := t.StopBackend(ctx); err != nil {
+						return err
+					}
+					return t.launchBackend(ctx)
+				}
 				fmt.Printf("%s is running with a healthy OpenCode backend.\n", vm)
 				return nil
 			}

@@ -3,6 +3,7 @@ package justcode
 import (
 	"context"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,6 +55,7 @@ type fakeStarter struct {
 	lastStdin []byte
 	lastName  string
 	lastArgs  []string
+	starts    int
 }
 
 func (f *fakeStarter) Start(stdin io.Reader, _ string, name string, args ...string) error {
@@ -62,6 +64,7 @@ func (f *fakeStarter) Start(stdin io.Reader, _ string, name string, args ...stri
 	}
 	f.lastName = name
 	f.lastArgs = args
+	f.starts++
 	return nil
 }
 
@@ -480,6 +483,76 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	}
 	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
 		t.Fatalf("secrets leaked into the interactive argv: %q", joined)
+	}
+}
+
+func TestTartStartRestartsHealthyBackendWhenOverlayChanges(t *testing.T) {
+	previousProbe := tartHealthProbeFn
+	tartHealthProbeFn = func(context.Context, *http.Client, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	t.Cleanup(func() { tartHealthProbeFn = previousProbe })
+
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		joined := strings.Join(args, " ")
+		switch {
+		case name == "tart" && len(args) > 0 && args[0] == "list":
+			return ExecResult{Stdout: "local opencode-test 127.0.0.1 50G running\n"}
+		case strings.Contains(joined, "ip --wait"):
+			return ExecResult{Stdout: "127.0.0.1"}
+		case strings.Contains(joined, "pgrep -x opencode"):
+			return ExecResult{ExitCode: 1}
+		default:
+			return ExecResult{ExitCode: 0}
+		}
+	}}
+	starter := &fakeStarter{}
+	tart := &Tart{
+		Config: Config{
+			TartVM:                       "opencode-test",
+			Username:                     "opencode",
+			Password:                     "pw",
+			PasswordSet:                  true,
+			APIKey:                       "key",
+			TartMTU:                      DefaultTartMTU,
+			WorkspaceDir:                 t.TempDir(),
+			GuestCredentialsAcknowledged: true,
+		},
+		Runner:            runner,
+		Starter:           starter,
+		StateDir:          t.TempDir(),
+		SelfBinary:        writeFakeSelf(t),
+		AgentWaitPolls:    1,
+		AgentWaitInterval: time.Nanosecond,
+		KillMaxPolls:      1,
+	}
+	choices := CuratedAlbertModels()
+	tart.OpenCodeOverlay = ManagedOverlay{
+		Model:  choices[0].Ref(),
+		Models: []AlbertModelConfig{choices[0].AlbertModelConfig()},
+	}
+
+	if err := tart.Start(context.Background()); err != nil {
+		t.Fatalf("first Tart start: %v", err)
+	}
+	if starter.starts != 1 {
+		t.Fatalf("first healthy VM should restart its untracked backend, starts=%d", starter.starts)
+	}
+	if err := tart.Start(context.Background()); err != nil {
+		t.Fatalf("unchanged Tart start: %v", err)
+	}
+	if starter.starts != 1 {
+		t.Fatalf("unchanged overlay restarted the backend, starts=%d", starter.starts)
+	}
+	tart.OpenCodeOverlay.Models = append(tart.OpenCodeOverlay.Models, choices[2].AlbertModelConfig())
+	if err := tart.Start(context.Background()); err != nil {
+		t.Fatalf("changed Tart start: %v", err)
+	}
+	if starter.starts != 2 {
+		t.Fatalf("changed model list did not restart the backend, starts=%d", starter.starts)
+	}
+	if !strings.Contains(strings.Join(starter.lastArgs, " "), `gpt-oss-120b`) {
+		t.Fatalf("restarted backend args omitted the newly enabled model: %v", starter.lastArgs)
 	}
 }
 
