@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.13.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.12.0...just-code-v0.13.0) (2026-10-23)
+
+
+### Features
+
+* **init:** complete the six-skill setup flow ([#167](https://github.com/etalab-ia/just-code/issues/167)) ([c3dd76f](https://github.com/etalab-ia/just-code/commit/c3dd76f2e4c28c8f12e2dc31c51cd92564166c0f))
+* **init:** improve skills selection screen ([#167](https://github.com/etalab-ia/just-code/issues/167)) ([e083dde](https://github.com/etalab-ia/just-code/commit/e083ddec9d748f975cdad495bc19102acc4d2100))
+* **init:** introduce the project setup wizard ([4b4cf5f](https://github.com/etalab-ia/just-code/commit/4b4cf5f2708d9bb7ade6db5b143482c5fca9ea07))
+* **init:** introduire l’écran de configuration du projet ([4152c4b](https://github.com/etalab-ia/just-code/commit/4152c4bdf91256a74a02bbacc7c2482e042c0308))
+* **init:** MCP wizard 3.8 and withdrawal of context7 and playwright ([b22af47](https://github.com/etalab-ia/just-code/commit/b22af47c1439194fe055f110cde7663aad2df67f))
+* **init:** MCP wizard 3.8 and withdrawal of context7 and playwright ([#168](https://github.com/etalab-ia/just-code/issues/168) [#175](https://github.com/etalab-ia/just-code/issues/175)) ([283be38](https://github.com/etalab-ia/just-code/commit/283be38f3a6c3c1f88a905971c0bfccd8938ae48))
+* **init:** terminer le parcours de sélection des skills ([#167](https://github.com/etalab-ia/just-code/issues/167)) ([260bfc6](https://github.com/etalab-ia/just-code/commit/260bfc635048d063a5e8db49b3677cbb4e615b9c))
+* **setup:** add editable recap choices and credential status ([63996e4](https://github.com/etalab-ia/just-code/commit/63996e48d81bbb8cab8298cb080d0ef6b5ddd17f))
+* **setup:** add multi-model selection ([3796545](https://github.com/etalab-ia/just-code/commit/37965450b1d09fbc1f2588afa8f9fbe3d5829fc2))
+* **setup:** clarify recap and show install progress ([44bb6d8](https://github.com/etalab-ia/just-code/commit/44bb6d8104652cb6bd1643164b8cfbc0d2b62aec))
+* **setup:** explain and validate the optional GitHub token ([#164](https://github.com/etalab-ia/just-code/issues/164)) ([1594d67](https://github.com/etalab-ia/just-code/commit/1594d675da7879860de13282b5bb2aea09487d05))
+* **setup:** expliquer et valider le jeton GitHub facultatif ([#164](https://github.com/etalab-ia/just-code/issues/164)) ([41fc411](https://github.com/etalab-ia/just-code/commit/41fc4112b2d7ccd26d9427c46182b3d4240e15dc))
+* **setup:** finaliser le récapitulatif et l’installation ([#165](https://github.com/etalab-ia/just-code/issues/165)) ([125d1ca](https://github.com/etalab-ia/just-code/commit/125d1caff357628f5b76d965ba484ced0ee9613b))
+* **setup:** sélectionner plusieurs modèles Albert API ([bc785dd](https://github.com/etalab-ia/just-code/commit/bc785ddc45ceba2f4ca157a34d1025c4fe3c5ac4))
+
+
+### Bug Fixes
+
+* **init:** address Codex review on MCP wizard seeding, retention, and probe ([6e84779](https://github.com/etalab-ia/just-code/commit/6e8477903e3b264a0c409d60a80bd119615d4e89))
+* **init:** isolate global credential check ([185155a](https://github.com/etalab-ia/just-code/commit/185155aee80edd67a4862c9a4a41623afc54f1f9))
+* **init:** keep retained pins and sibling choices on retry ([#167](https://github.com/etalab-ia/just-code/issues/167)) ([dbac9a5](https://github.com/etalab-ia/just-code/commit/dbac9a5d07dadd7fb3d1cf50bc492c04171274d2))
+* **init:** preserve and retry skill selections ([#167](https://github.com/etalab-ia/just-code/issues/167)) ([1f61da5](https://github.com/etalab-ia/just-code/commit/1f61da516a36c4349f01743e5c11dc6df56bf484))
+* **init:** probe default Albert credential for setup ([140f624](https://github.com/etalab-ia/just-code/commit/140f624a649679accd7bb895e2616d413b80f80f))
+* **init:** scope workspace intro to runtime ([8c891bc](https://github.com/etalab-ia/just-code/commit/8c891bc0c01f6f9b3ba1ab2523725f91de202a1a))
+* **init:** validate options before setup offer ([d7b5886](https://github.com/etalab-ia/just-code/commit/d7b58863961a4d29ccafae6fc7c2b5b2d0ea3317))
+* **setup:** cancel pending token replacement on apply ([6d43fc0](https://github.com/etalab-ia/just-code/commit/6d43fc07b2dcf102ad185c7def06c7e85080a712))
+* **setup:** keep model selection in one screen ([55b553b](https://github.com/etalab-ia/just-code/commit/55b553b9794801b512c54a3b987c4a253e07172b))
+* **setup:** normalize legacy model references ([e8e8a65](https://github.com/etalab-ia/just-code/commit/e8e8a651aecad57216bfd9ce3db2f8cc51409908))
+* **setup:** preserve legacy model settings ([60ec2c0](https://github.com/etalab-ia/just-code/commit/60ec2c05953a3010213844fd4ee7f635a01591b6))
+* **setup:** preserve unknown status in legacy journals ([e4a4b3e](https://github.com/etalab-ia/just-code/commit/e4a4b3ebe0c449976950cd6fa561ee6c978760c6))
+* **setup:** qualify runtime download estimate ([c857d0e](https://github.com/etalab-ia/just-code/commit/c857d0ec28a54b447fcdefbb640078cf908243bc))
+* **setup:** resume GitHub replacement and cancel on review EOF ([a36506b](https://github.com/etalab-ia/just-code/commit/a36506b2cdfd4ac1c0d986515237c033d768fa06))
+* **setup:** retain existing provider defaults ([e84ea89](https://github.com/etalab-ia/just-code/commit/e84ea89b6e758ca8414fdc43515d857488f7d4cb))
+* **setup:** skip empty git identity form ([69e21d8](https://github.com/etalab-ia/just-code/commit/69e21d8ba48dc668c2f173b20ec7835b83a0c8b7))
+* **tart:** forward selected model definitions to guest ([559eefb](https://github.com/etalab-ia/just-code/commit/559eefbf30751f841bafece1a24308aaf92abbce))
+* **tart:** restart backend when overlay changes ([fb87df6](https://github.com/etalab-ia/just-code/commit/fb87df6bbbe8c6af06cf270a251cd8922d721ecd))
+
 ## [0.12.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.11.0...just-code-v0.12.0) (2026-10-23)
 
 
