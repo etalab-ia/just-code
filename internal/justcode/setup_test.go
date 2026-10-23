@@ -39,13 +39,17 @@ func TestSetupJournalRoundTrip(t *testing.T) {
 	}
 	j.Stage = StageCredential
 	j.CredentialKinds = []string{"albert"}
+	verified := true
+	j.AlbertVerified = &verified
+	j.GitHubLogin = "kaaloo"
+	j.GitHubVerified = &verified
 	j.GitName = "N"
 	j.DefaultModel = "m"
 	if err := WriteSetupJournal(DefaultFS, dir, j); err != nil {
 		t.Fatal(err)
 	}
 	got, err := ReadSetupJournal(DefaultFS, dir)
-	if err != nil || got.Stage != StageCredential || len(got.CredentialKinds) != 1 || got.GitName != "N" {
+	if err != nil || got.Stage != StageCredential || len(got.CredentialKinds) != 1 || got.GitName != "N" || got.AlbertVerified == nil || !*got.AlbertVerified || got.GitHubLogin != "kaaloo" || got.GitHubVerified == nil || !*got.GitHubVerified {
 		t.Fatalf("round trip: %+v, %v", got, err)
 	}
 	if err := RemoveSetupJournal(DefaultFS, dir); err != nil {
@@ -53,6 +57,21 @@ func TestSetupJournalRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(SetupJournalPath(dir)); !os.IsNotExist(err) {
 		t.Fatal("journal must be removed")
+	}
+}
+
+func TestLegacySetupJournalCredentialStatusIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte(`{"schemaVersion":1,"stage":"credential","credentialKinds":["albert","github"]}`)
+	if err := os.WriteFile(SetupJournalPath(dir), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSetupJournal(DefaultFS, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AlbertVerified != nil || got.GitHubVerified != nil || got.GitHubLogin != "" {
+		t.Fatalf("legacy journal should preserve unknown credential state, got %+v", got)
 	}
 }
 
