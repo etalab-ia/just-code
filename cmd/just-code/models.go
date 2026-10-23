@@ -104,8 +104,8 @@ func resolveAlbertKeyForCatalogueAt(projectRoot string) (string, error) {
 	return resolveAlbertKeyForCredentialRef(resolveCredentialRef(projectRoot))
 }
 
-func resolveAlbertKeyForGlobalCatalogue() (string, error) {
-	return resolveAlbertKeyForCredentialRef(resolveGlobalCredentialRef())
+func resolveAlbertKeyForDefaultCatalogue() (string, error) {
+	return resolveAlbertKeyForCredentialRef("")
 }
 
 func resolveAlbertKeyForCredentialRef(credentialRef string) (string, error) {

@@ -137,6 +137,42 @@ func TestInitSetupOfferCanBeDeclinedWithoutError(t *testing.T) {
 	}
 }
 
+func TestInitSetupCheckUsesDefaultAlbertCredentialNotNamedReferences(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(justcode.ProjectStateDir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{CredentialRef: "missing-project-ref"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{CredentialRef: "missing-user-ref"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ALBERT_API_KEY", "test-albert-key")
+	t.Chdir(root)
+
+	for _, tc := range []struct {
+		name string
+		ref  string
+	}{
+		{name: "environment named reference", ref: "missing-env-ref"},
+		{name: "user settings named reference", ref: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("JUST_CODE_CREDENTIAL_REF", tc.ref)
+			needed, err := initSetupNeeded()
+			if err != nil || needed {
+				t.Fatalf("setup needed = %v, err = %v; usable default Albert key should mean setup is complete", needed, err)
+			}
+		})
+	}
+}
+
 // stubWizardHuh forces the line-based wizard path. The scripted tests drive
 // initRun with tty=true and a string reader; the seam's production probe
 // would be false there (stdout is a pipe), but pinning it keeps the tests

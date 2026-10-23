@@ -72,7 +72,7 @@ func initOptionsWithDisplayedRoot(opts initOptions) initOptions {
 }
 
 var initAlbertCredentialCheckFn = func() error {
-	_, err := resolveAlbertKeyForGlobalCatalogue()
+	_, err := resolveAlbertKeyForDefaultCatalogue()
 	return err
 }
 

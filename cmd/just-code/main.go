@@ -694,15 +694,6 @@ func resolveCredentialRef(projectRoot string) string {
 	return resolveUserCredentialRef()
 }
 
-// resolveGlobalCredentialRef applies global credential-reference precedence
-// without consulting the current project's manifest.
-func resolveGlobalCredentialRef() string {
-	if v := strings.TrimSpace(os.Getenv("JUST_CODE_CREDENTIAL_REF")); v != "" {
-		return v
-	}
-	return resolveUserCredentialRef()
-}
-
 func resolveUserCredentialRef() string {
 	if path, err := justcode.UserSettingsPath(); err == nil {
 		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil {
