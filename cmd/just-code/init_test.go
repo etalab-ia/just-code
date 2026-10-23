@@ -1855,3 +1855,68 @@ func TestGitHubApprovedScreenWithoutLogin(t *testing.T) {
 		t.Fatalf("the verified check must still be stated:\n%s", screen)
 	}
 }
+
+// TestInitReopensQuestionsWhenGitHubChangesBeforeWriting pins #155 for the
+// interactive path: if the GitHub situation changes between the answer and the
+// write (a token revoked meanwhile), the run reopens the questions with the
+// answers intact instead of failing after the last screen. Only a
+// non-interactive run fails outright, because it has nobody to re-ask.
+func TestInitReopensQuestionsWhenGitHubChangesBeforeWriting(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalProbe, originalApprove := githubInitProbeFn, approveGitHubForProjectFn
+	probes := 0
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		probes++
+		// The step's own probes (there is one per screen) approve; the
+		// pre-write re-check finds the token no longer usable.
+		if probes == 1 {
+			return justcode.GitHubProjectStatus{
+				Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+				HasOrigin: true,
+				HasToken:  true,
+				Login:     "kai",
+				Rights:    justcode.GitHubRepoRightsOK,
+			}
+		}
+		return justcode.GitHubProjectStatus{
+			Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+			HasOrigin: true,
+			HasToken:  true,
+			Login:     "kai",
+			Rights:    justcode.GitHubRepoRightsInvalid,
+		}
+	}
+	approved := false
+	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
+
+	// First pass: nine blank answers then Yes to GitHub (the token looks fine).
+	// The pre-write re-check then finds it unusable, so the questions reopen
+	// and the second pass continues without GitHub.
+	input := strings.Join([]string{
+		"", "", "", "", "", "", "", "", "", "o",
+		"", "", "", "", "", "", "", "", "", "c", "", "",
+	}, "\n")
+	var (
+		code int
+		err  error
+	)
+	out := captureStdout(t, func() {
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+	})
+	if !strings.Contains(out, "La situation GitHub a changé depuis votre réponse") {
+		t.Fatalf("the changed situation must be explained and the questions reopened:\n%s", out)
+	}
+	if code != 0 || err != nil {
+		t.Fatalf("a reopened run must still finish: code=%d err=%v out=\n%s", code, err, out)
+	}
+	if approved {
+		t.Fatal("no approval may be recorded when the re-check never approved")
+	}
+}

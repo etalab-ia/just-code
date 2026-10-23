@@ -421,13 +421,26 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			// workflow needs. A token revoked between the question and this
 			// point is refused here, before anything is written (#169).
 			status := githubInitProbeFn(answers.Root)
+			var blocked error
 			switch {
 			case !status.HasOrigin:
-				return 1, fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the GitHub workflow")
+				blocked = fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the GitHub workflow")
 			case !status.HasToken:
-				return 1, fmt.Errorf("no GitHub token is stored on this machine; add one with 'just-code auth add github'")
+				blocked = fmt.Errorf("no GitHub token is stored on this machine; add one with 'just-code auth add github'")
 			case status.Rights != justcode.GitHubRepoRightsOK:
-				return 1, fmt.Errorf("%s", gitHubRightsMessage(status))
+				blocked = fmt.Errorf("%s", gitHubRightsMessage(status))
+			}
+			if blocked != nil {
+				// A non-interactive run has nobody to re-ask, so it fails
+				// with the cause named. An interactive run must not lose the
+				// answers already given (#155): say what changed and reopen
+				// the questions, where the GitHub step verifies again.
+				if !tty || opts.Yes {
+					return 1, blocked
+				}
+				fmt.Printf("\nLa situation GitHub a changé depuis votre réponse : %v\n", blocked)
+				fmt.Println("Réouverture des questions ; vos réponses sont conservées.")
+				continue
 			}
 			answers.GitHubRemote = status.Remote
 		}
