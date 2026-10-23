@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -36,6 +37,10 @@ func run(args []string) (int, error) {
 	// The in-VM bootstrap is a hidden subcommand of this same binary. It runs
 	// inside the Tart guest and must not touch host config or load .env.
 	if len(args) > 0 && args[0] == justcode.GuestBootstrapCommand {
+		models, err := parseGuestAlbertModels(argOr(args, justcode.GuestBootstrapModelsArgIndex, ""))
+		if err != nil {
+			return 2, fmt.Errorf("invalid guest bootstrap model configuration: %w", err)
+		}
 		mcps, err := parseGuestMCPIDs(argOr(args, justcode.GuestBootstrapMCPArgIndex, ""))
 		if err != nil {
 			return 2, fmt.Errorf("invalid guest bootstrap MCP selection: %w", err)
@@ -46,11 +51,11 @@ func run(args []string) (int, error) {
 			MTU:      argOr(args, 3, ""),
 			// The model selection (P10) is non-secret managed configuration
 			// and rides argv; secrets never do.
-			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), MCPConnectors: mcps},
+			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), Models: models, MCPConnectors: mcps},
 			// The git identity (P11) rides argv the same way: the guest
 			// cannot read the host settings file.
-			GitName:  argOr(args, 5, ""),
-			GitEmail: argOr(args, 6, ""),
+			GitName:  argOr(args, 6, ""),
+			GitEmail: argOr(args, 7, ""),
 		}
 		return 0, justcode.RunGuestBootstrap(context.Background(), cfg)
 	}
@@ -63,6 +68,10 @@ func run(args []string) (int, error) {
 		return exitCodeOf(nil), justcode.RunGuestPrepare(context.Background(), cfg)
 	}
 	if len(args) > 0 && args[0] == justcode.GuestSecretsCommand {
+		models, err := parseGuestAlbertModels(argOr(args, justcode.GuestSecretsModelsArgIndex, ""))
+		if err != nil {
+			return 2, fmt.Errorf("invalid guest model configuration: %w", err)
+		}
 		mcps, err := parseGuestMCPIDs(argOr(args, justcode.GuestSecretsMCPArgIndex, ""))
 		if err != nil {
 			return 2, fmt.Errorf("invalid guest MCP selection: %w", err)
@@ -70,7 +79,7 @@ func run(args []string) (int, error) {
 		// The model selection (P10) is the one managed field the in-guest
 		// secrets file must reflect; argv carries no secrets, and the
 		// overlay is non-secret configuration.
-		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), MCPConnectors: mcps}
+		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), Models: models, MCPConnectors: mcps}
 		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: overlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
@@ -221,7 +230,8 @@ func run(args []string) (int, error) {
 		}
 		fmt.Fprintf(os.Stderr, "Warning: the project's managed MCP selection cannot be read (%v); continuing without it\n", mcpErr)
 	}
-	overlay := justcode.ManagedOverlay{Model: resolveModelSelection(projectRoot), MCPConnectors: mcpSelection}
+	modelSelection := resolveModelSelection(projectRoot)
+	overlay := justcode.ManagedOverlay{Model: modelSelection, Models: resolveEnabledAlbertModels(modelSelection), MCPConnectors: mcpSelection}
 	conflictMsg, err := opencodeConfigReview(projectRoot, overlay)
 	startPath := isLaunchAction(parsed.action)
 	if err != nil {
@@ -353,6 +363,22 @@ func run(args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("Unknown argument: %s", parsed.action)
 	}
+}
+
+func parseGuestAlbertModels(raw string) ([]justcode.AlbertModelConfig, error) {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "null" {
+		return nil, nil
+	}
+	var models []justcode.AlbertModelConfig
+	if err := json.Unmarshal([]byte(raw), &models); err != nil {
+		return nil, err
+	}
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) == "" || strings.TrimSpace(model.Name) == "" {
+			return nil, fmt.Errorf("model IDs and names must be non-empty")
+		}
+	}
+	return models, nil
 }
 
 func runtimeUsesMicrosandbox(runtimeFlag string, manifestRuntime justcode.Runtime) bool {
@@ -678,17 +704,95 @@ func resolveCredentialRef(projectRoot string) string {
 // embedded default, which the overlay applies itself.
 func resolveModelSelection(projectRoot string) string {
 	if v := strings.TrimSpace(os.Getenv("JUST_CODE_MODEL")); v != "" {
-		return v
+		return canonicalAlbertModelRef(v)
 	}
 	if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil && pm.Model != "" {
-		return pm.Model
+		return canonicalAlbertModelRef(pm.Model)
 	}
 	if path, err := justcode.UserSettingsPath(); err == nil {
 		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil && us.DefaultModel != "" {
-			return us.DefaultModel
+			return canonicalAlbertModelRef(us.DefaultModel)
 		}
 	}
 	return ""
+}
+
+func canonicalAlbertModelRef(model string) string {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if model == "albert/"+choice.ID || model == choice.ID || model == choice.OpenCodeID || model == choice.Ref() {
+			return choice.Ref()
+		}
+	}
+	return model
+}
+
+func canonicalAlbertModelID(id string) string {
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if id == choice.ID || id == choice.OpenCodeID || id == choice.Ref() || id == "albert/"+choice.ID {
+			return choice.ID
+		}
+	}
+	return id
+}
+
+func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig {
+	activeModel = canonicalAlbertModelRef(activeModel)
+	path, err := justcode.UserSettingsPath()
+	var ids []string
+	if err == nil {
+		if settings, readErr := justcode.ReadUserSettings(justcode.DefaultFS, path); readErr == nil {
+			for _, id := range settings.Models {
+				ids = append(ids, canonicalAlbertModelID(id))
+			}
+		}
+	}
+	if len(ids) == 0 {
+		if activeModel == "" || activeModel == "albert/qwen3-coder" {
+			return nil
+		}
+		for _, choice := range justcode.CuratedAlbertModels() {
+			if choice.Default {
+				ids = append(ids, choice.ID)
+			}
+		}
+	}
+	var configured []justcode.AlbertModelConfig
+	choices := justcode.CuratedAlbertModels()
+	for _, id := range ids {
+		found := false
+		for _, choice := range choices {
+			if id == choice.ID {
+				configured = append(configured, choice.AlbertModelConfig())
+				found = true
+				break
+			}
+		}
+		if !found {
+			configured = append(configured, justcode.AlbertModelConfig{ID: id, Name: id})
+		}
+	}
+	if strings.HasPrefix(activeModel, "albert/") {
+		activeID := strings.TrimPrefix(activeModel, "albert/")
+		activeConfigured := false
+		for _, choice := range choices {
+			if choice.Ref() == activeModel || "albert/"+choice.ID == activeModel || activeID == choice.ID || activeID == choice.OpenCodeID {
+				activeConfigured = containsString(ids, choice.ID)
+				if !activeConfigured {
+					configured = append(configured, choice.AlbertModelConfig())
+				}
+				break
+			}
+		}
+		for _, model := range configured {
+			if model.ID == activeID {
+				activeConfigured = true
+			}
+		}
+		if !activeConfigured {
+			configured = append(configured, justcode.AlbertModelConfig{ID: activeID, Name: activeID})
+		}
+	}
+	return configured
 }
 
 // opencodeConfigReview surfaces managed-field conflicts between the overlay

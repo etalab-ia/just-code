@@ -262,16 +262,15 @@ func (w SetupWizard) SaveIdentity(name, email string) error {
 	return WriteSetupJournal(w.FS, w.StateDir, j)
 }
 
-// SaveSettings writes the resolved global settings and journals the model.
+// SaveSettings writes the resolved global settings and journals the model set.
 // The settings file is the P04 managed schema; the identity fields are not
-// part of it (they live as git config at runtime), so only the model is
-// persisted here.
+// part of it (they live as git config at runtime), so only the model choices
+// are persisted here.
 //
 // modelChosen is false when the model prompt was never answered (EOF, Ctrl-D):
 // the stored model is then left exactly as it was, so an unanswered run cannot
-// silently reset a configuration the user never asked to change. An ANSWERED
-// empty value is a real choice of the built-in default, and does clear it.
-func (w SetupWizard) SaveSettings(model string, modelChosen bool) error {
+// silently reset a configuration the user never asked to change.
+func (w SetupWizard) SaveSettings(model string, models []string, modelChosen bool) error {
 	path, err := UserSettingsPath()
 	if err != nil {
 		return err
@@ -282,6 +281,7 @@ func (w SetupWizard) SaveSettings(model string, modelChosen bool) error {
 	}
 	if modelChosen {
 		us.DefaultModel = model
+		us.Models = append([]string(nil), models...)
 	}
 	if err := WriteUserSettings(w.FS, path, us); err != nil {
 		return err
@@ -292,6 +292,7 @@ func (w SetupWizard) SaveSettings(model string, modelChosen bool) error {
 	}
 	if modelChosen {
 		j.DefaultModel = model
+		j.Models = append([]string(nil), models...)
 		j.ModelChosen = true
 	}
 	return WriteSetupJournal(w.FS, w.StateDir, j)

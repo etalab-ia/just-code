@@ -22,6 +22,49 @@ import (
 // albertCatalogueURL is the models endpoint of the Albert API.
 const albertCatalogueURL = "https://albert.api.etalab.gouv.fr/v1/models"
 
+// AlbertModelChoice is a model curated for the setup wizard.
+type AlbertModelChoice struct {
+	ID             string
+	OpenCodeID     string
+	Reference      string
+	Name           string
+	Description    string
+	Context        int
+	Output         int
+	Default        bool
+	ToolChoiceAuto bool
+	Vision         bool
+}
+
+// CuratedAlbertModels is the stable setup set. Availability is determined
+// separately from the live or cached Albert catalogue.
+func CuratedAlbertModels() []AlbertModelChoice {
+	return []AlbertModelChoice{
+		{ID: "Qwen/Qwen3-Coder-30B-A3B-Instruct", OpenCodeID: "qwen3-coder", Name: "Qwen3 Coder", Description: "orienté code et tâches agentiques, contexte long", Context: 262144, Default: true},
+		{ID: "deepseek-ai/DeepSeek-V4-Flash-0731", OpenCodeID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Description: "spécialisé code, raisonnement", Context: 131072, Output: 65536, Default: true, ToolChoiceAuto: true},
+		{ID: "openai/gpt-oss-120b", OpenCodeID: "gpt-oss-120b", Name: "gpt-oss 120b", Description: "généraliste, pour les tâches complexes", Context: 131072},
+		{ID: "google/gemma-4-31B-it", OpenCodeID: "gemma-4", Name: "Gemma 4", Description: "tâches modérées, sait lire des images", Context: 262144, Vision: true},
+	}
+}
+
+// AlbertModelConfig builds the OpenCode provider definition for a curated
+// choice, mapping its stable OpenCode ID to the API's model ID.
+func (m AlbertModelChoice) AlbertModelConfig() AlbertModelConfig {
+	config := AlbertModelConfig{ID: m.OpenCodeID, ModelID: m.ID, Name: m.Name, Context: m.Context, Output: m.Output, Vision: m.Vision}
+	if m.ToolChoiceAuto {
+		config.RequestBody = map[string]any{"tool_choice": "auto"}
+	}
+	return config
+}
+
+// Ref is the OpenCode model reference used in settings and overlays.
+func (m AlbertModelChoice) Ref() string {
+	if m.Reference != "" {
+		return m.Reference
+	}
+	return "albert/" + m.OpenCodeID
+}
+
 // AlbertCatalogueURL exposes the models endpoint for the CLI.
 func AlbertCatalogueURL() string { return albertCatalogueURL }
 

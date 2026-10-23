@@ -2,6 +2,9 @@ package justcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,6 +47,8 @@ type Tart struct {
 	AgentWaitInterval time.Duration
 	AgentWaitPolls    int
 }
+
+var tartHealthProbeFn = ProbeHealth
 
 // NewTart builds a Tart orchestrator with production defaults.
 func NewTart(cfg Config) *Tart {
@@ -289,30 +294,36 @@ func (t *Tart) guestRun(ctx context.Context, args ...string) error {
 	return runOK(t.Runner, ctx, "tart", full...)
 }
 
-// BackendArgs returns the argv for the detached bootstrap invocation:
-// `tart exec -i <vm> <local binary> __guest-bootstrap <port> <username> <mtu> <model> <gitName> <gitEmail>`.
-// Secrets are deliberately absent: they travel on stdin only. The model
-// selection (P10) and the git identity (P11) ride argv: both are non-secret
-// managed configuration.
-func BackendArgs(vm, localBinary, port, username, mtu, model, gitName, gitEmail string, mcps ...string) []string {
+// BackendArgs returns the argv for the detached bootstrap invocation. The
+// enabled model definitions and MCP selection are non-secret configuration;
+// credentials remain on stdin.
+func BackendArgs(vm, localBinary, port, username, mtu, model string, models []AlbertModelConfig, gitName, gitEmail string, mcps ...string) ([]string, error) {
+	modelsJSON, err := json.Marshal(models)
+	if err != nil {
+		return nil, fmt.Errorf("encode guest Albert model configuration: %w", err)
+	}
 	args := []string{"exec", "-i", vm, localBinary}
-	return append(args, guestBootstrapArgs(port, username, mtu, model, gitName, gitEmail, mcps)...)
+	return append(args, guestBootstrapArgs(port, username, mtu, model, string(modelsJSON), gitName, gitEmail, mcps)...), nil
 }
 
-func guestBootstrapArgs(port, username, mtu, model, gitName, gitEmail string, mcps []string) []string {
-	args := []string{GuestBootstrapCommand, port, username, mtu, model, gitName, gitEmail}
+func guestBootstrapArgs(port, username, mtu, model, modelsJSON, gitName, gitEmail string, mcps []string) []string {
+	args := []string{GuestBootstrapCommand, port, username, mtu, model, modelsJSON, gitName, gitEmail}
 	if len(mcps) > 0 {
 		args = append(args, strings.Join(mcps, ","))
 	}
 	return args
 }
 
-func guestSecretsArgs(username, model string, mcps []string) []string {
-	args := []string{GuestSecretsCommand, username, model}
+func guestSecretsArgs(username, model string, models []AlbertModelConfig, mcps []string) ([]string, error) {
+	modelsJSON, err := json.Marshal(models)
+	if err != nil {
+		return nil, fmt.Errorf("encode guest Albert model configuration: %w", err)
+	}
+	args := []string{GuestSecretsCommand, username, model, string(modelsJSON)}
 	if len(mcps) > 0 {
 		args = append(args, strings.Join(mcps, ","))
 	}
-	return args
+	return args, nil
 }
 
 // hostGitIdentity reads the git identity (P11, written by setup) from the
@@ -368,8 +379,58 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 	}
 	stdin := SecretsReader(cfg.Password, key)
 	name, email := hostGitIdentity()
-	args := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model, name, email, t.OpenCodeOverlay.MCPConnectors...)
-	return t.Starter.Start(stdin, t.LogPath(), "tart", args...)
+	args, err := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model, t.OpenCodeOverlay.Models, name, email, t.OpenCodeOverlay.MCPConnectors...)
+	if err != nil {
+		return err
+	}
+	if err := t.Starter.Start(stdin, t.LogPath(), "tart", args...); err != nil {
+		return err
+	}
+	return t.recordBackendOverlayFingerprint()
+}
+
+func (t *Tart) backendOverlayFingerprint() (string, error) {
+	content, err := ComposeConfigContent(t.OpenCodeOverlay)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (t *Tart) backendOverlayFingerprintPath() string {
+	dir := t.StateDir
+	if t.Instance != "" {
+		dir = InstanceStateDir(t.StateDir, t.Instance)
+	}
+	return filepath.Join(dir, "tart-opencode-config.sha256")
+}
+
+func (t *Tart) overlayChangedSinceBackendLaunch() (bool, error) {
+	want, err := t.backendOverlayFingerprint()
+	if err != nil {
+		return false, err
+	}
+	data, err := DefaultFS.ReadFile(t.backendOverlayFingerprintPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("read Tart OpenCode configuration fingerprint: %w", err)
+	}
+	return strings.TrimSpace(string(data)) != want, nil
+}
+
+func (t *Tart) recordBackendOverlayFingerprint() error {
+	fingerprint, err := t.backendOverlayFingerprint()
+	if err != nil {
+		return err
+	}
+	path := t.backendOverlayFingerprintPath()
+	if err := DefaultFS.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return atomicWrite(DefaultFS, path, []byte(fingerprint+"\n"), 0o600)
 }
 
 // waitForAgent polls `tart exec <vm> true` until the guest agent responds, up
@@ -600,7 +661,18 @@ func (t *Tart) Start(ctx context.Context) error {
 		if err == nil && ip != "" {
 			client := &http.Client{Timeout: 5 * time.Second}
 			endpoint := "http://" + ip + ":" + strconv.Itoa(DefaultPort)
-			if ProbeHealth(ctx, client, endpoint, cfg.Username, cfg.Password).Healthy {
+			if tartHealthProbeFn(ctx, client, endpoint, cfg.Username, cfg.Password).Healthy {
+				changed, err := t.overlayChangedSinceBackendLaunch()
+				if err != nil {
+					return err
+				}
+				if changed {
+					fmt.Printf("%s has changed OpenCode configuration; restarting backend...\n", vm)
+					if err := t.StopBackend(ctx); err != nil {
+						return err
+					}
+					return t.launchBackend(ctx)
+				}
 				fmt.Printf("%s is running with a healthy OpenCode backend.\n", vm)
 				return nil
 			}
@@ -816,7 +888,11 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 		return err
 	}
 	model := t.OpenCodeOverlay.EffectiveOverlay().Model
-	secretArgs := append([]string{"tart", "exec", "-i", vm, guestLocalBinary}, guestSecretsArgs(cfg.Username, model, t.OpenCodeOverlay.MCPConnectors)...)
+	guestArgs, err := guestSecretsArgs(cfg.Username, model, t.OpenCodeOverlay.Models, t.OpenCodeOverlay.MCPConnectors)
+	if err != nil {
+		return err
+	}
+	secretArgs := append([]string{"tart", "exec", "-i", vm, guestLocalBinary}, guestArgs...)
 	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key), secretArgs[0], secretArgs[1:]...); err != nil {
 		return err
 	}

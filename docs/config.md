@@ -71,14 +71,20 @@ l'invité ; confirmer la perte avant de l'exécuter.
 `just-code setup` prépare la machine en une passe guidée : diagnostic
 (plateforme, virtualisation, disque — lecture seule) → écran d'introduction
 (parcours annoncé, Entrée pour commencer) → clé Albert API (masquée, validée
-contre Albert API ; rejet et indisponibilité réseau distincts) → modèle par
-défaut → identifiant GitHub optionnel → identité git → revue → application
-(réglages globaux + runtime managé).
+contre Albert API ; rejet et indisponibilité réseau distincts) → sélection des
+modèles disponibles et modèle par défaut → identifiant GitHub optionnel →
+identité git → revue → application (réglages globaux + runtime managé).
 
-L'ordre suit celui annoncé par l'écran d'introduction : clé, puis modèles,
-puis GitHub. L'écran de la clé porte le compteur `[1/3]` ; les compteurs des
-deux écrans suivants seront ajoutés avec l'écran de sélection des modèles,
-qui n'existe pas encore.
+L'ordre suit celui annoncé par l'écran d'introduction : clé, modèles, puis
+GitHub. L'écran de sélection présente les quatre modèles Albert API retenus,
+pré-sélectionne Qwen3 Coder et DeepSeek V4 Flash, puis demande lequel utiliser
+par défaut. La disponibilité vient du catalogue Albert API ; un modèle absent
+est marqué indisponible et ne peut pas être choisi. Si le catalogue est
+injoignable, le choix par défaut est conservé. Les modèles cochés sont
+enregistrés dans les réglages utilisateur et sont proposés par `/models` dans
+OpenCode. Si `JUST_CODE_MODEL` ou le manifeste du projet impose un autre modèle,
+ce modèle est aussi exposé pour que le lancement reste possible. Le choix par
+défaut peut ensuite être modifié avec `just-code setup`.
 
 ```bash
 just-code setup            # assistant interactif
@@ -351,16 +357,18 @@ résoudre les révisions, y compris lors d'une réimportation.
 
 La configuration OpenCode effective est composée au lancement : l'asset
 embarqué (provider Albert, permissions) fusionné avec la couche gérée
-(`OPENCODE_CONFIG_CONTENT`), qui ne porte que les champs managés : `model` et
-`small_model`. OpenCode fusionne le contenu inline en dernier
+(`OPENCODE_CONFIG_CONTENT`), qui porte les champs managés : `model`,
+`small_model` et la liste de modèles Albert autorisés. OpenCode fusionne le
+contenu inline en dernier
 ([contrat D-001](decisions/2026-09-23-opencode-configuration-contract.md)) ;
 la config projet et la config utilisateur survivent champ par champ en
 dessous. Précédence de la sélection : `JUST_CODE_MODEL` > `model` du
 manifeste projet > `defaultModel` des réglages utilisateur > valeur intégrée
-(`albert/deepseek-v4-flash`). Un conflit entre un champ managé et la config
-projet est affiché en diff avant lancement (la valeur gérée gagne) : si la
-config projet définit `model` différemment, les deux valeurs sont affichées
-(l'inverse serait un écrasement invisible).
+(`albert/qwen3-coder`). `settings.json` conserve le modèle par défaut
+(`defaultModel`) et la liste des modèles autorisés (`models`). Un conflit entre
+un champ managé et la config projet est affiché en diff avant lancement (la
+valeur gérée gagne) : si la config projet définit `model` différemment, les
+deux valeurs sont affichées (l'inverse serait un écrasement invisible).
 
 `just-code models` valide la sélection contre le catalogue Albert
 (`text-generation` uniquement) ; le catalogue en échec réseau retombe sur le

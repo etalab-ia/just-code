@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,8 +12,217 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
+
+func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T) {
+	choices := justcode.CuratedAlbertModels()
+	picker := setupModelPicker{
+		choices: choices,
+		selected: map[string]bool{
+			choices[0].ID: true,
+			choices[1].ID: true,
+		},
+		available:    map[string]bool{},
+		defaultModel: choices[0].Ref(),
+	}
+	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	accepted := updated.(setupModelPicker)
+	if !accepted.done || accepted.defaultModel != choices[0].Ref() {
+		t.Fatalf("Enter should accept the preselected defaults: %+v", accepted)
+	}
+
+	picker.done = false
+	picker.cursor = 2
+	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	picker = updated.(setupModelPicker)
+	if !picker.selected[choices[2].ID] {
+		t.Fatal("Space should add the highlighted model")
+	}
+	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	picker = updated.(setupModelPicker)
+	if picker.defaultModel != choices[2].Ref() {
+		t.Fatalf("right arrow should mark the cursor model as default: %q", picker.defaultModel)
+	}
+	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	accepted = updated.(setupModelPicker)
+	if !accepted.done || accepted.defaultModel != choices[2].Ref() || !accepted.selected[choices[2].ID] {
+		t.Fatal("Enter should submit the model set and its default together")
+	}
+}
+
+func TestSetupModelPickerRefusesUnavailableModel(t *testing.T) {
+	choices := justcode.CuratedAlbertModels()
+	picker := setupModelPicker{
+		choices: choices,
+		selected: map[string]bool{
+			choices[0].ID: true,
+		},
+		available: map[string]bool{
+			choices[0].ID: true,
+			choices[1].ID: false,
+		},
+		catalogueChecked: true,
+		defaultModel:     choices[0].Ref(),
+		cursor:           1,
+	}
+	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	picker = updated.(setupModelPicker)
+	if picker.selected[choices[1].ID] {
+		t.Fatal("unavailable model must not be added to the selection")
+	}
+	if picker.errorMessage == "" {
+		t.Fatal("unavailable selection should explain why it cannot be toggled")
+	}
+}
+
+func TestPromptSetupModelsPreservesLegacyCustomDefault(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
+	choices := justcode.CuratedAlbertModels()
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		catalogue := justcode.Catalogue{}
+		for _, choice := range choices {
+			catalogue.Models = append(catalogue.Models, justcode.CatalogueModel{ID: choice.ID, Type: "text-generation"})
+		}
+		return catalogue, true, nil
+	}
+	var sawLegacy bool
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		for _, choice := range picker.choices {
+			if choice.Ref() == "albert/legacy-coder" {
+				sawLegacy = picker.selected[choice.ID] && picker.defaultModel == choice.Ref()
+			}
+		}
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+
+	model := "albert/legacy-coder"
+	selected, defaultModel, ok, err := promptSetupModels(setupModelIDsWithLegacyDefault(model), model)
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if !sawLegacy || !containsString(selected, "legacy-coder") || defaultModel != model {
+		t.Fatalf("legacy custom model was not preserved: selected=%v default=%q sawLegacy=%v", selected, defaultModel, sawLegacy)
+	}
+}
+
+func TestPromptSetupModelsPreservesExternalProviderDefault(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
+	choices := justcode.CuratedAlbertModels()
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		catalogue := justcode.Catalogue{}
+		for _, choice := range choices {
+			catalogue.Models = append(catalogue.Models, justcode.CatalogueModel{ID: choice.ID, Type: "text-generation"})
+		}
+		return catalogue, true, nil
+	}
+	var sawExternalDefault bool
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		sawExternalDefault = picker.externalDefault && picker.defaultModel == "anthropic/claude"
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+
+	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), "anthropic/claude")
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if !sawExternalDefault || defaultModel != "anthropic/claude" {
+		t.Fatalf("external provider default was not preserved: default=%q sawExternal=%v", defaultModel, sawExternalDefault)
+	}
+}
+
+func TestCanonicalSetupModelRefMapsLegacyCatalogueID(t *testing.T) {
+	choice := justcode.CuratedAlbertModels()[1]
+	legacyRef := "albert/" + choice.ID
+	if got := canonicalSetupModelRef(legacyRef); got != choice.Ref() {
+		t.Fatalf("legacy reference %q mapped to %q, want %q", legacyRef, got, choice.Ref())
+	}
+	if !setupModelEnabled(legacyRef, defaultSetupModelIDs()) {
+		t.Fatalf("legacy full API reference %q should match the selected DeepSeek model", legacyRef)
+	}
+}
+
+func TestPromptSetupModelsKeepsDefaultsWhenCatalogueIsUnavailable(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		return justcode.Catalogue{}, false, errors.New("catalogue offline")
+	}
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+
+	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if !sameStrings(selected, defaultSetupModelIDs()) {
+		t.Fatalf("catalogue outage changed default selections: %v", selected)
+	}
+	if defaultModel != "albert/qwen3-coder" {
+		t.Fatalf("default model = %q, want albert/qwen3-coder", defaultModel)
+	}
+}
+
+func TestPromptSetupModelsDropsUnavailableDefaults(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
+	choices := justcode.CuratedAlbertModels()
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		return justcode.Catalogue{Models: []justcode.CatalogueModel{{ID: choices[0].ID, Type: "text-generation"}}}, true, nil
+	}
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+
+	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if !sameStrings(selected, []string{choices[0].ID}) || defaultModel != choices[0].Ref() {
+		t.Fatalf("unavailable default remained selected: selected=%v default=%q", selected, defaultModel)
+	}
+}
+
+func TestPromptSetupModelsKeepsSelectionWhenCatalogueCacheIsStale(t *testing.T) {
+	previousCatalogue, previousRun := setupModelCatalogueFn, setupModelPickerRun
+	choices := justcode.CuratedAlbertModels()
+	setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
+		return justcode.Catalogue{Models: []justcode.CatalogueModel{{ID: choices[0].ID, Type: "text-generation"}}}, false, nil
+	}
+	var retained bool
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		retained = !picker.catalogueChecked && picker.selected[choices[0].ID] && picker.selected[choices[1].ID]
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+
+	selected, _, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	if err != nil || !ok {
+		t.Fatalf("prompt result: selected=%v ok=%v err=%v", selected, ok, err)
+	}
+	if !retained || !sameStrings(selected, defaultSetupModelIDs()) {
+		t.Fatalf("stale cache should not remove a default selection: retained=%v selected=%v", retained, selected)
+	}
+}
 
 // setupTestEnv isolates HOME and returns the state dir and settings path.
 func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
@@ -722,7 +932,7 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 		}
 	})
 	keyAt := strings.Index(out, "[1/3] Clé Albert API")
-	modelAt := strings.Index(out, "Default model")
+	modelAt := strings.Index(out, "Models (comma-separated")
 	githubAt := strings.Index(out, "GitHub credential (optional")
 	if keyAt < 0 || modelAt < 0 || githubAt < 0 {
 		t.Fatalf("flow markers missing (key=%d model=%d github=%d); output:\n%s", keyAt, modelAt, githubAt, out)
@@ -735,8 +945,8 @@ func TestSetupWizardFlowIsKeyThenModelsThenGitHub(t *testing.T) {
 // TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume pins the Kimi
 // review finding on #216, across two runs:
 //
-//  1. a completed install has a saved model, and a re-run answers the model
-//     prompt EMPTY (an explicit choice of the built-in default) but is then
+//  1. a completed install has a saved custom model, and a re-run answers the
+//     model prompt with Enter to keep the existing choice but is then
 //     aborted at the recap;
 //  2. the resumed run's model prompt is never answered (EOF).
 //
@@ -760,7 +970,7 @@ func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// Run 1: key -> EMPTY model (explicit built-in) -> skip GitHub ->
+	// Run 1: key -> Enter (preserve the legacy custom model) -> skip GitHub ->
 	// identities -> refuse at the recap.
 	_ = captureStdout(t, func() {
 		_, _ = setupWizardRun(true, bufio.NewReader(strings.NewReader("the-key\n\n\n\n\nn\n")),
@@ -772,8 +982,9 @@ func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !j.ModelChosen || j.DefaultModel != "" {
-		t.Fatalf("run 1 must journal the answered-empty choice: chosen=%v model=%q", j.ModelChosen, j.DefaultModel)
+	defaultModel := "albert/old"
+	if !j.ModelChosen || j.DefaultModel != defaultModel || len(j.Models) != 3 || !containsString(j.Models, "old") {
+		t.Fatalf("run 1 must journal the default model set: chosen=%v model=%q models=%v", j.ModelChosen, j.DefaultModel, j.Models)
 	}
 
 	// Run 2: resume. The key is already stored, so the MODEL prompt is the
@@ -788,8 +999,8 @@ func TestExplicitDefaultModelSurvivesAnAbortAndAnUnansweredResume(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.DefaultModel != "" {
-		t.Fatalf("an explicit default choice must not be undone by an unanswered resume; got %q", after.DefaultModel)
+	if after.DefaultModel != defaultModel {
+		t.Fatalf("the journaled default choice must survive an unanswered resume; got %q", after.DefaultModel)
 	}
 }
 
@@ -831,10 +1042,9 @@ func TestUnansweredModelPromptKeepsTheSavedModel(t *testing.T) {
 	}
 }
 
-// TestEmptyModelAnswerClearsAJournaledChoice pins the round-5 finding on #216:
-// a resumed run that had journaled a custom model must be able to go back to
-// the built-in default by answering the prompt with an empty line.
-func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
+// TestEmptyModelAnswerPreservesLegacyCustomChoice covers old settings that
+// contain a custom default but no explicit model list.
+func TestEmptyModelAnswerPreservesLegacyCustomChoice(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
 	journalPastPreflight(t, stateDir)
@@ -844,10 +1054,11 @@ func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	j.DefaultModel = "albert/previous-choice"
+	j.ModelChosen = true
 	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
 		t.Fatal(err)
 	}
-	// key -> EMPTY model (choose the built-in) -> skip GitHub -> identities
+	// key -> Enter (keep the current model) -> skip GitHub -> identities
 	// -> apply.
 	input := "the-key\n\n\n\n\n\ny\n"
 	_ = captureStdout(t, func() {
@@ -859,13 +1070,7 @@ func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
 			t.Fatalf("run: code=%d err=%v", code, rerr)
 		}
 	})
-	after, rerr := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	if after.DefaultModel != "" {
-		t.Fatalf("an empty answer must clear the journaled model; got %q", after.DefaultModel)
-	}
+	defaultModel := "albert/previous-choice"
 	path, perr := justcode.UserSettingsPath()
 	if perr != nil {
 		t.Fatal(perr)
@@ -874,8 +1079,8 @@ func TestEmptyModelAnswerClearsAJournaledChoice(t *testing.T) {
 	if uerr != nil {
 		t.Fatal(uerr)
 	}
-	if us.DefaultModel != "" {
-		t.Fatalf("an empty answer must clear the stored model; got %q", us.DefaultModel)
+	if us.DefaultModel != defaultModel || len(us.Models) != 3 || !containsString(us.Models, "previous-choice") {
+		t.Fatalf("Enter must preserve the legacy model and enable it; got model=%q models=%v", us.DefaultModel, us.Models)
 	}
 }
 

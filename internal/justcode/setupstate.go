@@ -51,11 +51,11 @@ type SetupJournal struct {
 	GitEmail string `json:"gitEmail,omitempty"`
 	// DefaultModel is the resolved model selection, when one was chosen.
 	DefaultModel string `json:"defaultModel,omitempty"`
-	// ModelChosen records that the model prompt was ANSWERED, which is a
-	// different fact from the value it produced: an answered empty value means
-	// "use the built-in default" and must stay distinguishable from "never
-	// asked". Without it, a resume could not tell an explicit default choice
-	// from an interruption, and would resurrect a previously saved model.
+	// Models is the set of Albert models enabled in the setup run.
+	Models []string `json:"models,omitempty"`
+	// ModelChosen records that the model prompt was answered. Without it, a
+	// resume could confuse an interruption with an explicit choice and restore
+	// a previously saved model set.
 	ModelChosen bool `json:"modelChosen,omitempty"`
 }
 

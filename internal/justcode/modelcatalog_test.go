@@ -33,6 +33,25 @@ func TestCatalogueFindAndFilter(t *testing.T) {
 	}
 }
 
+func TestCuratedAlbertModelDefaultsAndIDs(t *testing.T) {
+	models := CuratedAlbertModels()
+	if len(models) != 4 {
+		t.Fatalf("curated model count = %d, want 4", len(models))
+	}
+	var defaults []string
+	for _, model := range models {
+		if model.Default {
+			defaults = append(defaults, model.Name)
+		}
+	}
+	if len(defaults) != 2 || defaults[0] != "Qwen3 Coder" || defaults[1] != "DeepSeek V4 Flash" {
+		t.Fatalf("default models = %v", defaults)
+	}
+	if models[1].AlbertModelConfig().RequestBody["tool_choice"] != "auto" {
+		t.Fatal("DeepSeek config must set tool_choice=auto")
+	}
+}
+
 func TestCatalogueCacheNetworkFirst(t *testing.T) {
 	dir := t.TempDir()
 	fetched := 0

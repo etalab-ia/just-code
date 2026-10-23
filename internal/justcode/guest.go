@@ -29,11 +29,15 @@ const GuestPrepareCommand = "__guest-prepare"
 const GuestSecretsCommand = "__guest-secrets"
 
 const (
-	// GuestBootstrapMCPArgIndex is the zero-based position in the hidden
-	// bootstrap's os.Args[1:] vector containing the selected MCP IDs.
-	GuestBootstrapMCPArgIndex = 7
-	// GuestSecretsMCPArgIndex is the corresponding position for __guest-secrets.
-	GuestSecretsMCPArgIndex = 3
+	// GuestBootstrapModelsArgIndex is the zero-based position in the hidden
+	// bootstrap's os.Args[1:] vector containing enabled model JSON.
+	GuestBootstrapModelsArgIndex = 5
+	// GuestBootstrapMCPArgIndex is the position containing selected MCP IDs.
+	GuestBootstrapMCPArgIndex = 8
+	// GuestSecretsModelsArgIndex is the corresponding model position for __guest-secrets.
+	GuestSecretsModelsArgIndex = 3
+	// GuestSecretsMCPArgIndex is the corresponding MCP position for __guest-secrets.
+	GuestSecretsMCPArgIndex = 4
 )
 
 const (

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -51,6 +52,80 @@ func TestParseArgs(t *testing.T) {
 				t.Errorf("version = %v, want %v", got.version, c.version)
 			}
 		})
+	}
+}
+
+func TestResolveEnabledAlbertModelsKeepsActiveModelAvailable(t *testing.T) {
+	setupTestEnv(t)
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	choices := justcode.CuratedAlbertModels()
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, justcode.UserSettings{
+		SchemaVersion: 1,
+		DefaultModel:  choices[1].Ref(),
+		Models:        []string{choices[1].ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveEnabledAlbertModels(choices[0].Ref())
+	var ids []string
+	for _, model := range got {
+		ids = append(ids, model.ID)
+	}
+	if len(ids) != 2 || ids[0] != choices[1].OpenCodeID || ids[1] != choices[0].OpenCodeID {
+		t.Fatalf("configured model keys = %v; selected and active default models must both be available", ids)
+	}
+}
+
+func TestResolveEnabledAlbertModelsMapsLegacyFullID(t *testing.T) {
+	setupTestEnv(t)
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deepseek := justcode.CuratedAlbertModels()[1]
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, justcode.UserSettings{
+		SchemaVersion: 1,
+		DefaultModel:  "albert/" + deepseek.ID,
+		Models:        []string{deepseek.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveEnabledAlbertModels("albert/" + deepseek.ID)
+	if len(got) != 1 || got[0].ID != deepseek.OpenCodeID || got[0].Output != 65536 || got[0].ModelID != deepseek.ID {
+		t.Fatalf("legacy DeepSeek model config = %+v", got)
+	}
+}
+
+func TestResolveModelSelectionCanonicalizesLegacyAlbertReference(t *testing.T) {
+	choice := justcode.CuratedAlbertModels()[1]
+	t.Setenv("JUST_CODE_MODEL", "albert/"+choice.ID)
+	if got := resolveModelSelection(t.TempDir()); got != choice.Ref() {
+		t.Fatalf("legacy model reference = %q, want canonical %q", got, choice.Ref())
+	}
+}
+
+func TestParseGuestAlbertModels(t *testing.T) {
+	choice := justcode.CuratedAlbertModels()[1]
+	want := choice.AlbertModelConfig()
+	data, err := json.Marshal([]justcode.AlbertModelConfig{want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseGuestAlbertModels(string(data))
+	if err != nil || len(got) != 1 {
+		t.Fatalf("parse guest model configs: models=%v err=%v", got, err)
+	}
+	if got[0].ID != want.ID || got[0].ModelID != want.ModelID || got[0].Output != want.Output || got[0].RequestBody["tool_choice"] != "auto" {
+		t.Fatalf("guest model config = %+v, want %+v", got[0], want)
+	}
+	if parsed, err := parseGuestAlbertModels("null"); err != nil || len(parsed) != 0 {
+		t.Fatalf("empty guest model config = %v, err=%v", parsed, err)
+	}
+	if _, err := parseGuestAlbertModels(`[{"id":""}]`); err == nil {
+		t.Fatal("empty model ID should be rejected")
 	}
 }
 

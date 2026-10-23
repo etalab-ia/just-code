@@ -3,6 +3,7 @@ package justcode
 import (
 	"context"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,6 +55,7 @@ type fakeStarter struct {
 	lastStdin []byte
 	lastName  string
 	lastArgs  []string
+	starts    int
 }
 
 func (f *fakeStarter) Start(stdin io.Reader, _ string, name string, args ...string) error {
@@ -62,6 +64,7 @@ func (f *fakeStarter) Start(stdin io.Reader, _ string, name string, args ...stri
 	}
 	f.lastName = name
 	f.lastArgs = args
+	f.starts++
 	return nil
 }
 
@@ -208,14 +211,20 @@ func TestStopBackendRefusesWhenStillRunning(t *testing.T) {
 }
 
 func TestBackendArgsExcludeSecrets(t *testing.T) {
-	args := BackendArgs("opencode-tahoe-base-latest",
-		"/tmp/just-code-guest", "4096", "opencode", "1280", "albert/deepseek-v4-flash", "Luis", "luis@example.gouv.fr")
+	deepseek := CuratedAlbertModels()[1].AlbertModelConfig()
+	args, err := BackendArgs("opencode-tahoe-base-latest",
+		"/tmp/just-code-guest", "4096", "opencode", "1280", "albert/deepseek-v4-flash", []AlbertModelConfig{deepseek}, "Luis", "luis@example.gouv.fr")
+	if err != nil {
+		t.Fatal(err)
+	}
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
 		t.Fatalf("secrets leaked into argv: %v", args)
 	}
 	want := []string{"exec", "-i", "opencode-tahoe-base-latest",
-		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280", "albert/deepseek-v4-flash", "Luis", "luis@example.gouv.fr"}
+		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280", "albert/deepseek-v4-flash",
+		`[{"id":"deepseek-v4-flash","modelID":"deepseek-ai/DeepSeek-V4-Flash-0731","name":"DeepSeek V4 Flash","context":131072,"output":65536,"requestBody":{"tool_choice":"auto"}}]`,
+		"Luis", "luis@example.gouv.fr"}
 	if len(args) != len(want) {
 		t.Fatalf("BackendArgs = %v, want %v", args, want)
 	}
@@ -227,15 +236,32 @@ func TestBackendArgsExcludeSecrets(t *testing.T) {
 }
 
 func TestGuestMCPArgumentPositions(t *testing.T) {
-	bootstrap := guestBootstrapArgs("4096", "opencode", "1280", "albert/model", "Luis", "luis@example.test", []string{"context7", "data-gouv"})
+	bootstrap := guestBootstrapArgs("4096", "opencode", "1280", "albert/model", `[]`, "Luis", "luis@example.test", []string{"context7", "data-gouv"})
+	if got := bootstrap[GuestBootstrapModelsArgIndex]; got != `[]` {
+		t.Fatalf("bootstrap model argv[%d] = %q", GuestBootstrapModelsArgIndex, got)
+	}
 	if got := bootstrap[GuestBootstrapMCPArgIndex]; got != "context7,data-gouv" {
 		t.Fatalf("bootstrap MCP argv[%d] = %q", GuestBootstrapMCPArgIndex, got)
 	}
-	if got := guestSecretsArgs("opencode", "albert/model", []string{"context7"})[GuestSecretsMCPArgIndex]; got != "context7" {
+	secrets, err := guestSecretsArgs("opencode", "albert/model", nil, []string{"context7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := secrets[GuestSecretsMCPArgIndex]; got != "context7" {
 		t.Fatalf("guest-secrets MCP argv[%d] = %q", GuestSecretsMCPArgIndex, got)
 	}
-	if got := len(guestBootstrapArgs("4096", "opencode", "1280", "albert/model", "Luis", "luis@example.test", nil)); got != GuestBootstrapMCPArgIndex {
+	if got := secrets[GuestSecretsModelsArgIndex]; got != "null" {
+		t.Fatalf("guest-secrets model argv[%d] = %q, want null for an empty list", GuestSecretsModelsArgIndex, got)
+	}
+	if got := len(guestBootstrapArgs("4096", "opencode", "1280", "albert/model", `[]`, "Luis", "luis@example.test", nil)); got != GuestBootstrapMCPArgIndex {
 		t.Fatalf("empty bootstrap argv length = %d, want legacy shape %d", got, GuestBootstrapMCPArgIndex)
+	}
+	emptySecrets, err := guestSecretsArgs("opencode", "albert/model", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(emptySecrets); got != GuestSecretsMCPArgIndex {
+		t.Fatalf("empty guest secrets argv length = %d, want MCP index %d", got, GuestSecretsMCPArgIndex)
 	}
 }
 
@@ -252,6 +278,8 @@ func TestSecretsReader(t *testing.T) {
 func TestLaunchBackendCopiesGuestBinaryAndStreamsSecrets(t *testing.T) {
 	r := &fakeRunner{}
 	tt := newTestTart(t, r)
+	qwen := CuratedAlbertModels()[0].AlbertModelConfig()
+	tt.OpenCodeOverlay.Models = []AlbertModelConfig{qwen}
 	if err := tt.launchBackend(context.Background()); err != nil {
 		t.Fatalf("launchBackend: %v", err)
 	}
@@ -279,6 +307,10 @@ func TestLaunchBackendCopiesGuestBinaryAndStreamsSecrets(t *testing.T) {
 	if strings.Contains(strings.Join(fs.lastArgs, " "), "pw") ||
 		strings.Contains(strings.Join(fs.lastArgs, " "), "key") {
 		t.Fatalf("secrets leaked into argv: %v", fs.lastArgs)
+	}
+	qwenJSON := `[{"id":"qwen3-coder","modelID":"Qwen/Qwen3-Coder-30B-A3B-Instruct","name":"Qwen3 Coder","context":262144}]`
+	if !strings.Contains(strings.Join(fs.lastArgs, " "), qwenJSON) {
+		t.Fatalf("bootstrap argv omitted the selected model config: %v", fs.lastArgs)
 	}
 }
 
@@ -395,6 +427,8 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 		return ExecResult{ExitCode: 0}
 	}}
 	tt := newTestTart(t, r)
+	gemma := CuratedAlbertModels()[3].AlbertModelConfig()
+	tt.OpenCodeOverlay.Models = []AlbertModelConfig{gemma}
 	var interactiveArgs []string
 	tt.Interactive = func(name string, args ...string) error {
 		interactiveArgs = append([]string{name}, args...)
@@ -408,11 +442,11 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand) {
 		t.Fatalf("secrets push missing; calls: %v", r.calls)
 	}
-	// Exact argv for the secrets subcommand: __guest-secrets <username> <model>.
-	// The consumer (main.go) reads Username at position 1 and Model at
-	// position 2; a position drift scrambles the in-guest env file.
-	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand + " opencode albert/deepseek-v4-flash") {
-		t.Fatalf("secrets argv must be __guest-secrets <username> <model>; calls: %v", r.calls)
+	// The model definitions travel as non-secret JSON argv alongside the
+	// default model; the credentials themselves remain on stdin.
+	gemmaJSON := `[{"id":"gemma-4","modelID":"google/gemma-4-31B-it","name":"Gemma 4","context":262144,"vision":true}]`
+	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand + " opencode albert/qwen3-coder " + gemmaJSON) {
+		t.Fatalf("secrets argv must include the selected models; calls: %v", r.calls)
 	}
 	for _, c := range r.calls {
 		if strings.Contains(c, "pw") || strings.Contains(c, "key") {
@@ -449,6 +483,76 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	}
 	if strings.Contains(joined, "pw") || strings.Contains(joined, "key") {
 		t.Fatalf("secrets leaked into the interactive argv: %q", joined)
+	}
+}
+
+func TestTartStartRestartsHealthyBackendWhenOverlayChanges(t *testing.T) {
+	previousProbe := tartHealthProbeFn
+	tartHealthProbeFn = func(context.Context, *http.Client, string, string, string) HealthProbe {
+		return HealthProbe{Healthy: true}
+	}
+	t.Cleanup(func() { tartHealthProbeFn = previousProbe })
+
+	runner := &fakeRunner{onRun: func(name string, args []string) ExecResult {
+		joined := strings.Join(args, " ")
+		switch {
+		case name == "tart" && len(args) > 0 && args[0] == "list":
+			return ExecResult{Stdout: "local opencode-test 127.0.0.1 50G running\n"}
+		case strings.Contains(joined, "ip --wait"):
+			return ExecResult{Stdout: "127.0.0.1"}
+		case strings.Contains(joined, "pgrep -x opencode"):
+			return ExecResult{ExitCode: 1}
+		default:
+			return ExecResult{ExitCode: 0}
+		}
+	}}
+	starter := &fakeStarter{}
+	tart := &Tart{
+		Config: Config{
+			TartVM:                       "opencode-test",
+			Username:                     "opencode",
+			Password:                     "pw",
+			PasswordSet:                  true,
+			APIKey:                       "key",
+			TartMTU:                      DefaultTartMTU,
+			WorkspaceDir:                 t.TempDir(),
+			GuestCredentialsAcknowledged: true,
+		},
+		Runner:            runner,
+		Starter:           starter,
+		StateDir:          t.TempDir(),
+		SelfBinary:        writeFakeSelf(t),
+		AgentWaitPolls:    1,
+		AgentWaitInterval: time.Nanosecond,
+		KillMaxPolls:      1,
+	}
+	choices := CuratedAlbertModels()
+	tart.OpenCodeOverlay = ManagedOverlay{
+		Model:  choices[0].Ref(),
+		Models: []AlbertModelConfig{choices[0].AlbertModelConfig()},
+	}
+
+	if err := tart.Start(context.Background()); err != nil {
+		t.Fatalf("first Tart start: %v", err)
+	}
+	if starter.starts != 1 {
+		t.Fatalf("first healthy VM should restart its untracked backend, starts=%d", starter.starts)
+	}
+	if err := tart.Start(context.Background()); err != nil {
+		t.Fatalf("unchanged Tart start: %v", err)
+	}
+	if starter.starts != 1 {
+		t.Fatalf("unchanged overlay restarted the backend, starts=%d", starter.starts)
+	}
+	tart.OpenCodeOverlay.Models = append(tart.OpenCodeOverlay.Models, choices[2].AlbertModelConfig())
+	if err := tart.Start(context.Background()); err != nil {
+		t.Fatalf("changed Tart start: %v", err)
+	}
+	if starter.starts != 2 {
+		t.Fatalf("changed model list did not restart the backend, starts=%d", starter.starts)
+	}
+	if !strings.Contains(strings.Join(starter.lastArgs, " "), `gpt-oss-120b`) {
+		t.Fatalf("restarted backend args omitted the newly enabled model: %v", starter.lastArgs)
 	}
 }
 
