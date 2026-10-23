@@ -45,8 +45,8 @@ func TestMCPStatusReturnsFailureForUnverifiedEndpoint(t *testing.T) {
 	}
 }
 
-func TestMCPStatusDoesNotProbeGuestLocalBrowserServerFromHost(t *testing.T) {
-	stubMCPProject(t, []string{"playwright"})
+func TestMCPStatusDoesNotProbeGuestLocalOrWithdrawnServersFromHost(t *testing.T) {
+	stubMCPProject(t, []string{"playwright", "chrome-devtools"})
 	oldProbe := probeRemoteMCPFn
 	probeCalls := 0
 	probeRemoteMCPFn = func(context.Context, *http.Client, justcode.MCPConnector) justcode.MCPHealth {

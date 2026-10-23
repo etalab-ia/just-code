@@ -44,6 +44,10 @@ func mcpCommand(args []string) (int, error) {
 			fmt.Fprintf(os.Stdout, "%-16s guest-local configured (%s@%s); not probed from host\n", id, browser.Package, browser.Version)
 			continue
 		}
+		if reason, removed := justcode.RemovedMCPIDs[id]; removed {
+			fmt.Fprintf(os.Stdout, "%-16s inactive: %s\n", id, reason)
+			continue
+		}
 		connector := connectorByID(id)
 		health := probeRemoteMCPFn(context.Background(), nil, connector)
 		fmt.Fprintf(os.Stdout, "%-10s %-28s configured -> %s (%s): %s\n", id, connector.Endpoint, health.State, connector.HealthAction, health.Detail)

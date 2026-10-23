@@ -494,7 +494,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 		code, err := initRun(initOptions{
 			Root: root, Isolation: "backend", CPUs: 4, MemoryMB: 2048,
 			Replace: true, Yes: true,
-			MCPConnectors: []string{"context7", "data-gouv"},
+			MCPConnectors: []string{"chrome-devtools", "data-gouv"},
 			Set:           map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true, "mcps": true},
 		}, bufio.NewReader(strings.NewReader("")), false)
 		if code != 0 || err != nil {
@@ -511,7 +511,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 	if pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.Isolation != string(justcode.IsolationBackend) {
 		t.Fatalf("manifest = %+v", pm)
 	}
-	if strings.Join(pm.MCPConnectors, ",") != "context7,data-gouv" {
+	if strings.Join(pm.MCPConnectors, ",") != "chrome-devtools,data-gouv" {
 		t.Fatalf("MCP connectors = %v", pm.MCPConnectors)
 	}
 }
@@ -735,6 +735,9 @@ func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	if pm.CPUs != 0 || pm.MemoryMB != 0 {
 		t.Fatalf("the default sizing must be left unset in the manifest, got %d/%d", pm.CPUs, pm.MemoryMB)
 	}
+	if strings.Join(pm.MCPConnectors, ",") != "data-gouv" {
+		t.Fatalf("a fresh project must default to the data-gouv MCP, got %v", pm.MCPConnectors)
+	}
 }
 
 func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
@@ -747,7 +750,7 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 	input := strings.Join([]string{
-		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "context7", "versioned",
+		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "chrome-devtools", "versioned",
 		"edit",
 		"", "", "", "", "", "", "", "", "", "", "", "",
 	}, "\n")
@@ -759,8 +762,52 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "context7" {
+	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
 		t.Fatalf("edit/back lost prior choices: %+v", manifest)
+	}
+}
+
+// TestInitNonTTYAcceptsFreshDefaultMCPWithoutPrompt pins that supplying --mcp
+// data-gouv keeps the scriptable path at the original answer count: the MCP
+// question is skipped, so the remaining prompts line up without an extra
+// newline.
+func TestInitNonTTYAcceptsFreshDefaultMCPWithoutPrompt(t *testing.T) {
+	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
+	root := initTestProject(t)
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{
+			Root: root, Isolation: "backend", CPUs: 4, MemoryMB: 2048,
+			Replace: true, Yes: true,
+			MCPConnectors: []string{"data-gouv"},
+			Set:           map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true, "mcps": true},
+		}, bufio.NewReader(strings.NewReader("")), false)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "Review the project setup") {
+		t.Fatalf("the review must be printed even without a terminal: %q", out)
+	}
+	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatalf("the manifest must be written and readable: %v", err)
+	}
+	if strings.Join(pm.MCPConnectors, ",") != "data-gouv" {
+		t.Fatalf("MCP connectors = %v", pm.MCPConnectors)
+	}
+}
+
+// TestInitRefusesWithdrawnMCPFlagValue pins that a withdrawn connector passed
+// on the command line is rejected before any question runs.
+func TestInitRefusesWithdrawnMCPFlagValue(t *testing.T) {
+	root := initTestProject(t)
+	code, err := initRun(initOptions{
+		Root:          root,
+		MCPConnectors: []string{"context7"},
+		Set:           map[string]bool{"root": true, "mcps": true},
+	}, bufio.NewReader(strings.NewReader("")), false)
+	if code != 2 || err == nil {
+		t.Fatalf("initRun with a withdrawn --mcp value: code=%d err=%v, want refusal before the first prompt", code, err)
 	}
 }
 
@@ -772,7 +819,7 @@ func TestBrowserResourceGuidanceRefreshesAfterResourceChanges(t *testing.T) {
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 
 	answers := justcode.InitAnswers{
-		MCPConnectors:           []string{"playwright"},
+		MCPConnectors:           []string{"chrome-devtools"},
 		CPUs:                    2,
 		MemoryMB:                4096,
 		BrowserResourceGuidance: "stale guidance for 2 vCPU and 4096 MiB RAM",
@@ -856,7 +903,7 @@ func TestInitSeedsUnspecifiedAnswersFromExistingManifest(t *testing.T) {
 	plan, err := wizard.Plan(justcode.InitAnswers{
 		Root: root, Runtime: justcode.RuntimeMicrosandbox, Isolation: justcode.IsolationBackend,
 		Model: "test-model", CPUs: 3, MemoryMB: 2048, CredentialRef: "work",
-		MCPConnectors: []string{"context7"}, MCPsSet: true,
+		MCPConnectors: []string{"data-gouv"}, MCPsSet: true,
 	})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -865,7 +912,7 @@ func TestInitSeedsUnspecifiedAnswersFromExistingManifest(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, justcode.InitAnswers{Root: root})
-	if got.Runtime != justcode.RuntimeMicrosandbox || got.Isolation != justcode.IsolationBackend || got.Model != "test-model" || got.CPUs != 3 || got.MemoryMB != 2048 || got.CredentialRef != "work" || strings.Join(got.MCPConnectors, ",") != "context7" {
+	if got.Runtime != justcode.RuntimeMicrosandbox || got.Isolation != justcode.IsolationBackend || got.Model != "test-model" || got.CPUs != 3 || got.MemoryMB != 2048 || got.CredentialRef != "work" || strings.Join(got.MCPConnectors, ",") != "data-gouv" {
 		t.Fatalf("seeded answers = %+v", got)
 	}
 }

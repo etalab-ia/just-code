@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -592,7 +593,7 @@ func validateInitOptions(opts initOptions) error {
 		return fmt.Errorf("--memory-mb must be 1 to %d, got %d", justcode.MaxSandboxMemoryMB, opts.MemoryMB)
 	}
 	if opts.Set["mcps"] {
-		if _, err := justcode.ValidateMCPConnectorIDs(opts.MCPConnectors); err != nil {
+		if _, err := justcode.ValidateMCPNewSelection(opts.MCPConnectors); err != nil {
 			return err
 		}
 	}
@@ -824,33 +825,73 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 	if !opts.Set["mcps"] {
-		fmt.Println("\nMCPs — curated remote services and optional guest-local browser tools:")
-		for _, choice := range justcode.MCPSelections() {
-			fmt.Printf("  %-16s %s\n", choice.ID, choice.Description)
-		}
+		fmt.Printf("\n%s\n", justcode.MCPStepTitle)
+		fmt.Println("Un MCP donne à l'agent l'accès à un service ou à un outil.")
 		current := append([]string(nil), answers.MCPConnectors...)
+		haveManifest := false
 		if !answers.MCPsSet {
 			current = nil
 			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
 				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
 					current = manifest.MCPConnectors
+					haveManifest = true
 				}
 			}
-			answers.MCPConnectors = append([]string(nil), current...)
 		}
-		currentLabel := strings.Join(current, ",")
-		if currentLabel == "" {
-			currentLabel = "none"
+		if len(current) == 0 && !haveManifest && !answers.MCPsSet {
+			current = append([]string(nil), justcode.DefaultFreshMCPIDs...)
 		}
-		answer, ok := promptLine(in, "  MCP IDs ["+currentLabel+"] (comma-separated; Enter keeps, `none` clears): ")
-		if ok && strings.TrimSpace(answer) != "" {
+		answers.MCPConnectors = append([]string(nil), current...)
+		for {
+			for _, choice := range justcode.MCPSelections() {
+				marker := "[ ]"
+				if containsString(current, choice.ID) {
+					marker = "[x]"
+				}
+				fmt.Printf("  %s %-14s %s\n", marker, choice.ID, choice.Description)
+			}
+			currentLabel := strings.Join(current, ",")
+			if currentLabel == "" {
+				currentLabel = "none"
+			}
+			answer, ok := promptLine(in, "  MCP IDs ["+currentLabel+"] (IDs séparés par des virgules ; Entrée garde la sélection, `none` efface tout) : ")
+			if !ok {
+				break
+			}
+			trimmed := strings.TrimSpace(answer)
+			if trimmed == "" {
+				break
+			}
+			if strings.EqualFold(trimmed, "none") {
+				if !promptNoMCPConfirmation(in) {
+					continue
+				}
+				answers.MCPsSet = true
+				answers.MCPConnectors = nil
+				current = nil
+				break
+			}
+			var ids []string
+			for _, id := range strings.Split(trimmed, ",") {
+				ids = append(ids, strings.TrimSpace(id))
+			}
+			validated, err := justcode.ValidateMCPNewSelection(ids)
+			if err != nil {
+				fmt.Printf("  %s\n", err)
+				continue
+			}
 			answers.MCPsSet = true
-			answers.MCPConnectors = nil
-			if !strings.EqualFold(strings.TrimSpace(answer), "none") {
-				for _, id := range strings.Split(answer, ",") {
-					answers.MCPConnectors = append(answers.MCPConnectors, strings.TrimSpace(id))
-				}
+			answers.MCPConnectors = validated
+			current = validated
+			break
+		}
+		for _, id := range answers.MCPConnectors {
+			if reason, removed := justcode.RemovedMCPIDs[id]; removed {
+				fmt.Printf("  %s : %s.\n", id, reason)
 			}
+		}
+		if justcode.HasBrowserMCPSelection(answers.MCPConnectors) {
+			fmt.Println(justcode.BrowserDownloadNote)
 		}
 	}
 	if justcode.HasBrowserMCPSelection(answers.MCPConnectors) {
@@ -886,6 +927,19 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		answers.SkillsLocalOnlySet = true
 	}
 	return answers, nil
+}
+
+// promptNoMCPConfirmation asks the zero-selection confirmation and returns
+// true when the user keeps an empty MCP set.
+func promptNoMCPConfirmation(in io.Reader) bool {
+	fmt.Print("Aucun MCP sélectionné. Continuer sans MCP ? (O/n) ")
+	reader := bufio.NewReader(in)
+	answer, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "" || answer == "o" || answer == "oui" || answer == "y" || answer == "yes"
 }
 
 func printProjectSkills(skills []justcode.ProjectSkill) {

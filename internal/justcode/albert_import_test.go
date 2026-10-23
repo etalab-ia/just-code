@@ -44,7 +44,7 @@ func TestDiscoverAlbertCodeImportRecognizesSafeLegacyIntent(t *testing.T) {
 	if !equalImportStrings(plan.Skills, []string{"official/rgaa"}) {
 		t.Fatalf("resolved skills = %v", plan.Skills)
 	}
-	if !equalImportStrings(plan.MCPConnectors, []string{"context7", "data-gouv", "playwright"}) {
+	if !equalImportStrings(plan.MCPConnectors, []string{"data-gouv"}) {
 		t.Fatalf("MCP connectors = %v", plan.MCPConnectors)
 	}
 	if plan.Model != "albert/deepseek-v4-flash" || !plan.CredentialAvailable || !plan.ManagedAgentsPresent || !plan.RuntimeScriptPresent {
@@ -62,7 +62,7 @@ func TestDiscoverAlbertCodeImportRecognizesSafeLegacyIntent(t *testing.T) {
 	if !strings.Contains(preview, "--import-albert-key") || !strings.Contains(preview, "do not transfer") || !strings.Contains(preview, "Host hygiene: .env") {
 		t.Fatalf("preview does not explain credential and workspace boundaries: %s", preview)
 	}
-	for _, name := range []string{"ALBERT_API_KEY", "OTHER_TOKEN", "CONTEXT7_API_KEY", "RUNTIME", "uses anonymous access"} {
+	for _, name := range []string{"ALBERT_API_KEY", "OTHER_TOKEN", "CONTEXT7_API_KEY", "RUNTIME", "no longer offered"} {
 		if !strings.Contains(preview, name) {
 			t.Fatalf("preview omitted safe legacy environment review item %q: %s", name, preview)
 		}

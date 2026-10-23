@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -13,6 +14,7 @@ import (
 type MCPConnector struct {
 	ID           string
 	Name         string
+	Description  string
 	Endpoint     string
 	Destination  string
 	Transport    string
@@ -24,12 +26,13 @@ type MCPConnector struct {
 // guest. It is kept separate from remote endpoints because it has no URL or
 // host-side health probe.
 type BrowserMCP struct {
-	ID      string
-	Name    string
-	Package string
-	Version string
-	Command string
-	Args    []string
+	ID          string
+	Name        string
+	Description string
+	Package     string
+	Version     string
+	Command     string
+	Args        []string
 }
 
 type MCPSelection struct {
@@ -38,30 +41,76 @@ type MCPSelection struct {
 	Local       bool
 }
 
+// Context7 was withdrawn from the catalogue because the service is private
+// and outside the State (#168). Playwright duplicated chrome-devtools (#175).
+// The ids stay valid for manifests written before the withdrawal: start and
+// doctor keep reading them, only new selections are refused.
+const removedMCPExplanation = "n'est plus proposé par just-code"
+
+// RemovedMCPIDs lists catalogue entries withdrawn from the offering, with the
+// reason shown to the user when a previous selection still references them.
+var RemovedMCPIDs = map[string]string{
+	"context7": removedMCPExplanation + " (service privé hors de l'État) ; la sélection existante est conservée mais inactive",
+	"playwright": removedMCPExplanation +
+		" (doublon de chrome-devtools pour tester une application web) ; la sélection existante est conservée mais inactive",
+}
+
+// BrowserDownloadNote announces the guest browser cost while the chrome-devtools
+// box is checked. Figures await Luis's final values; the disk figure is the P03
+// measurement already cited by BrowserResourceGuidance and the memory figure is
+// the default guest allocation.
+const BrowserDownloadNote = "Le navigateur est téléchargé dans la machine isolée au premier lancement (environ 2,6 Go). Prévoyez au moins 4 Go de mémoire."
+
+// DefaultFreshMCPIDs is the pre-checked selection for a fresh initialization
+// (no manifest, no flag): data-gouv is offered by default (#168).
+var DefaultFreshMCPIDs = []string{"data-gouv"}
+
+// MCPStepTitle is the wizard screen title from #168. The step number belongs
+// to the three-step init flow (#160); issues #167/#169 renumber the other
+// screens, so the value lives here in one place.
+const MCPStepTitle = "[2/3] MCP (facultatif)"
+
+// ProbeRemoteMCPFunc probes a remote connector with an MCP initialize
+// handshake. The init wizard uses it for the review screen's reachability
+// line; nil skips the probe (offline runs, tests). It returns nil when the
+// endpoint answered the handshake, a descriptive error otherwise.
+var ProbeRemoteMCPFunc = func(ctx context.Context, connector MCPConnector) error {
+	health := ProbeRemoteMCP(ctx, nil, connector)
+	if health.State != MCPConfigured {
+		return fmt.Errorf("%s (%s)", health.State, health.Detail)
+	}
+	return nil
+}
+
 var mcpCatalogue = map[string]MCPConnector{
-	"data-gouv": {ID: "data-gouv", Name: "data-gouv", Endpoint: "https://mcp.data.gouv.fr/mcp", Destination: "data.gouv.fr", Transport: "Streamable HTTP", HealthAction: "MCP initialize", Credential: "none"},
-	"context7":  {ID: "context7", Name: "context7", Endpoint: "https://mcp.context7.com/mcp", Destination: "context7.com", Transport: "Streamable HTTP", HealthAction: "MCP initialize", Credential: "optional; anonymous access supported"},
+	"data-gouv": {
+		ID: "data-gouv", Name: "data-gouv",
+		Description:  "rechercher et lire les données de data.gouv.fr",
+		Endpoint:     "https://mcp.data.gouv.fr/mcp",
+		Destination:  "data.gouv.fr",
+		Transport:    "Streamable HTTP",
+		HealthAction: "MCP initialize",
+		Credential:   "none",
+	},
 }
 
 // MCPConnectors lists the curated catalogue in stable display order.
 func MCPConnectors() []MCPConnector {
-	return []MCPConnector{mcpCatalogue["data-gouv"], mcpCatalogue["context7"]}
+	return []MCPConnector{mcpCatalogue["data-gouv"]}
 }
 
 var browserMPCCatalogue = map[string]BrowserMCP{
-	"playwright": {
-		ID: "playwright", Name: "playwright", Package: "@playwright/mcp", Version: "0.0.82", Command: "playwright-mcp",
-		Args: []string{"--headless", "--browser", "chromium", "--executable-path", "/usr/bin/chromium"},
-	},
 	"chrome-devtools": {
-		ID: "chrome-devtools", Name: "chrome-devtools", Package: "chrome-devtools-mcp", Version: "1.10.1", Command: "chrome-devtools-mcp",
+		ID: "chrome-devtools", Name: "chrome-devtools",
+		Description: "navigateur dans la machine isolée, pour tester une application web : console, réseau, performances",
+		Package:     "chrome-devtools-mcp", Version: "1.10.1", Command: "chrome-devtools-mcp",
 		Args: []string{"--browserUrl", "http://127.0.0.1:9222"},
 	},
 }
 
 // BrowserMCPs lists the individually selectable guest-local browser tools.
 func BrowserMCPs() []BrowserMCP {
-	return []BrowserMCP{browserMPCCatalogue["playwright"], browserMPCCatalogue["chrome-devtools"]}
+	return []BrowserMCP{browserMPCCatalogue["chrome-devtools"]}
 }
 
 func BrowserMCPByID(id string) (BrowserMCP, bool) {
@@ -109,15 +158,18 @@ func browserMCPBinaries(ids []string) []string {
 func MCPSelections() []MCPSelection {
 	choices := make([]MCPSelection, 0, len(mcpCatalogue)+len(browserMPCCatalogue))
 	for _, connector := range MCPConnectors() {
-		choices = append(choices, MCPSelection{ID: connector.ID, Description: connector.Endpoint + " (remote)"})
+		choices = append(choices, MCPSelection{ID: connector.ID, Description: connector.Description})
 	}
 	for _, connector := range BrowserMCPs() {
-		choices = append(choices, MCPSelection{ID: connector.ID, Description: connector.Package + "@" + connector.Version + " (guest-local)", Local: true})
+		choices = append(choices, MCPSelection{ID: connector.ID, Description: connector.Description, Local: true})
 	}
 	return choices
 }
 
 // ValidateMCPConnectorIDs validates and canonicalizes a user selection.
+// Selections withdrawn from the catalogue stay readable so manifests written
+// before the withdrawal keep starting; new user input goes through
+// ValidateMCPNewSelection, which refuses them.
 func ValidateMCPConnectorIDs(ids []string) ([]string, error) {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(ids))
@@ -125,7 +177,9 @@ func ValidateMCPConnectorIDs(ids []string) ([]string, error) {
 		id := strings.TrimSpace(raw)
 		if _, remote := mcpCatalogue[id]; !remote {
 			if _, local := browserMPCCatalogue[id]; !local {
-				return nil, fmt.Errorf("unknown managed MCP %q (expected data-gouv, context7, playwright or chrome-devtools)", id)
+				if _, removed := RemovedMCPIDs[id]; !removed {
+					return nil, fmt.Errorf("unknown managed MCP %q (managed catalogue: data-gouv, chrome-devtools)", id)
+				}
 			}
 		}
 		if !seen[id] {
@@ -135,6 +189,19 @@ func ValidateMCPConnectorIDs(ids []string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// ValidateMCPNewSelection validates an interactive or flag selection: every id
+// must be currently offered. Withdrawn ids are named with their reason instead
+// of failing as unknown.
+func ValidateMCPNewSelection(ids []string) ([]string, error) {
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if reason, removed := RemovedMCPIDs[id]; removed {
+			return nil, fmt.Errorf("le MCP %q est refusé : %s", id, reason)
+		}
+	}
+	return ValidateMCPConnectorIDs(ids)
 }
 
 func containsMCPConnector(ids []string, wanted string) bool {

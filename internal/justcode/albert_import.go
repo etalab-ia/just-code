@@ -171,14 +171,6 @@ func DiscoverAlbertCodeImport(root string) (AlbertCodeImport, error) {
 		if plan.CredentialNeedsReview {
 			plan.ReviewItems = append(plan.ReviewItems, ".env contains an unsupported or repeated ALBERT_API_KEY assignment; resolve it manually")
 		}
-		if containsMCPConnector(plan.MCPConnectors, "context7") {
-			for _, name := range plan.LegacyEnvKeys {
-				if name == "CONTEXT7_API_KEY" {
-					plan.ReviewItems = append(plan.ReviewItems, "CONTEXT7_API_KEY remains host-only; the imported Context7 connector uses anonymous access")
-					break
-				}
-			}
-		}
 		plan.SourceFiles = append(plan.SourceFiles, ".env (host-only; not transferred)")
 	}
 	if info, err := os.Lstat(filepath.Join(pc.Root, ".agent-vm.runtime.sh")); err == nil {
@@ -272,6 +264,10 @@ func (p *AlbertCodeImport) importOpenCodeConfig(config map[string]any) {
 				continue
 			}
 			if legacyMCPMatches(name, entry) {
+				if _, removed := RemovedMCPIDs[name]; removed {
+					p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("mcp.%q is no longer offered by just-code; it is not imported", name))
+					continue
+				}
 				p.MCPConnectors = append(p.MCPConnectors, name)
 			} else {
 				p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("mcp.%q is custom or unsupported; values withheld and not imported", name))

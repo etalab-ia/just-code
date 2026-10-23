@@ -218,6 +218,11 @@ func huhReviewDescription(plan justcode.InitPlan) string {
 			}
 			t.Row("MCP · "+choice.ID, detail)
 		}
+		for _, id := range a.MCPConnectors {
+			if reason, removed := justcode.RemovedMCPIDs[id]; removed {
+				t.Row("MCP · "+id, "non repris — "+reason)
+			}
+		}
 	}
 	if len(a.Skills) == 0 {
 		t.Row("Skills", "None selected")
