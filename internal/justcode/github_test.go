@@ -2,6 +2,8 @@ package justcode
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,106 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestSplitGitHubSlug(t *testing.T) {
+	for _, tt := range []struct {
+		slug       string
+		wantOwner  string
+		wantRepo   string
+		wantPieces bool
+	}{
+		{slug: "owner/repo", wantOwner: "owner", wantRepo: "repo", wantPieces: true},
+		{slug: "a/b/c", wantOwner: "a", wantRepo: "b/c", wantPieces: true},
+		{slug: "owner", wantPieces: false},
+		{slug: "", wantPieces: false},
+	} {
+		owner, repo := splitGitHubSlug(tt.slug)
+		if tt.wantPieces {
+			if owner != tt.wantOwner || repo != tt.wantRepo {
+				t.Fatalf("splitGitHubSlug(%q) = %q, %q; want %q, %q", tt.slug, owner, repo, tt.wantOwner, tt.wantRepo)
+			}
+		} else if owner != "" || repo != "" {
+			t.Fatalf("splitGitHubSlug(%q) = %q, %q; want empty", tt.slug, owner, repo)
+		}
+	}
+}
+
+func TestProbeGitHubProjectAt(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		userStatus int
+		userBody   string
+		repoStatus int
+		repoBody   string
+		wantLogin  string
+		wantRights GitHubRepoRights
+	}{
+		{
+			name: "read and push is OK",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsOK,
+		},
+		{
+			name: "read without push is insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":false}}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsInsufficient,
+		},
+		{
+			name: "404 is no access",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusNotFound, repoBody: `{"message":"Not Found"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsNoAccess,
+		},
+		{
+			name: "401 is invalid",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusUnauthorized, repoBody: `{"message":"Bad credentials"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsInvalid,
+		},
+		{
+			name: "403 with organization hint is org pending",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"the organization has not approved access"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsOrgPending,
+		},
+		{
+			name: "403 without organization hint is insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"Resource not accessible by personal access token"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsInsufficient,
+		},
+		{
+			name: "user endpoint failure still classifies from the repo",
+			userStatus: http.StatusInternalServerError, userBody: ``,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			wantLogin: "", wantRights: GitHubRepoRightsOK,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.userStatus)
+				w.Write([]byte(tt.userBody))
+			})
+			mux.HandleFunc("/repos/", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.repoStatus)
+				w.Write([]byte(tt.repoBody))
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			got := probeGitHubProjectAt(context.Background(), srv.Client(), "tok", "owner", "repo", srv.URL+"/user", srv.URL+"/repos/owner/repo")
+			if got.login != tt.wantLogin {
+				t.Fatalf("login = %q, want %q", got.login, tt.wantLogin)
+			}
+			if got.rights != tt.wantRights {
+				t.Fatalf("rights = %v, want %v", got.rights, tt.wantRights)
+			}
+		})
+	}
+}
 
 func TestParseGitHubRemote(t *testing.T) {
 	for _, tt := range []struct {

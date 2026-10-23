@@ -524,7 +524,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		if err := approveGitHubForProjectFn(plan.Answers.Root); err != nil {
 			return 1, fmt.Errorf("project configuration was written, but GitHub approval was not recorded; run 'just-code bindings approve github': %w", err)
 		}
-		fmt.Println("GitHub guest workflow approved on this host; the approval is not stored in project files.")
+		fmt.Println("Accord GitHub enregistré pour ce projet sur ce poste ; il n'est pas écrit dans le projet.")
 	}
 	// The trailer is advice for the standalone command. When the launch flow
 	// drives the setup, the launch is already continuing: telling the user to
@@ -833,32 +833,67 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 	if !opts.Set["github"] {
-		// Resolve the origin and stored credential before offering the
-		// choice: a project without a usable GitHub.com origin cannot approve
-		// the workflow, and refusing only after the last question threw away
-		// every answer (#155). The post-question preflight still gates the
-		// explicit --github flag path.
-		remote, preflightErr := githubInitPreflightFn(answers.Root)
-		if preflightErr != nil {
-			fmt.Println()
-			fmt.Println("GitHub guest workflow (optional) — unavailable for this project:")
-			fmt.Println("  " + preflightErr.Error())
-			fmt.Println("Existing approvals remain unchanged; fix the above and re-run 'just-code init' to enable it.")
-			answers.GitHubWorkflow = false
-			answers.GitHubRemote = justcode.GitHubRemote{}
-		} else {
-			answers.GitHubRemote = remote
-			fmt.Println()
-			fmt.Println("GitHub guest workflow (optional): the Microsandbox guest can push branches and open draft PRs to this origin.")
-			fmt.Printf("Origin: %s\n", remote.Repo)
-			fmt.Println("It uses the stored GitHub credential through the secret proxy; approval is local to this host and not shared with clones.")
-			fmt.Println("Existing approvals remain unchanged; 'just-code bindings revoke github' disables the grant.")
-			prompt := "Approve the GitHub workflow for this project? [y/N]: "
-			if answers.GitHubWorkflow {
-				prompt = "Approve the GitHub workflow for this project? [Y/n]: "
-			}
-			if answer, ok := promptLine(in, prompt); ok && strings.TrimSpace(answer) != "" {
-				answers.GitHubWorkflow = strings.EqualFold(strings.TrimSpace(answer), "y")
+		// The GitHub step verifies on this screen and renders one distinct
+		// screen per situation (#169): an approved repo+token, a project not
+		// linked to GitHub, a project with no stored token, or a token
+		// without the needed rights. Nothing is decided here that the later
+		// review could reject, so a refusal never throws away the other
+		// answers (#155).
+	githubStep:
+		for {
+			probe := githubInitProbeFn(answers.Root)
+			switch {
+			case !probe.HasOrigin:
+				fmt.Println(gitHubNoOriginScreen())
+				quit, err := gitHubContinueLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if quit {
+					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
+			case !probe.HasToken:
+				fmt.Println(gitHubNoTokenScreen(probe))
+				addNow, err := gitHubTokenLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if addNow {
+					stored, _, _, err := githubTokenStage(context.Background(), initGitHubAddWizard(), in)
+					if err != nil {
+						return answers, err
+					}
+					if stored {
+						continue
+					}
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
+			case probe.Rights == justcode.GitHubRepoRightsOK:
+				fmt.Println(gitHubApprovedScreen(probe))
+				yes, err := gitHubYesDefault(in)
+				if err != nil {
+					return answers, err
+				}
+				answers.GitHubRemote = probe.Remote
+				answers.GitHubWorkflow = yes
+				break githubStep
+			default:
+				fmt.Println(gitHubInsufficientScreen(probe))
+				reverify, err := gitHubRightsLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if reverify {
+					continue
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
 			}
 		}
 	}
@@ -1082,6 +1117,183 @@ func truncateLine(s string, n int) string {
 	return b.String()
 }
 
+// The GitHub step (3.9) renders one distinct screen per situation and
+// verifies on that screen, never after the recap (#169). The screen text is
+// the approved copy from the wizard epic; the input helpers keep an invalid
+// answer on the same screen instead of throwing the run away.
+
+func gitHubRepoDisplay(r justcode.GitHubRemote) string {
+	if r.Repo == "" {
+		return ""
+	}
+	return "github.com/" + r.Repo
+}
+
+func gitHubApprovedScreen(p justcode.GitHubProjectStatus) string {
+	return fmt.Sprintf(`[3/3] GitHub (facultatif)
+
+Dépôt détecté : %s
+Jeton GitHub : compte %s, droits vérifiés sur ce dépôt ✅
+
+Autoriser l'agent à pousser ses modifications sur une branche
+et à ouvrir une pull request en brouillon sur ce dépôt ? (O/n)
+Vous gardez la main : rien n'est fusionné sans votre accord.
+`, gitHubRepoDisplay(p.Remote), p.Login)
+}
+
+func gitHubNoOriginScreen() string {
+	return `[3/3] GitHub (facultatif)
+
+Ce projet n'est pas relié à GitHub.
+L'agent travaille sur une copie du projet. Pour récupérer ses modifications
+dans votre dossier, vous les relirez puis les appliquerez avec : just-code workspace apply
+
+  > Continuer
+    Quitter, relier le projet à GitHub, puis relancer : just-code init
+`
+}
+
+func gitHubNoTokenScreen(p justcode.GitHubProjectStatus) string {
+	return fmt.Sprintf(`[3/3] GitHub (facultatif)
+
+Dépôt détecté : %s
+Aucun jeton GitHub n'est enregistré sur ce poste.
+
+  > Plus tard (just-code auth add github, puis just-code init)
+    Ajouter un jeton maintenant      → même écran qu'au setup (cf. 3.4)
+`, gitHubRepoDisplay(p.Remote))
+}
+
+func gitHubInsufficientScreen(p justcode.GitHubProjectStatus) string {
+	return fmt.Sprintf(`[3/3] GitHub (facultatif)
+
+Dépôt détecté : %s
+%s
+
+[R] Revérifier  [C] Continuer sans GitHub
+`, gitHubRepoDisplay(p.Remote), gitHubRightsMessage(p))
+}
+
+func gitHubRightsMessage(p justcode.GitHubProjectStatus) string {
+	switch p.Rights {
+	case justcode.GitHubRepoRightsNoAccess:
+		return fmt.Sprintf("Votre jeton n'a pas accès à %s. Ajoutez ce dépôt au jeton sur GitHub.", p.Remote.Repo)
+	case justcode.GitHubRepoRightsInsufficient:
+		return "Votre jeton n'a pas les droits nécessaires. Il lui faut Contents et Pull requests en lecture et écriture."
+	case justcode.GitHubRepoRightsOrgPending:
+		owner := p.Remote.Repo
+		if parts := strings.SplitN(owner, "/", 2); len(parts) == 2 {
+			owner = parts[0]
+		}
+		return fmt.Sprintf("L'organisation %s n'a pas encore approuvé votre jeton.", owner)
+	case justcode.GitHubRepoRightsInvalid:
+		return "Votre jeton n'est plus accepté par GitHub. Vérifiez-le avec « just-code auth add github »."
+	default:
+		return "Impossible de vérifier les droits de votre jeton pour le moment (réseau)."
+	}
+}
+
+var gitHubNoOriginPrompt = "Continuer (Entrée) ou Quitter (q) : "
+var gitHubNoTokenPrompt = "Plus tard (Entrée) ou Ajouter un jeton maintenant (a) : "
+var gitHubRightsPrompt = "[R] Revérifier  [C] Continuer sans GitHub : "
+
+// gitHubYesDefault reads the case-1 (O/n) answer. Enter defaults to Oui;
+// only an explicit non/non declines.
+func gitHubYesDefault(in *bufio.Reader) (bool, error) {
+	for {
+		answer, ok := promptLine(in, "(O/n) ")
+		if !ok {
+			return false, fmt.Errorf("no answer; nothing was written")
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "o", "oui", "y", "yes":
+			return true, nil
+		case "n", "non", "no":
+			return false, nil
+		default:
+			fmt.Println("Réponse non reconnue. Répondez O (oui) ou n (non).")
+		}
+	}
+}
+
+// gitHubContinueLoop reads the case-2 choice. It reports true when the user
+// chooses to quit init. Enter defaults to Continuer.
+func gitHubContinueLoop(in *bufio.Reader) (bool, error) {
+	for {
+		answer, ok := promptLine(in, gitHubNoOriginPrompt)
+		if !ok {
+			return false, fmt.Errorf("no answer; nothing was written")
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "c", "continuer", "continuer sans github":
+			return false, nil
+		case "q", "quitter":
+			return true, nil
+		default:
+			fmt.Println("Réponse non reconnue. Continuer (Entrée) ou quitter (q).")
+		}
+	}
+}
+
+// gitHubTokenLoop reads the case-3 choice. It reports true when the user
+// wants to add a token now. Enter defaults to Plus tard.
+func gitHubTokenLoop(in *bufio.Reader) (bool, error) {
+	for {
+		answer, ok := promptLine(in, gitHubNoTokenPrompt)
+		if !ok {
+			return false, fmt.Errorf("no answer; nothing was written")
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "p", "plus tard":
+			return false, nil
+		case "a", "ajouter", "ajouter un jeton maintenant":
+			return true, nil
+		default:
+			fmt.Println("Réponse non reconnue. Plus tard (Entrée) ou Ajouter maintenant (a).")
+		}
+	}
+}
+
+// gitHubRightsLoop reads the case-4 choice. It reports true when the user
+// wants to re-verify. Enter defaults to Continuer sans GitHub.
+func gitHubRightsLoop(in *bufio.Reader) (bool, error) {
+	for {
+		answer, ok := promptLine(in, gitHubRightsPrompt)
+		if !ok {
+			return false, fmt.Errorf("no answer; nothing was written")
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "r", "revérifier", "reverifier":
+			return true, nil
+		case "", "c", "continuer", "continuer sans github":
+			return false, nil
+		default:
+			fmt.Println("Réponse non reconnue. [R] Revérifier ou [C] Continuer sans GitHub.")
+		}
+	}
+}
+
+// initGitHubAddWizard builds a minimal setup wizard for the "Ajouter un jeton
+// maintenant" branch of the case-3 screen. It reuses setup's own token stage,
+// so the add flow and its validation are identical to setup's (cf. 3.4).
+func initGitHubAddWizard() justcode.SetupWizard {
+	return justcode.SetupWizard{
+		FS: justcode.DefaultFS,
+		Store: func(ctx context.Context) (justcode.SetupStore, error) {
+			return authStore(false)
+		},
+		ValidateGitHub: githubTokenProbeFn,
+	}
+}
+
+// githubInitProbeFn classifies the project's GitHub situation for the init
+// screen (origin present, token present, and what the token may do). Tests
+// replace this seam to drive each of the four situations without a network or
+// a real credential store.
+var githubInitProbeFn = func(root string) justcode.GitHubProjectStatus {
+	return justcode.ProbeGitHubForProject(context.Background(), root, nil)
+}
+
 // githubInitPreflightFn resolves the stored token and the host origin before
 // the project manifest is written. Tests replace this seam so they do not
 // inherit a real keychain or repository remote.
@@ -1174,7 +1386,7 @@ Options:
   --cpus <n>              guest CPUs (max detected host capacity)
   --memory-mb <size>      guest memory in MiB or GiB (e.g. 4096, 4G, 2.5G; max detected host RAM)
   --credential-ref <ref>  project credential reference (default: the global one)
-  --github                enable the protected GitHub guest workflow
+  --github                enable pushing changes to the project's GitHub repository
   --skill <id>            select an exact catalogue skill (repeatable; e.g. official/rgaa)
   --clear-skills          remove all managed project skills
   --mcp <id>              select data-gouv or context7 (repeatable)

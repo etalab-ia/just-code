@@ -376,13 +376,15 @@ func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 		return justcode.HostResources{CPUs: 1, MemoryMB: 6000}, nil
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
-	input := strings.Join([]string{"", "", "", "", "", "n", "", "", "", "y"}, "\n")
+	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "y"}, "\n")
+	var code int
+	var err error
 	out := captureStdout(t, func() {
-		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
-		if code != 0 || err != nil {
-			t.Fatalf("initRun: code=%d err=%v", code, err)
-		}
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	})
+	if code != 0 || err != nil {
+		t.Fatalf("initRun: code=%d err=%v out=\n%s", code, err, out)
+	}
 	if !strings.Contains(out, "selected 1 CPU automatically") || strings.Contains(out, "cpus (`default` resets)") {
 		t.Fatalf("the sole CPU value must be stated without prompting: %q", out)
 	}
@@ -426,7 +428,7 @@ func TestInitGitHubApprovalStaysOutOfProjectManifest(t *testing.T) {
 	if preflightRoot != root || approvedRoot != canonicalRoot {
 		t.Fatalf("preflight root = %q, approval root = %q, want %q and canonical %q", preflightRoot, approvedRoot, root, canonicalRoot)
 	}
-	if !strings.Contains(out, "guest workflow for owner/repo") || !strings.Contains(out, "approval is not stored in project files") {
+	if !strings.Contains(out, "agent may push changes to a branch of owner/repo") || !strings.Contains(out, "Accord GitHub enregistré") {
 		t.Fatalf("review must identify the repo and host-local approval: %q", out)
 	}
 	manifest, err := os.ReadFile(justcode.ProjectManifestPath(root))
@@ -465,77 +467,227 @@ func TestInitGitHubWorkflowRejectsNonMicrosandboxRuntime(t *testing.T) {
 	}
 }
 
-// TestInitSkipsGitHubQuestionWhenOriginUnusable pins #155: a project whose
-// origin or credential cannot support the guest workflow is never offered
-// the approval question, so the run can no longer fail after the last screen
-// and throw the session away. The reason is stated on screen.
-func TestInitSkipsGitHubQuestionWhenOriginUnusable(t *testing.T) {
+// TestInitNoOriginShowsCase2Screen pins #169 case 2: a project not linked to
+// GitHub gets its own screen and continues by default. It also pins #155: the
+// run completes instead of failing after the last screen with the answers lost.
+func TestInitNoOriginShowsCase2Screen(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
-	originalPreflight, originalApprove := githubInitPreflightFn, approveGitHubForProjectFn
-	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
-		return justcode.GitHubRemote{}, fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the guest GitHub workflow")
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalProbe, originalApprove := githubInitProbeFn, approveGitHubForProjectFn
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		return justcode.GitHubProjectStatus{}
 	}
 	approved := false
 	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
-	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, skills, MCPs,
-	// skill storage, apply — the GitHub question is absent by design.
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
+	// runtime, isolation, model, cpus, memory, credential-ref, github
+	// (continue), skills, MCPs, skill storage, apply.
+	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+	var code int
+	var err error
 	out := captureStdout(t, func() {
-		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
-		if code != 0 || err != nil {
-			t.Fatalf("initRun: code=%d err=%v", code, err)
-		}
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	})
-	if strings.Contains(out, "Approve the GitHub workflow") {
-		t.Fatalf("the approval question must not be asked when the origin is unusable: %q", out)
+	if code != 0 || err != nil {
+		t.Fatalf("initRun: code=%d err=%v out=\n%s", code, err, out)
 	}
-	if !strings.Contains(out, "GitHub guest workflow (optional) — unavailable for this project:") || !strings.Contains(out, "no readable origin remote") {
-		t.Fatalf("the skip must state the reason on screen: %q", out)
+	if !strings.Contains(out, "Ce projet n'est pas relié à GitHub.") {
+		t.Fatalf("the case-2 screen must appear: %q", out)
+	}
+	if strings.Contains(out, "droits vérifiés") {
+		t.Fatalf("no approval screen may appear without an origin: %q", out)
 	}
 	if approved {
-		t.Fatal("no approval may be recorded when the question is skipped")
+		t.Fatal("no approval may be recorded when there is no GitHub link")
 	}
 	if _, err := os.Stat(justcode.ProjectManifestPath(root)); err != nil {
 		t.Fatalf("the project must still be configured: %v", err)
 	}
 }
 
-// TestInitGitHubQuestionResolvesOriginUpfront pins the other half of #155:
-// with a usable origin the question is offered, names the repo, and a Yes
-// completes the run instead of failing after the review with the answers lost.
-func TestInitGitHubQuestionResolvesOriginUpfront(t *testing.T) {
+// TestInitNoTokenShowsCase3Screen pins #169 case 3: a project with a repo but
+// no stored token gets its own screen and defers by default.
+func TestInitNoTokenShowsCase3Screen(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
-	originalPreflight, originalApprove := githubInitPreflightFn, approveGitHubForProjectFn
-	var preflightRoots []string
-	githubInitPreflightFn = func(gotRoot string) (justcode.GitHubRemote, error) {
-		preflightRoots = append(preflightRoots, gotRoot)
-		return justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, nil
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
 	}
-	approveGitHubForProjectFn = func(string) error { return nil }
-	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, github=y,
-	// skills, MCPs, skill storage, apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "y", "", "", "", ""}, "\n") + "\n"
-	out := captureStdout(t, func() {
-		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
-		if code != 0 || err != nil {
-			t.Fatalf("a Yes with a usable origin must complete the run: code=%d err=%v", code, err)
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalProbe, originalApprove := githubInitProbeFn, approveGitHubForProjectFn
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		return justcode.GitHubProjectStatus{
+			Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+			HasOrigin: true,
 		}
+	}
+	approved := false
+	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
+	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+	var code int
+	var err error
+	out := captureStdout(t, func() {
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	})
-	if !strings.Contains(out, "Approve the GitHub workflow for this project? [y/N]: ") {
-		t.Fatalf("the question must be asked: %q", out)
+	if code != 0 || err != nil {
+		t.Fatalf("initRun: code=%d err=%v out=\n%s", code, err, out)
 	}
-	if !strings.Contains(out, "Origin: owner/repo") {
-		t.Fatalf("the question must name the resolved origin: %q", out)
+	if !strings.Contains(out, "Aucun jeton GitHub n'est enregistré sur ce poste.") {
+		t.Fatalf("the case-3 screen must appear: %q", out)
 	}
-	if !strings.Contains(out, "guest workflow for owner/repo") {
-		t.Fatalf("the review must carry the resolved origin: %q", out)
+	if approved {
+		t.Fatal("no approval may be recorded without a stored token")
 	}
-	if len(preflightRoots) < 2 {
-		t.Fatalf("the origin must be resolved at question time and re-checked before writing, got %d calls", len(preflightRoots))
+}
+
+// TestInitApprovedGitHubShowsCase1Screen pins #169 case 1: with a usable origin
+// and a token that can read and push, the approved screen is shown, defaults to
+// Oui, and a Yes completes the run with the approval recorded on this host only
+// (never in the manifest).
+func TestInitApprovedGitHubShowsCase1Screen(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalProbe, originalApprove := githubInitProbeFn, approveGitHubForProjectFn
+	var probeRoots []string
+	githubInitProbeFn = func(gotRoot string) justcode.GitHubProjectStatus {
+		probeRoots = append(probeRoots, gotRoot)
+		return justcode.GitHubProjectStatus{
+			Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+			HasOrigin: true,
+			HasToken:  true,
+			Login:     "kai",
+			Rights:    justcode.GitHubRepoRightsOK,
+		}
+	}
+	approved := false
+	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
+	// runtime, isolation, model, cpus, memory, credential-ref, github (O),
+	// skills, MCPs, skill storage, apply.
+	input := strings.Join([]string{"", "", "", "", "", "", "o", "", "", "", ""}, "\n") + "\n"
+	var code int
+	var err error
+	out := captureStdout(t, func() {
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+	})
+	if code != 0 || err != nil {
+		t.Fatalf("a Yes with verified rights must complete the run: code=%d err=%v out=\n%s", code, err, out)
+	}
+	if !strings.Contains(out, "Dépôt détecté : github.com/owner/repo") || !strings.Contains(out, "Jeton GitHub : compte kai, droits vérifiés sur ce dépôt ✅") {
+		t.Fatalf("the approved case-1 screen must show the repo and verified account: %q", out)
+	}
+	if !approved {
+		t.Fatal("a Yes must record the host-local approval")
+	}
+	if len(probeRoots) < 1 {
+		t.Fatalf("the origin must be verified at question time, got %d calls", len(probeRoots))
+	}
+	if _, err := os.Stat(justcode.ProjectManifestPath(root)); err != nil {
+		t.Fatalf("the project must still be configured: %v", err)
+	}
+}
+
+// TestInitCase4InsufficientRightsAllowsReverify pins #169 case 4: a token
+// without the needed rights shows the cause-specific screen, and [R] re-probes
+// without leaving the wizard. After the fix it proceeds to the approved screen.
+func TestInitCase4InsufficientRightsAllowsReverify(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalProbe, originalApprove := githubInitProbeFn, approveGitHubForProjectFn
+	calls := 0
+	status := justcode.GitHubProjectStatus{
+		Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+		HasOrigin: true,
+		HasToken:  true,
+		Login:     "kai",
+		Rights:    justcode.GitHubRepoRightsInsufficient,
+	}
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		calls++
+		if calls >= 2 {
+			status.Rights = justcode.GitHubRepoRightsOK
+		}
+		return status
+	}
+	approved := false
+	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
+	// runtime, isolation, model, cpus, memory, credential-ref, github (R),
+	// github (O), skills, MCPs, skill storage, apply.
+	input := strings.Join([]string{"", "", "", "", "", "", "r", "o", "", "", "", ""}, "\n") + "\n"
+	var code int
+	var err error
+	out := captureStdout(t, func() {
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+	})
+	if code != 0 || err != nil {
+		t.Fatalf("a re-verify followed by a Yes must complete the run: code=%d err=%v out=\n%s", code, err, out)
+	}
+	if !strings.Contains(out, "Votre jeton n'a pas les droits nécessaires.") {
+		t.Fatalf("the case-4 cause must be stated: %q", out)
+	}
+	if !approved {
+		t.Fatal("after re-verify approves, the host-local approval must be recorded")
+	}
+	if calls < 2 {
+		t.Fatalf("Revérifier must re-probe without leaving the wizard, got %d probes", calls)
+	}
+}
+
+// TestInitCase4ContinueWithoutGitHub pins the case-4 exit: continuing without
+// GitHub keeps the run going and records no approval.
+func TestInitCase4ContinueWithoutGitHub(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalHostResources := detectHostResourcesFn
+	detectHostResourcesFn = func() (justcode.HostResources, error) {
+		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
+	}
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalProbe, originalApprove := githubInitProbeFn, approveGitHubForProjectFn
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		return justcode.GitHubProjectStatus{
+			Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+			HasOrigin: true,
+			HasToken:  true,
+			Login:     "kai",
+			Rights:    justcode.GitHubRepoRightsInsufficient,
+		}
+	}
+	approved := false
+	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
+	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
+	input := strings.Join([]string{"", "", "", "", "", "", "c", "", "", "", ""}, "\n") + "\n"
+	var code int
+	var err error
+	out := captureStdout(t, func() {
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+	})
+	if code != 0 || err != nil {
+		t.Fatalf("continuing without GitHub must complete the run: code=%d err=%v out=\n%s", code, err, out)
+	}
+	if !strings.Contains(out, "Votre jeton n'a pas les droits nécessaires.") {
+		t.Fatalf("the case-4 cause must be stated: %q", out)
+	}
+	if approved {
+		t.Fatal("no approval may be recorded when the user continues without GitHub")
 	}
 }
 
@@ -572,15 +724,15 @@ func TestAskInitQuestionsHuhOffersGitHubOnlyWhenUsable(t *testing.T) {
 	originalRun := huhRun
 	huhRun = func(*huh.Form) error { return nil }
 	t.Cleanup(func() { huhRun = originalRun })
-	originalPreflight := githubInitPreflightFn
-	t.Cleanup(func() { githubInitPreflightFn = originalPreflight })
+	originalProbe := githubInitProbeFn
+	t.Cleanup(func() { githubInitProbeFn = originalProbe })
 	opts := initOptions{
 		Root: root, Set: map[string]bool{"root": true},
 		hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384,
 	}
 
-	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
-		return justcode.GitHubRemote{}, fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the guest GitHub workflow")
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		return justcode.GitHubProjectStatus{}
 	}
 	answers, err := askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
 	if err != nil {
@@ -590,8 +742,14 @@ func TestAskInitQuestionsHuhOffersGitHubOnlyWhenUsable(t *testing.T) {
 		t.Fatalf("an unusable origin must leave the workflow off with no stashed remote: %+v", answers)
 	}
 
-	githubInitPreflightFn = func(string) (justcode.GitHubRemote, error) {
-		return justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, nil
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		return justcode.GitHubProjectStatus{
+			Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+			HasOrigin: true,
+			HasToken:  true,
+			Login:     "kai",
+			Rights:    justcode.GitHubRepoRightsOK,
+		}
 	}
 	answers, err = askInitQuestionsHuh(opts, justcode.InitAnswers{Root: root})
 	if err != nil {
@@ -1009,7 +1167,7 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
 	input := strings.Join([]string{
-		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "chrome-devtools", "versioned",
+		"microsandbox", "backend", "test-model", "3", "2048", "work", "", "", "chrome-devtools", "versioned",
 		"edit",
 		"", "", "", "", "", "", "", "", "", "", "", "",
 	}, "\n")

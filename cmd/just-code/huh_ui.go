@@ -232,9 +232,9 @@ func huhReviewDescription(plan justcode.InitPlan) string {
 		credential = fmt.Sprintf("Reference: %s (value is not written)", a.CredentialRef)
 	}
 	t.Row("Credential", credential)
-	github := "No new approval; existing host-local approvals remain unchanged"
+	github := "No approval; the agent will not push to GitHub"
 	if a.GitHubWorkflow {
-		github = fmt.Sprintf("Guest workflow for %s (approval stays host-local)", a.GitHubRemote.Repo)
+		github = fmt.Sprintf("Agent may push changes to a branch of %s and open a draft pull request", a.GitHubRemote.Repo)
 	}
 	t.Row("GitHub", github)
 	if len(a.MCPConnectors) == 0 {
@@ -430,11 +430,22 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		cpusInput := strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)))
 		memoryInput := justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)))
 		credentialRef := answers.CredentialRef
-		githubWorkflow := answers.GitHubWorkflow
 		skills := append([]string(nil), answers.Skills...)
 		mcps := append([]string(nil), answers.MCPConnectors...)
 		haveManifestMCPs := false
 		skillsLocalOnly := answers.SkillsLocalOnly
+
+		// The GitHub step is a distinct screen, not a field of the main
+		// form: it renders one of the four situations and verifies on that
+		// screen (#169). It runs before the form so a refusal or a re-verify
+		// never throws away the other answers (#155).
+		if !opts.Set["github"] {
+			var err error
+			answers, err = askGitHubStepHuh(answers)
+			if err != nil {
+				return answers, err
+			}
+		}
 
 		if !answers.SkillsSet {
 			current, err := currentProjectSkillSelection(answers.Root)
@@ -550,27 +561,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				}).
 				Value(&credentialRef))
 		}
-		if !opts.Set["github"] {
-			// Same rule as the line wizard: resolve the origin and stored
-			// credential before offering the choice. A project without a
-			// usable GitHub.com origin cannot approve the workflow, and the
-			// post-form preflight failing there would throw away every
-			// answer (#155). Each form pass re-resolves, so a root changed
-			// inside the form gets the correct question on the reseeded pass.
-			remote, preflightErr := githubInitPreflightFn(answers.Root)
-			if preflightErr != nil {
-				fmt.Fprintf(os.Stderr, "GitHub guest workflow (optional) — unavailable for this project: %v\n", preflightErr)
-				githubWorkflow = false
-				answers.GitHubWorkflow = false
-				answers.GitHubRemote = justcode.GitHubRemote{}
-			} else {
-				answers.GitHubRemote = remote
-				credentialFields = append(credentialFields, huh.NewConfirm().
-					Title("Approve the GitHub workflow for this project?").
-					Description(fmt.Sprintf("The Microsandbox guest can push branches and open draft PRs to %s. It uses the stored GitHub credential through the secret proxy; approval is local to this host. 'just-code bindings revoke github' disables the grant.", remote.Repo)).
-					Value(&githubWorkflow))
-			}
-		}
 		var credentialGroup *huh.Group
 		if len(credentialFields) > 0 {
 			credentialGroup = huh.NewGroup(credentialFields...).Title("Credentials")
@@ -666,7 +656,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			answers.MemoryMB = memoryMB
 		}
 		answers.CredentialRef = strings.TrimSpace(credentialRef)
-		answers.GitHubWorkflow = githubWorkflow
 		// Match the line wizard's "Enter keeps" semantics: a form
 		// submission only marks the value explicit when it differs from
 		// the seeded value, so accepting the defaults preserves the
@@ -761,4 +750,115 @@ func retainedSkillOptions(options []huh.Option[string], catalogue []justcode.Pro
 		}
 	}
 	return retained
+}
+
+// askGitHubStepHuh renders the GitHub step (3.9) as its own screen with one
+// distinct form per situation (#169). It verifies on that screen, so a
+// refusal or a re-verify never throws away the other answers (#155).
+func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error) {
+	for {
+		probe := githubInitProbeFn(answers.Root)
+		switch {
+		case !probe.HasOrigin:
+			choice := "continue"
+			err := huhRun(huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("[3/3] GitHub (facultatif)").
+						Description("Ce projet n'est pas relié à GitHub.\nL'agent travaille sur une copie du projet. Pour récupérer ses modifications dans votre dossier, vous les relirez puis les appliquerez avec : just-code workspace apply"),
+					huh.NewSelect[string]().
+						Title("Que voulez-vous faire ?").
+						Options(
+							huh.NewOption("Continuer", "continue"),
+							huh.NewOption("Quitter, relier le projet à GitHub, puis relancer : just-code init", "quit"),
+						).
+						Value(&choice),
+				),
+			))
+			if err != nil {
+				return answers, err
+			}
+			if choice == "quit" {
+				return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
+			}
+			answers.GitHubWorkflow = false
+			answers.GitHubRemote = justcode.GitHubRemote{}
+			return answers, nil
+		case !probe.HasToken:
+			choice := "later"
+			err := huhRun(huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("[3/3] GitHub (facultatif)").
+						Description(fmt.Sprintf("Dépôt détecté : %s\nAucun jeton GitHub n'est enregistré sur ce poste.", gitHubRepoDisplay(probe.Remote))),
+					huh.NewSelect[string]().
+						Title("Jeton GitHub").
+						Options(
+							huh.NewOption("Plus tard (just-code auth add github)", "later"),
+							huh.NewOption("Ajouter un jeton maintenant", "add"),
+						).
+						Value(&choice),
+				),
+			))
+			if err != nil {
+				return answers, err
+			}
+			if choice == "add" {
+				stored, _, _, err := githubTokenStage(context.Background(), initGitHubAddWizard(), nil)
+				if err != nil {
+					return answers, err
+				}
+				if stored {
+					continue
+				}
+			}
+			answers.GitHubWorkflow = false
+			answers.GitHubRemote = justcode.GitHubRemote{}
+			return answers, nil
+		case probe.Rights == justcode.GitHubRepoRightsOK:
+			yes := true
+			err := huhRun(huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("[3/3] GitHub (facultatif)").
+						Description(fmt.Sprintf("Dépôt détecté : %s\nJeton GitHub : compte %s, droits vérifiés sur ce dépôt ✅", gitHubRepoDisplay(probe.Remote), probe.Login)),
+					huh.NewConfirm().
+						Title("Autoriser l'agent à pousser ses modifications sur une branche et à ouvrir une pull request en brouillon sur ce dépôt ?").
+						Description("Vous gardez la main : rien n'est fusionné sans votre accord.").
+						Value(&yes),
+				),
+			))
+			if err != nil {
+				return answers, err
+			}
+			answers.GitHubRemote = probe.Remote
+			answers.GitHubWorkflow = yes
+			return answers, nil
+		default:
+			choice := "continue"
+			err := huhRun(huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("[3/3] GitHub (facultatif)").
+						Description(fmt.Sprintf("Dépôt détecté : %s\n%s", gitHubRepoDisplay(probe.Remote), gitHubRightsMessage(probe))),
+					huh.NewSelect[string]().
+						Title("Jeton GitHub").
+						Options(
+							huh.NewOption("Revérifier", "reverify"),
+							huh.NewOption("Continuer sans GitHub", "continue"),
+						).
+						Value(&choice),
+				),
+			))
+			if err != nil {
+				return answers, err
+			}
+			if choice == "reverify" {
+				continue
+			}
+			answers.GitHubWorkflow = false
+			answers.GitHubRemote = justcode.GitHubRemote{}
+			return answers, nil
+		}
+	}
 }

@@ -523,10 +523,10 @@ func FormatInitReview(plan InitPlan) string {
 	// the three.
 	b.WriteString("               (the manifest records the reference, never a value)\n")
 	if a.GitHubWorkflow {
-		fmt.Fprintf(&b, "  GitHub       guest workflow for %s\n", a.GitHubRemote.Repo)
-		b.WriteString("               GitHub token approval is host-local and is not written to the project\n")
+		fmt.Fprintf(&b, "  GitHub       agent may push changes to a branch of %s and open a draft pull request\n", a.GitHubRemote.Repo)
+		b.WriteString("               Approval is local to this machine and is not written to the project\n")
 	} else {
-		b.WriteString("  GitHub       no new approval; existing host-local approvals remain unchanged\n")
+		b.WriteString("  GitHub       no approval; the agent will not push to GitHub\n")
 	}
 	if len(a.MCPConnectors) == 0 {
 		b.WriteString("  MCPs         none selected\n")

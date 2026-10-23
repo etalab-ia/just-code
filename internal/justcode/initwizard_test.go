@@ -150,7 +150,7 @@ func TestInitPlanGitHubWorkflowRequiresCanonicalRemote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical GitHub remote: %v", err)
 	}
-	if !strings.Contains(FormatInitReview(plan), "guest workflow for owner/repo") {
+	if !strings.Contains(FormatInitReview(plan), "agent may push changes to a branch of owner/repo") {
 		t.Fatal("the review must identify the approved repository")
 	}
 }
