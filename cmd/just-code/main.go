@@ -691,6 +691,10 @@ func resolveCredentialRef(projectRoot string) string {
 	if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil && pm.CredentialRef != "" {
 		return pm.CredentialRef
 	}
+	return resolveUserCredentialRef()
+}
+
+func resolveUserCredentialRef() string {
 	if path, err := justcode.UserSettingsPath(); err == nil {
 		if us, err := justcode.ReadUserSettings(justcode.DefaultFS, path); err == nil {
 			return us.CredentialRef
