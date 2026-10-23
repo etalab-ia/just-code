@@ -410,7 +410,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		}
 	}
 	if len(models) == 0 {
-		models = defaultSetupModelIDs()
+		models = setupModelIDsWithLegacyDefault(model)
 	}
 	if model == "" {
 		model = defaultSetupModel()
@@ -662,6 +662,15 @@ func defaultSetupModelIDs() []string {
 	return ids
 }
 
+func setupModelIDsWithLegacyDefault(model string) []string {
+	ids := defaultSetupModelIDs()
+	id := strings.TrimPrefix(model, "albert/")
+	if id == model || id == "" || setupModelEnabled(model, ids) {
+		return ids
+	}
+	return append(ids, id)
+}
+
 func defaultSetupModel() string {
 	for _, model := range justcode.CuratedAlbertModels() {
 		if model.Default {
@@ -885,11 +894,26 @@ var setupModelPickerRun = func(initial setupModelPicker) (setupModelPicker, erro
 
 func promptSetupModels(current []string, currentDefault string) ([]string, string, bool, error) {
 	choices := justcode.CuratedAlbertModels()
+	for _, id := range current {
+		if !isCuratedAlbertModelID(choices, id) {
+			choices = append(choices, justcode.AlbertModelChoice{
+				ID:          id,
+				OpenCodeID:  id,
+				Reference:   "albert/" + id,
+				Name:        "Modèle actuel",
+				Description: id + " (conservé depuis les réglages existants)",
+			})
+		}
+	}
 	catalogue, fresh, catalogueErr := setupModelCatalogueFn()
 	available := map[string]bool{}
 	if catalogueErr == nil {
 		for _, choice := range choices {
-			_, available[choice.ID] = catalogue.Find(choice.ID)
+			if choice.Reference != "" {
+				available[choice.ID] = true
+			} else {
+				_, available[choice.ID] = catalogue.Find(choice.ID)
+			}
 		}
 		if !fresh {
 			fmt.Println("Catalogue indisponible : sélection par défaut conservée.")
@@ -946,6 +970,15 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 		}
 	}
 	return modelIDs, picked.defaultModel, true, nil
+}
+
+func isCuratedAlbertModelID(choices []justcode.AlbertModelChoice, id string) bool {
+	for _, choice := range choices {
+		if choice.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func containsString(values []string, want string) bool {

@@ -75,6 +75,9 @@ func TestComposeConfigContentRestrictsAlbertModelsToSelection(t *testing.T) {
 	if deepseek["name"] != choice.Name || deepseek["limit"].(map[string]any)["context"] != float64(choice.Context) {
 		t.Fatalf("selected model definition = %v", deepseek)
 	}
+	if deepseek["limit"].(map[string]any)["output"] != float64(65536) {
+		t.Fatalf("DeepSeek output token limit was lost: %v", deepseek["limit"])
+	}
 	if deepseek["modelID"] != choice.ID {
 		t.Fatalf("Albert API model ID = %v, want %s", deepseek["modelID"], choice.ID)
 	}
