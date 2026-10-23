@@ -658,7 +658,13 @@ setupStages:
 		fmt.Printf("  Espace disque       %s disponibles\n", humanBytes(j.Preflight.DiskFreeBytes))
 	}
 	if justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
-		if j.GitHubVerified == nil {
+		if j.GitHubReplacePending {
+			if j.GitHubLogin != "" {
+				fmt.Printf("  GitHub              jeton actuel @%s conservé ; remplacement en attente\n", j.GitHubLogin)
+			} else {
+				fmt.Println("  GitHub              jeton actuel conservé ; remplacement en attente")
+			}
+		} else if j.GitHubVerified == nil {
 			fmt.Println("  GitHub              jeton enregistré, état de vérification inconnu (journal historique)")
 		} else if !*j.GitHubVerified {
 			fmt.Println("  GitHub              jeton enregistré, non vérifié")
@@ -696,6 +702,13 @@ setupStages:
 		goto setupStages
 	case "quit":
 		return 1, fmt.Errorf("configuration non appliquée; aucun paramètre ni runtime n'a été appliqué")
+	}
+	if j.GitHubReplacePending {
+		fmt.Println("Remplacement GitHub annulé ; le jeton existant sera conservé.")
+		j.GitHubReplacePending = false
+		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+			return 1, err
+		}
 	}
 
 	// Apply: write the settings (only now — a cancelled apply must leave

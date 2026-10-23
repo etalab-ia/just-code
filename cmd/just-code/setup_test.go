@@ -865,6 +865,45 @@ func TestSetupWizardAbandonedGitHubReplacementResumes(t *testing.T) {
 	}
 }
 
+func TestSetupWizardApplyCancelsPendingGitHubReplacement(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	verified := true
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.CredentialKinds = []string{"albert", "github"}
+	j.AlbertVerified = &verified
+	j.GitHubLogin = "old-account"
+	j.GitHubVerified = &verified
+	j.GitHubReplacePending = true
+	j.GitName, j.GitEmail = "Test User", "test@example.test"
+	j.DefaultModel = defaultSetupModel()
+	j.Models = defaultSetupModelIDs()
+	j.ModelChosen = true
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader("\n\na\n")), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code != 0 || err != nil {
+			t.Fatalf("apply with the existing token: code=%d err=%v", code, err)
+		}
+	})
+	for _, want := range []string{"jeton actuel @old-account conservé ; remplacement en attente", "Remplacement GitHub annulé ; le jeton existant sera conservé."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("apply recap is missing %q; output:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(justcode.SetupJournalPath(stateDir)); !os.IsNotExist(err) {
+		t.Fatalf("completed setup must remove its journal, err=%v", err)
+	}
+}
+
 func TestLegacySetupJournalRecapReportsUnknownCredentialVerification(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
