@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -534,18 +535,22 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		}
 	}
 
-	// Stage: git identity (editable, defaults offered).
+	// Stage: git identity (editable, defaulting to the host git config).
 	if j.GitName == "" || j.GitEmail == "" {
 		fmt.Println()
-		fmt.Println("Git identity for guest commits:")
-		var name, email string
+		name, email := hostGitIdentityFn()
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(email) == "" {
+			fmt.Println("L'agent signe ses commits à votre nom. Votre git config n'en contient pas : indiquez-les.")
+		}
 		if wizardHuhFn() {
-			err := huhRun(huh.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Name").Description("Used for guest commits; empty uses Albert Code Agent.").Value(&name),
-					huh.NewInput().Title("Email").Description("Used for guest commits; empty uses albert-code@noreply.etalab.gouv.fr.").Value(&email),
-				),
-			))
+			var fields []huh.Field
+			if strings.TrimSpace(name) == "" {
+				fields = append(fields, huh.NewInput().Title("Prénom et nom").Value(&name))
+			}
+			if strings.TrimSpace(email) == "" {
+				fields = append(fields, huh.NewInput().Title("Adresse e-mail").Value(&email))
+			}
+			err := huhRun(huh.NewForm(huh.NewGroup(fields...)))
 			if errors.Is(err, huh.ErrUserAborted) {
 				// Identity is persisted here, not at final apply: an
 				// abort must cancel setup, not save partial values.
@@ -556,14 +561,15 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 				return 1, err
 			}
 		} else {
-			name, _ = promptLine(in, "Name [Albert Code Agent]: ")
-			email, _ = promptLine(in, "Email [albert-code@noreply.etalab.gouv.fr]: ")
+			if strings.TrimSpace(name) == "" {
+				name, _ = promptLine(in, "Prénom et nom : ")
+			}
+			if strings.TrimSpace(email) == "" {
+				email, _ = promptLine(in, "Adresse e-mail : ")
+			}
 		}
-		if strings.TrimSpace(name) == "" {
-			name = "Albert Code Agent"
-		}
-		if strings.TrimSpace(email) == "" {
-			email = "albert-code@noreply.etalab.gouv.fr"
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(email) == "" {
+			return 1, fmt.Errorf("le nom et l'adresse e-mail sont nécessaires pour signer les commits")
 		}
 		if err := w.SaveIdentity(strings.TrimSpace(name), strings.TrimSpace(email)); err != nil {
 			return 1, err
@@ -573,33 +579,45 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 	// Review.
 	fmt.Println()
-	fmt.Println("Review:")
-	fmt.Printf("  Albert credential: stored (%s store)\n", storeLabel(fallback))
-	if justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
-		fmt.Println("  GitHub credential: stored (inactive until a project approves the binding)")
-	} else {
-		fmt.Println("  GitHub credential: not stored (skippable, add later)")
+	fmt.Println("Récapitulatif")
+	albertStore := "le trousseau"
+	if fallback {
+		albertStore = "un fichier protégé"
 	}
-	fmt.Printf("  Git identity: %s <%s>\n", strings.TrimSpace(j.GitName), strings.TrimSpace(j.GitEmail))
+	fmt.Printf("  Clé Albert API      enregistrée dans %s\n", albertStore)
+	if j.Preflight.DiskFreeBytes > 0 {
+		fmt.Printf("  Espace disque       %s disponibles\n", humanBytes(j.Preflight.DiskFreeBytes))
+	}
+	if justcode.ContainsCredentialKind(j.CredentialKinds, "github") {
+		fmt.Println("  GitHub              jeton enregistré")
+	} else {
+		fmt.Println("  GitHub              plus tard")
+	}
+	fmt.Printf("  Signature commits   %s <%s>\n", strings.TrimSpace(j.GitName), strings.TrimSpace(j.GitEmail))
 	if model != "" {
-		fmt.Printf("  Default model: %s\n", model)
+		selectedModels := make([]string, 0, len(models))
+		for _, id := range models {
+			selectedModels = append(selectedModels, setupModelLabel(id))
+		}
+		fmt.Printf("  Modèles             %s (par défaut : %s)\n", strings.Join(selectedModels, ", "), setupModelLabel(model))
 	} else if !modelAnswered {
 		// The prompt was never answered: the saved setting is untouched, so the
 		// recap must not announce a change the run will not make.
-		fmt.Println("  Default model: unchanged")
+		fmt.Println("  Modèles             sélection actuelle conservée")
 	} else {
-		fmt.Println("  Default model: albert/qwen3-coder (built-in)")
+		fmt.Println("  Modèles             Qwen3 Coder (par défaut)")
 	}
-	fmt.Println("  Managed runtime: will be downloaded and verified (or reused if trusted)")
+	fmt.Println("\nÀ l'étape suivante, just-code télécharge et vérifie la machine isolée.")
+	fmt.Println("Environ 2 Go et quelques minutes selon votre connexion.")
 	apply := true
 	if wizardHuhFn() {
-		proceed, err := huhConfirm("Apply this configuration?", "Writes the settings, then installs the managed Microsandbox runtime.", true)
+		proceed, err := huhConfirm("Appliquer", "Installer et vérifier la machine isolée.", true)
 		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 			return 1, err
 		}
 		apply = err == nil && proceed
 	} else {
-		answer, _ := promptLine(in, "Apply? [Y/n]: ")
+		answer, _ := promptLine(in, "Appliquer ? [O/n] : ")
 		apply = !strings.EqualFold(strings.TrimSpace(answer), "n")
 	}
 	if !apply {
@@ -612,7 +630,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		return 1, err
 	}
 	fmt.Println()
-	fmt.Println("Installing the managed Microsandbox runtime (downloaded and digest-verified)...")
+	fmt.Println("Installation de la machine isolée…")
 	if err := w.InstallRuntime(ctx); err != nil {
 		// Journal preserved: the retry skips the credential prompts.
 		return 1, fmt.Errorf("runtime installation failed: %v (re-run 'just-code setup' to resume; the credential prompts will be skipped)", err)
@@ -623,14 +641,30 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 }
 
 func setupCompletionMessage() string {
-	return "Setup complete. Run 'just-code' from a project directory to launch the configured runtime. On an unconfigured host, the default is Microsandbox/full, with the agent and TUI running inside the guest."
+	return "Configuration terminée.\n\nÉtape suivante, dans le dossier d'un projet :\n  cd mon-projet\n  just-code\n\nVérifier l'installation à tout moment : just-code setup doctor"
 }
 
-func storeLabel(fallback bool) string {
-	if fallback {
-		return "file"
+func hostGitIdentity() (string, string) {
+	read := func(key string) string {
+		value, err := exec.Command("git", "config", "--global", "--get", key).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(value))
 	}
-	return "native"
+	return read("user.name"), read("user.email")
+}
+
+var hostGitIdentityFn = hostGitIdentity
+
+func setupModelLabel(id string) string {
+	id = strings.TrimPrefix(id, "albert/")
+	for _, model := range justcode.CuratedAlbertModels() {
+		if id == model.ID || id == model.OpenCodeID || id == model.Ref() {
+			return model.Name
+		}
+	}
+	return id
 }
 
 func currentUserSettings() (justcode.UserSettings, bool) {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	msb "github.com/superradcompany/microsandbox/sdk/go"
+	"golang.org/x/term"
 )
 
 // msbRuntimeReleaseURL is the upstream Microsandbox release the runtime is
@@ -283,7 +284,9 @@ func downloadAndInstallMSBRuntime(ctx context.Context, client *http.Client, home
 		archive.Close()
 		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
 	}
-	n, err := io.Copy(archive, io.LimitReader(resp.Body, msbRuntimeMaxArchive+1))
+	progress := &runtimeDownloadProgress{total: resp.ContentLength, enabled: term.IsTerminal(int(os.Stderr.Fd()))}
+	n, err := io.Copy(archive, io.LimitReader(io.TeeReader(resp.Body, progress), msbRuntimeMaxArchive+1))
+	progress.finish()
 	if err != nil {
 		archive.Close()
 		return fmt.Errorf("download %s: %w", url, err)
@@ -296,6 +299,7 @@ func downloadAndInstallMSBRuntime(ctx context.Context, client *http.Client, home
 		archive.Close()
 		return err
 	}
+	fmt.Fprintln(os.Stderr, "  [2/3] Vérification de l'intégrité")
 	if err := verifySHA256(archive, artifact.sha256); err != nil {
 		archive.Close()
 		return fmt.Errorf("verify %s: %w", artifact.name, err)
@@ -304,6 +308,7 @@ func downloadAndInstallMSBRuntime(ctx context.Context, client *http.Client, home
 		archive.Close()
 		return err
 	}
+	fmt.Fprintln(os.Stderr, "  [3/3] Préparation")
 	if err := extractMSBRuntime(archive, home, artifact); err != nil {
 		archive.Close()
 		return fmt.Errorf("extract %s: %w", artifact.name, err)
@@ -312,6 +317,46 @@ func downloadAndInstallMSBRuntime(ctx context.Context, client *http.Client, home
 		return err
 	}
 	return nil
+}
+
+type runtimeDownloadProgress struct {
+	total   int64
+	read    int64
+	last    time.Time
+	enabled bool
+}
+
+func (p *runtimeDownloadProgress) Write(data []byte) (int, error) {
+	p.read += int64(len(data))
+	if p.enabled && time.Since(p.last) >= 250*time.Millisecond {
+		p.render()
+	}
+	return len(data), nil
+}
+
+func (p *runtimeDownloadProgress) render() {
+	if p.total <= 0 {
+		fmt.Fprintf(os.Stderr, "\r  [1/3] Téléchargement %s", runtimeBytes(p.read))
+	} else {
+		fraction := float64(p.read) / float64(p.total)
+		if fraction > 1 {
+			fraction = 1
+		}
+		filled := int(fraction * 10)
+		fmt.Fprintf(os.Stderr, "\r  [1/3] Téléchargement %s %s / %s", strings.Repeat("█", filled)+strings.Repeat("░", 10-filled), runtimeBytes(p.read), runtimeBytes(p.total))
+	}
+	p.last = time.Now()
+}
+
+func (p *runtimeDownloadProgress) finish() {
+	if p.enabled {
+		p.render()
+		fmt.Fprintln(os.Stderr)
+	}
+}
+
+func runtimeBytes(n int64) string {
+	return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
 }
 
 func verifySHA256(r io.Reader, expected string) error {
