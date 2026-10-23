@@ -130,6 +130,10 @@ const (
 	// GitHubRepoRightsOrgPending means the repository's organization has not
 	// approved the credential yet.
 	GitHubRepoRightsOrgPending
+	// GitHubRepoRightsSSO means the organization requires SAML single sign-on
+	// and the credential is not authorised for it: the remedy is to authorise
+	// the token for the organization, not to wait for an approval.
+	GitHubRepoRightsSSO
 	// GitHubRepoRightsInvalid means GitHub rejected the credential (expired or
 	// revoked).
 	GitHubRepoRightsInvalid
@@ -272,9 +276,19 @@ func probeGitHubProjectAt(ctx context.Context, client *http.Client, token, owner
 	case http.StatusForbidden:
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		lower := strings.ToLower(string(data))
-		if strings.Contains(lower, "organization") || strings.Contains(lower, "approved") || strings.Contains(lower, "approuv") {
+		switch {
+		case strings.Contains(lower, "rate limit") || resp.Header.Get("X-RateLimit-Remaining") == "0":
+			// A throttled probe says nothing about rights. Reporting it as
+			// insufficient rights would send the user to change a token that
+			// is fine, and Revérifier would loop until the window resets.
+			res.rights = GitHubRepoRightsUnknown
+		case strings.Contains(lower, "saml"):
+			// SSO enforcement is fixed by authorising the token for the
+			// organization, not by waiting for an approval.
+			res.rights = GitHubRepoRightsSSO
+		case strings.Contains(lower, "organization") || strings.Contains(lower, "approved"):
 			res.rights = GitHubRepoRightsOrgPending
-		} else {
+		default:
 			res.rights = GitHubRepoRightsInsufficient
 		}
 	default:

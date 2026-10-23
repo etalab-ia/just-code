@@ -429,18 +429,23 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			var blocked error
 			switch {
 			case !status.HasOrigin:
-				blocked = fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to enable the GitHub workflow")
+				blocked = fmt.Errorf("the project has no readable origin remote; configure a GitHub.com origin to allow the agent to push")
+			case status.TokenError != nil:
+				// A store that cannot be read is not a missing token: the
+				// remedy is to unlock it, and saying "add a token" would send
+				// the user down the wrong path.
+				blocked = fmt.Errorf("the GitHub credential store could not be read: %w", status.TokenError)
 			case !status.HasToken:
 				blocked = fmt.Errorf("no GitHub token is stored on this machine; add one with 'just-code auth add github'")
 			case status.Rights != justcode.GitHubRepoRightsOK:
-				blocked = fmt.Errorf("%s", gitHubRightsMessage(status))
+				blocked = errors.New(gitHubRightsMessage(status))
 			}
 			if blocked != nil {
-				// A non-interactive run has nobody to re-ask, so it fails
-				// with the cause named. An interactive run must not lose the
-				// answers already given (#155): say what changed and reopen
-				// the questions, where the GitHub step verifies again.
-				if !tty || opts.Yes {
+				// Reopening only helps when the GitHub step will run again:
+				// --github skips that step, so continuing would re-ask every
+				// other question and block here forever. Fail with the cause
+				// named in that case, and in any run with nobody to re-ask.
+				if !tty || opts.Yes || opts.Set["github"] {
 					return 1, blocked
 				}
 				fmt.Printf("\nLa situation GitHub a changé depuis votre réponse : %v\n", blocked)
@@ -1070,7 +1075,19 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 			case probe.TokenError != nil:
 				// A locked or unavailable store must not be reported as "no
 				// token yet": the remedy is to unlock it, not to add a token.
-				return answers, fmt.Errorf("the GitHub credential store could not be read: %w", probe.TokenError)
+				// GitHub stays optional, so this is a screen with a way out
+				// rather than an abort of the whole wizard.
+				fmt.Println(gitHubStoreErrorScreen(probe.TokenError))
+				quit, err := gitHubContinueLoop(in)
+				if err != nil {
+					return answers, err
+				}
+				if quit {
+					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
+				}
+				answers.GitHubWorkflow = false
+				answers.GitHubRemote = justcode.GitHubRemote{}
+				break githubStep
 			case !probe.HasToken:
 				fmt.Println(gitHubNoTokenScreen(probe))
 				addNow, err := gitHubTokenLoop(in)
@@ -1265,14 +1282,18 @@ func gitHubRepoDisplay(r justcode.GitHubRemote) string {
 	return "github.com/" + r.Repo
 }
 
-func gitHubApprovedScreen(p justcode.GitHubProjectStatus) string {
-	// The account name is what makes the check verifiable by the reader. When
-	// GitHub did not report it, the rights are still verified, so say that
-	// rather than printing an empty "compte ,".
-	account := fmt.Sprintf("compte %s", p.Login)
+// gitHubAccountLabel names the account the verified token authenticates as.
+// The name is what makes the check verifiable by the reader. When GitHub did
+// not report it, the rights are still verified, so say that rather than
+// rendering an empty "compte ,". Both UIs share this so they cannot drift.
+func gitHubAccountLabel(p justcode.GitHubProjectStatus) string {
 	if p.Login == "" {
-		account = "jeton accepté"
+		return "jeton accepté"
 	}
+	return "compte " + p.Login
+}
+
+func gitHubApprovedScreen(p justcode.GitHubProjectStatus) string {
 	return fmt.Sprintf(`[3/3] GitHub (facultatif)
 
 Dépôt détecté : %s
@@ -1281,7 +1302,21 @@ Jeton GitHub : %s, droits vérifiés sur ce dépôt ✅
 Autoriser l'agent à pousser ses modifications sur une branche
 et à ouvrir une pull request en brouillon sur ce dépôt ? (O/n)
 Vous gardez la main : rien n'est fusionné sans votre accord.
-`, gitHubRepoDisplay(p.Remote), account)
+`, gitHubRepoDisplay(p.Remote), gitHubAccountLabel(p))
+}
+
+func gitHubStoreErrorScreen(err error) string {
+	return fmt.Sprintf(`[3/3] GitHub (facultatif)
+
+Le mot de passe de votre poste protège les identifiants, et il n'a pas pu être
+lu. Tant qu'il est verrouillé, just-code ne peut pas savoir si un jeton GitHub
+est disponible.
+
+  > Continuer sans GitHub
+    Quitter, déverrouiller le trousseau, puis relancer : just-code init
+
+Détail : %v
+`, err)
 }
 
 func gitHubNoOriginScreen() string {
@@ -1320,7 +1355,7 @@ Avec Tart et agent-vm, le dossier du projet est monté dans la machine : vous
 récupérez les modifications directement dans votre dossier.
 
   > Continuer sans GitHub
-    Changer de type de machine (Microsandbox) dans les questions précédentes
+    Quitter, choisir Microsandbox dans les questions précédentes, puis relancer
 `, name)
 }
 
@@ -1351,6 +1386,12 @@ func gitHubRightsMessage(p justcode.GitHubProjectStatus) string {
 		return fmt.Sprintf("Votre jeton n'a pas accès à %s. Ajoutez ce dépôt au jeton sur GitHub.", p.Remote.Repo)
 	case justcode.GitHubRepoRightsInsufficient:
 		return "Votre jeton n'a pas les droits nécessaires. Il lui faut Contents et Pull requests en lecture et écriture."
+	case justcode.GitHubRepoRightsSSO:
+		owner := p.Remote.Repo
+		if parts := strings.SplitN(owner, "/", 2); len(parts) == 2 {
+			owner = parts[0]
+		}
+		return fmt.Sprintf("Votre jeton n'est pas autorisé pour l'organisation %s. Autorisez-le pour cette organisation sur GitHub (Single sign-on), puis revérifiez.", owner)
 	case justcode.GitHubRepoRightsOrgPending:
 		owner := p.Remote.Repo
 		if parts := strings.SplitN(owner, "/", 2); len(parts) == 2 {
@@ -1372,7 +1413,9 @@ var gitHubRightsPrompt = "[R] Revérifier  [C] Continuer sans GitHub : "
 // only an explicit non/non declines.
 func gitHubYesDefault(in *bufio.Reader) (bool, error) {
 	for {
-		answer, ok := promptLine(in, "(O/n) ")
+		// The screen above already ends with the question and its (O/n)
+		// hint, so the prompt stays empty rather than asking twice.
+		answer, ok := promptLine(in, "")
 		if !ok {
 			return false, fmt.Errorf("no answer; nothing was written")
 		}

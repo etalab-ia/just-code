@@ -581,7 +581,7 @@ func FormatInitReview(plan InitPlan) string {
 		fmt.Fprintf(&b, "  GitHub       agent may push changes to a branch of %s and open a draft pull request\n", a.GitHubRemote.Repo)
 		b.WriteString("               Approval is local to this machine and is not written to the project\n")
 	} else {
-		b.WriteString("  GitHub       no approval; the agent will not push to GitHub\n")
+		b.WriteString("  GitHub       no approval for this project; any approval already recorded on this machine is unchanged\n")
 	}
 	if len(a.MCPConnectors) == 0 {
 		b.WriteString("  MCPs         none selected\n")
