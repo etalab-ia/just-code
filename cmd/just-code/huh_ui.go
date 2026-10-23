@@ -380,7 +380,7 @@ func huhReviewDescription(plan justcode.InitPlan) string {
 		credential = fmt.Sprintf("Reference: %s (value is not written)", a.CredentialRef)
 	}
 	t.Row("Credential", credential)
-	github := "No approval; the agent will not push to GitHub"
+	github := "No approval for this project; an approval already recorded here is unchanged"
 	if a.GitHubWorkflow {
 		github = fmt.Sprintf("Agent may push changes to a branch of %s and open a draft pull request", a.GitHubRemote.Repo)
 	}
@@ -913,8 +913,31 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 		case probe.TokenError != nil:
 			// Same rule as the line wizard: a store that cannot be read is
 			// not the same situation as having no token, and its remedy is
-			// different.
-			return answers, fmt.Errorf("the GitHub credential store could not be read: %w", probe.TokenError)
+			// different. GitHub stays optional, so offer a way out.
+			choice := "continue"
+			err := huhRun(huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("[3/3] GitHub (facultatif)").
+						Description(fmt.Sprintf("Le mot de passe de votre poste protège les identifiants, et il n'a pas pu être lu.\nTant qu'il est verrouillé, just-code ne peut pas savoir si un jeton GitHub est disponible.\n\nDétail : %v", probe.TokenError)),
+					huh.NewSelect[string]().
+						Title("GitHub").
+						Options(
+							huh.NewOption("Continuer sans GitHub", "continue"),
+							huh.NewOption("Quitter pour déverrouiller, puis relancer", "quit"),
+						).
+						Value(&choice),
+				),
+			))
+			if err != nil {
+				return answers, err
+			}
+			if choice == "quit" {
+				return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
+			}
+			answers.GitHubWorkflow = false
+			answers.GitHubRemote = justcode.GitHubRemote{}
+			return answers, nil
 		case !probe.HasToken:
 			choice := "later"
 			err := huhRun(huh.NewForm(
@@ -956,7 +979,7 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 				huh.NewGroup(
 					huh.NewNote().
 						Title("[3/3] GitHub (facultatif)").
-						Description(fmt.Sprintf("Dépôt détecté : %s\nJeton GitHub : compte %s, droits vérifiés sur ce dépôt ✅", gitHubRepoDisplay(probe.Remote), probe.Login)),
+						Description(fmt.Sprintf("Dépôt détecté : %s\nJeton GitHub : %s, droits vérifiés sur ce dépôt ✅", gitHubRepoDisplay(probe.Remote), gitHubAccountLabel(probe))),
 					huh.NewConfirm().
 						Title("Autoriser l'agent à pousser ses modifications sur une branche et à ouvrir une pull request en brouillon sur ce dépôt ?").
 						Description("Vous gardez la main : rien n'est fusionné sans votre accord.").

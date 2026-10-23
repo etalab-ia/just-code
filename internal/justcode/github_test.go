@@ -43,8 +43,11 @@ func TestProbeGitHubProjectAt(t *testing.T) {
 		userBody   string
 		repoStatus int
 		repoBody   string
-		wantLogin  string
-		wantRights GitHubRepoRights
+		// exhaustedRateLimit sends the header GitHub sets when the window is
+		// spent, which must be read as "unknown", not as insufficient rights.
+		exhaustedRateLimit bool
+		wantLogin          string
+		wantRights         GitHubRepoRights
 	}{
 		{
 			name:       "read and push is OK",
@@ -83,6 +86,25 @@ func TestProbeGitHubProjectAt(t *testing.T) {
 			wantLogin: "kai", wantRights: GitHubRepoRightsInsufficient,
 		},
 		{
+			name:       "403 rate limit is unknown, not insufficient rights",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"API rate limit exceeded for user ID 1."}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsUnknown,
+		},
+		{
+			name:       "403 with exhausted rate limit header is unknown",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"Forbidden"}`,
+			exhaustedRateLimit: true,
+			wantLogin:          "kai", wantRights: GitHubRepoRightsUnknown,
+		},
+		{
+			name:       "403 saml enforcement is its own cause",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"Resource protected by organization SAML enforcement. You must grant your token access to this organization."}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsSSO,
+		},
+		{
 			name:       "user endpoint failure still classifies from the repo",
 			userStatus: http.StatusInternalServerError, userBody: ``,
 			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
@@ -96,6 +118,9 @@ func TestProbeGitHubProjectAt(t *testing.T) {
 				w.Write([]byte(tt.userBody))
 			})
 			mux.HandleFunc("/repos/", func(w http.ResponseWriter, r *http.Request) {
+				if tt.exhaustedRateLimit {
+					w.Header().Set("X-RateLimit-Remaining", "0")
+				}
 				w.WriteHeader(tt.repoStatus)
 				w.Write([]byte(tt.repoBody))
 			})

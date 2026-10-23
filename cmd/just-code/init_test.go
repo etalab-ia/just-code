@@ -1966,6 +1966,17 @@ func TestGitHubScreensAvoidInternalTerms(t *testing.T) {
 		gitHubNoOriginScreen(),
 		gitHubNoTokenScreen(justcode.GitHubProjectStatus{Remote: remote, HasOrigin: true}),
 		gitHubInsufficientScreen(justcode.GitHubProjectStatus{Remote: remote, HasOrigin: true, HasToken: true, Rights: justcode.GitHubRepoRightsOrgPending}),
+		gitHubStoreErrorScreen(errors.New("secret-service locked")),
+		gitHubRuntimeScreen(justcode.RuntimeTart),
+	}
+	// The failure surfaces reach the user too, so they are held to the same
+	// register as the screens themselves.
+	for _, rights := range []justcode.GitHubRepoRights{
+		justcode.GitHubRepoRightsNoAccess, justcode.GitHubRepoRightsInsufficient,
+		justcode.GitHubRepoRightsOrgPending, justcode.GitHubRepoRightsSSO,
+		justcode.GitHubRepoRightsInvalid, justcode.GitHubRepoRightsUnknown,
+	} {
+		screens = append(screens, gitHubRightsMessage(justcode.GitHubProjectStatus{Remote: remote, HasOrigin: true, HasToken: true, Rights: rights}))
 	}
 	forbidden := []string{"guest", "grant", "granted", "secret proxy", "binding", "workflow", "P09", "P22", "token approval"}
 	for _, screen := range screens {
@@ -2141,5 +2152,129 @@ func TestInitGitHubStepExplainsUnsupportedRuntime(t *testing.T) {
 				t.Fatalf("the project must still be configured: %v", statErr)
 			}
 		})
+	}
+}
+
+// TestInitGitHubFlagFailsInsteadOfReopening pins the --github escape hatch: with
+// the flag set the GitHub step never runs, so reopening the questions on a
+// failed re-check would re-ask everything and block again, forever. The flag
+// path must fail once with the cause named.
+func TestInitGitHubFlagFailsInsteadOfReopening(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalProbe := githubInitProbeFn
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		return justcode.GitHubProjectStatus{
+			Remote:    justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+			HasOrigin: true,
+			HasToken:  true,
+			Login:     "kai",
+			Rights:    justcode.GitHubRepoRightsInvalid,
+		}
+	}
+	t.Cleanup(func() { githubInitProbeFn = originalProbe })
+
+	input := strings.Repeat("\n", 20)
+	var (
+		code int
+		err  error
+	)
+	out := captureStdout(t, func() {
+		code, err = initRun(initOptions{Root: root, Replace: true, GitHub: true, Set: map[string]bool{"root": true, "github": true}}, bufio.NewReader(strings.NewReader(input)), true)
+	})
+	if code == 0 || err == nil {
+		t.Fatalf("--github with unusable rights must fail: code=%d err=%v\n%s", code, err, out)
+	}
+	if strings.Count(out, "Réouverture des questions") > 0 {
+		t.Fatalf("--github must not reopen the questions: it would loop forever\n%s", out)
+	}
+	if _, statErr := os.Stat(justcode.ProjectManifestPath(root)); statErr == nil {
+		t.Fatal("nothing may be written when the re-check blocks")
+	}
+}
+
+// TestInitLockedStoreOffersContinuingWithoutGitHub pins that an unreadable
+// credential store is a screen with a way out, not an abort: GitHub is
+// optional, so a locked keychain must not cost every other answer.
+func TestInitLockedStoreOffersContinuingWithoutGitHub(t *testing.T) {
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalProbe := githubInitProbeFn
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		return justcode.GitHubProjectStatus{
+			Remote:     justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+			HasOrigin:  true,
+			TokenError: errors.New("secret-service locked"),
+		}
+	}
+	t.Cleanup(func() { githubInitProbeFn = originalProbe })
+
+	// Eleven blank answers reach the GitHub screen; Enter continues without it.
+	input := strings.Repeat("\n", 14)
+	var (
+		code int
+		err  error
+	)
+	out := captureStdout(t, func() {
+		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
+	})
+	if code != 0 || err != nil {
+		t.Fatalf("a locked store must not abort the run: code=%d err=%v\n%s", code, err, out)
+	}
+	// The sentence wraps across two lines in the rendered screen, so match a
+	// phrase that stays on one line.
+	if !strings.Contains(out, "verrouillé") || !strings.Contains(out, "Continuer sans GitHub") {
+		t.Fatalf("the store screen must explain the lock and offer a way out:\n%s", out)
+	}
+	if strings.Contains(out, "Aucun jeton GitHub n'est enregistré") {
+		t.Fatalf("a locked store must not be reported as a missing token:\n%s", out)
+	}
+	if _, statErr := os.Stat(justcode.ProjectManifestPath(root)); statErr != nil {
+		t.Fatalf("the project must still be configured: %v", statErr)
+	}
+}
+
+// TestGitHubAccountLabelAlwaysNamesSomething pins the shared label: an accepted
+// token with no reported login must still read as a completed check in both
+// UIs, never as "compte ,".
+func TestGitHubAccountLabelAlwaysNamesSomething(t *testing.T) {
+	withLogin := justcode.GitHubProjectStatus{Login: "kai"}
+	if got := gitHubAccountLabel(withLogin); got != "compte kai" {
+		t.Fatalf("label with login = %q", got)
+	}
+	withoutLogin := justcode.GitHubProjectStatus{}
+	if got := gitHubAccountLabel(withoutLogin); got != "jeton accepté" {
+		t.Fatalf("label without login = %q", got)
+	}
+	if strings.Contains(gitHubAccountLabel(withoutLogin), "compte") {
+		t.Fatal("an unknown login must not render an empty account name")
+	}
+}
+
+// TestGitHubRightsMessageCoversEveryCause pins that each rights verdict has its
+// own sentence and its own remedy: a throttled probe must not tell the user to
+// change a token, and SSO must not tell them to wait for an approval.
+func TestGitHubRightsMessageCoversEveryCause(t *testing.T) {
+	remote := justcode.GitHubRemote{URL: "https://github.com/etalab-ia/mon-projet.git", Repo: "etalab-ia/mon-projet"}
+	cases := map[justcode.GitHubRepoRights][]string{
+		justcode.GitHubRepoRightsNoAccess:     {"accès"},
+		justcode.GitHubRepoRightsInsufficient: {"Contents", "Pull requests"},
+		justcode.GitHubRepoRightsOrgPending:   {"n'a pas encore approuvé"},
+		justcode.GitHubRepoRightsSSO:          {"Single sign-on"},
+		justcode.GitHubRepoRightsInvalid:      {"n'est plus accepté"},
+		justcode.GitHubRepoRightsUnknown:      {"réseau"},
+	}
+	seen := make(map[string]justcode.GitHubRepoRights, len(cases))
+	for rights, wants := range cases {
+		msg := gitHubRightsMessage(justcode.GitHubProjectStatus{Remote: remote, HasOrigin: true, HasToken: true, Rights: rights})
+		for _, want := range wants {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("rights %d message %q must mention %q", rights, msg, want)
+			}
+		}
+		if prev, dup := seen[msg]; dup {
+			t.Fatalf("rights %d and %d share a message: %q", prev, rights, msg)
+		}
+		seen[msg] = rights
 	}
 }
