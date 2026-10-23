@@ -406,7 +406,7 @@ setupStages:
 			return 1, err
 		}
 	} else {
-		fmt.Println("Albert credential: already stored.")
+		fmt.Println("Clé Albert API déjà enregistrée.")
 	}
 
 	// Stage: model selection (catalogue-validated when reachable). It runs
@@ -514,12 +514,16 @@ setupStages:
 			return 1, err
 		}
 		keepGitHub = choice == "keep"
+		j.GitHubReplacePending = !keepGitHub
+		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+			return 1, err
+		}
 	}
-	if !keepGitHub && (editing || !justcode.ContainsCredentialKind(j.CredentialKinds, "github")) {
+	if !keepGitHub && (editing || !hasGitHub || j.GitHubReplacePending) {
 		if editing {
 			j.SkipGitHub = false
 		}
-		if j.SkipGitHub {
+		if j.SkipGitHub && !j.GitHubReplacePending {
 			// A resumed run keeps the earlier "no" without re-asking.
 		} else {
 			fmt.Println()
@@ -558,10 +562,16 @@ setupStages:
 				j.CredentialKinds = addCredentialKind(j.CredentialKinds, "github")
 				j.GitHubLogin = githubLogin
 				j.GitHubVerified = &githubVerified
+				j.GitHubReplacePending = false
+				j.SkipGitHub = false
 			} else {
 				if hasGitHub {
-					fmt.Println("Le jeton déjà enregistré est conservé.")
-					j.SkipGitHub = true
+					if j.GitHubReplacePending {
+						fmt.Println("Le jeton précédent est conservé. Le remplacement reste à terminer lors de la reprise.")
+						j.SkipGitHub = false
+					} else {
+						fmt.Println("Le jeton déjà enregistré est conservé.")
+					}
 				} else {
 					fmt.Println(githubLaterMessage)
 					j.SkipGitHub = true
@@ -722,7 +732,7 @@ func setupRuntimeSummary(preflight justcode.SetupPreflight) string {
 	if preflight.RuntimeInstalled {
 		return "La machine isolée est déjà installée. just-code la vérifiera et la réutilisera, sans téléchargement."
 	}
-	return "just-code téléchargera et vérifiera la machine isolée si aucune installation valide n'est disponible.\nDans ce cas, espace requis : environ 2 Go. Durée estimée : quelques minutes selon votre connexion."
+	return "just-code téléchargera et vérifiera la machine isolée si aucune installation valide n'est disponible.\nEspace recommandé : environ 2 Go ; le contrôle bloque sous 1 Gio libre. Durée estimée : quelques minutes selon votre connexion."
 }
 
 func setupReviewChoice(in *bufio.Reader) (string, error) {

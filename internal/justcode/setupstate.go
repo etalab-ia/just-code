@@ -54,6 +54,9 @@ type SetupJournal struct {
 	// SkipGitHub records an explicit "no" to the optional GitHub prompt, so
 	// a resumed run does not re-ask.
 	SkipGitHub bool `json:"skipGitHub,omitempty"`
+	// GitHubReplacePending records that the user chose to replace an existing
+	// token but left before storing its replacement. A resume must re-ask.
+	GitHubReplacePending bool `json:"githubReplacePending,omitempty"`
 	// GitName and GitEmail are the chosen identity.
 	GitName  string `json:"gitName,omitempty"`
 	GitEmail string `json:"gitEmail,omitempty"`

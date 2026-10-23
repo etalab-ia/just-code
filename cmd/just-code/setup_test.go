@@ -687,7 +687,7 @@ func TestSetupRuntimeSummaryDescribesReuseWithoutDownload(t *testing.T) {
 		t.Fatalf("reused runtime summary must not promise a download or disk use: %q", message)
 	}
 	conditional := setupRuntimeSummary(justcode.SetupPreflight{})
-	if !strings.Contains(conditional, "si aucune installation valide n'est disponible") || !strings.Contains(conditional, "2 Go") {
+	if !strings.Contains(conditional, "si aucune installation valide n'est disponible") || !strings.Contains(conditional, "2 Go") || !strings.Contains(conditional, "1 Gio libre") {
 		t.Fatalf("missing-runtime summary should qualify the download estimate: %q", conditional)
 	}
 }
@@ -786,6 +786,82 @@ func TestSetupWizardCancelAtApplyLeavesSettingsUntouched(t *testing.T) {
 	journal, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
 	if err != nil || !justcode.ContainsCredentialKind(journal.CredentialKinds, "albert") {
 		t.Fatalf("quitting should preserve credentials and the resume journal: journal=%+v err=%v", journal, err)
+	}
+}
+
+func TestSetupWizardReviewEOFQuitsWithoutApplying(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	installed := false
+	input := "test-key\n\nn\nTest User\ntest@example.test\n"
+	code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(input)),
+		func(context.Context, string) error { return nil },
+		func(context.Context) error { installed = true; return nil },
+		func(string) string { return "" })
+	if code == 0 || err == nil {
+		t.Fatalf("EOF at the review must quit: code=%d err=%v", code, err)
+	}
+	if installed || readUserSettingsFile(t) != nil {
+		t.Fatal("EOF at the review must not apply settings or install the runtime")
+	}
+	journal, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || !justcode.ContainsCredentialKind(journal.CredentialKinds, "albert") {
+		t.Fatalf("EOF quit should preserve the resume journal and credentials: journal=%+v err=%v", journal, err)
+	}
+}
+
+func TestSetupWizardAbandonedGitHubReplacementResumes(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	journalPastPreflight(t, stateDir)
+	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified := true
+	j.CredentialKinds = []string{"albert", "github"}
+	j.AlbertVerified = &verified
+	j.GitHubLogin = "old-account"
+	j.GitHubVerified = &verified
+	j.GitName, j.GitEmail = "Test User", "test@example.test"
+	j.DefaultModel = defaultSetupModel()
+	j.Models = defaultSetupModelIDs()
+	j.ModelChosen = true
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+
+	firstInput := "\nm\ng\n\nr\na\n\n\n\nq\n"
+	_ = captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(firstInput)), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code == 0 || err == nil {
+			t.Fatalf("first run should quit after abandoning replacement: code=%d err=%v", code, err)
+		}
+	})
+	j, err = justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || !j.GitHubReplacePending || j.GitHubLogin != "old-account" {
+		t.Fatalf("abandoned replacement state was not preserved: journal=%+v err=%v", j, err)
+	}
+
+	forceGitHubProbe(t, func(string) justcode.CredentialProbe {
+		return justcode.CredentialProbe{Login: "replacement-account"}
+	})
+	secondInput := "\na\ngithub_pat_replacement\nq\n"
+	out := captureStdout(t, func() {
+		code, err := setupWizardRun(true, bufio.NewReader(strings.NewReader(secondInput)), nil,
+			func(context.Context) error { return nil }, func(string) string { return "" })
+		if code == 0 || err == nil {
+			t.Fatalf("second run should allow replacement then quit: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "✅ Jeton valide : compte replacement-account.") {
+		t.Fatalf("resumed setup did not offer the pending GitHub replacement:\n%s", out)
+	}
+	j, err = justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil || j.GitHubReplacePending || j.GitHubLogin != "replacement-account" {
+		t.Fatalf("successful replacement did not clear pending state: journal=%+v err=%v", j, err)
 	}
 }
 
@@ -1448,7 +1524,7 @@ func TestSetupWizardGitHubValidFineGrainedToken(t *testing.T) {
 	if strings.Contains(out, "github_pat_secretvalue") {
 		t.Errorf("the token must never be displayed; output:\n%s", out)
 	}
-	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton vérifié, compte @moncompte", "Dans ce cas, espace requis : environ 2 Go", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
+	for _, want := range []string{"Clé Albert API      enregistrée dans un fichier protégé (vérifiée)", "GitHub              jeton vérifié, compte @moncompte", "Espace recommandé : environ 2 Go ; le contrôle bloque sous 1 Gio libre", "[A] Appliquer  [M] Modifier  [Q] Quitter"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("recap is missing %q; output:\n%s", want, out)
 		}
