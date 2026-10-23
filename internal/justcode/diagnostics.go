@@ -312,6 +312,30 @@ func firstVersionToken(output string) string {
 	return ""
 }
 
+// unreachedFallbackItem reports that the consented file store holds kind even
+// though the read path never consulted it, and names the two ways out. It is
+// what turns "credential store denied" into an actionable line on a headless
+// host: the value is already on disk, so the remedy is not to store it again.
+//
+// It only runs on the error path, and it reports presence, never a value: the
+// file store's own Get result is discarded except for success.
+func (d Diagnostics) unreachedFallbackItem(kind CredentialKind) (DiagnosticItem, bool) {
+	file, err := NewFileCredentialStore()
+	if err != nil {
+		return DiagnosticItem{}, false
+	}
+	if !file.HasCredential(kind) {
+		return DiagnosticItem{}, false
+	}
+	return DiagnosticItem{
+		Name:  "File fallback credential",
+		Value: "present, not read",
+		Detail: fmt.Sprintf("the %s store could not be read, so the file store holding %q was not consulted; "+
+			"declare it with 'just-code auth use-fallback %s', or export ALBERT_API_KEY, or give this host a keyring session", kind, kind, kind),
+		Status: DiagnosticWarn,
+	}, true
+}
+
 func (d Diagnostics) providerSection(ctx context.Context, fs FS) DiagnosticSection {
 	section := DiagnosticSection{Title: "Provider verification"}
 	key := strings.TrimSpace(os.Getenv("ALBERT_API_KEY"))
@@ -333,6 +357,13 @@ func (d Diagnostics) providerSection(ctx context.Context, fs FS) DiagnosticSecti
 				section.Items = append(section.Items, DiagnosticItem{Name: "Albert credential store", Value: storeErr.State, Detail: storeErr.Kind + " store could not be read", Status: DiagnosticWarn})
 			} else {
 				section.Items = append(section.Items, DiagnosticItem{Name: "Albert credential store", Value: "unverified", Detail: "credential could not be read", Status: DiagnosticWarn})
+			}
+			// The read failed before it could reach the consented file store.
+			// Saying whether that store actually holds the credential is the
+			// difference between "store one" and "it is already there; record
+			// it or open a keyring session" (#201).
+			if item, ok := d.unreachedFallbackItem(CredentialAlbert); ok {
+				section.Items = append(section.Items, item)
 			}
 		}
 	}

@@ -24,6 +24,7 @@ Sur Tart et agent-vm, les secrets ne passent jamais par la ligne de commande : e
 just-code auth add [albert|github|context7]   # saisie masquée interactive (ou --stdin pour un pipe)
 just-code auth status                         # état du magasin, jamais les valeurs
 just-code auth remove [albert|github|context7] # révocation puis suppression
+just-code auth use-fallback [albert|github|context7] # enregistre qu'une valeur déjà stockée vit dans le fichier
 ```
 
 Le secret ne passe jamais par la ligne de commande (argv) : la saisie interactive est masquée, `--stdin` lit une ligne sur l'entrée standard. Sur les hôtes sans magasin natif (Linux headless sans Secret Service), le repli `--fallback` écrit un fichier JSON `0600` dans le répertoire de configuration — **jamais créé implicitement** : sans consentement explicite (`auth add --fallback`), toute écriture échoue.
@@ -31,6 +32,8 @@ Le secret ne passe jamais par la ligne de commande (argv) : la saisie interactiv
 L'ordre de résolution de la clé au démarrage est détaillé plus bas. Les identifiants restent référencés par nom (`credentialRef`) dans la configuration gérée ; la valeur ne figure jamais dans `settings.json`, `project.json` ni les exports.
 
 Un magasin natif indisponible ou verrouillé est une erreur explicite au démarrage, jamais un repli silencieux vers le fichier : ce fichier peut détenir un identifiant périmé ou différent précisément quand l'attendu ne peut pas être vérifié. Seul un « introuvable » (aucune entrée) poursuit vers le repli consentit.
+
+Pour que ce contrat ne rende pas inatteignable une valeur que vous avez délibérément placée dans le fichier, chaque écriture **enregistre** le magasin qui l'a reçue (état hôte, `credential-stores.json`, sans aucune valeur). Au démarrage, un identifiant enregistré comme stocké dans le fichier est lu **directement dans le fichier**, sans sonde du magasin natif : sur un hôte sans session D-Bus, un `secret-tool` incapable de démarrer ne bloque donc plus la lecture d'une valeur que vous avez stockée avec `--fallback`. Un identifiant enregistré comme natif ne change rien, puisque le magasin natif est déjà en tête de l'ordre ci-dessous ; et sans enregistrement, l'ordre documenté s'applique tel quel, erreur explicite comprise. `auth use-fallback` enregistre ce choix pour une valeur déjà présente dans le fichier, sans redemander le secret.
 
 La rotation est détectée sans jamais toucher la valeur : `auth add` incrémente un compteur par identifiant (état hôte, non secret), et la réconciliation compare ce compteur — remplacer une clé sur une instance saine planifie un rafraîchissement au lieu du no-op.
 

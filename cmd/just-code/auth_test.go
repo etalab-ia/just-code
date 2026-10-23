@@ -115,6 +115,84 @@ func TestAuthAddFallbackCreatesStoreOnlyAfterNonemptySecret(t *testing.T) {
 			t.Fatalf("fallback store mode = %o, want 0600", info.Mode().Perm())
 		}
 	}
+	// The write records the store it used, so a later start reads the value
+	// back from the file instead of probing a native adapter that may be
+	// unreachable (#201).
+	if recorded := justcode.RecordedCredentialStoreForKind(justcode.DefaultStateDir(), justcode.CredentialGithub); recorded != "file" {
+		t.Fatalf("recorded store = %q, want file", recorded)
+	}
+}
+
+// TestAuthUseFallbackRecordsAnExistingValue covers the migration path: a host
+// that stored with --fallback before the store choice was recorded can declare
+// it without re-entering a secret it cannot read back.
+func TestAuthUseFallbackRecordsAnExistingValue(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the CLI path test uses XDG/HOME credential directories")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
+
+	// Nothing stored yet: recording would pin a store that holds nothing, so it
+	// must refuse and leave no record.
+	if code, err := authUseFallbackCmd([]string{"albert"}); code != 1 || err == nil {
+		t.Fatalf("no stored value: code=%d err=%v", code, err)
+	}
+	if recorded := justcode.RecordedCredentialStoreForKind(justcode.DefaultStateDir(), justcode.CredentialAlbert); recorded != "" {
+		t.Fatalf("a refused command recorded %q", recorded)
+	}
+
+	store, err := justcode.ConsentFileStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const testValue = "not-a-real-albert-key"
+	if err := store.Put(context.Background(), justcode.CredentialAlbert, testValue); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := authUseFallbackCmd([]string{"albert"}); code != 0 || err != nil {
+		t.Fatalf("record existing fallback value: code=%d err=%v", code, err)
+	}
+	if recorded := justcode.RecordedCredentialStoreForKind(justcode.DefaultStateDir(), justcode.CredentialAlbert); recorded != "file" {
+		t.Fatalf("recorded store = %q, want file", recorded)
+	}
+	// Recording must not read or rewrite the value.
+	got, err := store.Get(context.Background(), justcode.CredentialAlbert)
+	if err != nil || got != testValue {
+		t.Fatalf("the stored value changed: %q, %v", got, err)
+	}
+}
+
+// TestAuthStatusReportsTheRecordedStore covers the user-visible half of #201: a
+// host that stored with --fallback must be able to see which store a start will
+// read from, including when the fallback file was never created (the early
+// return that the record display has to survive).
+func TestAuthStatusReportsTheRecordedStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the CLI path test uses XDG/HOME credential directories")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
+
+	if code, err := authStatusCmd(); code != 0 || err != nil {
+		t.Fatalf("status with no record: code=%d err=%v", code, err)
+	}
+	if err := justcode.RecordCredentialStore(justcode.DefaultStateDir(), justcode.CredentialAlbert, "file"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if code, err := authStatusCmd(); code != 0 || err != nil {
+			t.Fatalf("status: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "albert: read from the file store") {
+		t.Fatalf("status did not report the recorded store:\n%s", out)
+	}
 }
 
 func withAuthTestStdin(t *testing.T, input string) {

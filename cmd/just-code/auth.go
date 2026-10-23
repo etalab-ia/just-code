@@ -21,9 +21,10 @@ import (
 //	auth add [albert] [--stdin] [--fallback]
 //	auth status
 //	auth remove [albert] [--fallback]
+//	auth use-fallback [albert]
 func authCmd(args []string) (int, error) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: just-code auth add|status|remove [kind] [--stdin] [--fallback]")
+		fmt.Fprintln(os.Stderr, "Usage: just-code auth add|status|remove [kind] [--stdin] [--fallback] | auth use-fallback [kind]")
 		return 2, nil
 	}
 	switch args[0] {
@@ -33,8 +34,10 @@ func authCmd(args []string) (int, error) {
 		return authStatusCmd()
 	case "remove":
 		return authRemoveCmd(args[1:])
+	case "use-fallback":
+		return authUseFallbackCmd(args[1:])
 	default:
-		return 2, fmt.Errorf("Unknown auth command: %s (expected add, status or remove)", args[0])
+		return 2, fmt.Errorf("Unknown auth command: %s (expected add, status, remove or use-fallback)", args[0])
 	}
 }
 
@@ -141,12 +144,71 @@ func authAddCmd(args []string) (int, error) {
 	// running instance must schedule a refresh, not be swallowed by the
 	// no-op path.
 	justcode.BumpCredentialGeneration(kind)
+	// Record which store received the value. A later read honours it, so the
+	// user's explicit --fallback choice survives into every start even on a
+	// host whose native adapter exists but cannot answer. The write also
+	// repoints the record: storing natively after a fallback write must not
+	// leave reads pinned to the older file value.
+	if err := justcode.RecordCredentialStore(justcode.DefaultStateDir(), kind, store.Kind()); err != nil {
+		// The value is stored but the choice is not, so the next start would
+		// fall back to the native-first chain and — on a host without a D-Bus
+		// session — fail to reach the credential just written. Reporting
+		// success here would be exactly the false reassurance #201 is about.
+		return 1, fmt.Errorf("stored the %q credential in the %s store, but could not record that choice (%w); the next start may look in the native store instead", kind, store.Kind(), err)
+	}
 	fmt.Printf("Stored credential %q in the %s store. It is referenced by name (credentialRef), never written to a project file.\n", kind, store.Kind())
+	return 0, nil
+}
+
+// authUseFallbackCmd records that an already-stored credential lives in the
+// consented file store, without asking for the value again.
+//
+// This exists for hosts that stored with `--fallback` before the store choice
+// was recorded: the value is already on disk and correct, and asking the user to
+// re-enter a secret they cannot read back would be the only alternative. It
+// verifies the claim before recording it — a pin to a store that does not hold
+// the kind would turn a working default chain into a hard not-found.
+func authUseFallbackCmd(args []string) (int, error) {
+	kind, _, _, err := parseAuthArgs(args)
+	if err != nil {
+		return 2, err
+	}
+	store, err := justcode.NewFileCredentialStore()
+	if err != nil {
+		return 1, err
+	}
+	if !store.HasCredential(kind) {
+		return 1, fmt.Errorf("no %q credential in the file store: store one first with 'just-code auth add %s --fallback'", kind, kind)
+	}
+	if err := justcode.RecordCredentialStore(justcode.DefaultStateDir(), kind, store.Kind()); err != nil {
+		return 1, err
+	}
+	fmt.Printf("Recorded that %q is stored in the %s store. Future starts read it from there; the value is not read or changed by this command.\n", kind, store.Kind())
 	return 0, nil
 }
 
 func authStatusCmd() (int, error) {
 	ctx := context.Background()
+	// Printed last, from every path: which store a start will read each kind
+	// from is the recorded choice, not a probe. Saying so is what lets a
+	// headless host trust that `start` uses the value it stored with
+	// --fallback.
+	defer func() {
+		for _, kind := range justcode.KnownCredentialKinds() {
+			recorded := justcode.RecordedCredentialStoreForKind(justcode.DefaultStateDir(), kind)
+			if recorded == "" {
+				continue
+			}
+			if store, definite := justcode.CredentialStoreForRead(justcode.DefaultStateDir(), kind); definite {
+				fmt.Printf("%s: read from the %s store\n", kind, store)
+				continue
+			}
+			// A native record is where the value was last written, not a pin:
+			// resolution still falls through to the file when the native entry
+			// is gone, so promising the native store would contradict `start`.
+			fmt.Printf("%s: last written to the %s store (a start falls through to the file store if it is missing there)\n", kind, recorded)
+		}
+	}()
 	native := justcode.DefaultCredentialStore()
 	fmt.Printf("Native store: %s\n", justcode.StoreAvailability())
 	if native != nil {
@@ -278,6 +340,10 @@ func authRemoveCmd(args []string) (int, error) {
 		}
 		return 1, err
 	}
+	// The entry is gone from this store. Drop the record only when it names this
+	// store: the other store may still hold the kind, and its own record must
+	// keep pointing at it.
+	_ = justcode.ForgetCredentialStore(justcode.DefaultStateDir(), kind, store.Kind())
 	fmt.Printf("Removed credential %q from the %s store.\n", kind, store.Kind())
 	return 0, nil
 }

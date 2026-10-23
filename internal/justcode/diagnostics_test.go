@@ -475,6 +475,68 @@ func TestDiagnosticsValidatesExplicitRuntimeWithoutManagedInstall(t *testing.T) 
 	t.Fatalf("valid explicit runtime was not accepted without a managed install: %+v", report.Sections)
 }
 
+// TestDiagnosticsNamesAnUnreachedFallbackCredential is the #201 diagnostic: the
+// native store fails, the read never reaches the consented file store, and that
+// store holds the credential. Doctor must say so and name the remedies, instead
+// of implying nothing was ever stored.
+func TestDiagnosticsNamesAnUnreachedFallbackCredential(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	file, err := ConsentFileStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Put(context.Background(), CredentialAlbert, "secret-value-canary"); err != nil {
+		t.Fatal(err)
+	}
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	report := Diagnostics{
+		Preflight: &preflight, StateDir: t.TempDir(), ProjectDir: t.TempDir(),
+		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) { return "native", nil },
+		ReadAlbert: func(context.Context) (string, error) {
+			return "", &StoreError{Op: "get", Kind: "secret-service", State: "denied", Err: errors.New("exit 1: secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY")}
+		},
+		ReadCredential: func(_ context.Context, _ CredentialKind) (string, string, error) {
+			return "", "native", ErrCredentialNotFound
+		},
+	}.Collect(context.Background())
+
+	got := diagnosticItemFrom(t, report, "Provider verification", "File fallback credential")
+	if got.Value != "present, not read" || got.Status != DiagnosticWarn {
+		t.Fatalf("the unreached fallback must be reported: %+v", got)
+	}
+	for _, want := range []string{"auth use-fallback albert", "ALBERT_API_KEY"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("detail must name %q: %q", want, got.Detail)
+		}
+	}
+	// Presence is the claim; the value must never reach the report.
+	if strings.Contains(diagnosticText(report), "secret-value-canary") {
+		t.Fatal("the diagnostic report leaked the stored value")
+	}
+}
+
+// TestDiagnosticsDoesNotClaimAnUnreachedFallbackWhenEmpty: with nothing in the
+// file store the extra line would send the user to a command that refuses.
+func TestDiagnosticsDoesNotClaimAnUnreachedFallbackWhenEmpty(t *testing.T) {
+	setupDiagnosticsEnv(t)
+	preflight := SetupPreflight{Platform: "test/arch", VirtualizationOK: true, DiskFreeBytes: 2 << 30, DiskOK: true}
+	report := Diagnostics{
+		Preflight: &preflight, StateDir: t.TempDir(), ProjectDir: t.TempDir(),
+		LookPath:    func(string) (string, error) { return "", exec.ErrNotFound },
+		VerifyStore: func(context.Context) (string, error) { return "native", nil },
+		ReadAlbert: func(context.Context) (string, error) {
+			return "", &StoreError{Op: "get", Kind: "secret-service", State: "denied", Err: errors.New("denied")}
+		},
+		ReadCredential: func(_ context.Context, _ CredentialKind) (string, string, error) {
+			return "", "native", ErrCredentialNotFound
+		},
+	}.Collect(context.Background())
+	if strings.Contains(diagnosticText(report), "File fallback credential") {
+		t.Fatalf("an empty file store must not be advertised:\n%s", diagnosticText(report))
+	}
+}
+
 func setupDiagnosticsEnv(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -482,6 +544,13 @@ func setupDiagnosticsEnv(t *testing.T) string {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	// Windows resolves os.UserConfigDir() from APPDATA, not from HOME or
+	// XDG_CONFIG_HOME. Without this the credential tests read the runner's real
+	// AppData\just-code\credentials.json, so a test that expects "nothing is
+	// stored" fails on any machine that has a fallback file — an environmental
+	// failure, not a defect in the code under test.
+	t.Setenv("APPDATA", filepath.Join(home, "appdata"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "localappdata"))
 	t.Setenv("ALBERT_API_KEY", "")
 	t.Setenv("MSB_PATH", "")
 	t.Setenv("MSB_LIBKRUNFW_PATH", "")
