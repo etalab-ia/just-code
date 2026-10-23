@@ -45,8 +45,10 @@ per-binding authorization, forbidden hosts/redirects, rotation, removal,
 re-add/restart and reference persistence. Applications that sign or transform
 tokens locally remain unsupported without separate evidence.
 
-The older credential laboratory is pinned to msb 0.7.3; its historic results
-do not qualify 0.7.6 or these new cases. Do not bump that pin or call Phase 0
-complete from loader tests alone. This loader matrix ran in Cloud; the native
-matrix ran separately on an explicitly connected Mac. Neither matrix alone
-proves the later Phase 2/3 just-code application integration.
+The P02 credential-transport laboratory is now pinned to msb 0.7.6 and its
+network matrix was requalified 16/16 on macOS (see #205). That result covers
+P02 transport only; it does not qualify this project-secrets loader matrix or
+these new cases. Do not call Phase 0 complete from loader tests alone. This
+loader matrix ran in Cloud; the native matrix ran separately on an explicitly
+connected Mac. Neither matrix alone proves the later Phase 2/3 just-code
+application integration.

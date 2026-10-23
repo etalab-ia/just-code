@@ -33,8 +33,8 @@ avec ses certificats sous `$MSB_CREDENTIAL_LAB` (défaut `/tmp/p02-lab`) :
   JSON (`{method, path, headers, body}`) dans `requests.jsonl`, répond 302 vers
   `https://evil.test:8443/redirect-target` sur `/redirect-to-evil` ;
 - `lab/dns.py` (dans le dépôt) : DNS UDP sur `0.0.0.0:5354`, répond `p02lab.test` et
-  `evil.test` -> IP LAN hôte, REFUSED (rcode 5) pour les autres noms afin que
-  le résolveur bascule sur le fallback (1.1.1.1).
+  `evil.test` -> IP LAN hôte, NODATA pour leurs requêtes AAAA, et REFUSED
+  (rcode 5) pour les autres noms afin que le résolveur bascule sur le fallback (1.1.1.1).
 
 L'IP LAN de l'hôte est lue sur `en0`. Le moteur Microsandbox doit résoudre
 lui-même les noms autorisés (les entrées `/etc/hosts` invité ne suffisent
@@ -63,8 +63,8 @@ la moindre requête. Les diagnostics vont dans `server.log`, jamais dans
 le journal JSON. Les serveurs copiés précédemment dans `/tmp/p02-lab`
 ne sont pas utilisés ; `MSB_CREDENTIAL_LAB_RESTART` n'est plus utilisé.
 
-Les tests du cycle de vie du journal TLS (réinitialisation et préservation
-en cas de port occupé) sont exécutables sans runtime Microsandbox :
+Les tests DNS (réponse NODATA pour AAAA connu, REFUSED pour nom inconnu) et
+du cycle de vie du journal TLS sont exécutables sans runtime Microsandbox :
 
 ```sh
 python3 -m unittest discover -s tests/integration/credentials/lab -p 'test_*.py' -v
@@ -73,9 +73,23 @@ python3 -m unittest discover -s tests/integration/credentials/lab -p 'test_*.py'
 ## Épinglage
 
 Les versions testées sont épinglées dans `pin.json` (CLI msb, SDK Go, image
-invité). Le harnais échoue si la version CLI ne correspond pas. La matrice
-doit être reproduite et le décision record mis à jour avant toute montée de
-version du runtime.
+invité). Le harnais échoue si la version CLI ne correspond pas. Pour
+caractériser une CLI candidate sans modifier le pin du SDK Go, définir
+`MSB_CLI_VERSION_OVERRIDE` et pointer `MSB_BIN` vers le binaire candidat ; cet
+override ne change ni `go.mod` ni le runtime embarqué.
+
+Les query params ne sont pas substitués ; depuis msb 0.7.5, un placeholder
+dans cette zone peut être transmis littéralement à un hôte autorisé. T6
+vérifie que la valeur secrète n'est pas transmise et que l'en-tête continue
+d'être substitué. La matrice doit être reproduite et le décision record mis
+à jour avant toute montée de version du runtime.
+
+Exemple pour tester un runtime candidat déjà installé :
+
+```sh
+MSB_BIN=/path/to/msb-0.7.8 MSB_CLI_VERSION_OVERRIDE=0.7.8 \
+  MSB_CREDENTIAL_INTEGRATION_NETWORK=1 tests/integration/credentials/run.sh
+```
 
 ## Cas non couverts par le harnais
 
