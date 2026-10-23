@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"charm.land/huh/v2"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -857,7 +858,7 @@ func TestInitSkillPromptShowsSixChoicesAndConfirmsEmptySelection(t *testing.T) {
 		t.Fatalf("selected skills = %+v", got)
 	}
 	for _, want := range []string{
-		"[1/3] Skills (facultatif)", "[x] securite-developpement", "[ ] anssi-guides",
+		"Skills (facultatif)", "[x] securite-developpement", "[ ] anssi-guides",
 		"[ ] rgaa", "[ ] react-dsfr", "[ ] lasuite-ui-kit", "[ ] datagouv-apis",
 		"Aucune skill sélectionnée. Continuer sans skill ? (O/n)",
 		"Où enregistrer les skills ?", "règles de sécurité de l'État, issues des guides ANSSI",
@@ -898,6 +899,72 @@ func TestInitLineWizardDefaultsSecuritySkillForNewProject(t *testing.T) {
 	}
 	if !strings.Contains(out, "[x] securite-developpement") || !strings.Contains(out, "1 skill sélectionnée.") {
 		t.Fatalf("default skill and count not shown: %s", out)
+	}
+}
+
+func TestInitLineSkillPromptRetriesTyposAndRetainsOlderPins(t *testing.T) {
+	root := initTestProject(t)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root),
+		justcode.ProjectManifest{Skills: []string{"experimental/old-tool"}}); err != nil {
+		t.Fatal(err)
+	}
+	originalCatalogue := projectSkillCatalogueFn
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return initSkillFixtureCatalogue(), nil
+	}
+	t.Cleanup(func() { projectSkillCatalogueFn = originalCatalogue })
+	set := map[string]bool{
+		"root": true, "runtime": true, "isolation": true, "model": true,
+		"cpus": true, "memory-mb": true, "credential-ref": true, "github": true,
+		"mcps": true, "skills-storage": true,
+	}
+	var got justcode.InitAnswers
+	out := captureStdout(t, func() {
+		var err error
+		got, err = askInitQuestions(bufio.NewReader(strings.NewReader("not-a-skill\nrgaa\n")), initOptions{Set: set}, justcode.InitAnswers{Root: root})
+		if err != nil {
+			t.Fatalf("askInitQuestions: %v", err)
+		}
+	})
+	if !equalStringSlices(got.Skills, []string{"official/rgaa", "experimental/old-tool"}) {
+		t.Fatalf("replacement selection = %v", got.Skills)
+	}
+	for _, want := range []string{"unknown skill \"not-a-skill\"", "experimental/old-tool", "conservées si vous saisissez de nouveaux noms"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("retry or retention message missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestInitLineSkillPromptSkipsUnavailableCatalogue(t *testing.T) {
+	root := initTestProject(t)
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root),
+		justcode.ProjectManifest{Skills: []string{"official/rgaa"}}); err != nil {
+		t.Fatal(err)
+	}
+	originalCatalogue := projectSkillCatalogueFn
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return nil, errors.New("offline")
+	}
+	t.Cleanup(func() { projectSkillCatalogueFn = originalCatalogue })
+	set := map[string]bool{
+		"root": true, "runtime": true, "isolation": true, "model": true,
+		"cpus": true, "memory-mb": true, "credential-ref": true, "github": true,
+		"mcps": true,
+	}
+	var got justcode.InitAnswers
+	out := captureStdout(t, func() {
+		var err error
+		got, err = askInitQuestions(bufio.NewReader(strings.NewReader("versioned\n")), initOptions{Set: set}, justcode.InitAnswers{Root: root})
+		if err != nil {
+			t.Fatalf("askInitQuestions: %v", err)
+		}
+	})
+	if got.SkillsSet || !equalStringSlices(got.Skills, []string{"official/rgaa"}) {
+		t.Fatalf("unavailable catalogue changed the current skills: %+v", got)
+	}
+	if !strings.Contains(out, "La sélection actuelle est conservée") || strings.Contains(out, "[ ] securite-developpement") {
+		t.Fatalf("unavailable catalogue should skip skill choices: %s", out)
 	}
 }
 

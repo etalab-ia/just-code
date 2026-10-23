@@ -56,7 +56,7 @@ func TestInitMultiSelectsAnnounceSelectionKeys(t *testing.T) {
 	}
 	skillsValue := []string{}
 	assertHint("Project skills", newProjectSkillsMultiSelect(
-		[]huh.Option[string]{huh.NewOption("pdf", "pdf")}, &skillsValue))
+		[]huh.Option[string]{huh.NewOption("pdf", "pdf")}, &skillsValue, "[1/3] "))
 	mcpValue := []string{}
 	assertHint("MCPs", newProjectMCPsMultiSelect(
 		[]huh.Option[string]{huh.NewOption("data-gouv", "data-gouv")}, &mcpValue))
@@ -86,16 +86,16 @@ func TestInitSkillsAreTheSixDescribedOfficialEntries(t *testing.T) {
 	}
 	selected := []string{"official/securite-developpement"}
 	localOnly := false
-	content := newInitSkillsGroup(options, &selected, &localOnly, true, true).Content()
+	content := newInitSkillsGroup(options, &selected, &localOnly, true, true, "[1/3] ").Content()
 	for _, want := range []string{"Space or x toggles", "Enter confirms", "règles, références, exemples"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("skills screen missing %q: %s", want, content)
 		}
 	}
-	if got := initSkillsTitle(1); got != "[1/3] Skills (facultatif) — 1 skill sélectionnée" {
+	if got := initSkillsTitle(1, "[1/3] "); got != "[1/3] Skills (facultatif) — 1 skill sélectionnée" {
 		t.Errorf("one-skill title = %q", got)
 	}
-	if got := initSkillsTitle(0); !strings.Contains(got, "0 skills sélectionnées") {
+	if got := initSkillsTitle(0, ""); !strings.Contains(got, "0 skills sélectionnées") {
 		t.Errorf("zero-skill title = %q", got)
 	}
 	for _, want := range []string{"Où enregistrer les skills ?", "Avec le projet", "Sur ce poste uniquement", "rien n'est ajouté au dépôt"} {
@@ -235,13 +235,49 @@ func TestIsTTYFileRejectsDevNull(t *testing.T) {
 	}
 }
 
-func TestSplitInitSkillSelectionsKeepsNonOfferedSkillsWithoutDisplayingThem(t *testing.T) {
-	visible, retained := splitInitSkillSelections([]string{"experimental/rag-parse", "official/rgaa", "official/ghost-skill"})
-	if !equalStringSlices(visible, []string{"official/rgaa"}) {
-		t.Fatalf("visible selections = %v", visible)
+func TestRetainedSkillOptionsPreserveUnavailablePins(t *testing.T) {
+	catalogue := []justcode.ProjectSkill{{ID: "official/securite-developpement"}}
+	options := retainedSkillOptions(initSkillOptions(catalogue), []string{
+		"official/securite-developpement", "official/rgaa", "experimental/rag-parse",
+	})
+	if len(options) != 3 {
+		t.Fatalf("options = %d, want one offered and two retained", len(options))
 	}
-	if !equalStringSlices(retained, []string{"experimental/rag-parse", "official/ghost-skill"}) {
-		t.Fatalf("retained selections = %v", retained)
+	if options[0].Value != "official/securite-developpement" ||
+		options[1].Value != "official/rgaa" || options[2].Value != "experimental/rag-parse" {
+		t.Fatalf("retained option values = %v, %v, %v", options[0].Value, options[1].Value, options[2].Value)
+	}
+	for _, option := range options[1:] {
+		if !strings.Contains(option.Key, "déjà configurée, non proposée") {
+			t.Errorf("retained option %q is not distinguished from new choices", option.Key)
+		}
+	}
+	selected := []string{"official/securite-developpement", "official/rgaa", "experimental/rag-parse"}
+	localOnly := false
+	content := newInitSkillsGroup(options, &selected, &localOnly, true, false, "").Content()
+	for _, id := range []string{"official/rgaa (déjà configurée, non proposée)", "experimental/rag-parse (déjà configurée, non proposée)"} {
+		if !strings.Contains(content, id) {
+			t.Errorf("retained option is missing from the form: %s", content)
+		}
+	}
+}
+
+func TestInitSkillsStepPrefixIsOmittedForPartialWizard(t *testing.T) {
+	if got := initSkillsStepPrefix(initOptions{}); got != "[1/3] " {
+		t.Fatalf("full wizard prefix = %q", got)
+	}
+	for _, field := range []string{"root", "runtime", "isolation", "model", "cpus", "memory-mb", "credential-ref", "github"} {
+		if got := initSkillsStepPrefix(initOptions{Set: map[string]bool{field: true}}); got != "" {
+			t.Errorf("prefix with %q supplied = %q", field, got)
+		}
+	}
+}
+
+func TestDecliningNoSkillsConfirmationKeepsTheReselectionEmpty(t *testing.T) {
+	answers := justcode.InitAnswers{Skills: []string{"official/securite-developpement"}}
+	keepEmptyInitSkillsForRetry(&answers)
+	if !answers.SkillsSet || len(answers.Skills) != 0 {
+		t.Fatalf("retry state = SkillsSet:%v Skills:%v; want explicit empty selection", answers.SkillsSet, answers.Skills)
 	}
 }
 

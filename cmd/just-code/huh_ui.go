@@ -94,24 +94,47 @@ func initSkillInCatalogue(catalogue []justcode.ProjectSkill, id string) bool {
 	return false
 }
 
-func splitInitSkillSelections(ids []string) (visible, retained []string) {
-	known := make(map[string]bool, len(initSkillOrder))
-	for _, id := range initSkillOrder {
-		known[id] = true
+func retainedInitSkillIDs(selected []string, options []huh.Option[string]) []string {
+	offered := make(map[string]bool, len(options))
+	for _, option := range options {
+		offered[option.Value] = true
 	}
-	for _, id := range ids {
-		if known[id] {
-			visible = append(visible, id)
-		} else {
+	var retained []string
+	for _, id := range selected {
+		if !offered[id] {
 			retained = append(retained, id)
 		}
 	}
-	return visible, retained
+	return retained
 }
 
-func newProjectSkillsMultiSelect(skillOptions []huh.Option[string], value *[]string) *huh.MultiSelect[string] {
+func retainedSkillOptions(options []huh.Option[string], selected []string) []huh.Option[string] {
+	retained := append([]huh.Option[string](nil), options...)
+	seen := make(map[string]bool, len(options)+len(selected))
+	for _, option := range options {
+		seen[option.Value] = true
+	}
+	for _, id := range selected {
+		if !seen[id] {
+			retained = append(retained, huh.NewOption(id+" (déjà configurée, non proposée)", id))
+			seen[id] = true
+		}
+	}
+	return retained
+}
+
+func initSkillsStepPrefix(opts initOptions) string {
+	for _, field := range []string{"root", "runtime", "isolation", "model", "cpus", "memory-mb", "credential-ref", "github"} {
+		if opts.Set[field] {
+			return ""
+		}
+	}
+	return "[1/3] "
+}
+
+func newProjectSkillsMultiSelect(skillOptions []huh.Option[string], value *[]string, stepPrefix string) *huh.MultiSelect[string] {
 	return huh.NewMultiSelect[string]().
-		TitleFunc(func() string { return initSkillsTitle(len(*value)) }, value).
+		TitleFunc(func() string { return initSkillsTitle(len(*value), stepPrefix) }, value).
 		Description("Une skill apporte à l'agent un savoir-faire de l'État : règles, références, exemples. Il s'en sert quand votre demande s'y rapporte. " + multiSelectKeyHint).
 		Height(len(skillOptions) + 10).
 		Filterable(true).
@@ -119,14 +142,19 @@ func newProjectSkillsMultiSelect(skillOptions []huh.Option[string], value *[]str
 		Value(value)
 }
 
-func initSkillsTitle(count int) string {
-	return fmt.Sprintf("[1/3] Skills (facultatif) — %s", strings.TrimSuffix(initSkillsCountLabel(count), "."))
+func initSkillsTitle(count int, stepPrefix string) string {
+	return fmt.Sprintf("%sSkills (facultatif) — %s", stepPrefix, strings.TrimSuffix(initSkillsCountLabel(count), "."))
 }
 
-func newInitSkillsGroup(skillOptions []huh.Option[string], skills *[]string, skillsLocalOnly *bool, includeSkills, includeStorage bool) *huh.Group {
+func keepEmptyInitSkillsForRetry(answers *justcode.InitAnswers) {
+	answers.Skills = nil
+	answers.SkillsSet = true
+}
+
+func newInitSkillsGroup(skillOptions []huh.Option[string], skills *[]string, skillsLocalOnly *bool, includeSkills, includeStorage bool, stepPrefix string) *huh.Group {
 	fields := make([]huh.Field, 0, 2)
 	if includeSkills {
-		fields = append(fields, newProjectSkillsMultiSelect(skillOptions, skills))
+		fields = append(fields, newProjectSkillsMultiSelect(skillOptions, skills, stepPrefix))
 	}
 	if includeStorage {
 		fields = append(fields, huh.NewSelect[bool]().
@@ -458,7 +486,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		credentialRef := answers.CredentialRef
 		githubWorkflow := answers.GitHubWorkflow
 		skills := append([]string(nil), answers.Skills...)
-		var retainedSkills []string
 		mcps := append([]string(nil), answers.MCPConnectors...)
 		skillsLocalOnly := answers.SkillsLocalOnly
 
@@ -476,7 +503,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 				skills = []string{"official/securite-developpement"}
 			}
 		}
-		skills, retainedSkills = splitInitSkillSelections(skills)
+		skillOptionsPass := retainedSkillOptions(skillOptions, skills)
 		if !answers.MCPsSet {
 			if pc, err := justcode.DiscoverProject(answers.Root); err == nil {
 				if manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(pc.Root)); err == nil {
@@ -595,8 +622,8 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			credentialGroup = huh.NewGroup(credentialFields...).Title("Credentials")
 		}
 
-		skillsGroup := newInitSkillsGroup(skillOptions, &skills, &skillsLocalOnly,
-			!opts.Set["skills"] && !skipSkills, !opts.Set["skills-storage"])
+		skillsGroup := newInitSkillsGroup(skillOptionsPass, &skills, &skillsLocalOnly,
+			!opts.Set["skills"] && !skipSkills, !opts.Set["skills-storage"], initSkillsStepPrefix(opts))
 
 		mcpFields := make([]huh.Field, 0, 2)
 		if !opts.Set["mcps"] {
@@ -679,7 +706,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		// MultiSelect's value in its own option order, so compare as
 		// sets: a reordered-but-identical selection is not a change.
 		if !skipSkills {
-			selectedSkills := append(append([]string(nil), skills...), retainedSkills...)
+			selectedSkills := append([]string(nil), skills...)
 			answers.SkillsSet = answers.SkillsSet || !equalStringSets(answers.Skills, selectedSkills)
 			answers.Skills = selectedSkills
 			if len(skills) == 0 {
@@ -688,7 +715,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 					return answers, err
 				}
 				if !proceed {
-					answers.SkillsSet = false
+					keepEmptyInitSkillsForRetry(&answers)
 					continue
 				}
 				answers.Skills = nil

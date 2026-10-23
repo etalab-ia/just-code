@@ -766,9 +766,9 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 	if !opts.Set["skills"] {
-		catalogue, err := projectSkillCatalogueFn(context.Background())
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", err)
+		catalogue, catalogueErr := projectSkillCatalogueFn(context.Background())
+		if catalogueErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", catalogueErr)
 		}
 		if !answers.SkillsSet {
 			current, err := currentProjectSkillSelection(answers.Root)
@@ -776,42 +776,49 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 				return answers, fmt.Errorf("read current project skills: %w", err)
 			}
 			answers.Skills = current
-			if len(current) == 0 && !projectManifestExists(answers.Root) && initSkillInCatalogue(catalogue, "official/securite-developpement") {
+			if catalogueErr == nil && len(current) == 0 && !projectManifestExists(answers.Root) && initSkillInCatalogue(catalogue, "official/securite-developpement") {
 				answers.Skills = []string{"official/securite-developpement"}
 				answers.SkillsSet = true
 			}
 		}
-		for {
-			printInitProjectSkills(answers.Skills)
-			current := strings.Join(initSkillNames(answers.Skills), ",")
-			if current == "" {
-				current = "aucune"
-			}
-			answer, ok := promptLine(in, fmt.Sprintf("  Skills sélectionnées (%d) [%s] (noms séparés par des virgules; Entrée garde, `none` efface): ", len(answers.Skills), current))
-			if ok && strings.TrimSpace(answer) != "" {
-				value := strings.TrimSpace(answer)
-				if strings.EqualFold(value, "none") {
-					answers.Skills = nil
-				} else {
-					selected, err := parseInitSkillSelection(value)
-					if err != nil {
-						return answers, err
-					}
-					answers.Skills = selected
+		if catalogueErr == nil {
+			for {
+				printInitProjectSkills(answers.Skills, catalogue, initSkillsStepPrefix(opts))
+				current := strings.Join(initSkillNames(answers.Skills), ",")
+				if current == "" {
+					current = "aucune"
 				}
-				answers.SkillsSet = true
+				answer, ok := promptLine(in, fmt.Sprintf("  Skills sélectionnées (%d) [%s] (noms séparés par des virgules; Entrée garde, `none` efface): ", len(answers.Skills), current))
+				if ok && strings.TrimSpace(answer) != "" {
+					value := strings.TrimSpace(answer)
+					if strings.EqualFold(value, "none") {
+						answers.Skills = nil
+						answers.SkillsSet = true
+					} else {
+						selected, err := parseInitSkillSelection(value)
+						if err != nil {
+							fmt.Printf("  %v. Corrigez votre sélection et réessayez.\n", err)
+							continue
+						}
+						selected = append(selected, retainedInitSkillIDs(answers.Skills, initSkillOptions(catalogue))...)
+						answers.Skills = selected
+						answers.SkillsSet = true
+					}
+				}
+				if len(answers.Skills) > 0 {
+					break
+				}
+				proceed, err := confirmNoInitSkills(in)
+				if err != nil {
+					return answers, err
+				}
+				if proceed {
+					answers.SkillsSet = true
+					break
+				}
 			}
-			if len(answers.Skills) > 0 {
-				break
-			}
-			proceed, err := confirmNoInitSkills(in)
-			if err != nil {
-				return answers, err
-			}
-			if proceed {
-				answers.SkillsSet = true
-				break
-			}
+		} else {
+			fmt.Println("La sélection actuelle est conservée. Relancez `just-code init` lorsque le catalogue est accessible pour modifier les skills.")
 		}
 	}
 	if !opts.Set["skills-storage"] {
@@ -893,12 +900,12 @@ func printProjectSkills(skills []justcode.ProjectSkill) {
 	}
 }
 
-func printInitProjectSkills(selected []string) {
+func printInitProjectSkills(selected []string, catalogue []justcode.ProjectSkill, stepPrefix string) {
 	selectedSet := make(map[string]bool, len(selected))
 	for _, id := range selected {
 		selectedSet[id] = true
 	}
-	fmt.Println("\n[1/3] Skills (facultatif)")
+	fmt.Println("\n" + initSkillsTitle(len(selected), stepPrefix))
 	fmt.Println("Une skill apporte à l'agent un savoir-faire de l'État : règles, références, exemples.")
 	fmt.Println("Il s'en sert quand votre demande s'y rapporte.")
 	for _, id := range initSkillOrder {
@@ -916,10 +923,10 @@ func printInitProjectSkills(selected []string) {
 	}
 	fmt.Println("Saisissez un ou plusieurs noms séparés par des virgules. Entrée garde la sélection.")
 	fmt.Println(initSkillsCountLabel(len(selected)))
-	for _, id := range selected {
-		if _, ok := initSkillDescriptions[id]; !ok {
-			fmt.Printf("  Skill déjà configurée conservée : %s\n", id)
-		}
+	retained := retainedInitSkillIDs(selected, initSkillOptions(catalogue))
+	if len(retained) > 0 {
+		fmt.Printf("Skills déjà configurées hors de la liste conservées si vous saisissez de nouveaux noms : %s. `none` efface tout.\n",
+			strings.Join(initSkillNames(retained), ", "))
 	}
 }
 
