@@ -4,6 +4,7 @@
   "packages": {
     ".": {
       "release-type": "simple",
+      "bump-minor-pre-major": true,
       "changelog-path": "CHANGELOG.md",
       "initial-version": "0.1.0",
       "component": "just-code"
