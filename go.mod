@@ -11,7 +11,7 @@ require (
 	github.com/go-rotini/dotenv v1.0.3
 	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-runewidth v0.0.30
-	github.com/superradcompany/microsandbox/sdk/go v0.7.6
+	github.com/superradcompany/microsandbox/sdk/go v0.7.8
 	golang.org/x/sys v0.44.0
 	golang.org/x/term v0.27.0
 	gopkg.in/yaml.v3 v3.0.1
