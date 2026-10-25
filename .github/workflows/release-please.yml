@@ -19,6 +19,7 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       release_created: ${{ steps.release.outputs.release_created || steps.dispatch.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name || steps.dispatch.outputs.tag_name }}
@@ -26,7 +27,7 @@ jobs:
       - name: Run release-please
         id: release
         if: github.event_name == 'push'
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -65,11 +66,12 @@ jobs:
             arch: arm64
             asset: linux-arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     container: ubuntu:20.04
     steps:
       - name: Install build tools
         run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates gcc git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Build the exact release tag, not HEAD of main at job start time.
           ref: ${{ needs.release-please.outputs.tag_name }}
@@ -79,7 +81,7 @@ jobs:
         # mounted checkout. Writing the exception to the system config makes it
         # visible to every later step regardless of HOME.
         run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -96,7 +98,7 @@ jobs:
           mkdir -p dist
           go build -trimpath -ldflags="-s -w -X main.version=$VERSION" \
             -o "dist/just-code-${{ matrix.asset }}" ./cmd/just-code
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.asset }}
           path: dist/*
@@ -126,8 +128,9 @@ jobs:
             asset: windows-arm64
             ext: .exe
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Build the exact release tag, not HEAD of main at job start time.
           ref: ${{ needs.release-please.outputs.tag_name }}
@@ -157,7 +160,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "llvm-mingw-$version-ucrt-aarch64\bin")
           Add-Content -Path $env:GITHUB_ENV -Value 'CC=aarch64-w64-mingw32-clang'
           Add-Content -Path $env:GITHUB_ENV -Value 'CXX=aarch64-w64-mingw32-clang++'
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -179,7 +182,7 @@ jobs:
           mkdir -p dist
           go build -trimpath -ldflags="-s -w -X main.version=$VERSION" \
             -o "dist/just-code-${{ matrix.asset }}${{ matrix.ext }}" ./cmd/just-code
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.asset }}
           path: dist/*
@@ -190,8 +193,9 @@ jobs:
     needs: [release-please, build-linux, build-desktop]
     if: needs.release-please.outputs.release_created == 'true' && needs.build-linux.result == 'success' && needs.build-desktop.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true

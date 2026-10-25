@@ -52,18 +52,26 @@ CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o just-code ./cmd/just-code
 Le dépôt embarque des hooks pre-commit. Prérequis : [pre-commit](https://pre-commit.com/#install) et [Go](https://go.dev/dl/) sur le `PATH` (pre-commit compile gitleaks depuis la version épinglée au premier commit ; gitleaks lui-même n'a pas besoin d'être installé). Après un clone :
 
 ```bash
-pre-commit install
+pre-commit install --install-hooks
 ```
 
-Le hook [gitleaks](https://github.com/gitleaks) scanne les changements stagés à chaque commit et bloque l'ajout de secrets (clés API, mots de passe). La version est épinglée dans `.pre-commit-config.yaml`. Le premier commit après l'installation est lent (compilation de gitleaks) ; les suivants sont quasi instantanés. Pour le passer ponctuellement : `SKIP=gitleaks git commit ...` (les hooks locaux restent contournables ; ne le fais que si tu sais pourquoi).
+Le hook [gitleaks](https://github.com/gitleaks) scanne les changements stagés à chaque commit et bloque l'ajout de secrets (clés API, mots de passe). La version est épinglée dans `.pre-commit-config.yaml`. Le premier commit après l'installation est lent (compilation de gitleaks) ; les suivants sont quasi instantanés. Les hooks locaux ne doivent pas être contournés : toute exception demande une autorisation explicite de Luis.
+
+Le workflow `gitleaks.yml` complète ce contrôle local sur chaque PR et chaque push sur `main`. Il vérifie l'empreinte SHA-256 du binaire avant d'analyser tout l'historique. Il n'utilise pas `gitleaks-action`, dont l'usage sur un dépôt d'organisation nécessite une licence séparée.
+
+Les fixtures Node sous `tests/` restent des fixtures d'un projet Go : elles ne justifient ni un outillage Node racine ni un hook CVE Lite. OSV-Scanner couvre leurs lockfiles en CI.
 
 ## Intégration continue et publication
 
-Quatre workflows GitHub Actions accompagnent le CLI :
+Cinq workflows GitHub Actions accompagnent le CLI :
 
 - **`ci.yml`** (sur chaque PR, et sur `main`) : vérification du formatage (`gofmt`), `go vet`, `go test -race`, tests et compilation CGO sur chaque plateforme native prise en charge, contrat OpenCode hôte épinglé et tests de cycle de vie du serveur de laboratoire TLS. Les jobs d'intégration n'utilisent aucun identifiant et ne démarrent pas de microVM ; voir le [protocole de qualification bêta](qualification-beta.md) pour cette preuve native.
-- **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les cinq binaires (`darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`) sur leurs runners natifs, génère `SHA256SUMS` et les attache à la release une fois toutes les plateformes réussies.
+- **`gitleaks.yml`** (sur chaque PR et sur `main`) : scan complet de l'historique pour détecter les secrets, indépendamment de l'installation des hooks sur chaque poste.
+- **`osv-scanner.yml`** (sur chaque PR, sur `main` et chaque semaine) : compare les vulnérabilités introduites par une PR à la branche de base et signale l'inventaire complet dans Code Scanning. Le scan local avec Go installé doit confirmer que l'analyse des appels Go fonctionne.
+- **`release-please.yml`** (sur `main`) : [release-please](https://github.com/googleapis/release-please) maintient une PR de release à partir des Conventional Commits (`feat:` = minor, `fix:` = patch). Fusionner cette PR écrit le `CHANGELOG.md`, crée le tag et la release GitHub, puis construit les cinq binaires (`darwin-arm64`, `linux-arm64`, `linux-x64`, `windows-x64.exe`, `windows-arm64.exe`) sur leurs runners natifs, génère `SHA256SUMS` et les attache à la release une fois toutes les plateformes réussies. Tant que le projet n'a pas décidé de publier sa version 1.0.0, `bump-minor-pre-major` maintient aussi les changements incompatibles sur les versions mineures (`0.1.0`, `0.2.0`, etc.). Le passage à `1.0.0` se fait uniquement par décision explicite, avec `Release-As: 1.0.0` dans le commit concerné.
 - **`msb-runtime-watch.yml`** (cron hebdomadaire, lundi 09:00 UTC) : surveille les releases amont du runtime Microsandbox et ouvre une issue de suivi lorsqu'une version plus récente que le SDK embarqué est publiée ; voir « Mise à jour du runtime Microsandbox » ci-dessous.
+
+`.github/dependabot.yml` couvre chaque module Go, lockfile npm, fichier `requirements.txt`, la configuration pre-commit et les workflows. Le délai `cooldown.default-days: 7` retarde les PR de versions ordinaires, pas les correctifs de sécurité. Go n'a pas de délai de publication minimal natif équivalent à pnpm ou uv : les modules verrouillés, Dependabot et la revue restent donc nécessaires. Les mises à jour ne sont jamais fusionnées automatiquement.
 
 Le tag de release est la source de vérité de la version : il est injecté dans le binaire via `-ldflags "-X main.version=<tag>"` (sans le préfixe `just-code-`), donc `just-code version` affiche exactement la version publiée.
 
