@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -40,6 +40,58 @@ jobs:
         run: tests/integration/opencode/run.sh
       - name: Test credential lab server lifecycle
         run: python -m unittest discover -s tests/integration/credentials/lab -p 'test_*.py' -v
+
+  # The project-secret loader suites and the fixture Go modules are separate
+  # modules with no go.work, so `go test ./...` at the root never reaches them.
+  # Dependabot opens PRs against their manifests anyway, and without this job
+  # those PRs land green while the recorded pins and loader contracts drift.
+  # See https://github.com/etalab-ia/just-code/issues/246.
+  fixture-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            tests/integration/project-secrets/package-lock.json
+            tests/integration/project-secrets/native-phase3/guest/node-app/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install the qualified Node loaders
+        working-directory: tests/integration/project-secrets
+        run: npm ci
+      - name: Run the Node loader contract suite
+        working-directory: tests/integration/project-secrets
+        run: npm test
+      - name: Install the qualified Python loaders
+        working-directory: tests/integration/project-secrets
+        run: python -m pip install --no-cache-dir -r requirements.txt
+      - name: Run the Python loader contract suite
+        working-directory: tests/integration/project-secrets
+        run: python -m unittest -v test_python_loaders.py
+      - name: Install the guest Node fixture
+        working-directory: tests/integration/project-secrets/native-phase3/guest/node-app
+        run: npm ci
+      # Covers the embedded guest fixture pins (TestGuestFixtureDependencyPins)
+      # and the fixture-side loader/credential contracts. These jobs do not
+      # boot a microVM; they build and run the host-side guard tests only.
+      - name: Test the fixture Go modules
+        run: |
+          set -eu
+          for module in native native-phase3 native-phase4; do
+            dir="tests/integration/project-secrets/$module"
+            echo "::group::$module"
+            (cd "$dir" && go test ./...)
+            echo "::endgroup::"
+          done
 
   # Linux builds inside Ubuntu 20.04 so the binary remains compatible with the
   # SDK's glibc baseline instead of inheriting the runner host's newer glibc.
@@ -58,7 +110,7 @@ jobs:
     steps:
       - name: Install build tools
         run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates gcc git
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Trust the mounted workspace
         # VCS stamping shells out to git, and the container user does not own the
         # mounted checkout. Writing the exception to the system config makes it
@@ -95,7 +147,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Test POSIX installer on macOS
         if: matrix.os == 'darwin'
         run: sh tests/installers/test-posix.sh
@@ -142,3 +194,64 @@ jobs:
           fi
       - run: go test ./...
       - run: go build ./cmd/just-code
+
+  # The release jobs in release-please.yml only run when a release is created,
+  # so PR CI never exercises the artifact actions. Those actions are how a
+  # release passes its binaries from the build matrix to the job that publishes
+  # them, so a broken hand-off would first show up as a failed release. This
+  # job reproduces that hand-off with the same pins and the same inputs
+  # (multiple named uploads, then one download with merge-multiple).
+  # download-artifact v8 also fails the run when an artifact digest does not
+  # match the digest the server reported, which v4 only warned about; that
+  # enforcement is checked here rather than discovered during a release.
+  artifact-handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Upload and download need the Actions artifact API, which the workflow's
+    # `contents: read` does not grant. Scoped to this job only.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Stage release-shaped assets
+        run: |
+          set -eu
+          mkdir -p dist
+          # Three distinct names, matching the per-platform asset matrix.
+          printf 'linux-x64\n'  > "dist/just-code-linux-x64"
+          printf 'linux-arm64\n' > "dist/just-code-linux-arm64"
+          printf 'darwin-arm64\n' > "dist/just-code-darwin-arm64"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-x64
+          path: dist/just-code-linux-x64
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-arm64
+          path: dist/just-code-linux-arm64
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: darwin-arm64
+          path: dist/just-code-darwin-arm64
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: downloaded
+          merge-multiple: true
+      - name: Verify every asset survived the hand-off
+        run: |
+          set -eu
+          cd downloaded
+          ls -la
+          # merge-multiple flattens the per-artifact subdirectories, so the
+          # publish job's `sha256sum just-code-*` glob must still match all
+          # three files here.
+          test "$(find . -maxdepth 1 -type f -name 'just-code-*' | wc -l)" -eq 3
+          test "$(cat just-code-linux-x64)"   = "linux-x64"
+          test "$(cat just-code-linux-arm64)" = "linux-arm64"
+          test "$(cat just-code-darwin-arm64)" = "darwin-arm64"
