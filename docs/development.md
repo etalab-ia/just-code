@@ -57,7 +57,7 @@ pre-commit install --install-hooks
 
 Le hook [gitleaks](https://github.com/gitleaks) scanne les changements stagés à chaque commit et bloque l'ajout de secrets (clés API, mots de passe). La version est épinglée dans `.pre-commit-config.yaml`. Le premier commit après l'installation est lent (compilation de gitleaks) ; les suivants sont quasi instantanés. Les hooks locaux ne doivent pas être contournés : toute exception demande une autorisation explicite de Luis.
 
-Le workflow `gitleaks.yml` complète ce contrôle local sur chaque PR et chaque push sur `main`. Il vérifie l'empreinte SHA-256 du binaire avant d'analyser tout l'historique. Il n'utilise pas `gitleaks-action`, dont l'usage sur un dépôt d'organisation nécessite une licence séparée.
+Le workflow `gitleaks.yml` complète ce contrôle local sur chaque PR et chaque push sur `main`. Il vérifie l'empreinte SHA-256 du binaire avant d'analyser tout l'historique. Il n'utilise pas `gitleaks-action`, dont l'usage sur un dépôt d'organisation nécessite une licence séparée. `.gitleaks.toml` ne contient que des exclusions ciblées et expliquées : les lockfiles et les journaux de qualification restent analysés.
 
 Les fixtures Node sous `tests/` restent des fixtures d'un projet Go : elles ne justifient ni un outillage Node racine ni un hook CVE Lite. OSV-Scanner couvre leurs lockfiles en CI.
 

@@ -1,0 +1,19 @@
+title = "just-code Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# Qualification logs record the source commit as `source=<40-hex>`.
+# The public commit ID and the documented public-constant digest in Go are
+# not credentials. Do not exclude whole log files or source files: other
+# assignments and secrets in them must still be reported.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+ids = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''(?i)^META step=.* source=[0-9a-f]{40} ''',
+  '''(?i)^\s*const\s+guestSecretHeaderLineDigest\s*=''',
+]
