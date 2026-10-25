@@ -81,7 +81,7 @@ jobs:
         # mounted checkout. Writing the exception to the system config makes it
         # visible to every later step regardless of HOME.
         run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -160,7 +160,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "llvm-mingw-$version-ucrt-aarch64\bin")
           Add-Content -Path $env:GITHUB_ENV -Value 'CC=aarch64-w64-mingw32-clang'
           Add-Content -Path $env:GITHUB_ENV -Value 'CXX=aarch64-w64-mingw32-clang++'
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
