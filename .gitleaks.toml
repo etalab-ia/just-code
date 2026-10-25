@@ -12,11 +12,24 @@ useDefault = true
 [[rules]]
 id = "generic-api-key"
 
+# Match only the public metadata assignment, never the entire line: another
+# credential appended later on that line must still fail.
 [[rules.allowlists]]
-ids = ["generic-api-key"]
-regexTarget = "line"
+regexTarget = "match"
 regexes = [
-  '''(?i)^META step=.* source=[0-9a-f]{40} ''',
-  '''(?i)^\s*const\s+guestSecretHeaderLineDigest\s*=''',
-  '''(?i)^\s*IFS=\s+read\s+-r\s+ALBERT_API_KEY\s+\|\|''',
+  '''(?i)source=[0-9a-f]{40}''',
+]
+
+# This exact digest is documented in the source as a public constant.
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''(?i)^guestSecretHeaderLineDigest\s*=\s*"bc7625348f136cc1f93c91b6c14fc89fd57550b5a85278b2216a01a201075f7b"''',
+]
+
+# This historical shell operation reads a value from stdin; no value is present.
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''(?i)ALBERT_API_KEY\s+\|\|\s+ALBERT_API_KEY=$''',
 ]
