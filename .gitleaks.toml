@@ -5,8 +5,10 @@ useDefault = true
 
 # Qualification logs record the source commit as `source=<40-hex>`.
 # The public commit ID and the documented public-constant digest in Go are
-# not credentials. Do not exclude whole log files or source files: other
-# assignments and secrets in them must still be reported.
+# not credentials. The historical Tart script read ALBERT_API_KEY from stdin;
+# that variable-name assignment also contains no secret value. Do not exclude
+# whole log files or source files: other assignments and secrets in them must
+# still be reported.
 [[rules]]
 id = "generic-api-key"
 
@@ -16,4 +18,5 @@ regexTarget = "line"
 regexes = [
   '''(?i)^META step=.* source=[0-9a-f]{40} ''',
   '''(?i)^\s*const\s+guestSecretHeaderLineDigest\s*=''',
+  '''(?i)^\s*IFS=\s+read\s+-r\s+ALBERT_API_KEY\s+\|\|''',
 ]
