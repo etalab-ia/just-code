@@ -67,19 +67,29 @@ jobs:
           cache: true
       - name: Install the qualified Node loaders
         working-directory: tests/integration/project-secrets
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Run the Node loader contract suite
         working-directory: tests/integration/project-secrets
         run: npm test
       - name: Install the qualified Python loaders
         working-directory: tests/integration/project-secrets
-        run: python -m pip install --no-cache-dir -r requirements.txt
+        run: |
+          set -eu
+          # A venv under RUNNER_TEMP keeps this independent of the runner
+          # image's PEP 668 policy -- setup-python's interpreter may be marked
+          # externally-managed, where a bare `pip install` exits 1 -- and stays
+          # out of the checkout.
+          venv="$RUNNER_TEMP/loaders-venv"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install --no-cache-dir -r requirements.txt
+          echo "LOADERS_VENV=$venv" >> "$GITHUB_ENV"
       - name: Run the Python loader contract suite
         working-directory: tests/integration/project-secrets
-        run: python -m unittest -v test_python_loaders.py
+        run: |
+          "$LOADERS_VENV/bin/python" -m unittest -v test_python_loaders.py
       - name: Install the guest Node fixture
         working-directory: tests/integration/project-secrets/native-phase3/guest/node-app
-        run: npm ci
+        run: npm ci --ignore-scripts
       # Covers the embedded guest fixture pins (TestGuestFixtureDependencyPins)
       # and the fixture-side loader/credential contracts. These jobs do not
       # boot a microVM; they build and run the host-side guard tests only.
