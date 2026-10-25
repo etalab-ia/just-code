@@ -59,11 +59,12 @@ expanding loader, where an unquoted `$(...)` becomes code execution. That is a
 property of the dependency version, so the fixtures qualify it.
 
 `dotenv` 17.4.2 / `dotenv-expand` 13.0.0, and `dotenv` 18.0.8 as offered by
-Dependabot #254 / #262, pass all 46 Node and 16 Python tests and carry no OSV
-advisory, so nothing refuses them on behaviour. They are deferred because these
-pins are the versions the native guest qualification was measured against: a
-major waits for that macOS arm64 re-run rather than for a new failure to force
-it.
+Dependabot #254 / #262, pass all 46 Node tests and carry no OSV advisory, so
+nothing refuses them on behaviour. The Python suite is not evidence about them:
+it loads `python-dotenv`, so its 16 tests qualify the applied `python-dotenv`
+1.2.4 pin only. These Node majors are deferred because the current pins are the
+versions the native guest qualification was measured against: a major waits for
+that macOS arm64 re-run rather than for a new failure to force it.
 
 ## Design Consequence and Remaining Gate
 
