@@ -1,6 +1,7 @@
 package justcode
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -155,6 +156,38 @@ type InitPlan struct {
 	// has no host endpoint to probe; it is described separately by the review.
 	MCPChecks   []InitMCPCheck
 	FileChanges []InitFileChange
+	// These snapshots protect the file summary from changes made while the
+	// review is open. AGENTS.md remains a deliberate merge, not a whole-file
+	// precondition, so unrelated user text is preserved.
+	lockfileSnapshot   reviewedFileSnapshot
+	localSkillSnapshot reviewedFileSnapshot
+}
+
+type reviewedFileSnapshot struct {
+	data    []byte
+	existed bool
+}
+
+func readReviewedFileSnapshot(fs FS, path string) (reviewedFileSnapshot, error) {
+	data, err := fs.ReadFile(path)
+	if err == nil {
+		return reviewedFileSnapshot{data: data, existed: true}, nil
+	}
+	if os.IsNotExist(err) {
+		return reviewedFileSnapshot{}, nil
+	}
+	return reviewedFileSnapshot{}, err
+}
+
+func (s reviewedFileSnapshot) validateCurrent(fs FS, path string) error {
+	current, err := readReviewedFileSnapshot(fs, path)
+	if err != nil {
+		return fmt.Errorf("cannot re-read %s before Apply: %w", path, err)
+	}
+	if current.existed != s.existed || !bytes.Equal(current.data, s.data) {
+		return fmt.Errorf("%s changed after the review; run init again to review the current files before applying", path)
+	}
+	return nil
 }
 
 // InitMCPCheck is the result of one remote MCP handshake. Checked is false
@@ -563,25 +596,21 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 		plan.InstructionsChanged = plan.InstructionsBefore != plan.InstructionsAfter
 	}
-	lockfileExisted := false
-	if _, err := fs.ReadFile(plan.LockPath); err == nil {
-		lockfileExisted = true
-	} else if !os.IsNotExist(err) {
+	plan.lockfileSnapshot, err = readReviewedFileSnapshot(fs, plan.LockPath)
+	if err != nil {
 		return plan, err
 	}
 	plan.FileChanges = []InitFileChange{
 		{Path: plan.ManifestPath, Description: "configuration du projet", Existed: plan.ExistingManifest != nil},
-		{Path: plan.LockPath, Description: "références des dépendances du projet", Existed: lockfileExisted},
+		{Path: plan.LockPath, Description: "références des dépendances du projet", Existed: plan.lockfileSnapshot.existed},
 	}
 	if localOnly {
-		localSkillsExisted := false
-		if _, err := fs.ReadFile(plan.LocalSkillsPath); err == nil {
-			localSkillsExisted = true
-		} else if !os.IsNotExist(err) {
+		plan.localSkillSnapshot, err = readReviewedFileSnapshot(fs, plan.LocalSkillsPath)
+		if err != nil {
 			return plan, err
 		}
 		plan.FileChanges = append(plan.FileChanges, InitFileChange{
-			Path: plan.LocalSkillsPath, Description: "skills conservés sur ce poste", Existed: localSkillsExisted, Local: true,
+			Path: plan.LocalSkillsPath, Description: "skills conservés sur ce poste", Existed: plan.localSkillSnapshot.existed, Local: true,
 		})
 	}
 	if plan.InstructionsChanged {
@@ -622,6 +651,11 @@ func FormatInteractiveInitReview(plan InitPlan) string {
 			storage = "(sur ce poste)"
 		}
 		row("Skills", strings.Join(names, ", ")+"                "+storage)
+		for _, id := range a.Skills {
+			if lock := plan.SkillLocks[id]; lock.Revision != "" {
+				continuation(fmt.Sprintf("%s : révision %s", id, lock.Revision))
+			}
+		}
 	}
 
 	if len(a.MCPConnectors) == 0 {
@@ -714,7 +748,8 @@ func FormatInteractiveInitReview(plan InitPlan) string {
 		fmt.Fprintf(&b, "Attention : %s\n", warning)
 	}
 	if plan.ExistingManifest != nil {
-		b.WriteString("Attention : la configuration existante sera remplacée.\n")
+		b.WriteString("Attention : la configuration existante sera remplacée :\n")
+		b.WriteString(formatManifestSummary(*plan.ExistingManifest))
 	}
 
 	b.WriteString("\nFichiers modifiés dans votre projet :\n")
@@ -1028,6 +1063,17 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	if readErr != nil && !os.IsNotExist(readErr) {
 		// An unreadable manifest must not be silently replaced either.
 		return readErr
+	}
+	// A lock or local selection created or edited after the review is not
+	// covered by its file-change summary. Refuse it before any write, including
+	// when --replace was supplied; replacement must not hide concurrent work.
+	if err := plan.lockfileSnapshot.validateCurrent(fs, plan.LockPath); err != nil {
+		return err
+	}
+	if plan.Answers.SkillsLocalOnly {
+		if err := plan.localSkillSnapshot.validateCurrent(fs, plan.LocalSkillsPath); err != nil {
+			return err
+		}
 	}
 	// Validate the lock before writing any project file: a malformed or
 	// unreadable lock must not leave a new manifest beside discarded pins.

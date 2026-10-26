@@ -375,9 +375,12 @@ skills, les MCP, GitHub, la machine isolée et le modèle. Il indique pour chaqu
 MCP distant si son initialisation MCP répond : un service injoignable affiche
 un avertissement mais n'empêche pas **Appliquer**. La liste des fichiers créés
 ou modifiés distingue ceux du projet de ceux conservés sur ce poste. La touche
-**d** affiche, puis masque sur l'interface interactive, le diff de la seule
-section just-code d'`AGENTS.md` ; le texte utilisateur hors de cette section
-reste intact. **Modifier** rouvre les questions avec les réponses conservées,
+**d** affiche le diff de la seule section just-code d'`AGENTS.md` (en mode
+accessible, choisissez l'option numérotée « Afficher ou masquer le détail ») ;
+le texte utilisateur hors de cette section reste intact. Les empreintes sha256
+sont masquées, mais les révisions épinglées des skills restent visibles. Un
+remplacement affiche aussi les valeurs de la configuration existante avant
+**Appliquer**. **Modifier** rouvre les questions avec les réponses conservées,
 **Réglages avancés** les réglages techniques, et **Quitter** n'écrit rien.
 Le mode `init --yes` conserve la revue détaillée, notamment les révisions et
 empreintes sha256 des skills.

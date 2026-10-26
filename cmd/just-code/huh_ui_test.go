@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -537,6 +538,7 @@ func TestHuhResourceInputsCanRestoreImplicitDefaults(t *testing.T) {
 }
 
 func TestHuhApplyChoiceDiffBindingReopensWithoutApplying(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
 	originalRun := huhApplyRun
 	t.Cleanup(func() { huhApplyRun = originalRun })
 	plan := justcode.InitPlan{InstructionsChanged: true}
@@ -564,9 +566,6 @@ func TestHuhApplyChoiceDiffBindingReopensWithoutApplying(t *testing.T) {
 	if err != nil || choice != "apply" || calls != 2 {
 		t.Fatalf("real d binding then Apply = %q, %v, calls=%d\n%s", choice, err, calls, output.String())
 	}
-	if !strings.Contains(output.String(), "masquer le détail") {
-		t.Fatalf("the real d binding did not reopen with the diff:\n%s", output.String())
-	}
 	calls = 0
 	huhApplyRun = func(form *huh.Form) error {
 		calls++
@@ -576,6 +575,105 @@ func TestHuhApplyChoiceDiffBindingReopensWithoutApplying(t *testing.T) {
 	choice, err = huhApplyChoice(plan)
 	if err != nil || choice != "apply" || calls != 1 || showDiff {
 		t.Fatalf("d must stay inert without an AGENTS.md change: %q, %v, calls=%d, showDiff=%v", choice, err, calls, showDiff)
+	}
+}
+
+func TestHuhApplyChoiceAccessibleDiffEditAndQuit(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	originalRun, originalHuh := huhApplyAccessibleRun, huhAccessibleModeFn
+	t.Cleanup(func() { huhApplyAccessibleRun, huhAccessibleModeFn = originalRun, originalHuh })
+	huhAccessibleModeFn = func() bool { return true }
+	plan := justcode.InitPlan{
+		Answers:             justcode.InitAnswers{Root: "/tmp/project"},
+		InstructionsChanged: true,
+		InstructionsAfter:   "<!-- BEGIN JUST-CODE MANAGED SKILLS -->\nContenu géré.\n<!-- END JUST-CODE MANAGED SKILLS -->\n",
+	}
+	calls := 0
+	huhApplyAccessibleRun = func(form *huh.Form) error {
+		calls++
+		input := "5\n"
+		if calls == 2 {
+			input = "1\n"
+		}
+		if calls > 2 {
+			t.Fatalf("accessible diff repeatedly reopened without Apply (calls=%d)", calls)
+		}
+		return form.WithAccessible(true).WithInput(strings.NewReader(input)).Run()
+	}
+	out := captureStdout(t, func() {
+		choice, err := huhApplyChoice(plan)
+		if err != nil || choice != "apply" || calls != 2 {
+			t.Fatalf("accessible diff then Apply = %q, %v, calls=%d", choice, err, calls)
+		}
+	})
+	if !strings.Contains(out, "Diff de la section just-code dans AGENTS.md") || !strings.Contains(out, "<!-- BEGIN JUST-CODE MANAGED SKILLS -->") || !strings.Contains(out, "Contenu géré.") {
+		t.Fatalf("accessible mode did not display the exact managed diff:\n%s", out)
+	}
+	calls = 0
+	huhApplyAccessibleRun = func(form *huh.Form) error {
+		calls++
+		return form.WithAccessible(true).WithInput(strings.NewReader("2\n")).Run()
+	}
+	if choice, err := huhApplyChoice(plan); err != nil || choice != "edit" || calls != 1 {
+		t.Fatalf("accessible Edit = %q, %v, calls=%d", choice, err, calls)
+	}
+	huhApplyAccessibleRun = func(form *huh.Form) error {
+		return form.WithAccessible(true).WithInput(strings.NewReader("4\n")).Run()
+	}
+	if choice, err := huhApplyChoice(plan); err != nil || choice != "cancel" {
+		t.Fatalf("accessible Quit = %q, %v", choice, err)
+	}
+}
+
+func TestHuhApplyChoiceSmallTerminalKeepsTextAndChoicesReachable(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	originalRun := huhApplyRun
+	t.Cleanup(func() { huhApplyRun = originalRun })
+	plan := justcode.InitPlan{
+		Answers: justcode.InitAnswers{
+			Root: "/tmp/project", Runtime: justcode.RuntimeMicrosandbox, Isolation: justcode.IsolationFull,
+			MCPConnectors:           []string{"data-gouv", "chrome-devtools"},
+			BrowserResourceGuidance: "Navigateur : pic de mémoire non mesuré ; les autres applications du poste doivent conserver de la marge.",
+		},
+		GuestCPUs: 2, GuestMemoryMB: 4096,
+		InstructionsChanged: true,
+		InstructionsAfter:   "<!-- BEGIN JUST-CODE MANAGED SKILLS -->\n" + strings.Repeat("Ligne du diff à lire.\n", 20) + "<!-- END JUST-CODE MANAGED SKILLS -->\n",
+		Warnings:            []string{"un avertissement qui doit rester lisible"},
+	}
+	var output strings.Builder
+	calls := 0
+	huhApplyRun = func(form *huh.Form) error {
+		calls++
+		_, _ = form.Update(tea.WindowSizeMsg{Width: 48, Height: 15})
+		view := form.View()
+		if height := lipgloss.Height(view); height > 15 {
+			t.Fatalf("action form exceeds the short terminal: %d lines\n%s", height, view)
+		}
+		for _, want := range []string{"Appliquer", "Modifier", "Réglages avancés", "Quitter"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("short terminal hides %q:\n%s", want, view)
+			}
+		}
+		output.WriteString(view)
+		input := "d"
+		if calls == 2 {
+			input = "\x1b[B\x1b[B\x1b[B\r"
+		}
+		return form.WithInput(strings.NewReader(input)).WithOutput(&output).Run()
+	}
+	var choice string
+	var err error
+	out := captureStdout(t, func() {
+		choice, err = huhApplyChoice(plan)
+	})
+	if err != nil || choice != "cancel" || calls != 2 {
+		t.Fatalf("diff then Quit = %q, %v, calls=%d", choice, err, calls)
+	}
+	joined := out + output.String()
+	for _, want := range []string{"data-gouv", "chrome-devtools", "pic de mémoire", "un avertissement qui doit rester lisible", "Fichiers modifiés", "Ligne du diff à lire.", "<!-- BEGIN JUST-CODE MANAGED SKILLS -->"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("scrollback recap never displays %q:\n%s", want, joined)
+		}
 	}
 }
 

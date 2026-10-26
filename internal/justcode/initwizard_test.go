@@ -96,6 +96,38 @@ func TestInteractiveInitReviewMarksAnExistingEmptyInstructionsFileAsModified(t *
 	}
 }
 
+func TestInteractiveInitReviewPreservesExistingConfigAndLocalSkillRevisions(t *testing.T) {
+	root := initTestRoot(t)
+	if err := WriteProjectManifest(DefaultFS, ProjectManifestPath(root), ProjectManifest{Model: "albert/original", CPUs: 8}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := FormatInteractiveInitReview(plan)
+	if !strings.Contains(review, "albert/original") || !strings.Contains(review, "cpus") || !strings.Contains(review, "8") {
+		t.Fatalf("replacement recap hides the old configuration:\n%s", review)
+	}
+
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	plan, err = (InitWizard{StateDir: t.TempDir(), ResolveSkills: fixtureSkillResolver(t)}).Plan(InitAnswers{
+		Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true,
+		SkillsLocalOnly: true, SkillsLocalOnlySet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review = FormatInteractiveInitReview(plan)
+	revision := plan.SkillLocks["official/rgaa"].Revision
+	if !strings.Contains(review, "official/rgaa : révision "+revision) || strings.Contains(review, "sha256") {
+		t.Fatalf("local-only skill revision missing or digest leaked:\n%s", review)
+	}
+}
+
 func TestInteractiveInitReviewMCPReachabilityAndLocalState(t *testing.T) {
 	root := initTestRoot(t)
 	cache := t.TempDir()
@@ -782,6 +814,72 @@ func TestInitPlanRejectsRetainedSkillWithoutExistingPin(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), `retained skill "official/fantome" has no existing pin`) {
 		t.Fatalf("retaining a never-pinned skill must fail, got %v", err)
+	}
+}
+
+func TestInitApplyRejectsReviewedStateChangesBeforeWriting(t *testing.T) {
+	for _, kind := range []string{"lock-created", "lock-edited", "lock-deleted", "local-created", "local-edited"} {
+		t.Run(kind, func(t *testing.T) {
+			root := initTestRoot(t)
+			localOnly := strings.HasPrefix(kind, "local-")
+			manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+			if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{SkillsLocalOnly: localOnly}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasSuffix(kind, "-created") {
+				if err := WriteLockfile(DefaultFS, lockPath, Lockfile{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wizard := InitWizard{StateDir: t.TempDir()}
+			answers := InitAnswers{Root: root}
+			if localOnly {
+				answers.SkillsLocalOnly, answers.SkillsLocalOnlySet = true, true
+			}
+			plan, err := wizard.Plan(answers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var path string
+			switch {
+			case localOnly:
+				path = plan.LocalSkillsPath
+				if kind == "local-created" {
+					// The replacement summary says no local file exists. A file
+					// created after Plan must be refused, not overwritten.
+					err = WriteLocalSkillSelections(DefaultFS, path, LocalSkillSelections{})
+				} else {
+					err = WriteLocalSkillSelections(DefaultFS, path, LocalSkillSelections{})
+				}
+			case kind == "lock-created":
+				path = lockPath
+				err = WriteLockfile(DefaultFS, lockPath, Lockfile{})
+			case kind == "lock-edited":
+				path = lockPath
+				err = WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{"skill": "new-pin"}})
+			case kind == "lock-deleted":
+				path = lockPath
+				err = os.Remove(lockPath)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, readErr := readReviewedFileSnapshot(DefaultFS, path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			applyErr := wizard.Apply(plan, true)
+			if applyErr == nil || !strings.Contains(applyErr.Error(), "changed after the review") {
+				t.Fatalf("changed %s was not refused: %v", kind, applyErr)
+			}
+			after, readErr := readReviewedFileSnapshot(DefaultFS, path)
+			if readErr != nil || after.existed != before.existed || !bytes.Equal(after.data, before.data) {
+				t.Fatalf("Apply changed the concurrent file %s: before=%+v after=%+v err=%v", path, before, after, readErr)
+			}
+			if got, err := ReadProjectManifest(DefaultFS, manifestPath); err != nil || len(got.MCPConnectors) != 0 {
+				t.Fatalf("refused Apply changed the manifest: %+v, %v", got, err)
+			}
+		})
 	}
 }
 

@@ -58,17 +58,54 @@ func huhApplyKeyFilter(instructionsChanged bool, showDiff *bool) tea.ProgramOpti
 		key, ok := msg.(tea.KeyPressMsg)
 		if ok && key.String() == "d" && instructionsChanged {
 			*showDiff = !*showDiff
-			// Reopen the form with the same selected action and the new
-			// description. No answer or network result is discarded.
 			return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 		}
 		return msg
 	})
 }
 
+var huhAccessibleModeFn = func() bool { return os.Getenv("TERM") == "dumb" }
+
+var printInitReviewFn = func(plan justcode.InitPlan) { fmt.Print(justcode.FormatInteractiveInitReview(plan)) }
+var printInitInstructionsDiffFn = func(plan justcode.InitPlan) { fmt.Print(justcode.FormatInitInstructionsDiff(plan)) }
+
 // huhApplyRun keeps the program options installed by the recap, including its
 // `d` filter. Replacing the options here would silently discard that binding.
 var huhApplyRun = func(form *huh.Form) error { return form.Run() }
+var huhApplyAccessibleRun = func(form *huh.Form) error {
+	return form.WithInput(os.Stdin).WithOutput(os.Stdout).Run()
+}
+
+// huhApplyAccessible uses a numbered diff option because Huh's accessible
+// runner does not execute Bubble Tea key filters.
+func huhApplyAccessible(plan justcode.InitPlan, showDiff *bool) (string, error) {
+	for {
+		if plan.InstructionsChanged && *showDiff {
+			printInitInstructionsDiffFn(plan)
+		}
+		options := []huh.Option[string]{
+			huh.NewOption("Appliquer", "apply"),
+			huh.NewOption("Modifier (retour à l'étape 1)", "edit"),
+			huh.NewOption("Réglages avancés", "advanced"),
+			huh.NewOption("Quitter sans rien enregistrer", "cancel"),
+		}
+		if plan.InstructionsChanged {
+			options = append(options, huh.NewOption("Afficher ou masquer le détail d'AGENTS.md", "diff"))
+		}
+		choice := "apply"
+		width := huhReviewTableWidth()
+		selectField := huh.NewSelect[string]().Title("Appliquer cette configuration ?")
+		selectField.WithWidth(width)
+		selectField.Options(options...).Value(&choice)
+		if err := huhApplyAccessibleRun(huh.NewForm(huh.NewGroup(selectField)).WithWidth(width)); err != nil {
+			return "", err
+		}
+		if choice != "diff" {
+			return choice, nil
+		}
+		*showDiff = !*showDiff
+	}
+}
 
 // The init wizard's MultiSelects carry their selection keys in the
 // description: huh toggles with space or x and Enter only confirms the list,
@@ -322,25 +359,29 @@ func huhConfirm(title, description string, defaultYes bool) (bool, error) {
 	return value, nil
 }
 
-// huhApplyChoice presents the interactive recap and lets the user inspect the
-// managed AGENTS.md diff without rebuilding the plan or probing MCPs again.
+// huhApplyChoice prints the full recap to normal terminal scrollback and
+// keeps only the action list in Huh. A short terminal never hides choices
+// behind a long note. The d binding prints the diff without rebuilding the
+// plan or probing MCPs again; it never applies the configuration.
 func huhApplyChoice(plan justcode.InitPlan) (string, error) {
 	choice := "apply"
+	printInitReviewFn(plan)
 	showDiff := false
+	if huhAccessibleModeFn() {
+		return huhApplyAccessible(plan, &showDiff)
+	}
 	for {
 		previousShowDiff := showDiff
-		description := huhReviewDescription(plan)
 		diffHint := ""
 		if plan.InstructionsChanged {
 			diffHint = "d : afficher le détail des changements dans AGENTS.md"
 			if showDiff {
-				description += "\n" + escapeHuhNoteMarkup(justcode.FormatInitInstructionsDiff(plan))
+				printInitInstructionsDiffFn(plan)
 				diffHint = "d : masquer le détail des changements dans AGENTS.md"
 			}
 		}
 		form := huh.NewForm(
 			huh.NewGroup(
-				huh.NewNote().Description(description),
 				huh.NewSelect[string]().
 					Title("Appliquer cette configuration ?").
 					Description(diffHint).
@@ -352,7 +393,7 @@ func huhApplyChoice(plan justcode.InitPlan) (string, error) {
 					).
 					Value(&choice),
 			),
-		).WithProgramOptions(
+		).WithWidth(huhReviewTableWidth()).WithProgramOptions(
 			huhApplyKeyFilter(plan.InstructionsChanged, &showDiff),
 			tea.WithOutput(os.Stdout),
 		)
