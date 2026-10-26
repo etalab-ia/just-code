@@ -208,7 +208,7 @@ func probeGitHubForProjectWith(
 	if owner == "" || repo == "" {
 		return st
 	}
-	p := probeGitHubProjectAt(ctx, client, token, owner, repo, githubUserURL, githubRepoAPIPath(owner, repo))
+	p := probeGitHubProjectAt(ctx, client, token, owner, repo, githubUserURL, githubRepoAPIPath(owner, repo), githubPullsAPIPath(owner, repo))
 	st.Login = p.login
 	st.Rights = p.rights
 	return st
@@ -226,17 +226,32 @@ func githubRepoAPIPath(owner, repo string) string {
 	return "https://api.github.com/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
 }
 
+// githubPullsAPIPath is the pull-request listing endpoint. Reading it needs the
+// Pull requests permission, while the repository endpoint needs only Metadata
+// read, so it is what distinguishes a token that can open the promised draft
+// pull request from one that can only push.
+func githubPullsAPIPath(owner, repo string) string {
+	return githubRepoAPIPath(owner, repo) + "/pulls?per_page=1"
+}
+
 type githubProjectProbeResult struct {
 	login  string
 	rights GitHubRepoRights
 }
 
-// probeGitHubProjectAt verifies a token against the GitHub user and repository
-// endpoints. userURL may be empty to skip the login lookup. The repository
-// endpoint decides the rights classification; the user endpoint only enriches
+// probeGitHubProjectAt verifies a token against the GitHub user, repository and
+// pull-request endpoints. userURL may be empty to skip the login lookup, and
+// pullsURL may be empty to skip the pull-request check. The repository endpoint
+// decides most of the rights classification; the user endpoint only enriches
 // the result with the account login, so a failed login lookup never turns a
 // valid token into a failure.
-func probeGitHubProjectAt(ctx context.Context, client *http.Client, token, owner, repo, userURL, repoURL string) githubProjectProbeResult {
+//
+// The pull-request check exists because the push role is not the same thing as
+// the Pull requests permission: a fine-grained token can report
+// `permissions.push: true` while lacking Pull requests write, and then the
+// draft PR the wizard promises is rejected at use time. Only when both hold is
+// the credential reported as fully usable.
+func probeGitHubProjectAt(ctx context.Context, client *http.Client, token, owner, repo, userURL, repoURL, pullsURL string) githubProjectProbeResult {
 	client = noRedirectClient(client)
 	res := githubProjectProbeResult{rights: GitHubRepoRightsUnknown}
 	if userURL != "" {
@@ -264,10 +279,23 @@ func probeGitHubProjectAt(ctx context.Context, client *http.Client, token, owner
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
 			return res
 		}
-		if body.Permissions.Push {
-			res.rights = GitHubRepoRightsOK
-		} else {
+		switch {
+		case !body.Permissions.Push:
 			res.rights = GitHubRepoRightsInsufficient
+		case pullsURL == "":
+			res.rights = GitHubRepoRightsOK
+		default:
+			switch githubPullRequestAccess(ctx, client, token, pullsURL) {
+			case pullAccessYes:
+				res.rights = GitHubRepoRightsOK
+			case pullAccessNo:
+				res.rights = GitHubRepoRightsInsufficient
+			default:
+				// Throttled, unreachable or otherwise unanswerable. Saying
+				// "insufficient rights" would send the user to change a token
+				// that may be fine, so report that the check could not run.
+				res.rights = GitHubRepoRightsUnknown
+			}
 		}
 	case http.StatusUnauthorized:
 		res.rights = GitHubRepoRightsInvalid
@@ -397,4 +425,48 @@ func githubSnapshotBranchScript(workspace string, remote GitHubRemote, baseBranc
 		"; git branch -m " + shellQuote(branch) +
 		"; git reset --hard \"$commit\"" +
 		"; mv \"$temp_config\" \"$config\""
+}
+
+// pullAccess is the answer to "may this token read the repository's pull
+// requests", which is the permission needed to open the draft PR the wizard
+// offers. reading is not the same as pushing: a fine-grained token can push
+// while lacking Pull requests access.
+type pullAccess int
+
+const (
+	// pullAccessUnknown means the question could not be answered (throttled,
+	// unreachable, unexpected status). It must not be reported as a rights
+	// problem, because the remedy may be nothing at all.
+	pullAccessUnknown pullAccess = iota
+	pullAccessYes
+	pullAccessNo
+)
+
+// githubPullRequestAccess asks the pull-request listing, a read that changes
+// nothing on the remote.
+func githubPullRequestAccess(ctx context.Context, client *http.Client, token, pullsURL string) pullAccess {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pullsURL, nil)
+	if err != nil {
+		return pullAccessUnknown
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return pullAccessUnknown
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return pullAccessYes
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		// A 403 here is a permission refusal unless it is a throttle; both
+		// endpoints share the rate limit, so check the header first.
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			return pullAccessUnknown
+		}
+		return pullAccessNo
+	default:
+		return pullAccessUnknown
+	}
 }

@@ -46,14 +46,39 @@ func TestProbeGitHubProjectAt(t *testing.T) {
 		// exhaustedRateLimit sends the header GitHub sets when the window is
 		// spent, which must be read as "unknown", not as insufficient rights.
 		exhaustedRateLimit bool
-		wantLogin          string
-		wantRights         GitHubRepoRights
+		// pullsStatus is the answer from the pull-request listing, which needs
+		// the Pull requests permission; zero means "OK, empty list".
+		pullsStatus int
+		// pullsThrottled marks that answer as a spent rate limit rather than a
+		// permission refusal.
+		pullsThrottled bool
+		wantLogin      string
+		wantRights     GitHubRepoRights
 	}{
 		{
 			name:       "read and push is OK",
 			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
 			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
 			wantLogin: "kai", wantRights: GitHubRepoRightsOK,
+		},
+		{
+			// A fine-grained token can report push access (a repository role)
+			// and still lack the Pull requests permission, in which case the
+			// draft PR the wizard promises would be rejected. Both must hold.
+			name:       "push without pull-request access is insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			pullsStatus: http.StatusForbidden,
+			wantLogin:   "kai", wantRights: GitHubRepoRightsInsufficient,
+		},
+		{
+			// A throttle on the pull-request check must not be reported as a
+			// rights problem: the token may be fine and the remedy is to retry.
+			name:       "throttled pull-request check is unknown, not insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			pullsStatus: http.StatusForbidden, pullsThrottled: true,
+			wantLogin: "kai", wantRights: GitHubRepoRightsUnknown,
 		},
 		{
 			name:       "read without push is insufficient",
@@ -112,10 +137,20 @@ func TestProbeGitHubProjectAt(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.pullsStatus == 0 {
+				tt.pullsStatus = http.StatusOK
+			}
 			mux := http.NewServeMux()
 			mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.userStatus)
 				w.Write([]byte(tt.userBody))
+			})
+			mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+				if tt.pullsThrottled {
+					w.Header().Set("X-RateLimit-Remaining", "0")
+				}
+				w.WriteHeader(tt.pullsStatus)
+				w.Write([]byte(`[]`))
 			})
 			mux.HandleFunc("/repos/", func(w http.ResponseWriter, r *http.Request) {
 				if tt.exhaustedRateLimit {
@@ -127,7 +162,7 @@ func TestProbeGitHubProjectAt(t *testing.T) {
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
 
-			got := probeGitHubProjectAt(context.Background(), srv.Client(), "tok", "owner", "repo", srv.URL+"/user", srv.URL+"/repos/owner/repo")
+			got := probeGitHubProjectAt(context.Background(), srv.Client(), "tok", "owner", "repo", srv.URL+"/user", srv.URL+"/repos/owner/repo", srv.URL+"/repos/owner/repo/pulls")
 			if got.login != tt.wantLogin {
 				t.Fatalf("login = %q, want %q", got.login, tt.wantLogin)
 			}
