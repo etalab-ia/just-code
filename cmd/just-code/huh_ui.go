@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strconv"
@@ -72,8 +74,31 @@ var printInitInstructionsDiffFn = func(plan justcode.InitPlan) { fmt.Print(justc
 // huhApplyRun keeps the program options installed by the recap, including its
 // `d` filter. Replacing the options here would silently discard that binding.
 var huhApplyRun = func(form *huh.Form) error { return form.Run() }
-var huhApplyAccessibleRun = func(form *huh.Form) error {
-	return form.WithInput(os.Stdin).WithOutput(os.Stdout).Run()
+
+// initAccessibleInput distinguishes a real answer from Huh's default on EOF.
+// The accessible prompt cannot report cancellation, so the recap must not
+// treat the selected default as affirmative when no bytes were read.
+type initAccessibleInput struct {
+	io.Reader
+	readBytes int64
+	readErr   error
+}
+
+func (in *initAccessibleInput) Read(p []byte) (int, error) {
+	n, err := in.Reader.Read(p)
+	in.readBytes += int64(n)
+	if err != nil && !errors.Is(err, io.EOF) {
+		in.readErr = err
+	}
+	return n, err
+}
+
+var huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
+	err := form.WithInput(in).WithOutput(os.Stdout).Run()
+	if in.readErr != nil {
+		return false, in.readErr
+	}
+	return in.readBytes > 0, err
 }
 
 // huhApplyAccessible uses a numbered diff option because Huh's accessible
@@ -97,8 +122,12 @@ func huhApplyAccessible(plan justcode.InitPlan, showDiff *bool) (string, error) 
 		selectField := huh.NewSelect[string]().Title("Appliquer cette configuration ?")
 		selectField.WithWidth(width)
 		selectField.Options(options...).Value(&choice)
-		if err := huhApplyAccessibleRun(huh.NewForm(huh.NewGroup(selectField)).WithWidth(width)); err != nil {
+		answered, err := huhApplyAccessibleRun(huh.NewForm(huh.NewGroup(selectField)).WithWidth(width), &initAccessibleInput{Reader: os.Stdin})
+		if err != nil {
 			return "", err
+		}
+		if !answered {
+			return "", huh.ErrUserAborted
 		}
 		if choice != "diff" {
 			return choice, nil

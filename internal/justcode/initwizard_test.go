@@ -835,6 +835,15 @@ func TestInitApplyRejectsReviewedStateChangesBeforeWriting(t *testing.T) {
 			answers := InitAnswers{Root: root}
 			if localOnly {
 				answers.SkillsLocalOnly, answers.SkillsLocalOnlySet = true, true
+				if kind == "local-edited" {
+					path, err := LocalSkillSelectionsPath(wizard.StateDir, DiscoverInstanceForTest(t, root))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := WriteLocalSkillSelections(DefaultFS, path, LocalSkillSelections{}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			plan, err := wizard.Plan(answers)
 			if err != nil {
@@ -844,13 +853,12 @@ func TestInitApplyRejectsReviewedStateChangesBeforeWriting(t *testing.T) {
 			switch {
 			case localOnly:
 				path = plan.LocalSkillsPath
-				if kind == "local-created" {
-					// The replacement summary says no local file exists. A file
-					// created after Plan must be refused, not overwritten.
-					err = WriteLocalSkillSelections(DefaultFS, path, LocalSkillSelections{})
-				} else {
-					err = WriteLocalSkillSelections(DefaultFS, path, LocalSkillSelections{})
+				// Simulate a local file created or edited after the review.
+				selection := LocalSkillSelections{}
+				if kind == "local-edited" {
+					selection.Skills = []string{"official/rgaa"}
 				}
+				err = WriteLocalSkillSelections(DefaultFS, path, selection)
 			case kind == "lock-created":
 				path = lockPath
 				err = WriteLockfile(DefaultFS, lockPath, Lockfile{})

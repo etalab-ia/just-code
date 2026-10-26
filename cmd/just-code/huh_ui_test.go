@@ -581,6 +581,7 @@ func TestHuhApplyChoiceDiffBindingReopensWithoutApplying(t *testing.T) {
 func TestHuhApplyChoiceAccessibleDiffEditAndQuit(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	originalRun, originalHuh := huhApplyAccessibleRun, huhAccessibleModeFn
+	realRun := originalRun
 	t.Cleanup(func() { huhApplyAccessibleRun, huhAccessibleModeFn = originalRun, originalHuh })
 	huhAccessibleModeFn = func() bool { return true }
 	plan := justcode.InitPlan{
@@ -589,7 +590,7 @@ func TestHuhApplyChoiceAccessibleDiffEditAndQuit(t *testing.T) {
 		InstructionsAfter:   "<!-- BEGIN JUST-CODE MANAGED SKILLS -->\nContenu géré.\n<!-- END JUST-CODE MANAGED SKILLS -->\n",
 	}
 	calls := 0
-	huhApplyAccessibleRun = func(form *huh.Form) error {
+	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
 		calls++
 		input := "5\n"
 		if calls == 2 {
@@ -598,7 +599,8 @@ func TestHuhApplyChoiceAccessibleDiffEditAndQuit(t *testing.T) {
 		if calls > 2 {
 			t.Fatalf("accessible diff repeatedly reopened without Apply (calls=%d)", calls)
 		}
-		return form.WithAccessible(true).WithInput(strings.NewReader(input)).Run()
+		in.Reader = strings.NewReader(input)
+		return realRun(form, in)
 	}
 	out := captureStdout(t, func() {
 		choice, err := huhApplyChoice(plan)
@@ -610,18 +612,27 @@ func TestHuhApplyChoiceAccessibleDiffEditAndQuit(t *testing.T) {
 		t.Fatalf("accessible mode did not display the exact managed diff:\n%s", out)
 	}
 	calls = 0
-	huhApplyAccessibleRun = func(form *huh.Form) error {
+	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
 		calls++
-		return form.WithAccessible(true).WithInput(strings.NewReader("2\n")).Run()
+		in.Reader = strings.NewReader("2\n")
+		return realRun(form, in)
 	}
 	if choice, err := huhApplyChoice(plan); err != nil || choice != "edit" || calls != 1 {
 		t.Fatalf("accessible Edit = %q, %v, calls=%d", choice, err, calls)
 	}
-	huhApplyAccessibleRun = func(form *huh.Form) error {
-		return form.WithAccessible(true).WithInput(strings.NewReader("4\n")).Run()
+	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
+		in.Reader = strings.NewReader("4\n")
+		return realRun(form, in)
 	}
 	if choice, err := huhApplyChoice(plan); err != nil || choice != "cancel" {
 		t.Fatalf("accessible Quit = %q, %v", choice, err)
+	}
+	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
+		in.Reader = strings.NewReader("")
+		return realRun(form, in)
+	}
+	if choice, err := huhApplyChoice(plan); choice != "" || !errors.Is(err, huh.ErrUserAborted) {
+		t.Fatalf("accessible EOF must cancel, not apply: choice=%q err=%v", choice, err)
 	}
 }
 

@@ -1208,6 +1208,51 @@ func TestInitReviewDiffThenApply(t *testing.T) {
 	}
 }
 
+// TestInitAccessibleEOFDoesNotApply pins Ctrl+D at the recap: Huh's
+// accessible prompt returns its default on EOF, but no input is not consent.
+// The real production runner must cancel before any file or approval is written.
+func TestInitAccessibleEOFDoesNotApply(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	root := initTestProject(t)
+	stubInitSkillResolver(t)
+	wizardHuhFn = func() bool { return true }
+	originalHuh, originalApprove := huhAccessibleModeFn, approveGitHubForProjectFn
+	huhAccessibleModeFn = func() bool { return true }
+	approveGitHubForProjectFn = func(string) error {
+		t.Fatal("EOF must not record a GitHub approval")
+		return nil
+	}
+	t.Cleanup(func() { huhAccessibleModeFn, approveGitHubForProjectFn = originalHuh, originalApprove })
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEnd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	originalStdin := os.Stdin
+	os.Stdin = readEnd
+	t.Cleanup(func() { os.Stdin = originalStdin; _ = readEnd.Close() })
+	opts := initOptions{
+		Root: root, Skills: []string{"official/example"}, MCPConnectors: []string{},
+		Set: map[string]bool{"root": true, "skills": true, "skills-storage": true, "mcps": true, "github": true},
+	}
+	var code int
+	out := captureStdout(t, func() {
+		code, err = initRun(opts, bufio.NewReader(readEnd), true)
+	})
+	if code != 1 || err == nil {
+		t.Fatalf("EOF must cancel instead of applying: code=%d err=%v\n%s", code, err, out)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "main.go" {
+		t.Fatalf("EOF wrote project files: %v\n%s", entries, out)
+	}
+}
+
 func TestInitReviewQuitWritesNothing(t *testing.T) {
 	root := initTestProject(t)
 	stubInitSkillResolver(t)
