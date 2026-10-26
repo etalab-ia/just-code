@@ -197,6 +197,25 @@ func (m *MicrosandboxRuntime) warn(summary, format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
+// An existing VM can still need installation after an interrupted first start.
+// Check before relaunching: a fast install could finish before the health wait.
+func (m *MicrosandboxRuntime) announceBackendStart(ctx context.Context) {
+	if m.Launch == nil {
+		return
+	}
+	code, _, err := m.Client.Exec(ctx, m.InstanceName(), msbGuestPrepareProbe)
+	switch {
+	case err == nil && code == msbPrepareReady:
+		m.Launch.AnnounceWarmStart()
+	case err == nil && (code == msbPrepareProgress || code == msbPrepareIdle):
+		m.Launch.AnnounceFirstStart()
+	default:
+		// A failed probe must not turn an unknown state into a warm sample.
+		m.Launch.timingUnavailable = true
+		m.Launch.AddWarning("durée non enregistrée : état de préparation des outils non vérifié")
+	}
+}
+
 // NewMicrosandboxRuntime builds a Microsandbox backend with production
 // defaults. Without a project context it operates on the legacy singleton
 // instance name, so existing behavior is unchanged until callers pass an
@@ -732,7 +751,7 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 	// detection logic now runs at the transfer boundary
 	// (ResolveTransferSet), where refusing a file actually protects
 	// something. What remains here is hygiene advice, never a block.
-	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
+	m.noteWorkspaceHygiene(ctx)
 	if err := m.Client.EnsureInstalled(ctx); err != nil {
 		return err
 	}
@@ -790,9 +809,7 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 			m.say("%s is running with a healthy OpenCode backend.", m.InstanceName())
 			return nil
 		}
-		// The machine is up but its agent is not: a restart of the backend,
-		// not an installation, so the expectation is the warm one.
-		m.Launch.AnnounceWarmStart()
+		m.announceBackendStart(ctx)
 		if err := beforeBackendLaunch(); err != nil {
 			return err
 		}
@@ -801,11 +818,6 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 	}
 
 	if exists {
-		// A sandbox that already exists has its toolchain installed: this
-		// start is the quick one, and must not be announced as an install.
-		if m.cfg.Isolation != IsolationFull {
-			m.Launch.AnnounceWarmStart()
-		}
 		m.say("Starting %s...", m.InstanceName())
 		// Both isolation modes use the same secret-proxy configuration: the
 		// guest environment carries the placeholder, never the real key. The
@@ -841,6 +853,7 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 		// Booting a stopped VM does not re-run the container entrypoint, so the
 		// backend has to be launched explicitly. Reconcile managed skills first
 		// so an orphaned skill can never be served by the restarted backend.
+		m.announceBackendStart(ctx)
 		if err := beforeBackendLaunch(); err != nil {
 			return err
 		}
@@ -1239,7 +1252,7 @@ func warnWorkspaceHygiene(ctx context.Context, dir string) {
 // fact twice; it is dropped and `just-code doctor` keeps the detail. Anywhere
 // else the block prints as before, so scripts, CI and plain starts lose nothing.
 func (m *MicrosandboxRuntime) noteWorkspaceHygiene(ctx context.Context) {
-	if m.Launch != nil {
+	if m.Launch != nil && m.Launch.Terminal {
 		return
 	}
 	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
@@ -1307,7 +1320,7 @@ func (m *MicrosandboxRuntime) Restart(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
 	}
-	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
+	m.noteWorkspaceHygiene(ctx)
 	// Re-run the credential preflight now that the directory exists. A
 	// workspace deleted while its sandbox and project-secret state survived is
 	// not "no project scope": recreating the same path yields the same

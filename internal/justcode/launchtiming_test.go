@@ -1,12 +1,109 @@
 package justcode
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type launchPreparationClient struct {
+	*fakeMSBClient
+	preparation fakeMSBExecResult
+	launched    bool
+}
+
+func (c *launchPreparationClient) Exec(ctx context.Context, name, command string) (int, string, error) {
+	if command == msbGuestPrepareProbe {
+		c.record("exec " + name + " " + command)
+		if c.launched {
+			return msbPrepareReady, "", nil
+		}
+		return c.preparation.code, c.preparation.stderr, c.preparation.err
+	}
+	if command == msbRelaunchCommand {
+		c.launched = true
+	}
+	return c.fakeMSBClient.Exec(ctx, name, command)
+}
+
+func TestBackendRetryTimingUsesPreparationMarker(t *testing.T) {
+	cases := []struct {
+		name  string
+		probe fakeMSBExecResult
+		kind  LaunchKind
+	}{
+		{"ready", fakeMSBExecResult{code: msbPrepareReady}, LaunchWarm},
+		{"installing", fakeMSBExecResult{code: msbPrepareProgress}, LaunchCold},
+		{"interrupted", fakeMSBExecResult{code: msbPrepareIdle}, LaunchCold},
+		{"unknown", fakeMSBExecResult{code: 1}, ""},
+		{"unavailable", fakeMSBExecResult{err: fmt.Errorf("guest agent unavailable")}, ""},
+	}
+	for _, status := range []string{"stopped", "running"} {
+		for _, tc := range cases {
+			t.Run(status+"/"+tc.name, func(t *testing.T) {
+				client := &fakeMSBClient{exists: true, status: status}
+				m := newTestMicrosandbox(t, client)
+				m.Client = &launchPreparationClient{fakeMSBClient: client, preparation: tc.probe}
+				store := NewLaunchTimingStore(DefaultFS, t.TempDir())
+				m.Launch = &LaunchUX{TimingStore: store, TimingKey: "retry"}
+				if err := m.Start(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if !hasCall(client, "exec "+msbSandbox+" "+msbGuestPrepareProbe) {
+					t.Fatal("preparation state was never checked")
+				}
+				if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+					t.Fatal("classification prevented backend launch")
+				}
+				if m.Launch.IsFirstStart() != (tc.kind == LaunchCold) {
+					t.Fatalf("incorrect cold classification: %v", m.Launch.IsFirstStart())
+				}
+				m.Launch.Observe(125 * time.Second)
+				_, _, coldSample := store.Observation("retry", LaunchCold)
+				_, _, warmSample := store.Observation("retry", LaunchWarm)
+				if coldSample != (tc.kind == LaunchCold) || warmSample != (tc.kind == LaunchWarm) {
+					t.Fatalf("wrong history: cold=%v warm=%v", coldSample, warmSample)
+				}
+				if tc.kind == "" && !m.Launch.HasWarnings() {
+					t.Fatal("unknown preparation must explain the missing timing")
+				}
+			})
+		}
+	}
+}
+
+func TestLaunchHygieneDetailStaysInNonInteractiveLogs(t *testing.T) {
+	withNoGitleaks(t)
+	for _, restart := range []bool{false, true} {
+		for _, terminal := range []bool{false, true} {
+			t.Run(fmt.Sprintf("restart=%v/terminal=%v", restart, terminal), func(t *testing.T) {
+				m := newTestMicrosandbox(t, &fakeMSBClient{exists: true, status: "stopped"})
+				m.Launch = &LaunchUX{Terminal: terminal}
+				if err := os.WriteFile(filepath.Join(m.cfg.WorkspaceDir, ".env"), []byte("FIXTURE=value\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				output := captureStderr(t, func() {
+					var err error
+					if restart {
+						err = m.Restart(context.Background())
+					} else {
+						err = m.Start(context.Background())
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				})
+				if strings.Contains(output, "dotenv file (excluded from transfer)") == terminal {
+					t.Fatalf("incorrect launch hygiene output: %q", output)
+				}
+			})
+		}
+	}
+}
 
 func TestLaunchTimingPersistence(t *testing.T) {
 	dir := t.TempDir()

@@ -40,7 +40,8 @@ type LaunchUX struct {
 	TimingStore  *LaunchTimingStore
 	TimingKey    string
 
-	firstStart bool
+	firstStart        bool
+	timingUnavailable bool
 
 	// copiedFiles is how many files landed in the machine; dotenvExcluded and
 	// secretExcluded count what the default-deny filter refused.
@@ -187,7 +188,7 @@ func (u *LaunchUX) LaunchLine() string {
 
 // Observe records the complete successful runtime start, including reconciliation.
 func (u *LaunchUX) Observe(elapsed time.Duration) {
-	if u == nil || u.TimingStore == nil {
+	if u == nil || u.TimingStore == nil || u.timingUnavailable {
 		return
 	}
 	kind := LaunchWarm
