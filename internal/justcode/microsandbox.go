@@ -169,6 +169,32 @@ type MicrosandboxRuntime struct {
 	// store; a caller that already resolved one (the CLI, or tests) injects it
 	// so the index's recorded store matches the store actually used.
 	ProjectSecrets *ProjectSecretStore
+	// Launch is the first-launch report (issue #172). When set on a terminal,
+	// the runtime records what each phase did into it and stops printing its
+	// own verbose English lines, because the CLI renders one French checklist
+	// from that state. A nil Launch keeps the legacy verbose behaviour.
+	Launch *LaunchUX
+}
+
+// verbose reports whether this runtime should keep printing its own per-phase
+// lines. It is true unless a launch report is taking over on a terminal, so
+// scripts, CI and logs lose nothing.
+func (m *MicrosandboxRuntime) verbose() bool {
+	return m.Launch == nil || !m.Launch.Terminal
+}
+
+func (m *MicrosandboxRuntime) say(format string, args ...any) {
+	if m.verbose() {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+func (m *MicrosandboxRuntime) warn(summary, format string, args ...any) {
+	if m.Launch != nil && m.Launch.Terminal {
+		m.Launch.AddWarning("%s", summary)
+		return
+	}
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
 // NewMicrosandboxRuntime builds a Microsandbox backend with production
@@ -406,7 +432,7 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 		}
 		approvals, err := ReadBindingApprovals(DefaultFS, bindingApprovalsPath(m.stateDirOrDefault(), m.InstanceName()))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: cannot read the binding approvals for %s (%v); optional bindings are skipped\n", m.InstanceName(), err)
+			m.warn("approbations illisibles : accès facultatifs ignorés ; détail : just-code bindings list", "Warning: cannot read the binding approvals for %s (%v); optional bindings are skipped", m.InstanceName(), err)
 			continue
 		}
 		if !approvals.Approves(b.Kind) {
@@ -415,7 +441,7 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 		v, store, err := read(ctx, b.Kind, m.CredentialStore)
 		if err != nil {
 			if isNotFound(err) {
-				fmt.Fprintf(os.Stderr, "Warning: the %s binding is approved for %s but no %q credential is stored; skipping it (just-code auth add %s)\n",
+				m.warn("identifiant facultatif absent ; détail : just-code bindings list", "Warning: the %s binding is approved for %s but no %q credential is stored; skipping it (just-code auth add %s)",
 					b.Kind, m.InstanceName(), b.Kind, b.Kind)
 				continue
 			}
@@ -464,7 +490,7 @@ func (m *MicrosandboxRuntime) resolveProjectSecretBindings(ctx context.Context) 
 	}
 	if len(record.deliveries) == 0 {
 		for _, undelivered := range record.undelivered {
-			fmt.Fprintf(os.Stderr, "Note: the imported project secret %s is not approved for guest delivery; run 'just-code secrets bindings approve' to expose it.\n", undelivered)
+			m.warn("secrets importés non transmis faute d'approbation ; détail : just-code secrets bindings list", "Note: the imported project secret %s is not approved for guest delivery; run 'just-code secrets bindings approve' to expose it.", undelivered)
 		}
 		return nil, nil
 	}
@@ -636,7 +662,7 @@ func (m *MicrosandboxRuntime) syncProjectSecretDelivery(ctx context.Context, bin
 		return fmt.Errorf("recording the applied project secret inventory: %w", err)
 	}
 	if len(managed) > 0 {
-		fmt.Printf("Published %d managed project secret file(s) into the guest workspace.\n", len(managed))
+		m.say("Published %d managed project secret file(s) into the guest workspace.", len(managed))
 	}
 	return nil
 }
@@ -662,9 +688,9 @@ func (m *MicrosandboxRuntime) projectSecretFileDeliveries(ctx context.Context, s
 	if guestReadable > 0 {
 		// The warning is the point of the separate approval: it is repeated at
 		// every start because the exposure lasts as long as the sandbox does.
-		fmt.Fprintf(os.Stderr, "Warning: %d project secret(s) are delivered readable inside %s. "+
+		m.warn(fmt.Sprintf("%d secret(s) lisible(s) par l'agent et conservé(s) dans les snapshots ; détail : just-code secrets bindings list", guestReadable), "Warning: %d project secret(s) are delivered readable inside %s. "+
 			"Everything running in that sandbox, including the agent, can read them; they are readable for as long as the sandbox holds them, "+
-			"and a snapshot taken now captures them. Run 'just-code secrets bindings list' to review.\n",
+			"and a snapshot taken now captures them. Run 'just-code secrets bindings list' to review.",
 			guestReadable, m.InstanceName())
 	}
 	return out, nil
@@ -753,22 +779,34 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 			if err := m.waitForToolchain(ctx); err != nil {
 				return err
 			}
-			fmt.Printf("%s is running (isolation full; the TUI runs inside the microVM).\n", m.InstanceName())
+			if !m.Launch.IsFirstStart() {
+				m.Launch.AnnounceWarmStart()
+			}
+			m.say("%s is running (isolation full; the TUI runs inside the microVM).", m.InstanceName())
 			return nil
 		}
 		if m.backendHealthy(ctx) {
-			fmt.Printf("%s is running with a healthy OpenCode backend.\n", m.InstanceName())
+			m.Launch.AnnounceWarmStart()
+			m.say("%s is running with a healthy OpenCode backend.", m.InstanceName())
 			return nil
 		}
+		// The machine is up but its agent is not: a restart of the backend,
+		// not an installation, so the expectation is the warm one.
+		m.Launch.AnnounceWarmStart()
 		if err := beforeBackendLaunch(); err != nil {
 			return err
 		}
-		fmt.Printf("%s is running but the OpenCode backend is not responding; restarting it inside the microVM...\n", m.InstanceName())
+		m.say("%s is running but the OpenCode backend is not responding; restarting it inside the microVM...", m.InstanceName())
 		return m.launchBackend(ctx)
 	}
 
 	if exists {
-		fmt.Printf("Starting %s...\n", m.InstanceName())
+		// A sandbox that already exists has its toolchain installed: this
+		// start is the quick one, and must not be announced as an install.
+		if m.cfg.Isolation != IsolationFull {
+			m.Launch.AnnounceWarmStart()
+		}
+		m.say("Starting %s...", m.InstanceName())
 		// Both isolation modes use the same secret-proxy configuration: the
 		// guest environment carries the placeholder, never the real key. The
 		// reference re-resolves from this process's environment at boot, so a
@@ -794,7 +832,10 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 			if err := m.waitForToolchain(ctx); err != nil {
 				return err
 			}
-			fmt.Printf("%s started (isolation full; the TUI runs inside the microVM).\n", m.InstanceName())
+			if !m.Launch.IsFirstStart() {
+				m.Launch.AnnounceWarmStart()
+			}
+			m.say("%s started (isolation full; the TUI runs inside the microVM).", m.InstanceName())
 			return nil
 		}
 		// Booting a stopped VM does not re-run the container entrypoint, so the
@@ -803,12 +844,15 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 		if err := beforeBackendLaunch(); err != nil {
 			return err
 		}
-		fmt.Printf("Launching OpenCode inside %s...\n", m.InstanceName())
+		m.say("Launching OpenCode inside %s...", m.InstanceName())
 		return m.launchBackend(ctx)
 	}
 
-	fmt.Printf("Creating %s microVM...\n", m.InstanceName())
-	fmt.Println("First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.")
+	// Creating the sandbox is the first start: the guest has no toolchain yet
+	// and the installer has to run before anything can be said about readiness.
+	m.Launch.AnnounceFirstStart()
+	m.say("Creating %s microVM...", m.InstanceName())
+	m.say("First start installs the toolchain inside the microVM (build-base, node, python); this can take several minutes.")
 	if err := m.Client.Create(ctx, m.sandboxSpec(bindings)); err != nil {
 		return err
 	}
@@ -827,7 +871,7 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 	// (which installs the toolchain and then execs `opencode serve`, or keeps
 	// the VM alive in full mode) is never run by creation itself. Launch it
 	// explicitly, the same way a restarted VM would.
-	fmt.Printf("Launching the start script inside %s...\n", m.InstanceName())
+	m.say("Launching the start script inside %s...", m.InstanceName())
 	if err := m.launchBackend(ctx); err != nil {
 		return err
 	}
@@ -867,9 +911,15 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 				return nil
 			case code == msbPrepareProgress:
 				// The installer is alive; keep waiting.
+				if !m.Launch.IsFirstStart() {
+					m.Launch.AnnounceFirstStart()
+				}
 			case code == msbPrepareIdle && relaunches < msbToolchainRelaunchLimit:
+				if !m.Launch.IsFirstStart() {
+					m.Launch.AnnounceFirstStart()
+				}
 				relaunches++
-				fmt.Printf("Nothing is preparing the guest in %s; launching the start script...\n", m.InstanceName())
+				m.say("Nothing is preparing the guest in %s; launching the start script...", m.InstanceName())
 				if err := m.launchBackend(ctx); err != nil {
 					return err
 				}
@@ -878,7 +928,7 @@ func (m *MicrosandboxRuntime) waitForToolchain(ctx context.Context) error {
 		if first {
 			// Quiet in the common case (sandbox already prepared); the wait
 			// message only makes sense when there is something to wait for.
-			fmt.Println("Waiting for the guest toolchain to finish installing...")
+			m.say("Waiting for the guest toolchain to finish installing...")
 		}
 		select {
 		case <-time.After(delay):
@@ -927,11 +977,12 @@ func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
 	}
 	name, email := guestGitIdentity(m.guestGitConfig())
 	env := map[string]string{
-		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
-		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
-		"OPENCODE_CONFIG_CONTENT":  content,
-		msbGitNameEnv:              name,
-		msbGitEmailEnv:             email,
+		"OPENCODE_DISABLE_AUTOUPDATE": "1",
+		"OPENCODE_SERVER_PASSWORD":    m.cfg.Password,
+		"OPENCODE_SERVER_USERNAME":    m.cfg.Username,
+		"OPENCODE_CONFIG_CONTENT":     content,
+		msbGitNameEnv:                 name,
+		msbGitEmailEnv:                email,
 	}
 	for key, value := range browserGuestEnv(m.OpenCodeOverlay.MCPConnectors) {
 		env[key] = value
@@ -952,9 +1003,10 @@ func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
 		content = opencodeConfigContent
 	}
 	env := map[string]string{
-		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
-		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
-		"OPENCODE_CONFIG_CONTENT":  content,
+		"OPENCODE_DISABLE_AUTOUPDATE": "1",
+		"OPENCODE_SERVER_PASSWORD":    m.cfg.Password,
+		"OPENCODE_SERVER_USERNAME":    m.cfg.Username,
+		"OPENCODE_CONFIG_CONTENT":     content,
 	}
 	// The commit identity for guest work (P11 settings, documented defaults
 	// otherwise). It is configuration, not a secret.
@@ -1146,10 +1198,23 @@ func (m *MicrosandboxRuntime) rejectFullServerPortForwarding(ctx context.Context
 	return nil
 }
 
+// workspaceHygieneCounts reports how many files in the host checkout look like
+// secrets. It is a measurement only: it never blocks, because under the sealed
+// model the checkout is not mounted and the transfer filter refuses these
+// files at the guest boundary. How the number is presented is the caller's
+// decision — the plain path prints the detail block, the first-launch
+// checklist (issue #172) folds it into a single line.
+func workspaceHygieneCounts(ctx context.Context, dir string) (dotenv, secrets int) {
+	res, err := ScanWorkspace(ctx, dir)
+	if err != nil {
+		return 0, 0
+	}
+	return len(res.DotenvFiles), len(res.GitleaksFindings)
+}
+
 // warnWorkspaceHygiene prints host-side advice about secrets sitting in the
-// checkout. It never blocks: the sealed model does not mount the checkout, so
-// these files cannot reach the guest — the transfer filter refuses them — and
-// a block here would be advice pretending to be a security boundary.
+// checkout, in full. A block here would be advice pretending to be a security
+// boundary, so this is guidance, never a gate.
 func warnWorkspaceHygiene(ctx context.Context, dir string) {
 	res, err := ScanWorkspace(ctx, dir)
 	if err != nil {
@@ -1164,8 +1229,20 @@ func warnWorkspaceHygiene(ctx context.Context, dir string) {
 		fmt.Fprintf(os.Stderr, "  dotenv file (excluded from transfer): %s\n", f)
 	}
 	for _, f := range res.GitleaksFindings {
-		fmt.Fprintf(os.Stderr, "  gitleaks (excluded from transfer): %s\n", f)
+		fmt.Fprintf(os.Stderr, "  secret found in the checkout (excluded from transfer): %s\n", f)
 	}
+}
+
+// noteWorkspaceHygiene is the launch-aware form of the host-checkout advice.
+// During a first launch (issue #172) the copy line of the checklist already
+// says how many files stayed behind, so the English block would state the same
+// fact twice; it is dropped and `just-code doctor` keeps the detail. Anywhere
+// else the block prints as before, so scripts, CI and plain starts lose nothing.
+func (m *MicrosandboxRuntime) noteWorkspaceHygiene(ctx context.Context) {
+	if m.Launch != nil {
+		return
+	}
+	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
 }
 
 // rejectIsolationMismatch compares the isolation mode the sandbox was
@@ -1393,7 +1470,16 @@ func (m *MicrosandboxRuntime) RunAgent(ctx context.Context) error {
 	}
 	resumeArgs, warn := OpenCodeResumeArgs(hasSessions, listErr, help+"\n"+stderr, probeErr)
 	if warn {
-		WarnOpenCodeResumeUnavailable("dans le sandbox Microsandbox")
+		if m.Launch != nil && m.Launch.Terminal {
+			m.Launch.AddWarning("reprise automatique indisponible ; les sessions restent accessibles dans OpenCode")
+		} else {
+			WarnOpenCodeResumeUnavailable("dans le sandbox Microsandbox")
+		}
+	}
+	if m.Launch != nil && m.Launch.Terminal {
+		for _, line := range m.Launch.Checklist() {
+			fmt.Fprintln(os.Stderr, line)
+		}
 	}
 	code, err := m.Client.AttachInteractive(ctx, m.InstanceName(), "opencode", resumeArgs, "/workspace")
 	if err != nil {

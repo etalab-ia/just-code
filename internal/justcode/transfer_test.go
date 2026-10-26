@@ -375,14 +375,22 @@ func TestTransferFindingPathMappingHandlesBothConventions(t *testing.T) {
 					t.Fatalf("a flagged file must not cross: %v", man.Included())
 				}
 			}
-			var reason string
+			var flagged TransferEntry
 			for _, e := range man.Excluded() {
 				if e.Rel == "src/config.txt" {
-					reason = e.Reason
+					flagged = e
 				}
 			}
-			if !strings.Contains(reason, "gitleaks") || !strings.Contains(reason, "generic-api-key") {
-				t.Fatalf("exclusion reason = %q", reason)
+			if flagged.Exclusion != TransferExclusionSecret {
+				t.Fatalf("exclusion category = %q, want %q", flagged.Exclusion, TransferExclusionSecret)
+			}
+			// The rule identifier says what was found and stays; the
+			// scanner's name is an internal dependency and does not.
+			if !strings.Contains(flagged.Reason, "generic-api-key") {
+				t.Fatalf("the reason must keep the rule identifier: %q", flagged.Reason)
+			}
+			if strings.Contains(strings.ToLower(flagged.Reason), "gitleaks") {
+				t.Fatalf("the reason must not name the scanner: %q", flagged.Reason)
 			}
 			// An unflagged sibling still crosses: the filter is precise.
 			var crossed bool
@@ -445,8 +453,11 @@ func TestTransferWithoutGitleaksStillFiltersNames(t *testing.T) {
 	if !man.GitleaksMissing {
 		t.Fatal("the manifest must report that detection did not run")
 	}
-	if !strings.Contains(man.Summary(), "gitleaks is not installed") {
+	if !strings.Contains(man.Summary(), "secret detection did not run") {
 		t.Fatalf("the summary must warn: %q", man.Summary())
+	}
+	if strings.Contains(strings.ToLower(man.Summary()), "gitleaks") {
+		t.Fatalf("the summary must not name the scanner: %q", man.Summary())
 	}
 	for _, e := range man.Included() {
 		if e.Rel == ".env" {
@@ -594,5 +605,169 @@ func TestStructuralExclusionsCannotBeOverridden(t *testing.T) {
 	}
 	if !envIncluded {
 		t.Fatalf("a dotenv exclusion must remain overridable by an explicit decision: %+v", man.Entries)
+	}
+}
+
+// TestTransferExclusionCategoryClassifiesEveryRefusal pins the structured
+// category (issue #172): each refusal class carries a stable value a caller
+// can count, an included entry carries none, and a re-included path counts as
+// crossed — so counting never has to match the reason prose.
+func TestTransferExclusionCategoryClassifiesEveryRefusal(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "keep.txt", "keep\n")
+	writeFile(t, dir, ".gitignore", "*.log\n")
+	writeFile(t, dir, "debug.log", "log\n")
+	writeFile(t, dir, ".env", "SECRET=1\n")
+	writeFile(t, dir, "flagged.txt", "password: \"hunter2correcthorsebatterystaple12345\"\n")
+	writeFile(t, dir, "big.bin", strings.Repeat("x", 4096))
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	gitInitForTransfer(t, dir)
+	withFindings(t, []gitleaksFinding{{
+		RuleID: "generic-api-key", File: "flagged.txt", Line: 1, Match: "REDACTED",
+	}})
+
+	man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{MaxFileBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]TransferExclusion{
+		"keep.txt":    TransferExclusionNone,
+		"debug.log":   TransferExclusionGitIgnored,
+		".env":        TransferExclusionDotenv,
+		"flagged.txt": TransferExclusionSecret,
+		"big.bin":     TransferExclusionSizeCap,
+		"link":        TransferExclusionSymlink,
+	}
+	state := map[string]TransferEntry{}
+	for _, e := range man.Entries {
+		state[e.Rel] = e
+	}
+	for rel, wantCat := range want {
+		e, ok := state[rel]
+		if !ok {
+			t.Fatalf("%s is missing from the manifest: %v", rel, man.Entries)
+		}
+		if e.Exclusion != wantCat {
+			t.Fatalf("%s exclusion category = %q, want %q (reason %q)", rel, e.Exclusion, wantCat, e.Reason)
+		}
+	}
+	// The invariant counting relies on: a category is present exactly when
+	// the file did not cross.
+	for _, e := range man.Entries {
+		if (e.Exclusion == TransferExclusionNone) != e.Included {
+			t.Fatalf("exclusion %q and included=%t disagree for %s", e.Exclusion, e.Included, e.Rel)
+		}
+	}
+
+	// An explicit re-inclusion counts as crossed: the overridden rule stays
+	// in the reason prose, but the category stays empty, so a count of
+	// exclusions cannot double-count a file the user chose to send.
+	man, err = ResolveTransferSet(context.Background(), dir, TransferOptions{
+		MaxFileBytes: 1024,
+		OptIn:        map[string]bool{".env": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range man.Entries {
+		if e.Rel != ".env" {
+			continue
+		}
+		if !e.Included || !e.OptIn || e.Exclusion != TransferExclusionNone {
+			t.Fatalf("a re-included file must count as crossed: %+v", e)
+		}
+	}
+}
+
+// TestTransferExclusionCountSeparatesDotenvFromSecrets pins the counting
+// contract the first-launch checklist (issue #172) relies on: how many
+// environment files and how many sensitive files stayed behind comes from
+// structured categories, never from matching the reason prose.
+func TestTransferExclusionCountSeparatesDotenvFromSecrets(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n")
+	writeFile(t, dir, ".env", "A=1\n")
+	writeFile(t, dir, ".env.staging", "B=2\n")
+	writeFile(t, dir, "prod.conf", "api_key: \"hunter2correcthorsebatterystaple12345\"\n")
+	writeFile(t, dir, "token.txt", "token: \"hunter2correcthorsebatterystaple12345\"\n")
+	gitInitForTransfer(t, dir)
+	withFindings(t, []gitleaksFinding{
+		{RuleID: "generic-api-key", File: "prod.conf", Line: 1, Match: "REDACTED"},
+		{RuleID: "generic-api-key", File: "token.txt", Line: 1, Match: "REDACTED"},
+	})
+
+	man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := man.ExclusionCount(TransferExclusionDotenv); got != 2 {
+		t.Fatalf("dotenv exclusions = %d, want 2 (excluded: %v)", got, man.Excluded())
+	}
+	if got := man.ExclusionCount(TransferExclusionSecret); got != 2 {
+		t.Fatalf("secret exclusions = %d, want 2 (excluded: %v)", got, man.Excluded())
+	}
+	if got := man.ExclusionCount(TransferExclusionGitIgnored); got != 0 {
+		t.Fatalf("git-ignored exclusions = %d, want 0", got)
+	}
+	if got := man.ExclusionCount(TransferExclusionNone); got != 0 {
+		t.Fatalf("counting the none category = %d, want 0 (it means the file crossed)", got)
+	}
+}
+
+// TestTransferUserVisibleTextNamesNoScanner pins the acceptance criterion
+// from issue #172: nothing the user reads names the detection tool. The tool
+// remains an internal dependency of the filter, so its name may survive only
+// where the user must type it — the remediation command.
+func TestTransferUserVisibleTextNamesNoScanner(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n")
+	writeFile(t, dir, ".env", "SECRET=1\n")
+	gitInitForTransfer(t, dir)
+
+	// Degraded mode: the summary warns about what did not run, without
+	// naming what is missing.
+	withNoGitleaks(t)
+	man, err := ResolveTransferSet(context.Background(), dir, TransferOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(man.Summary()), "gitleaks") {
+		t.Fatalf("the summary must not name the scanner: %q", man.Summary())
+	}
+	for _, e := range man.Entries {
+		if strings.Contains(strings.ToLower(e.Reason), "gitleaks") {
+			t.Fatalf("the reason for %s must not name the scanner: %q", e.Rel, e.Reason)
+		}
+	}
+
+	// Unattributable findings: the summary's warning and the transfer's
+	// refusal stay tool-free, except for the command the user may run.
+	withFindings(t, []gitleaksFinding{{
+		RuleID: "generic-api-key", File: "/elsewhere/other/config.txt", Line: 1, Match: "REDACTED",
+	}})
+	man, err = ResolveTransferSet(context.Background(), dir, TransferOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.UnmappedFindings) == 0 {
+		t.Fatal("an unattributable finding must be recorded")
+	}
+	if strings.Contains(strings.ToLower(man.Summary()), "gitleaks") {
+		t.Fatalf("the summary must not name the scanner: %q", man.Summary())
+	}
+	client := &fakeMSBClient{exists: true, execCaptureResults: []fakeMSBExecCaptureResult{{stdout: "no"}}}
+	m := newTestMicrosandbox(t, client)
+	m.cfg.WorkspaceDir = dir
+	err = m.ProvisionGuestWorkspace(context.Background(), SyncOptions{Print: func(string) {}})
+	if err == nil {
+		t.Fatal("provisioning must refuse while a finding cannot be attributed")
+	}
+	if strings.Contains(err.Error(), "gitleaks reported") {
+		t.Fatalf("the refusal must not name the scanner: %v", err)
+	}
+	if !strings.Contains(err.Error(), "just-code workspace status") {
+		t.Fatalf("the remediation command must keep its name: %v", err)
 	}
 }

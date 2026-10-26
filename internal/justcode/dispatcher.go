@@ -19,6 +19,31 @@ type Dispatcher struct {
 	// Runner is used only by the migration cleanup for the removed Docker
 	// runtime; each backend carries its own.
 	Runner Runner
+	Launch *LaunchUX
+}
+
+// SetLaunchUX attaches the concise launch report to the supported runtime.
+func (d *Dispatcher) SetLaunchUX(u *LaunchUX) {
+	d.Launch = u
+	if m, ok := d.backends[RuntimeMicrosandbox].(*MicrosandboxRuntime); ok {
+		m.Launch = u
+		image := msbImage
+		if m.cfg.Isolation == IsolationFull {
+			image = msbBrowserImage
+		}
+		if u != nil {
+			u.TimingKey = LaunchTimingKeyFor(m.cfg, image)
+		}
+	}
+}
+
+// RecordLaunchSkills runs after a successful start has reconciled the skills.
+func (d *Dispatcher) RecordLaunchSkills() {
+	var names []string
+	for _, skill := range d.cfg.ProjectSkills {
+		names = append(names, skill.ID)
+	}
+	d.Launch.RecordSkills(names)
 }
 
 // NewDispatcher builds a dispatcher over the runtimes for a config. Without

@@ -3,9 +3,60 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
+
+var launchTrustTTYFn = isTTY
+var launchTrustChoiceFn = func(detail string) (string, error) {
+	choice := "quit"
+	err := huhRun(huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().Title("Ce projet peut exécuter des plugins et des commandes MCP.").
+			Description(detail).Options(
+			huh.NewOption("Approuver et démarrer", "approve"),
+			huh.NewOption("Voir le détail", "detail"),
+			huh.NewOption("Quitter", "quit"),
+		).Value(&choice),
+	)))
+	return choice, err
+}
+
+func approveLaunchInputs(root string, inputs []justcode.UnapprovedInput) error {
+	var paths []string
+	for _, input := range inputs {
+		paths = append(paths, input.Path+" ("+input.Reason+")")
+	}
+	declared, err := justcode.DiscoverProjectExecutionInputs(root)
+	if err != nil {
+		return err
+	}
+	for _, plugin := range declared.Plugins {
+		paths = append(paths, "Plugin : "+plugin)
+	}
+	for _, command := range declared.MCPCommands {
+		paths = append(paths, "Commande MCP : "+command)
+	}
+	for _, endpoint := range declared.MCPEndpoints {
+		paths = append(paths, "Service MCP : "+endpoint)
+	}
+	detail := fmt.Sprintf("%d entrée(s) à approuver. L'approbation reste sur ce poste et porte sur leur contenu actuel.", len(inputs))
+	for {
+		choice, err := launchTrustChoiceFn(detail)
+		if err != nil {
+			return err
+		}
+		switch choice {
+		case "approve":
+			return justcode.ApproveReviewedInputs(justcode.DefaultFS, justcode.DefaultStateDir(), root, inputs)
+		case "detail":
+			detail = strings.Join(paths, "\n")
+		default:
+			return fmt.Errorf("démarrage annulé ; aucune entrée approuvée")
+		}
+	}
+}
 
 // trustCmd implements `just-code trust <subcommand>` (P10): the host-local
 // approval of execution-relevant project OpenCode inputs (project plugins,

@@ -137,6 +137,8 @@ type UnapprovedInput struct {
 	Path string
 	// Reason is "unapproved" or "changed".
 	Reason string
+	// Hash pins the content presented for interactive review. Empty is unreadable.
+	Hash string
 }
 
 func DiscoverUnapprovedInputs(fs FS, stateDir, projectRoot string) ([]UnapprovedInput, error) {
@@ -165,9 +167,9 @@ func DiscoverUnapprovedInputs(fs FS, stateDir, projectRoot string) ([]Unapproved
 		prior, was := approved[rel]
 		switch {
 		case !was:
-			out = append(out, UnapprovedInput{Path: rel, Reason: "unapproved"})
+			out = append(out, UnapprovedInput{Path: rel, Reason: "unapproved", Hash: hash})
 		case prior != hash:
-			out = append(out, UnapprovedInput{Path: rel, Reason: "changed since approval"})
+			out = append(out, UnapprovedInput{Path: rel, Reason: "changed since approval", Hash: hash})
 		}
 	}
 	// The config file (when it declares plugins or MCP commands) is itself
@@ -183,6 +185,42 @@ func DiscoverUnapprovedInputs(fs FS, stateDir, projectRoot string) ([]Unapproved
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// ApproveReviewedInputs approves only the hashes shown before the prompt, never
+// newly discovered content. Changed or added inputs still fail the launch gate.
+func ApproveReviewedInputs(fs FS, stateDir, root string, reviewed []UnapprovedInput) error {
+	record, err := ReadTrustRecord(fs, stateDir, root)
+	if err != nil {
+		return err
+	}
+	for _, input := range reviewed {
+		hash, err := hashFileContent(root, input.Path)
+		if err != nil || input.Hash == "" || hash != input.Hash {
+			return fmt.Errorf("%s a changé ou ne peut pas être lu ; relancez la vérification", input.Path)
+		}
+	}
+	for _, input := range reviewed {
+		prefix := input.Path + ":"
+		kept := record.Approved[:0]
+		for _, entry := range record.Approved {
+			if !strings.HasPrefix(entry, prefix) {
+				kept = append(kept, entry)
+			}
+		}
+		record.Approved = append(kept, prefix+input.Hash)
+	}
+	if err := WriteTrustRecord(fs, stateDir, root, record); err != nil {
+		return err
+	}
+	remaining, err := DiscoverUnapprovedInputs(fs, stateDir, root)
+	if err != nil {
+		return err
+	}
+	if len(remaining) > 0 {
+		return fmt.Errorf("les entrées du projet ont changé ; relancez la vérification")
+	}
+	return nil
 }
 
 // ApproveExecutionInputs records approval for every currently discovered

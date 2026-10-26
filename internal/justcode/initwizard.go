@@ -656,7 +656,7 @@ func FormatInitReview(plan InitPlan) string {
 	b.WriteString("  Managed MCP changes apply on the next launch, which may restart a running guest non-destructively.\n")
 	if a.Runtime == RuntimeMicrosandbox {
 		b.WriteString("\nThe guest receives a filtered copy of the project: .env files, ignored files,\n" +
-			"symlinks and anything gitleaks flags are excluded by default ('just-code workspace status').\n")
+			"symlinks and files flagged by secret detection are excluded by default ('just-code workspace status').\n")
 	} else {
 		b.WriteString("\nThis runtime MOUNTS the project into the guest: everything in it is readable there,\n" +
 			"including any secret it holds (a .env file blocks the start).\n")
