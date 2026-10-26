@@ -79,13 +79,40 @@ just-code auth add github
 just-code init --github
 ```
 
-L'assistant vérifie que le projet a un `origin` GitHub.com et que le jeton est
-stocké. L'approbation reste locale à l'hôte ; elle n'apparaît ni dans le
-manifeste ni dans le dépôt. Pour un projet déjà initialisé, utilise
-`just-code bindings approve github` après avoir stocké le jeton. Le parcours
-sans `--github` n'ajoute aucune approbation et ne modifie pas les approbations
-existantes. Sans approbation locale, `gh` n'est pas installé par just-code.
-Pour désactiver un accès déjà approuvé : `just-code bindings revoke github`.
+L'approbation reste locale à l'hôte ; elle n'apparaît ni dans le manifeste ni
+dans le dépôt. Pour un projet déjà initialisé, utilise
+`just-code bindings approve github` après avoir stocké le jeton. Sans
+approbation locale, `gh` n'est pas installé par just-code. Pour désactiver un
+accès déjà approuvé : `just-code bindings revoke github`.
+
+L'étape GitHub de `init` vérifie sur son propre écran et affiche un écran
+distinct par situation :
+
+- **dépôt et jeton avec les bons droits** : le dépôt détecté et le compte du
+  jeton sont affichés, puis la question d'autorisation, qui répond **Oui** par
+  défaut. Les droits annoncés sont réellement vérifiés : la lecture du dépôt,
+  le rôle d'écriture, et la permission Pull requests dont dépend la pull
+  request en brouillon promise à l'écran. Le rôle d'écriture ne suffit pas à
+  lui seul : un jeton peut pousser sur le dépôt sans pouvoir ouvrir de pull
+  request ;
+- **projet non relié à GitHub** : l'écran explique que les modifications se
+  récupèrent avec `just-code workspace apply`, et propose de continuer ou de
+  quitter pour relier le projet ;
+- **dépôt détecté mais aucun jeton enregistré** : l'écran propose d'ajouter un
+  jeton maintenant (même écran qu'au `setup`) ou de le faire plus tard ;
+- **vérification impossible** : réseau injoignable ou quota GitHub atteint.
+  L'écran le dit et propose `Revérifier`, plutôt que de conclure à tort à un
+  problème de droits ;
+- **jeton présent mais droits insuffisants** : l'écran distingue quatre causes
+  — le jeton n'a pas accès au dépôt, il lui manque Contents et Pull requests en
+  écriture, l'organisation n'a pas encore approuvé le jeton, ou GitHub ne
+  l'accepte plus — puis propose `Revérifier` ou `Continuer sans GitHub`.
+
+`Revérifier` relance la vérification sans quitter l'assistant : une correction
+faite sur GitHub est prise en compte immédiatement, et aucune réponse déjà
+donnée n'est perdue. `--github` applique la même vérification avant d'écrire
+quoi que ce soit : sans `origin`, sans jeton, ou avec des droits insuffisants,
+la commande échoue en nommant la cause.
 
 Au premier lancement approuvé, just-code installe GitHub CLI 2.100.0 dans la
 microVM uniquement, vérifie son empreinte, puis teste l'authentification,

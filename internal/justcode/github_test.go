@@ -2,6 +2,9 @@ package justcode
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +12,166 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestSplitGitHubSlug(t *testing.T) {
+	for _, tt := range []struct {
+		slug       string
+		wantOwner  string
+		wantRepo   string
+		wantPieces bool
+	}{
+		{slug: "owner/repo", wantOwner: "owner", wantRepo: "repo", wantPieces: true},
+		{slug: "a/b/c", wantOwner: "a", wantRepo: "b/c", wantPieces: true},
+		{slug: "owner", wantPieces: false},
+		{slug: "", wantPieces: false},
+	} {
+		owner, repo := splitGitHubSlug(tt.slug)
+		if tt.wantPieces {
+			if owner != tt.wantOwner || repo != tt.wantRepo {
+				t.Fatalf("splitGitHubSlug(%q) = %q, %q; want %q, %q", tt.slug, owner, repo, tt.wantOwner, tt.wantRepo)
+			}
+		} else if owner != "" || repo != "" {
+			t.Fatalf("splitGitHubSlug(%q) = %q, %q; want empty", tt.slug, owner, repo)
+		}
+	}
+}
+
+func TestProbeGitHubProjectAt(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		userStatus int
+		userBody   string
+		repoStatus int
+		repoBody   string
+		// exhaustedRateLimit sends the header GitHub sets when the window is
+		// spent, which must be read as "unknown", not as insufficient rights.
+		exhaustedRateLimit bool
+		// pullsStatus is the answer from the pull-request listing, which needs
+		// the Pull requests permission; zero means "OK, empty list".
+		pullsStatus int
+		// pullsThrottled marks that answer as a spent rate limit rather than a
+		// permission refusal.
+		pullsThrottled bool
+		wantLogin      string
+		wantRights     GitHubRepoRights
+	}{
+		{
+			name:       "read and push is OK",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsOK,
+		},
+		{
+			// A fine-grained token can report push access (a repository role)
+			// and still lack the Pull requests permission, in which case the
+			// draft PR the wizard promises would be rejected. Both must hold.
+			name:       "push without pull-request access is insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			pullsStatus: http.StatusForbidden,
+			wantLogin:   "kai", wantRights: GitHubRepoRightsInsufficient,
+		},
+		{
+			// A throttle on the pull-request check must not be reported as a
+			// rights problem: the token may be fine and the remedy is to retry.
+			name:       "throttled pull-request check is unknown, not insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			pullsStatus: http.StatusForbidden, pullsThrottled: true,
+			wantLogin: "kai", wantRights: GitHubRepoRightsUnknown,
+		},
+		{
+			name:       "read without push is insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":false}}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsInsufficient,
+		},
+		{
+			name:       "404 is no access",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusNotFound, repoBody: `{"message":"Not Found"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsNoAccess,
+		},
+		{
+			name:       "401 is invalid",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusUnauthorized, repoBody: `{"message":"Bad credentials"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsInvalid,
+		},
+		{
+			name:       "403 with organization hint is org pending",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"the organization has not approved access"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsOrgPending,
+		},
+		{
+			name:       "403 without organization hint is insufficient",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"Resource not accessible by personal access token"}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsInsufficient,
+		},
+		{
+			name:       "403 rate limit is unknown, not insufficient rights",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"API rate limit exceeded for user ID 1."}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsUnknown,
+		},
+		{
+			name:       "403 with exhausted rate limit header is unknown",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"Forbidden"}`,
+			exhaustedRateLimit: true,
+			wantLogin:          "kai", wantRights: GitHubRepoRightsUnknown,
+		},
+		{
+			name:       "403 saml enforcement is its own cause",
+			userStatus: http.StatusOK, userBody: `{"login":"kai"}`,
+			repoStatus: http.StatusForbidden, repoBody: `{"message":"Resource protected by organization SAML enforcement. You must grant your token access to this organization."}`,
+			wantLogin: "kai", wantRights: GitHubRepoRightsSSO,
+		},
+		{
+			name:       "user endpoint failure still classifies from the repo",
+			userStatus: http.StatusInternalServerError, userBody: ``,
+			repoStatus: http.StatusOK, repoBody: `{"permissions":{"push":true}}`,
+			wantLogin: "", wantRights: GitHubRepoRightsOK,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.pullsStatus == 0 {
+				tt.pullsStatus = http.StatusOK
+			}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.userStatus)
+				w.Write([]byte(tt.userBody))
+			})
+			mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+				if tt.pullsThrottled {
+					w.Header().Set("X-RateLimit-Remaining", "0")
+				}
+				w.WriteHeader(tt.pullsStatus)
+				w.Write([]byte(`[]`))
+			})
+			mux.HandleFunc("/repos/", func(w http.ResponseWriter, r *http.Request) {
+				if tt.exhaustedRateLimit {
+					w.Header().Set("X-RateLimit-Remaining", "0")
+				}
+				w.WriteHeader(tt.repoStatus)
+				w.Write([]byte(tt.repoBody))
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			got := probeGitHubProjectAt(context.Background(), srv.Client(), "tok", "owner", "repo", srv.URL+"/user", srv.URL+"/repos/owner/repo", srv.URL+"/repos/owner/repo/pulls")
+			if got.login != tt.wantLogin {
+				t.Fatalf("login = %q, want %q", got.login, tt.wantLogin)
+			}
+			if got.rights != tt.wantRights {
+				t.Fatalf("rights = %v, want %v", got.rights, tt.wantRights)
+			}
+		})
+	}
+}
 
 func TestParseGitHubRemote(t *testing.T) {
 	for _, tt := range []struct {
@@ -475,5 +638,54 @@ func runGitTest(t *testing.T, root string, args ...string) {
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+filepath.Join(root, "empty-gitconfig"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestProbeGitHubForProjectDistinguishesStoreFailure pins that a store that
+// cannot be read is NOT reported as "no token stored": the two situations have
+// different remedies (unlock the store, versus add a token), so the init screen
+// must not guess. A missing credential stays the ordinary case.
+func TestProbeGitHubForProjectDistinguishesStoreFailure(t *testing.T) {
+	remote := GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}
+	origin := func(context.Context, string) (GitHubRemote, error) { return remote, nil }
+
+	// Not found: an ordinary "no token yet" project.
+	notFound := func(context.Context, CredentialKind) (string, error) { return "", ErrCredentialNotFound }
+	st := probeGitHubForProjectWith(context.Background(), "/p", nil, origin, notFound)
+	if st.TokenError != nil || st.HasToken {
+		t.Fatalf("a missing credential must read as no token, got %+v", st)
+	}
+	if !st.HasOrigin || st.Remote != remote {
+		t.Fatalf("the origin must still be reported, got %+v", st)
+	}
+
+	// Locked store: a real problem, not an invitation to add a token.
+	locked := func(context.Context, CredentialKind) (string, error) {
+		return "", &StoreError{Op: "get", Kind: string(CredentialGithub), State: "locked"}
+	}
+	st = probeGitHubForProjectWith(context.Background(), "/p", nil, origin, locked)
+	if st.TokenError == nil || st.HasToken {
+		t.Fatalf("a locked store must surface as a store error, got %+v", st)
+	}
+}
+
+// TestProbeGitHubForProjectWithoutOrigin skips the credential read entirely:
+// a project with no GitHub link is its own situation, and asking for a token
+// there would offer a step the origin cannot support.
+func TestProbeGitHubForProjectWithoutOrigin(t *testing.T) {
+	read := false
+	noOrigin := func(context.Context, string) (GitHubRemote, error) {
+		return GitHubRemote{}, errors.New("no readable origin remote")
+	}
+	readFn := func(context.Context, CredentialKind) (string, error) {
+		read = true
+		return "tok", nil
+	}
+	st := probeGitHubForProjectWith(context.Background(), "/p", nil, noOrigin, readFn)
+	if st.HasOrigin || st.HasToken || st.TokenError != nil {
+		t.Fatalf("an unlinked project must be reported as such, got %+v", st)
+	}
+	if read {
+		t.Fatal("the credential store must not be read when the project has no origin")
 	}
 }
