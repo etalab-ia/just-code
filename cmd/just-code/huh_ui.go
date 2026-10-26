@@ -51,6 +51,25 @@ var huhRun = func(form *huh.Form) error {
 	return form.WithProgramOptions(tea.WithOutput(os.Stdout)).Run()
 }
 
+// huhApplyKeyFilter adds the recap's local `d` binding without discarding
+// stdout routing or any other program options installed by the runner.
+func huhApplyKeyFilter(instructionsChanged bool, showDiff *bool) tea.ProgramOption {
+	return tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+		key, ok := msg.(tea.KeyPressMsg)
+		if ok && key.String() == "d" && instructionsChanged {
+			*showDiff = !*showDiff
+			// Reopen the form with the same selected action and the new
+			// description. No answer or network result is discarded.
+			return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+		}
+		return msg
+	})
+}
+
+// huhApplyRun keeps the program options installed by the recap, including its
+// `d` filter. Replacing the options here would silently discard that binding.
+var huhApplyRun = func(form *huh.Form) error { return form.Run() }
+
 // The init wizard's MultiSelects carry their selection keys in the
 // description: huh toggles with space or x and Enter only confirms the list,
 // and nothing else on the screen says so. Testers completed init believing
@@ -303,30 +322,49 @@ func huhConfirm(title, description string, defaultYes bool) (bool, error) {
 	return value, nil
 }
 
-// huhApplyChoice presents the configuration table and the review question in
-// one huh form: apply, edit, open the advanced settings (#170) or cancel.
+// huhApplyChoice presents the interactive recap and lets the user inspect the
+// managed AGENTS.md diff without rebuilding the plan or probing MCPs again.
 func huhApplyChoice(plan justcode.InitPlan) (string, error) {
 	choice := "apply"
-	err := huhRun(huh.NewForm(
-		huh.NewGroup(
-			huh.NewNote().
-				Title("Configuration recap").
-				Description(huhReviewDescription(plan)),
-			huh.NewSelect[string]().
-				Title("Apply this configuration?").
-				Options(
-					huh.NewOption("Apply — write the manifest and lockfile", "apply"),
-					huh.NewOption("Edit — reopen the questions with the current answers", "edit"),
-					huh.NewOption("Réglages avancés — machine isolée, isolation, ressources", "advanced"),
-					huh.NewOption("Cancel — write nothing", "cancel"),
-				).
-				Value(&choice),
-		),
-	))
-	if err != nil {
-		return "", err
+	showDiff := false
+	for {
+		previousShowDiff := showDiff
+		description := huhReviewDescription(plan)
+		diffHint := ""
+		if plan.InstructionsChanged {
+			diffHint = "d : afficher le détail des changements dans AGENTS.md"
+			if showDiff {
+				description += "\n" + escapeHuhNoteMarkup(justcode.FormatInitInstructionsDiff(plan))
+				diffHint = "d : masquer le détail des changements dans AGENTS.md"
+			}
+		}
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewNote().Description(description),
+				huh.NewSelect[string]().
+					Title("Appliquer cette configuration ?").
+					Description(diffHint).
+					Options(
+						huh.NewOption("Appliquer", "apply"),
+						huh.NewOption("Modifier (retour à l'étape 1)", "edit"),
+						huh.NewOption("Réglages avancés", "advanced"),
+						huh.NewOption("Quitter sans rien enregistrer", "cancel"),
+					).
+					Value(&choice),
+			),
+		).WithProgramOptions(
+			huhApplyKeyFilter(plan.InstructionsChanged, &showDiff),
+			tea.WithOutput(os.Stdout),
+		)
+		err := huhApplyRun(form)
+		if showDiff != previousShowDiff {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return choice, nil
 	}
-	return choice, nil
 }
 
 func initModelDisplayName(model string) string {
@@ -560,107 +598,7 @@ func parseGuestMemoryInput(value string, maximum int) (memoryMB int, useDefault 
 }
 
 func huhReviewDescription(plan justcode.InitPlan) string {
-	a := plan.Answers
-	t := lipglosstable.New().
-		Headers("Setting", "Selection").
-		Width(huhReviewTableWidth()).
-		StyleFunc(func(row, column int) lipgloss.Style {
-			if row == lipglosstable.HeaderRow || column == 0 {
-				return lipgloss.NewStyle().Bold(true)
-			}
-			return lipgloss.NewStyle()
-		})
-	t.Row("Project", a.Root)
-	t.Row("Runtime", string(a.Runtime))
-	t.Row("Isolation", string(a.Isolation))
-	model := a.Model
-	if model == "" {
-		model = "Built-in default"
-	}
-	t.Row("Model", model)
-	t.Row("Resources", fmt.Sprintf("%d CPUs · %s", plan.GuestCPUs, justcode.FormatMemorySize(plan.GuestMemoryMB)))
-	credential := "Global Albert credential (reference only; no secret value is written)"
-	if a.CredentialRef != "" {
-		credential = fmt.Sprintf("Reference: %s (value is not written)", a.CredentialRef)
-	}
-	t.Row("Credential", credential)
-	github := "No approval for this project; an approval already recorded here is unchanged"
-	if a.GitHubWorkflow {
-		github = fmt.Sprintf("Agent may push changes to a branch of %s and open a draft pull request", a.GitHubRemote.Repo)
-	}
-	t.Row("GitHub", github)
-	if len(a.MCPConnectors) == 0 {
-		t.Row("MCPs", "None selected")
-	} else {
-		for _, choice := range justcode.MCPSelections() {
-			if !slices.Contains(a.MCPConnectors, choice.ID) {
-				continue
-			}
-			detail := choice.Description
-			if !choice.Local {
-				for _, connector := range justcode.MCPConnectors() {
-					if connector.ID == choice.ID {
-						detail = fmt.Sprintf("%s · %s · auth: %s", connector.Endpoint, connector.Transport, connector.Credential)
-						break
-					}
-				}
-			}
-			t.Row("MCP · "+choice.ID, detail)
-		}
-		for _, id := range a.MCPConnectors {
-			if reason, removed := justcode.RemovedMCPIDs[id]; removed {
-				t.Row("MCP · "+id, "non repris — "+reason)
-			}
-		}
-	}
-	if len(a.Skills) == 0 {
-		t.Row("Skills", "None selected")
-	} else {
-		for _, id := range a.Skills {
-			detail := id
-			if lock, ok := plan.SkillLocks[id]; ok {
-				digest := lock.SHA256
-				if len(digest) > 12 {
-					digest = digest[:12]
-				}
-				detail = fmt.Sprintf("%s · revision %s · sha256:%s", id, lock.Revision, digest)
-			}
-			t.Row("Skill", detail)
-		}
-	}
-	storage := "Versioned in .just-code/"
-	if a.SkillsLocalOnly {
-		storage = "Host-local; not shared with repository clones"
-	}
-	t.Row("Skill storage", storage)
-	t.Row("Manifest", plan.ManifestPath)
-	t.Row("Lockfile", plan.LockPath)
-	if plan.LocalSkillsPath != "" {
-		t.Row("Local skills", plan.LocalSkillsPath)
-	}
-	workspace := "Filtered project copy; .env, ignored files and symlinks are excluded by default"
-	if a.Runtime != justcode.RuntimeMicrosandbox {
-		workspace = "Project mounted into the guest; its files are readable there (.env blocks launch)"
-	}
-	t.Row("Workspace", workspace)
-	t.Row("Apply", "Does not boot or restart a VM; managed MCP changes apply on next launch")
-	if plan.ExistingManifest != nil {
-		t.Row("Existing manifest", "Will be replaced by this configuration")
-	}
-	if plan.InstructionsChanged {
-		t.Row("AGENTS.md", "Managed skills section changes; unrelated text is preserved")
-	}
-	if a.BrowserResourceGuidance != "" {
-		t.Row("Browser profile", a.BrowserResourceGuidance)
-	}
-	description := t.Render()
-	if len(plan.Warnings) > 0 {
-		description += "\n\nWarnings\n"
-		for _, warning := range plan.Warnings {
-			description += "• " + warning + "\n"
-		}
-	}
-	return escapeHuhNoteMarkup(description)
+	return escapeHuhNoteMarkup(justcode.FormatInteractiveInitReview(plan))
 }
 
 func huhReviewTableWidth() int {
@@ -722,7 +660,7 @@ func escapeHuhNoteMarkup(value string) string {
 	if os.Getenv("TERM") == "dumb" {
 		return value
 	}
-	return strings.NewReplacer("\\", "\\\\", "_", "\\_", "*", "\\*", "`", "\\`").Replace(value)
+	return strings.NewReplacer("\\", "\\\\", "_", "\\_", "*", "\\*", "`", "\\`", "<", "\\<", ">", "\\>").Replace(value)
 }
 
 // askInitQuestionsHuh renders the init wizard as one huh form. Groups the

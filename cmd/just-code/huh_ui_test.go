@@ -358,10 +358,13 @@ func TestInitAdvancedCtrlCCancels(t *testing.T) {
 func TestInitHuhRepairsInheritedResourcesBeforeReview(t *testing.T) {
 	root := initTestProject(t)
 	writeManifest(t, root, justcode.ProjectManifest{Runtime: "microsandbox", Isolation: "full", CPUs: 64, MemoryMB: 4096})
-	originalHuh, originalRun, originalAdvanced := wizardHuhFn, huhRun, runInitAdvancedForm
-	t.Cleanup(func() { wizardHuhFn, huhRun, runInitAdvancedForm = originalHuh, originalRun, originalAdvanced })
+	originalHuh, originalRun, originalApplyRun, originalAdvanced := wizardHuhFn, huhRun, huhApplyRun, runInitAdvancedForm
+	t.Cleanup(func() {
+		wizardHuhFn, huhRun, huhApplyRun, runInitAdvancedForm = originalHuh, originalRun, originalApplyRun, originalAdvanced
+	})
 	wizardHuhFn = func() bool { return true }
 	huhRun = func(*huh.Form) error { return nil }
+	huhApplyRun = func(*huh.Form) error { return nil }
 	calls := 0
 	runInitAdvancedForm = func(form *huh.Form) (bool, error) {
 		calls++
@@ -533,24 +536,74 @@ func TestHuhResourceInputsCanRestoreImplicitDefaults(t *testing.T) {
 	}
 }
 
-func TestHuhReviewDescriptionUsesTableAndKeepsWarningsSeparate(t *testing.T) {
+func TestHuhApplyChoiceDiffBindingReopensWithoutApplying(t *testing.T) {
+	originalRun := huhApplyRun
+	t.Cleanup(func() { huhApplyRun = originalRun })
+	plan := justcode.InitPlan{InstructionsChanged: true}
+	calls := 0
+	showDiff := false
+	program := tea.NewProgram(setupModelPicker{}, huhApplyKeyFilter(true, &showDiff),
+		tea.WithInput(strings.NewReader("d")), tea.WithOutput(&strings.Builder{}), tea.WithoutRenderer())
+	if _, err := program.Run(); err != nil || !showDiff {
+		t.Fatalf("real Bubble Tea input did not trigger the d binding: %v, showDiff=%v", err, showDiff)
+	}
+	showDiff = false
+	var output strings.Builder
+	huhApplyRun = func(form *huh.Form) error {
+		calls++
+		input := "\r"
+		if calls == 1 {
+			input = "d\r"
+		}
+		form.Init()
+		_, _ = form.Update(tea.WindowSizeMsg{Width: 100, Height: 60})
+		output.WriteString(form.View())
+		return form.WithInput(strings.NewReader(input)).WithOutput(&output).Run()
+	}
+	choice, err := huhApplyChoice(plan)
+	if err != nil || choice != "apply" || calls != 2 {
+		t.Fatalf("real d binding then Apply = %q, %v, calls=%d\n%s", choice, err, calls, output.String())
+	}
+	if !strings.Contains(output.String(), "masquer le détail") {
+		t.Fatalf("the real d binding did not reopen with the diff:\n%s", output.String())
+	}
+	calls = 0
+	huhApplyRun = func(form *huh.Form) error {
+		calls++
+		return form.WithInput(strings.NewReader("d\r")).WithOutput(&output).Run()
+	}
+	plan.InstructionsChanged = false
+	choice, err = huhApplyChoice(plan)
+	if err != nil || choice != "apply" || calls != 1 || showDiff {
+		t.Fatalf("d must stay inert without an AGENTS.md change: %q, %v, calls=%d, showDiff=%v", choice, err, calls, showDiff)
+	}
+}
+
+func TestHuhReviewDescriptionUsesFrenchRecapAndKeepsWarnings(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	plan := justcode.InitPlan{
 		Answers: justcode.InitAnswers{
 			Root: "/tmp/example_project", Runtime: justcode.RuntimeMicrosandbox,
 			Isolation: justcode.IsolationFull, CredentialRef: "work",
-			MCPConnectors: []string{"context7"}, Skills: []string{"official/rgaa"},
+			MCPConnectors: []string{"data-gouv"}, Skills: []string{"official/rgaa"},
 		},
-		GuestCPUs: 2, GuestMemoryMB: 2560,
-		ManifestPath: "/tmp/example-project/.just-code/project.json",
-		LockPath:     "/tmp/example-project/.just-code/lock.json",
-		Warnings:     []string{"the guest will use all 2 logical host CPUs"},
+		GuestCPUs: 2, GuestMemoryMB: 4096,
+		MCPChecks: []justcode.InitMCPCheck{{
+			ID: "data-gouv", Endpoint: "https://mcp.data.gouv.fr/mcp", Checked: true, Reachable: true,
+		}},
+		FileChanges: []justcode.InitFileChange{{
+			Path: "/tmp/example_project/.just-code/project.json", Description: "configuration du projet",
+		}},
+		Warnings: []string{"la machine isolée utilisera les 2 processeurs logiques du poste"},
 	}
 	got := huhReviewDescription(plan)
-	for _, want := range []string{"Setting", "Selection", `example\_project`, "2.5G", "context7", "official/rgaa", "Warnings", "all 2 logical host CPUs"} {
+	for _, want := range []string{`example\_project`, "4 Go", "rgaa", "✅ joignable", "Attention", "les 2 processeurs logiques du poste", "configuration du projet"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("Huh recap table lacks %q: %s", want, got)
+			t.Errorf("Huh recap lacks %q: %s", want, got)
 		}
+	}
+	if strings.Contains(got, "None selected") || strings.Contains(got, "sha256") {
+		t.Fatalf("Huh recap must use the concise French contract: %s", got)
 	}
 	t.Setenv("TERM", "dumb")
 	if accessible := huhReviewDescription(plan); !strings.Contains(accessible, "example_project") || strings.Contains(accessible, `example\_project`) {
@@ -572,6 +625,23 @@ func TestHuhReviewDescriptionEscapesMarkupOnlyForStyledRenderer(t *testing.T) {
 	accessible := huhReviewDescription(plan)
 	if !strings.Contains(accessible, "project_with_under") || strings.Contains(accessible, `project\_with\_under`) {
 		t.Fatalf("accessible Huh note must preserve the raw path: %s", accessible)
+	}
+}
+
+func TestHuhInstructionsDiffPreservesHTMLCommentMarkers(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	plan := justcode.InitPlan{
+		InstructionsChanged: true,
+		InstructionsAfter:   "<!-- BEGIN JUST-CODE MANAGED SKILLS -->\nmanaged text\n<!-- END JUST-CODE MANAGED SKILLS -->\n",
+	}
+	styled := escapeHuhNoteMarkup(justcode.FormatInitInstructionsDiff(plan))
+	if !strings.Contains(styled, `\<!-- BEGIN JUST-CODE MANAGED SKILLS --\>`) {
+		t.Fatalf("styled diff must preserve the leading HTML comment marker: %s", styled)
+	}
+	t.Setenv("TERM", "dumb")
+	plain := escapeHuhNoteMarkup(justcode.FormatInitInstructionsDiff(plan))
+	if !strings.Contains(plain, "<!-- BEGIN JUST-CODE MANAGED SKILLS -->") {
+		t.Fatalf("plain diff must preserve literal HTML comment markers: %s", plain)
 	}
 }
 
