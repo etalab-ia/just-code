@@ -392,6 +392,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// choice reopens them; the "Réglages avancés" choice (#170) edits only
 	// the expert settings and returns straight to the review.
 	askQuestions := true
+	apply := false
 	for {
 		useHuhReview := tty && !opts.Yes && wizardHuhFn()
 		if tty && !opts.Yes && askQuestions {
@@ -484,13 +485,15 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		review := justcode.FormatInitReview(plan)
+		interactiveReview := tty && !opts.Yes
 		if plan.ExistingManifest != nil && !opts.Replace {
-			fmt.Print(review)
+			fmt.Print(justcode.FormatInitReview(plan))
 			return 1, fmt.Errorf("%s already exists; re-run with --replace to overwrite it, or edit it directly", plan.ManifestPath)
 		}
-		if !useHuhReview {
-			fmt.Print(review)
+		if interactiveReview && !useHuhReview {
+			fmt.Print(justcode.FormatInteractiveInitReview(plan))
+		} else if !interactiveReview {
+			fmt.Print(justcode.FormatInitReview(plan))
 		}
 		if !tty && !opts.Yes {
 			resourceWarnings := justcode.GuestResourceWarnings(hostResources, plan.GuestCPUs, plan.GuestMemoryMB)
@@ -509,9 +512,9 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			switch choice {
 			case "apply":
 			case "cancel":
-				return 1, fmt.Errorf("cancelled; nothing was written")
+				return 1, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été enregistré")
 			case "edit":
-				fmt.Println("Reopening the setup questions with the current answers.")
+				fmt.Println("Réouverture des questions ; vos réponses sont conservées.")
 				askQuestions = true
 				continue
 			case "advanced":
@@ -525,30 +528,48 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			}
 			break
 		}
-		answer, ok := promptLine(in, "\nApply? [Y/n/edit/advanced]: ")
-		if !ok {
-			return 1, fmt.Errorf("no answer; nothing was written")
-		}
-		switch strings.ToLower(strings.TrimSpace(answer)) {
-		case "", "y", "yes":
-			break
-		case "n", "no":
-			return 1, fmt.Errorf("cancelled; nothing was written")
-		case "e", "edit", "back":
-			fmt.Println("Reopening the setup questions; blank answers keep current values.")
-			askQuestions = true
-			continue
-		case "a", "advanced":
-			askQuestions = false
-			answers, err = askInitAdvancedLine(in, opts, answers)
-			if err != nil {
-				return 1, err
+		for {
+			diffHint := ""
+			if plan.InstructionsChanged {
+				diffHint = "/détail"
 			}
-			continue
-		default:
-			return 1, fmt.Errorf("enter yes, no, edit, or advanced")
+			answer, ok := promptLine(in, "\nAppliquer ? [O/n/modifier/réglages avancés"+diffHint+"] : ")
+			if !ok {
+				return 1, fmt.Errorf("aucune réponse ; rien n'a été enregistré")
+			}
+			switch strings.ToLower(strings.TrimSpace(answer)) {
+			case "", "o", "oui", "y", "yes":
+				apply = true
+			case "n", "non", "q", "quitter", "no":
+				return 1, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été enregistré")
+			case "d", "diff", "détail", "detail":
+				if !plan.InstructionsChanged {
+					fmt.Println("Aucun changement dans AGENTS.md à afficher.")
+					continue
+				}
+				fmt.Print(justcode.FormatInitInstructionsDiff(plan))
+				continue
+			case "m", "modifier", "e", "edit", "back":
+				fmt.Println("Réouverture des questions ; une réponse vide conserve les valeurs actuelles.")
+				askQuestions = true
+			case "a", "advanced", "avancé", "réglages avancés":
+				askQuestions = false
+				answers, err = askInitAdvancedLine(in, opts, answers)
+				if err != nil {
+					return 1, err
+				}
+			default:
+				fmt.Println("Réponse non reconnue. Répondez oui, non, modifier, réglages avancés ou détail.")
+				continue
+			}
+			if apply {
+				break
+			}
+			break
 		}
-		break
+		if apply {
+			break
+		}
 	}
 	revokeContext7 := plan.ExistingManifest != nil && containsConnector(plan.ExistingManifest.MCPConnectors, "context7") && !containsConnector(plan.Answers.MCPConnectors, "context7")
 	context7Revoked, context7Live := false, false
@@ -605,9 +626,9 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	// drives the setup, the launch is already continuing: telling the user to
 	// run it would describe a step the code does not need.
 	if opts.FromLaunch {
-		fmt.Println("\nConfiguration written. Continuing the launch...")
+		fmt.Println("\nProjet configuré. Poursuite du lancement…")
 	} else {
-		fmt.Println("\nNext: run 'just-code' in this directory to start the agent in its sealed workspace.")
+		fmt.Println("\nProjet configuré.\nLancez l'agent : just-code")
 	}
 	return 0, nil
 }
@@ -1678,7 +1699,7 @@ var catalogueModelWarningFn = catalogueModelWarningForRoot
 func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
 	apiKey, err := resolveAlbertKeyForCatalogueAt(projectRoot)
 	if err != nil {
-		return "the model was recorded unverified: no Albert credential is available to check the catalogue", nil
+		return "le modèle a été enregistré sans vérification : aucun identifiant Albert ne permet de consulter le catalogue", nil
 	}
 	cache := justcode.CatalogueCache{
 		FS:  justcode.DefaultFS,
@@ -1689,7 +1710,7 @@ func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
 	}
 	catalogue, _, err := cache.Load(context.Background())
 	if err != nil {
-		return "the model was recorded unverified: the catalogue could not be reached", nil
+		return "le modèle a été enregistré sans vérification : le catalogue Albert est injoignable", nil
 	}
 	if _, ok := catalogue.Find(model); !ok {
 		// A listed miss is the user's answer being wrong, not a validation

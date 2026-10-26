@@ -1,10 +1,12 @@
 package justcode
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -148,7 +150,63 @@ type InitPlan struct {
 	InstructionsPath    string
 	InstructionsBefore  string
 	InstructionsAfter   string
+	InstructionsExisted bool
 	InstructionsChanged bool
+	// MCPChecks and FileChanges describe the interactive review. A local MCP
+	// has no host endpoint to probe; it is described separately by the review.
+	MCPChecks   []InitMCPCheck
+	FileChanges []InitFileChange
+	// These snapshots protect the file summary from changes made while the
+	// review is open. AGENTS.md remains a deliberate merge, not a whole-file
+	// precondition, so unrelated user text is preserved.
+	lockfileSnapshot   reviewedFileSnapshot
+	localSkillSnapshot reviewedFileSnapshot
+}
+
+type reviewedFileSnapshot struct {
+	data    []byte
+	existed bool
+}
+
+func readReviewedFileSnapshot(fs FS, path string) (reviewedFileSnapshot, error) {
+	data, err := fs.ReadFile(path)
+	if err == nil {
+		return reviewedFileSnapshot{data: data, existed: true}, nil
+	}
+	if os.IsNotExist(err) {
+		return reviewedFileSnapshot{}, nil
+	}
+	return reviewedFileSnapshot{}, err
+}
+
+func (s reviewedFileSnapshot) validateCurrent(fs FS, path string) error {
+	current, err := readReviewedFileSnapshot(fs, path)
+	if err != nil {
+		return fmt.Errorf("cannot re-read %s before Apply: %w", path, err)
+	}
+	if current.existed != s.existed || !bytes.Equal(current.data, s.data) {
+		return fmt.Errorf("%s changed after the review; run init again to review the current files before applying", path)
+	}
+	return nil
+}
+
+// InitMCPCheck is the result of one remote MCP handshake. Checked is false
+// only when no probe is available, so a missing probe is never shown as a
+// successful connection.
+type InitMCPCheck struct {
+	ID        string
+	Endpoint  string
+	Checked   bool
+	Reachable bool
+}
+
+// InitFileChange is one file Apply will create or update. Local-only skill
+// state lives outside the project and is identified as such in the review.
+type InitFileChange struct {
+	Path        string
+	Description string
+	Existed     bool
+	Local       bool
 }
 
 type managedFileMutation struct {
@@ -262,7 +320,7 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	if abs, err := filepath.Abs(strings.TrimSpace(answers.Root)); err == nil {
 		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 			if resolved != pc.Root && strings.HasPrefix(resolved, pc.Root+string(filepath.Separator)) {
-				plan.Warnings = append(plan.Warnings, fmt.Sprintf("the project root is the Git worktree root %s (not %s): its manifest covers the whole worktree", pc.Root, resolved))
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("la racine du projet est %s (et non %s) : le fichier de configuration couvre toute cette copie de travail", pc.Root, resolved))
 			}
 		}
 	}
@@ -341,9 +399,6 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 
 	plan.ManifestPath = ProjectManifestPath(pc.Root)
 	plan.LockPath = ProjectLockPath(pc.Root)
-	if err := ensureProjectStateDirectory(pc.Root); err != nil {
-		return plan, err
-	}
 
 	if existing, err := ReadProjectManifest(fs, plan.ManifestPath); err == nil {
 		plan.ExistingManifest = &existing
@@ -405,27 +460,29 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 		plan.Answers.MCPConnectors = connectors
 	}
-	// The review screen verifies the data.gouv.fr endpoint answers an MCP
-	// initialize handshake before the user confirms (#168). A nil probe
-	// (tests) or a probe failure keeps the review usable: the failure is a
-	// warning line, not an abort, because the endpoint may simply be down
-	// right now.
+	// Check every selected remote MCP for the interactive recap (#168, #171).
+	// A failed handshake stays a warning: it must not prevent the user from
+	// saving a configuration for a temporarily unavailable endpoint.
+	// Withdrawn connectors are deliberately not contacted.
 	for _, connector := range MCPConnectors() {
 		if !containsMCPConnector(plan.Answers.MCPConnectors, connector.ID) {
 			continue
 		}
+		check := InitMCPCheck{ID: connector.ID, Endpoint: connector.Endpoint}
 		probe := w.ProbeRemoteMCP
 		if probe == nil {
 			probe = ProbeRemoteMCPFunc
 		}
-		if probe == nil {
-			break
+		if probe != nil {
+			check.Checked = true
+			if err := probe(context.Background(), connector); err != nil {
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+					"le test d'accès à %s a échoué : %v", connector.Endpoint, err))
+			} else {
+				check.Reachable = true
+			}
 		}
-		if err := probe(context.Background(), connector); err != nil {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
-				"le test d'accès à %s a échoué : %v", connector.Endpoint, err))
-		}
-		break
+		plan.MCPChecks = append(plan.MCPChecks, check)
 	}
 	if answers.SkillsLocalOnlySet {
 		localOnly = answers.SkillsLocalOnly
@@ -520,6 +577,7 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			if !info.Mode().IsRegular() {
 				return plan, fmt.Errorf("%s is not a regular file; refusing to change managed instructions", plan.InstructionsPath)
 			}
+			plan.InstructionsExisted = true
 			data, readErr := fs.ReadFile(plan.InstructionsPath)
 			if readErr != nil {
 				return plan, readErr
@@ -538,10 +596,243 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 		}
 		plan.InstructionsChanged = plan.InstructionsBefore != plan.InstructionsAfter
 	}
+	plan.lockfileSnapshot, err = readReviewedFileSnapshot(fs, plan.LockPath)
+	if err != nil {
+		return plan, err
+	}
+	plan.FileChanges = []InitFileChange{
+		{Path: plan.ManifestPath, Description: "configuration du projet", Existed: plan.ExistingManifest != nil},
+		{Path: plan.LockPath, Description: "références des dépendances du projet", Existed: plan.lockfileSnapshot.existed},
+	}
+	if localOnly {
+		plan.localSkillSnapshot, err = readReviewedFileSnapshot(fs, plan.LocalSkillsPath)
+		if err != nil {
+			return plan, err
+		}
+		plan.FileChanges = append(plan.FileChanges, InitFileChange{
+			Path: plan.LocalSkillsPath, Description: "skills conservés sur ce poste", Existed: plan.localSkillSnapshot.existed, Local: true,
+		})
+	}
+	if plan.InstructionsChanged {
+		description := "section just-code ajoutée (voir le détail : d)"
+		before, _ := managedSkillZone(plan.InstructionsBefore)
+		if before != "" {
+			description = "section just-code modifiée (voir le détail : d)"
+		}
+		plan.FileChanges = append(plan.FileChanges, InitFileChange{
+			Path: plan.InstructionsPath, Description: description, Existed: plan.InstructionsExisted,
+		})
+	}
 	if !pc.IsGit {
-		plan.Warnings = append(plan.Warnings, "this directory is not a Git repository: the manifest in .just-code/ will not be versioned with the project")
+		plan.Warnings = append(plan.Warnings, "ce dossier n'est pas un dépôt Git : le fichier de configuration dans .just-code/ ne sera pas versionné avec le projet")
 	}
 	return plan, nil
+}
+
+// FormatInteractiveInitReview is the concise, shared interactive recap (#171).
+// The non-interactive FormatInitReview intentionally remains the detailed
+// --yes output, including its pinned skill revisions and content digests.
+func FormatInteractiveInitReview(plan InitPlan) string {
+	var b strings.Builder
+	a := plan.Answers
+	row := func(label, value string) { fmt.Fprintf(&b, "  %-12s %s\n", label, value) }
+	continuation := func(value string) { fmt.Fprintf(&b, "                %s\n", value) }
+	fmt.Fprintf(&b, "Récapitulatif du projet : %s\n\n", filepath.Base(a.Root))
+
+	if len(a.Skills) == 0 {
+		row("Skills", "aucune sélectionnée")
+	} else {
+		names := make([]string, 0, len(a.Skills))
+		for _, id := range a.Skills {
+			names = append(names, strings.TrimPrefix(id, "official/"))
+		}
+		storage := "(avec le projet)"
+		if a.SkillsLocalOnly {
+			storage = "(sur ce poste)"
+		}
+		row("Skills", strings.Join(names, ", ")+"                "+storage)
+		for _, id := range a.Skills {
+			if lock := plan.SkillLocks[id]; lock.Revision != "" {
+				continuation(fmt.Sprintf("%s : révision %s", id, lock.Revision))
+			}
+		}
+	}
+
+	if len(a.MCPConnectors) == 0 {
+		row("MCP", "aucun sélectionné")
+	}
+	checked := make(map[string]InitMCPCheck, len(plan.MCPChecks))
+	for _, check := range plan.MCPChecks {
+		checked[check.ID] = check
+	}
+	firstMCP := true
+	writeMCP := func(id, detail string) {
+		if firstMCP {
+			row("MCP", detail)
+			firstMCP = false
+		} else {
+			continuation(detail)
+		}
+	}
+	for _, connector := range MCPConnectors() {
+		if !containsMCPConnector(a.MCPConnectors, connector.ID) {
+			continue
+		}
+		check := checked[connector.ID]
+		status := "⚠️ accès non vérifié"
+		if check.Checked {
+			status = "⚠️ injoignable"
+			if check.Reachable {
+				status = "✅ joignable"
+			}
+		}
+		writeMCP(connector.ID, fmt.Sprintf("%s → %s   %s", connector.ID, connector.Endpoint, status))
+	}
+	for _, choice := range BrowserMCPs() {
+		if containsMCPConnector(a.MCPConnectors, choice.ID) {
+			writeMCP(choice.ID, choice.ID+" — "+choice.Description+" ; installation au premier lancement")
+		}
+	}
+	for _, id := range a.MCPConnectors {
+		if reason, removed := RemovedMCPIDs[id]; removed {
+			writeMCP(id, id+" : non repris — "+reason)
+		}
+	}
+
+	if a.GitHubWorkflow {
+		row("GitHub", "pull requests en brouillon sur "+a.GitHubRemote.Repo)
+	} else {
+		row("GitHub", "non (récupération par just-code workspace apply)")
+		continuation("une autorisation déjà enregistrée sur ce poste reste inchangée")
+	}
+
+	isolation := "complète"
+	if a.Isolation == IsolationBackend {
+		isolation = "partielle"
+	}
+	cpuLabel := "processeurs"
+	if plan.GuestCPUs == 1 {
+		cpuLabel = "processeur"
+	}
+	runtimeName := string(a.Runtime)
+	if a.Runtime == RuntimeMicrosandbox {
+		runtimeName = "Microsandbox"
+	}
+	row("Machine", fmt.Sprintf("%s, isolation %s, %d %s, %s", runtimeName, isolation, plan.GuestCPUs, cpuLabel, formatInitReviewMemory(plan.GuestMemoryMB)))
+	model := "par défaut de setup"
+	if a.Model != "" {
+		model = strings.TrimPrefix(a.Model, "albert/")
+		for _, choice := range CuratedAlbertModels() {
+			if a.Model == choice.Ref() || a.Model == choice.ID {
+				model = choice.Name
+				break
+			}
+		}
+	}
+	row("Agent", "OpenCode, modèle "+model)
+	credential := "clé Albert API globale (référence, jamais sa valeur)"
+	if a.CredentialRef != "" {
+		credential = fmt.Sprintf("référence %q (jamais sa valeur)", a.CredentialRef)
+	}
+	row("Identifiant", credential)
+	if a.BrowserResourceGuidance != "" {
+		row("Conseil", a.BrowserResourceGuidance)
+	}
+
+	if a.Runtime == RuntimeMicrosandbox {
+		b.WriteString("\nCopie filtrée du projet : fichiers .env, fichiers ignorés et liens symboliques exclus par défaut.\n")
+	} else {
+		b.WriteString("\nLe dossier est partagé avec la machine isolée : l'agent peut lire tous ses fichiers, y compris les secrets. Un fichier .env bloque le démarrage.\n")
+	}
+	for _, warning := range plan.Warnings {
+		fmt.Fprintf(&b, "Attention : %s\n", warning)
+	}
+	if plan.ExistingManifest != nil {
+		b.WriteString("Attention : la configuration existante sera remplacée :\n")
+		b.WriteString(formatManifestSummary(*plan.ExistingManifest))
+	}
+
+	b.WriteString("\nFichiers modifiés dans votre projet :\n")
+	localChanges := make([]InitFileChange, 0, 1)
+	for _, change := range plan.FileChanges {
+		if change.Local {
+			localChanges = append(localChanges, change)
+			continue
+		}
+		writeInitFileChange(&b, a.Root, change)
+	}
+	if len(localChanges) > 0 {
+		b.WriteString("Fichiers modifiés sur ce poste, hors du projet :\n")
+		for _, change := range localChanges {
+			writeInitFileChange(&b, a.Root, change)
+		}
+	}
+
+	b.WriteString("\nL'initialisation ne démarre ni ne redémarre de machine isolée.\n")
+	b.WriteString("Au premier lancement : préparation de la machine isolée, environ 3 à 5 minutes.\n")
+	if len(a.Skills) > 0 {
+		b.WriteString("Les skills sont installés dans la machine isolée au premier lancement.\n")
+	}
+	if HasBrowserMCPSelection(a.MCPConnectors) {
+		b.WriteString(BrowserDownloadNote + "\n")
+	}
+	if len(a.MCPConnectors) > 0 {
+		b.WriteString("Les changements de MCP prennent effet au prochain lancement ; cela peut redémarrer la machine isolée sans effacer son contenu.\n")
+	}
+	return b.String()
+}
+
+func formatInitReviewMemory(memoryMB int) string {
+	if memoryMB > 0 && memoryMB%1024 == 0 {
+		return strconv.Itoa(memoryMB/1024) + " Go"
+	}
+	return FormatMemorySize(memoryMB)
+}
+
+func writeInitFileChange(b *strings.Builder, root string, change InitFileChange) {
+	marker := "+"
+	if change.Existed {
+		marker = "~"
+	}
+	fmt.Fprintf(b, "  %s %-32s %s\n", marker, initReviewPath(root, change.Path), change.Description)
+}
+
+// initReviewPath displays the user's home as ~ and project files relative to
+// the worktree, avoiding machine-specific paths in the confirmation screen.
+func initReviewPath(root, path string) string {
+	if rel, err := filepath.Rel(root, path); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(rel)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return filepath.ToSlash(filepath.Join("~", rel))
+		}
+	}
+	return path
+}
+
+// FormatInitInstructionsDiff returns only the managed AGENTS.md section.
+// Everything outside that section is preserved and never copied into the diff.
+func FormatInitInstructionsDiff(plan InitPlan) string {
+	if !plan.InstructionsChanged {
+		return ""
+	}
+	var b strings.Builder
+	before, _ := managedSkillZone(plan.InstructionsBefore)
+	after, _ := managedSkillZone(plan.InstructionsAfter)
+	b.WriteString("Diff de la section just-code dans AGENTS.md (tout le texte hors de cette section est conservé à l'identique) :\n")
+	b.WriteString("Si le filtre de copie exclut AGENTS.md, une autorisation fichier par fichier sera nécessaire pour le transmettre à la machine isolée.\n")
+	if before == "" {
+		b.WriteString("  actuel : aucune section de skills gérée par just-code\n")
+	} else {
+		fmt.Fprintf(&b, "--- actuel ---\n%s", ensureReviewNewline(before))
+	}
+	if after == "" {
+		b.WriteString("+++ proposé : suppression de la section gérée\n")
+	} else {
+		fmt.Fprintf(&b, "+++ proposé +++\n%s", ensureReviewNewline(after))
+	}
+	return b.String()
 }
 
 // FormatInitReview renders the confirmation screen: every decision the user
@@ -772,6 +1063,17 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 	if readErr != nil && !os.IsNotExist(readErr) {
 		// An unreadable manifest must not be silently replaced either.
 		return readErr
+	}
+	// A lock or local selection created or edited after the review is not
+	// covered by its file-change summary. Refuse it before any write, including
+	// when --replace was supplied; replacement must not hide concurrent work.
+	if err := plan.lockfileSnapshot.validateCurrent(fs, plan.LockPath); err != nil {
+		return err
+	}
+	if plan.Answers.SkillsLocalOnly {
+		if err := plan.localSkillSnapshot.validateCurrent(fs, plan.LocalSkillsPath); err != nil {
+			return err
+		}
 	}
 	// Validate the lock before writing any project file: a malformed or
 	// unreadable lock must not leave a new manifest beside discarded pins.

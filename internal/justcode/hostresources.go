@@ -120,11 +120,11 @@ func GuestResourceWarnings(host HostResources, guestCPUs, guestMemoryMB int) []s
 	}
 	var warnings []string
 	if guestCPUs >= host.CPUs {
-		warnings = append(warnings, fmt.Sprintf("the guest will use all %d logical host CPUs; other host work may become sluggish", host.CPUs))
+		warnings = append(warnings, fmt.Sprintf("la machine isolée utilisera les %d processeurs logiques du poste ; les autres applications peuvent ralentir", host.CPUs))
 	}
 	if int64(guestMemoryMB)*100 >= int64(host.MemoryMB)*GuestMemoryWarningPercent {
 		percent := float64(guestMemoryMB) * 100 / float64(host.MemoryMB)
-		warnings = append(warnings, fmt.Sprintf("guest memory %s uses %.1f%% of detected host memory; this may leave too little headroom for the host OS and hypervisor", FormatMemorySize(guestMemoryMB), percent))
+		warnings = append(warnings, fmt.Sprintf("la mémoire de la machine isolée (%s) utilise %.1f %% de la mémoire détectée sur ce poste ; le système et la virtualisation risquent de manquer de marge", FormatMemorySize(guestMemoryMB), percent))
 	}
 	return warnings
 }
@@ -191,17 +191,17 @@ func BrowserResourceGuidance(host HostResources, guestCPUs, guestMemoryMB int, d
 	if guestMemoryMB <= 0 {
 		guestMemoryMB = DefaultSandboxMemoryMB
 	}
-	message := fmt.Sprintf("Browser guest: %d vCPU, %d MiB RAM, 8192 MiB root disk. P03 measured about 2.6 GiB disk use; 662 MiB was an unused Playwright browser-download cache, which this setup does not populate. Browser-load RAM peak was not measured, so no larger RAM recommendation is justified.", guestCPUs, guestMemoryMB)
+	message := fmt.Sprintf("Navigateur dans la machine isolée : %d vCPU, %d MiB RAM, 8192 MiB de disque. Mesure P03 : environ 2,6 Gio utilisés. Le pic de mémoire du navigateur n'a pas été mesuré : aucune augmentation de mémoire n'est justifiée.", guestCPUs, guestMemoryMB)
 	if host.CPUs > 0 {
-		message += fmt.Sprintf(" Host: %d logical CPUs", host.CPUs)
+		message += fmt.Sprintf(" Poste : %d processeurs logiques", host.CPUs)
 	}
 	if host.MemoryMB > 0 {
-		message += fmt.Sprintf(" / %d MiB memory ceiling", host.MemoryMB)
+		message += fmt.Sprintf(" / %d MiB de mémoire au maximum", host.MemoryMB)
 	}
 	if detectionErr != nil {
-		message += ". Memory detection failed; treat host capacity as unknown"
+		message += ". Mémoire du poste non détectée : sa capacité est inconnue"
 	} else if host.CPUs > 0 && host.MemoryMB > 0 {
-		message += ". Detected host capacity is an upper bound and does not account for other host workloads"
+		message += ". La capacité détectée est un maximum, qui ne tient pas compte des autres applications"
 	}
 	return message
 }
