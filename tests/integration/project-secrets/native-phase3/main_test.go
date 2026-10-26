@@ -98,7 +98,7 @@ func TestGuestFixtureDependencyPins(t *testing.T) {
 	if err := json.Unmarshal(pkg, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Dependencies["dotenv"] != "16.4.7" || manifest.Dependencies["dotenv-expand"] != "12.0.2" {
+	if manifest.Dependencies["dotenv"] != "16.6.1" || manifest.Dependencies["dotenv-expand"] != "12.0.3" {
 		t.Fatalf("node loader pins drifted: %v", manifest.Dependencies)
 	}
 	lock, err := guestFixtures.ReadFile("guest/node-app/package-lock.json")
@@ -113,14 +113,14 @@ func TestGuestFixtureDependencyPins(t *testing.T) {
 	if err := json.Unmarshal(lock, &lockfile); err != nil {
 		t.Fatal(err)
 	}
-	if lockfile.Packages["node_modules/dotenv"].Version != "16.4.7" || lockfile.Packages["node_modules/dotenv-expand"].Version != "12.0.2" {
+	if lockfile.Packages["node_modules/dotenv"].Version != "16.6.1" || lockfile.Packages["node_modules/dotenv-expand"].Version != "12.0.3" {
 		t.Fatalf("lockfile pins drifted")
 	}
 	req, err := guestFixtures.ReadFile("guest/python-app/requirements.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(req)) != "python-dotenv==1.2.2" {
+	if strings.TrimSpace(string(req)) != "python-dotenv==1.2.4" {
 		t.Fatalf("python loader pin drifted: %q", req)
 	}
 	for _, path := range []string{"guest/node-app/app.mjs", "guest/python-app/app.py"} {

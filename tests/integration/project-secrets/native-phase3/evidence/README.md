@@ -61,3 +61,22 @@ The lab binds all interfaces for the duration of a run because the guest
 reaches it at the host LAN address; see the README's LAN-exposure note. Raw
 private diagnostics and the temporary CA keys are not checked in — only the
 sanitized `results.txt` transcripts.
+
+## Pin currency (2026-10-25)
+
+The transcripts themselves record no package versions, only
+`sdk=0.7.6 runtime=0.7.6 go=go1.27.1` and step names, so the qualified loader
+set comes from the guest manifests at the recorded commit `973ba24` (the
+`source=` field points at `f483a80`, where these paths did not yet exist):
+**Node dotenv 16.4.7 + dotenv-expand 12.0.2** and **python-dotenv 1.2.2**. The
+manifests under `guest/` have since moved to **16.6.1 / 12.0.3 / 1.2.4**
+(issue #246), and the
+guest installs its packages from those manifests at run time. A fresh run
+therefore exercises a different loader set than the one recorded here, so this
+evidence should not be cited as covering the current pins. The bump is
+patch/minor within each package and the host-side loader suites re-measure the
+same encoding and substitution properties on the new set, but the native
+qualification itself needs one more macOS arm64 run to be restated. Treat
+`main_test.go`'s `TestGuestFixtureDependencyPins` as the authority on which
+pins the kit currently carries, and `git show 973ba24:` on the two guest
+manifests as the authority on what this evidence covers.
