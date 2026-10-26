@@ -75,35 +75,40 @@ var printInitInstructionsDiffFn = func(plan justcode.InitPlan) { fmt.Print(justc
 // `d` filter. Replacing the options here would silently discard that binding.
 var huhApplyRun = func(form *huh.Form) error { return form.Run() }
 
-// initAccessibleInput distinguishes a real answer from Huh's default on EOF.
-// The accessible prompt cannot report cancellation, so the recap must not
-// treat the selected default as affirmative when no bytes were read.
-type initAccessibleInput struct {
-	io.Reader
-	readBytes int64
-	readErr   error
-}
-
-func (in *initAccessibleInput) Read(p []byte) (int, error) {
-	n, err := in.Reader.Read(p)
-	in.readBytes += int64(n)
-	if err != nil && !errors.Is(err, io.EOF) {
-		in.readErr = err
+// huhApplyAccessiblePrompt reads a numeric choice without Huh's accessible
+// default-on-EOF behavior. EOF without an answer is never consent, including
+// after an invalid answer; an explicit choice without a final newline is valid.
+func huhApplyAccessiblePrompt(options []huh.Option[string], in *bufio.Reader) (string, error) {
+	for i, option := range options {
+		fmt.Printf("%d. %s\n", i+1, option.Key)
 	}
-	return n, err
-}
-
-var huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
-	err := form.WithInput(in).WithOutput(os.Stdout).Run()
-	if in.readErr != nil {
-		return false, in.readErr
+	for {
+		fmt.Printf("Entrez un nombre entre 1 et %d : ", len(options))
+		answer, err := in.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			if errors.Is(err, io.EOF) {
+				return "", huh.ErrUserAborted
+			}
+			return "apply", nil
+		}
+		if index, parseErr := strconv.Atoi(answer); parseErr == nil && index >= 1 && index <= len(options) {
+			return options[index-1].Value, nil
+		}
+		if errors.Is(err, io.EOF) {
+			return "", huh.ErrUserAborted
+		}
+		fmt.Printf("Réponse non reconnue : entrez un nombre entre 1 et %d.\n", len(options))
 	}
-	return in.readBytes > 0, err
 }
 
 // huhApplyAccessible uses a numbered diff option because Huh's accessible
 // runner does not execute Bubble Tea key filters.
 func huhApplyAccessible(plan justcode.InitPlan, showDiff *bool) (string, error) {
+	in := bufio.NewReaderSize(os.Stdin, 1)
 	for {
 		if plan.InstructionsChanged && *showDiff {
 			printInitInstructionsDiffFn(plan)
@@ -117,17 +122,9 @@ func huhApplyAccessible(plan justcode.InitPlan, showDiff *bool) (string, error) 
 		if plan.InstructionsChanged {
 			options = append(options, huh.NewOption("Afficher ou masquer le détail d'AGENTS.md", "diff"))
 		}
-		choice := "apply"
-		width := huhReviewTableWidth()
-		selectField := huh.NewSelect[string]().Title("Appliquer cette configuration ?")
-		selectField.WithWidth(width)
-		selectField.Options(options...).Value(&choice)
-		answered, err := huhApplyAccessibleRun(huh.NewForm(huh.NewGroup(selectField)).WithWidth(width), &initAccessibleInput{Reader: os.Stdin})
+		choice, err := huhApplyAccessiblePrompt(options, in)
 		if err != nil {
 			return "", err
-		}
-		if !answered {
-			return "", huh.ErrUserAborted
 		}
 		if choice != "diff" {
 			return choice, nil

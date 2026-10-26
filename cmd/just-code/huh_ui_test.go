@@ -578,61 +578,79 @@ func TestHuhApplyChoiceDiffBindingReopensWithoutApplying(t *testing.T) {
 	}
 }
 
+func TestHuhApplyAccessiblePromptPreservesExplicitAnswers(t *testing.T) {
+	options := []huh.Option[string]{huh.NewOption("Appliquer", "apply"), huh.NewOption("Modifier", "edit")}
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{input: "\n", want: "apply"},
+		{input: "2\n", want: "edit"},
+		{input: "2", want: "edit"},
+		{input: "99\n2\n", want: "edit"},
+	} {
+		choice, err := huhApplyAccessiblePrompt(options, bufio.NewReader(strings.NewReader(tc.input)))
+		if err != nil || choice != tc.want {
+			t.Errorf("input %q = %q, %v; want %q", tc.input, choice, err, tc.want)
+		}
+	}
+	for _, input := range []string{"", "99\n", "abc\n"} {
+		if choice, err := huhApplyAccessiblePrompt(options, bufio.NewReader(strings.NewReader(input))); choice != "" || !errors.Is(err, huh.ErrUserAborted) {
+			t.Errorf("EOF after %q must cancel: choice=%q err=%v", input, choice, err)
+		}
+	}
+}
+
+func stubAccessibleInput(t *testing.T, content string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = previous; _ = r.Close() })
+}
+
 func TestHuhApplyChoiceAccessibleDiffEditAndQuit(t *testing.T) {
 	t.Setenv("TERM", "dumb")
-	originalRun, originalHuh := huhApplyAccessibleRun, huhAccessibleModeFn
-	realRun := originalRun
-	t.Cleanup(func() { huhApplyAccessibleRun, huhAccessibleModeFn = originalRun, originalHuh })
+	originalHuh := huhAccessibleModeFn
+	t.Cleanup(func() { huhAccessibleModeFn = originalHuh })
 	huhAccessibleModeFn = func() bool { return true }
 	plan := justcode.InitPlan{
 		Answers:             justcode.InitAnswers{Root: "/tmp/project"},
 		InstructionsChanged: true,
 		InstructionsAfter:   "<!-- BEGIN JUST-CODE MANAGED SKILLS -->\nContenu géré.\n<!-- END JUST-CODE MANAGED SKILLS -->\n",
 	}
-	calls := 0
-	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
-		calls++
-		input := "5\n"
-		if calls == 2 {
-			input = "1\n"
-		}
-		if calls > 2 {
-			t.Fatalf("accessible diff repeatedly reopened without Apply (calls=%d)", calls)
-		}
-		in.Reader = strings.NewReader(input)
-		return realRun(form, in)
-	}
 	out := captureStdout(t, func() {
+		stubAccessibleInput(t, "5\n1\n")
 		choice, err := huhApplyChoice(plan)
-		if err != nil || choice != "apply" || calls != 2 {
-			t.Fatalf("accessible diff then Apply = %q, %v, calls=%d", choice, err, calls)
+		if err != nil || choice != "apply" {
+			t.Fatalf("accessible diff then Apply = %q, %v", choice, err)
 		}
 	})
 	if !strings.Contains(out, "Diff de la section just-code dans AGENTS.md") || !strings.Contains(out, "<!-- BEGIN JUST-CODE MANAGED SKILLS -->") || !strings.Contains(out, "Contenu géré.") {
 		t.Fatalf("accessible mode did not display the exact managed diff:\n%s", out)
 	}
-	calls = 0
-	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
-		calls++
-		in.Reader = strings.NewReader("2\n")
-		return realRun(form, in)
+	stubAccessibleInput(t, "2\n")
+	if choice, err := huhApplyChoice(plan); err != nil || choice != "edit" {
+		t.Fatalf("accessible Edit = %q, %v", choice, err)
 	}
-	if choice, err := huhApplyChoice(plan); err != nil || choice != "edit" || calls != 1 {
-		t.Fatalf("accessible Edit = %q, %v, calls=%d", choice, err, calls)
-	}
-	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
-		in.Reader = strings.NewReader("4\n")
-		return realRun(form, in)
-	}
+	stubAccessibleInput(t, "4\n")
 	if choice, err := huhApplyChoice(plan); err != nil || choice != "cancel" {
 		t.Fatalf("accessible Quit = %q, %v", choice, err)
 	}
-	huhApplyAccessibleRun = func(form *huh.Form, in *initAccessibleInput) (bool, error) {
-		in.Reader = strings.NewReader("")
-		return realRun(form, in)
-	}
-	if choice, err := huhApplyChoice(plan); choice != "" || !errors.Is(err, huh.ErrUserAborted) {
-		t.Fatalf("accessible EOF must cancel, not apply: choice=%q err=%v", choice, err)
+	for _, input := range []string{"", "99\n", "not-a-number\n"} {
+		stubAccessibleInput(t, input)
+		if choice, err := huhApplyChoice(plan); choice != "" || !errors.Is(err, huh.ErrUserAborted) {
+			t.Fatalf("accessible EOF after %q must cancel: choice=%q err=%v", input, choice, err)
+		}
 	}
 }
 
