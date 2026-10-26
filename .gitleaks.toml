@@ -1,0 +1,35 @@
+title = "just-code Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# Qualification logs record the source commit as `source=<40-hex>`.
+# The public commit ID and the documented public-constant digest in Go are
+# not credentials. The historical Tart script read ALBERT_API_KEY from stdin;
+# that variable-name assignment also contains no secret value. Do not exclude
+# whole log files or source files: other assignments and secrets in them must
+# still be reported.
+[[rules]]
+id = "generic-api-key"
+
+# Match only the public metadata assignment, never the entire line: another
+# credential appended later on that line must still fail.
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''(?i)source=[0-9a-f]{40}''',
+]
+
+# This exact digest is documented in the source as a public constant.
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''(?i)^guestSecretHeaderLineDigest\s*=\s*"bc7625348f136cc1f93c91b6c14fc89fd57550b5a85278b2216a01a201075f7b"''',
+]
+
+# This historical shell operation reads a value from stdin; no value is present.
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''(?i)ALBERT_API_KEY\s+\|\|\s+ALBERT_API_KEY=$''',
+]

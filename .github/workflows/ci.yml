@@ -11,9 +11,10 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -26,12 +27,13 @@ jobs:
 
   integration-host:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
       - name: Test pinned OpenCode host integration
@@ -51,17 +53,18 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     container: ubuntu:20.04
     steps:
       - name: Install build tools
         run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates gcc git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Trust the mounted workspace
         # VCS stamping shells out to git, and the container user does not own the
         # mounted checkout. Writing the exception to the system config makes it
         # visible to every later step regardless of HOME.
         run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -90,8 +93,9 @@ jobs:
             os: windows
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Test POSIX installer on macOS
         if: matrix.os == 'darwin'
         run: sh tests/installers/test-posix.sh
@@ -124,7 +128,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "llvm-mingw-$version-ucrt-aarch64\bin")
           Add-Content -Path $env:GITHUB_ENV -Value 'CC=aarch64-w64-mingw32-clang'
           Add-Content -Path $env:GITHUB_ENV -Value 'CXX=aarch64-w64-mingw32-clang++'
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
