@@ -199,7 +199,7 @@ func (m *MicrosandboxRuntime) warn(summary, format string, args ...any) {
 
 // An existing VM can still need installation after an interrupted first start.
 // Check before relaunching: a fast install could finish before the health wait.
-func (m *MicrosandboxRuntime) announceBackendStart(ctx context.Context) {
+func (m *MicrosandboxRuntime) announceExistingStart(ctx context.Context) {
 	if m.Launch == nil {
 		return
 	}
@@ -809,7 +809,7 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 			m.say("%s is running with a healthy OpenCode backend.", m.InstanceName())
 			return nil
 		}
-		m.announceBackendStart(ctx)
+		m.announceExistingStart(ctx)
 		if err := beforeBackendLaunch(); err != nil {
 			return err
 		}
@@ -853,7 +853,7 @@ func (m *MicrosandboxRuntime) startInstanceWithBackendPreflight(ctx context.Cont
 		// Booting a stopped VM does not re-run the container entrypoint, so the
 		// backend has to be launched explicitly. Reconcile managed skills first
 		// so an orphaned skill can never be served by the restarted backend.
-		m.announceBackendStart(ctx)
+		m.announceExistingStart(ctx)
 		if err := beforeBackendLaunch(); err != nil {
 			return err
 		}

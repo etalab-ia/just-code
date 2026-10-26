@@ -462,7 +462,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// The scan is host hygiene advice, not a gate: with the sealed workspace
 	// (P22) the checkout is not mounted, so a secret in it cannot reach the
 	// guest. The transfer filter is the enforceable boundary.
-	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
+	m.noteWorkspaceHygiene(ctx)
 
 	path := instanceStatePath(stateDir, m.InstanceName())
 	applied, err := ReadInstanceState(DefaultFS, path)
@@ -763,6 +763,7 @@ func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op Reconcile
 		// host-local record is the only place that remembers them.
 		return m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings), m.appliedProjectBindings())
 	case OpRestartBackend:
+		m.announceExistingStart(ctx)
 		return m.launchBackend(ctx)
 	case OpRestartVM:
 		running, err := m.IsRunning(ctx)

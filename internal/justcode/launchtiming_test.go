@@ -16,6 +16,71 @@ type launchPreparationClient struct {
 	launched    bool
 }
 
+type reconcilePreparationClient struct {
+	*fakeMSBClient
+	probes int
+	finish bool
+}
+
+func (c *reconcilePreparationClient) Exec(ctx context.Context, name, command string) (int, string, error) {
+	if command == msbGuestPrepareProbe {
+		c.record("exec " + name + " " + command)
+		c.probes++
+		if c.finish && c.probes >= 3 {
+			return msbPrepareReady, "", nil
+		}
+		return msbPrepareProgress, "", nil
+	}
+	return c.fakeMSBClient.Exec(ctx, name, command)
+}
+
+func TestFullReconcileLaunchWaitsForPreparation(t *testing.T) {
+	for _, finish := range []bool{false, true} {
+		t.Run(fmt.Sprint(finish), func(t *testing.T) {
+			isolateHostState(t)
+			client := &fakeMSBClient{exists: true, status: "running", startScript: msbStartScript(IsolationFull)}
+			m := newTestMicrosandbox(t, client)
+			probe := &reconcilePreparationClient{fakeMSBClient: client, finish: finish}
+			m.Client = probe
+			m.cfg.Isolation = IsolationFull
+			m.cfg.StartTimeout = time.Second
+			if !finish {
+				m.cfg.StartTimeout = 5 * time.Millisecond
+			}
+			m.toolchainPollDelay = time.Millisecond
+			desired := m.desiredState(true, testBindings(m.cfg.APIKey), nil)
+			if err := WriteInstanceState(DefaultFS, instanceStatePath(DefaultStateDir(), m.InstanceName()), desired.toState()); err != nil {
+				t.Fatal(err)
+			}
+			store := NewLaunchTimingStore(DefaultFS, t.TempDir())
+			u := &LaunchUX{TimingStore: store}
+			d := NewDispatcherWith(m.cfg, map[Runtime]Backend{RuntimeMicrosandbox: m})
+			d.SetLaunchUX(u)
+			if err := StartOrReconcile(context.Background(), m); err != nil {
+				t.Fatal(err)
+			}
+			if !hasCall(client, "exec "+msbSandbox+" "+msbRelaunchCommand) {
+				t.Fatal("fixture did not exercise the reconciliation restart")
+			}
+			err := d.WaitLaunchReady(context.Background(), m)
+			if (err == nil) != finish {
+				t.Fatalf("readiness error=%v, installation finished=%v", err, finish)
+			}
+			if probe.probes < 2 {
+				t.Fatal("reconciliation bypassed the preparation check")
+			}
+			if err == nil {
+				u.Observe(143 * time.Second)
+			}
+			_, _, cold := store.Observation(u.TimingKey, LaunchCold)
+			_, _, warm := store.Observation(u.TimingKey, LaunchWarm)
+			if cold != finish || warm {
+				t.Fatalf("incorrect timing history: cold=%v warm=%v", cold, warm)
+			}
+		})
+	}
+}
+
 func (c *launchPreparationClient) Exec(ctx context.Context, name, command string) (int, string, error) {
 	if command == msbGuestPrepareProbe {
 		c.record("exec " + name + " " + command)
@@ -78,9 +143,10 @@ func TestBackendRetryTimingUsesPreparationMarker(t *testing.T) {
 
 func TestLaunchHygieneDetailStaysInNonInteractiveLogs(t *testing.T) {
 	withNoGitleaks(t)
-	for _, restart := range []bool{false, true} {
+	for _, action := range []string{"start", "restart", "reconcile"} {
 		for _, terminal := range []bool{false, true} {
-			t.Run(fmt.Sprintf("restart=%v/terminal=%v", restart, terminal), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/terminal=%v", action, terminal), func(t *testing.T) {
+				isolateHostState(t)
 				m := newTestMicrosandbox(t, &fakeMSBClient{exists: true, status: "stopped"})
 				m.Launch = &LaunchUX{Terminal: terminal}
 				if err := os.WriteFile(filepath.Join(m.cfg.WorkspaceDir, ".env"), []byte("FIXTURE=value\n"), 0o600); err != nil {
@@ -88,9 +154,12 @@ func TestLaunchHygieneDetailStaysInNonInteractiveLogs(t *testing.T) {
 				}
 				output := captureStderr(t, func() {
 					var err error
-					if restart {
+					switch action {
+					case "restart":
 						err = m.Restart(context.Background())
-					} else {
+					case "reconcile":
+						err = m.Reconcile(context.Background())
+					default:
 						err = m.Start(context.Background())
 					}
 					if err != nil {

@@ -42,10 +42,16 @@ func (d *Dispatcher) RecordLaunchSkills() {
 	d.Launch.RecordSkills(names)
 }
 
-// WaitLaunchReady includes backend installation in the measured launch. Full
-// isolation already waits for guest toolchain readiness inside StartOrReconcile.
+// WaitLaunchReady gates reports and timing even when reconciliation bypasses
+// Start: full isolation uses the guest marker, backend isolation uses health.
 func (d *Dispatcher) WaitLaunchReady(ctx context.Context, b Backend) error {
-	if d.Launch == nil || d.cfg.Isolation == IsolationFull {
+	if d.Launch == nil {
+		return nil
+	}
+	if d.cfg.Isolation == IsolationFull {
+		if m, ok := b.(*MicrosandboxRuntime); ok {
+			return m.waitForToolchain(ctx)
+		}
 		return nil
 	}
 	if d.cfg.StartTimeoutErr != nil {
