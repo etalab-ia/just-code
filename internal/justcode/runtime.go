@@ -6,8 +6,10 @@ package justcode
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Runtime identifies a supported sandbox backend.
@@ -41,6 +43,26 @@ func supportedRuntimesOn(goos string) []Runtime {
 		return []Runtime{RuntimeMicrosandbox}
 	}
 	return allRuntimes
+}
+
+// RuntimeInstallCheck reports whether rt is installed on this host and, when
+// it is not, the command that installs it. The init wizard's advanced
+// settings screen uses it to flag a runtime that cannot start yet (#170).
+// The check is read-only; installation stays with setup.
+func RuntimeInstallCheck(rt Runtime) (installed bool, installHint string) {
+	switch rt {
+	case RuntimeTart:
+		_, err := exec.LookPath("tart")
+		return err == nil, "brew install openai/tools/tart"
+	case RuntimeAgentVM:
+		_, err := exec.LookPath("limactl")
+		return err == nil, "brew install lima"
+	default:
+		hint := "just-code setup"
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return validateInstalledMSBRuntime(ctx) == nil, hint
+	}
 }
 
 // Backend is the lifecycle of a single sandbox backend. Microsandbox and Tart

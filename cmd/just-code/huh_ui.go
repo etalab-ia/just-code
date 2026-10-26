@@ -303,8 +303,8 @@ func huhConfirm(title, description string, defaultYes bool) (bool, error) {
 	return value, nil
 }
 
-// huhApplyChoice presents the configuration table and the three-way review
-// question in one huh form: apply, edit or cancel.
+// huhApplyChoice presents the configuration table and the review question in
+// one huh form: apply, edit, open the advanced settings (#170) or cancel.
 func huhApplyChoice(plan justcode.InitPlan) (string, error) {
 	choice := "apply"
 	err := huhRun(huh.NewForm(
@@ -317,6 +317,7 @@ func huhApplyChoice(plan justcode.InitPlan) (string, error) {
 				Options(
 					huh.NewOption("Apply — write the manifest and lockfile", "apply"),
 					huh.NewOption("Edit — reopen the questions with the current answers", "edit"),
+					huh.NewOption("Réglages avancés — machine isolée, isolation, ressources", "advanced"),
 					huh.NewOption("Cancel — write nothing", "cancel"),
 				).
 				Value(&choice),
@@ -328,29 +329,232 @@ func huhApplyChoice(plan justcode.InitPlan) (string, error) {
 	return choice, nil
 }
 
+func initModelDisplayName(model string) string {
+	if model == "" {
+		return "modèle par défaut de setup"
+	}
+	id := canonicalAlbertModelRef(model)
+	short := strings.TrimPrefix(id, "albert/")
+	for _, choice := range justcode.CuratedAlbertModels() {
+		if choice.OpenCodeID == short {
+			return choice.Name
+		}
+	}
+	return id
+}
+
+// runtimeInstallHintFn is the seam the advanced settings screen uses to flag
+// a chosen runtime that is not installed on this host. Tests stub it so the
+// check never depends on the machine running the test.
+var runtimeInstallHintFn = justcode.RuntimeInstallCheck
+
+// Each submitted editor commits one valid answer. Escape closes the editor
+// or returns to the recap without discarding previously accepted edits.
+func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcode.InitAnswers, error) {
+	choice := "runtime"
+	notices := make(map[justcode.Runtime]string)
+	modelWarning := ""
+	for {
+		rt := effectiveInitRuntime(answers)
+		notice, checked := notices[rt]
+		if !checked {
+			notice = initRuntimeNotice(rt)
+			notices[rt] = notice
+		}
+		iso := answers.Isolation
+		if iso == "" {
+			iso = justcode.IsolationFull
+		}
+		cpus := resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs))
+		memory := resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB))
+		var options []huh.Option[string]
+		if !opts.Set["runtime"] {
+			options = append(options, huh.NewOption("Type de machine isolée : "+string(rt), "runtime"))
+		}
+		if !opts.Set["isolation"] {
+			options = append(options, huh.NewOption("Mode d'isolation : "+isolationDisplayName(iso), "isolation"))
+		}
+		if !opts.Set["cpus"] {
+			options = append(options, huh.NewOption(fmt.Sprintf("Processeurs de la machine isolée : %d", cpus), "cpus"))
+		}
+		if !opts.Set["memory-mb"] {
+			options = append(options, huh.NewOption("Mémoire de la machine isolée : "+justcode.FormatMemorySize(memory), "memory"))
+		}
+		if !opts.Set["model"] {
+			options = append(options, huh.NewOption("Modèle principal : "+initModelDisplayName(answers.Model), "model"))
+		}
+		options = append(options, huh.NewOption("Revenir au récapitulatif", "back"))
+		if len(options) == 1 {
+			choice = "back"
+		}
+		description := "Ces valeurs conviennent à la plupart des projets. Modifiez-les seulement si besoin.\n\n" +
+			"Agent (harnais) : OpenCode (recommandé). Pi n'est pas encore pris en charge.\n" +
+			"Petit modèle : même modèle que le modèle principal ; sert aux titres et aux résumés de session.\n" +
+			"Défauts : Microsandbox, isolation complète, 2 processeurs, 4 Go.\n" +
+			"6 Go conseillés avec chrome-devtools.\n\n" + notice +
+			"\n" + modelWarning +
+			"\n\n↑ ↓ : choisir un réglage. Entrée : modifier. Échap : revenir au récapitulatif."
+		back, err := runInitAdvancedForm(huh.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().Title("Réglages avancés").Description(description).
+				Options(options...).Value(&choice),
+		)))
+		if err != nil {
+			return answers, err
+		}
+		if back || choice == "back" {
+			return answers, nil
+		}
+		var field huh.Field
+		var input string
+		switch choice {
+		case "runtime":
+			input = string(rt)
+			field = huh.NewSelect[string]().Title("Type de machine isolée").
+				Description("Microsandbox : copie filtrée du projet (.env et secrets exclus), démarrage rapide. Tart et agent-vm : votre dossier est partagé avec la VM.").
+				Options(
+					huh.NewOption("Microsandbox (recommandé)", string(justcode.RuntimeMicrosandbox)),
+					huh.NewOption("Tart : VM macOS complète ; dossier partagé", string(justcode.RuntimeTart)),
+					huh.NewOption("agent-vm : VM Lima ; dossier partagé", string(justcode.RuntimeAgentVM)),
+				).Validate(func(rt string) error {
+				if answers.GitHubWorkflow && rt != string(justcode.RuntimeMicrosandbox) {
+					return fmt.Errorf("le workflow GitHub du projet nécessite Microsandbox")
+				}
+				return nil
+			}).Value(&input)
+		case "isolation":
+			input = string(iso)
+			field = huh.NewSelect[string]().Title("Mode d'isolation").
+				Description("complet : l'agent et son interface tournent dans la machine isolée. partiel : l'interface tourne sur votre poste, l'agent dans la machine isolée.").
+				Options(huh.NewOption("complet (recommandé)", "full"), huh.NewOption("partiel", "backend")).Value(&input)
+		case "cpus":
+			input = strconv.Itoa(cpus)
+			field = huh.NewInput().Title("Processeurs de la machine isolée").
+				Description(fmt.Sprintf("De 1 à %d. Vide ou 'défaut' rétablit la valeur par défaut. Échap : annuler cette modification.", opts.maxCPUs)).
+				Validate(func(s string) error { _, _, err := parseGuestCPUsInput(s, opts.maxCPUs); return err }).Value(&input)
+		case "memory":
+			input = justcode.FormatMemorySize(memory)
+			field = huh.NewInput().Title("Mémoire de la machine isolée").
+				Description(fmt.Sprintf("Maximum sur ce poste : %s. 6 Go conseillés avec chrome-devtools. Vide ou 'défaut' rétablit la valeur par défaut. Échap : annuler cette modification.", justcode.FormatMemorySize(opts.maxMemoryMB))).
+				Validate(func(s string) error { _, _, err := parseGuestMemoryInput(s, opts.maxMemoryMB); return err }).Value(&input)
+		case "model":
+			input = answers.Model
+			field = huh.NewInput().Title("Modèle principal").
+				Description("Identifiant du modèle Albert ('just-code models' liste les modèles). Vide ou 'défaut' reprend le modèle défini dans setup. Échap : annuler cette modification.").
+				Validate(func(s string) error { _, err := validateInitModelInput(answers.Root, s); return err }).Value(&input)
+		default:
+			return answers, fmt.Errorf("unknown advanced setting %q", choice)
+		}
+		back, err = runInitAdvancedForm(huh.NewForm(huh.NewGroup(field)))
+		if err != nil {
+			return answers, err
+		}
+		if back {
+			continue
+		}
+		switch choice {
+		case "runtime":
+			answers.Runtime = justcode.Runtime(input)
+		case "isolation":
+			answers.Isolation = justcode.Isolation(input)
+		case "cpus":
+			n, reset, err := parseGuestCPUsInput(input, opts.maxCPUs)
+			if err != nil {
+				return answers, err
+			}
+			if reset || n != cpus {
+				answers.CPUs = n
+			}
+		case "memory":
+			n, reset, err := parseGuestMemoryInput(input, opts.maxMemoryMB)
+			if err != nil {
+				return answers, err
+			}
+			if reset || n != memory {
+				answers.MemoryMB = n
+			}
+		case "model":
+			warning, err := validateInitModelInput(answers.Root, input)
+			if err != nil {
+				return answers, err
+			}
+			answers.Model = normalizeInitModelInput(input)
+			modelWarning = warning
+		}
+	}
+}
+
+func normalizeInitModelInput(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "default") || strings.EqualFold(value, "défaut") {
+		return ""
+	}
+	return canonicalAlbertModelRef(value)
+}
+
+func validateInitModelInput(root, value string) (string, error) {
+	model := normalizeInitModelInput(value)
+	if model == "" {
+		return "", nil
+	}
+	return catalogueModelWarningFn(root, model)
+}
+
+// The filter distinguishes Escape (back) from Ctrl+C (cancel init).
+var runInitAdvancedForm = func(form *huh.Form) (back bool, err error) {
+	err = form.WithShowHelp(false).WithProgramOptions(tea.WithOutput(os.Stdout), tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "esc" {
+			back = true
+			return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+		}
+		return msg
+	})).Run()
+	if back && err == huh.ErrUserAborted {
+		err = nil
+	}
+	return back, err
+}
+
+func effectiveInitRuntime(answers justcode.InitAnswers) justcode.Runtime {
+	if answers.Runtime == "" {
+		return justcode.RuntimeMicrosandbox
+	}
+	return answers.Runtime
+}
+
+func initRuntimeNotice(rt justcode.Runtime) string {
+	var notice string
+	if rt == justcode.RuntimeTart || rt == justcode.RuntimeAgentVM {
+		notice = "Avec un dossier partagé, l'agent voit tous les fichiers du projet, y compris .env.\n"
+	}
+	if installed, hint := runtimeInstallHintFn(rt); !installed {
+		notice += fmt.Sprintf("La machine choisie (%s) n'est pas installée. Installez-la : %s", rt, hint)
+	}
+	return strings.TrimSpace(notice)
+}
+
 func parseGuestCPUsInput(value string, maximum int) (guestCPUs int, useDefault bool, err error) {
 	value = strings.TrimSpace(value)
-	if value == "" || strings.EqualFold(value, "default") {
+	if value == "" || strings.EqualFold(value, "default") || strings.EqualFold(value, "défaut") {
 		return 0, true, nil
 	}
 	guestCPUs, err = strconv.Atoi(value)
 	if err != nil || guestCPUs < 1 || guestCPUs > maximum {
-		return 0, false, fmt.Errorf("cpus must be 1 to %d, a blank value or 'default' resets", maximum)
+		return 0, false, fmt.Errorf("entrez un nombre entier de processeurs (de 1 à %d). Maximum sur ce poste : %d processeurs", maximum, maximum)
 	}
 	return guestCPUs, false, nil
 }
 
 func parseGuestMemoryInput(value string, maximum int) (memoryMB int, useDefault bool, err error) {
 	value = strings.TrimSpace(value)
-	if value == "" || strings.EqualFold(value, "default") {
+	if value == "" || strings.EqualFold(value, "default") || strings.EqualFold(value, "défaut") {
 		return 0, true, nil
 	}
 	memoryMB, err = justcode.ParseMemorySize(value)
 	if err != nil {
-		return 0, false, err
+		return 0, false, fmt.Errorf("format attendu : 4096, 4G ou 2.5G")
 	}
 	if memoryMB < 1 || memoryMB > maximum {
-		return 0, false, fmt.Errorf("memory must be 1 to %s; a blank value or 'default' resets", justcode.FormatMemorySize(maximum))
+		return 0, false, fmt.Errorf("au moins 1 MiB. Maximum sur ce poste : %s", justcode.FormatMemorySize(maximum))
 	}
 	return memoryMB, false, nil
 }
@@ -559,18 +763,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		// The root field starts empty each pass: an empty submission keeps the
 		// current root, matching the line wizard's default-in-prompt behavior.
 		root := ""
-		runtime := string(answers.Runtime)
-		if runtime == "" {
-			runtime = string(justcode.RuntimeMicrosandbox)
-		}
-		isolation := string(answers.Isolation)
-		if isolation == "" {
-			isolation = string(justcode.IsolationFull)
-		}
-		model := answers.Model
-		cpusInput := strconv.Itoa(resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)))
-		memoryInput := justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)))
-		credentialRef := answers.CredentialRef
 		skills := append([]string(nil), answers.Skills...)
 		mcps := append([]string(nil), answers.MCPConnectors...)
 		haveManifestMCPs := false
@@ -621,82 +813,9 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			).Title("Project")
 		}
 
-		runtimeFields := make([]huh.Field, 0, 2)
-		if !opts.Set["runtime"] {
-			runtimeFields = append(runtimeFields, huh.NewSelect[string]().
-				Title("Runtime").
-				Description("Where the guest comes from ('just-code doctor' checks the selected one).").
-				Options(
-					huh.NewOption("microsandbox — the sealed microVM (default)", string(justcode.RuntimeMicrosandbox)),
-					huh.NewOption("tart — a full VM that mounts the project", string(justcode.RuntimeTart)),
-					huh.NewOption("agent-vm — the managed tart VM", string(justcode.RuntimeAgentVM)),
-				).
-				Value(&runtime))
-		}
-		if !opts.Set["isolation"] {
-			runtimeFields = append(runtimeFields, huh.NewSelect[string]().
-				Title("Sharing mode").
-				Description("Where the agent and its credentials run.").
-				Options(
-					huh.NewOption("full — inside the guest; your machine is only a terminal", string(justcode.IsolationFull)),
-					huh.NewOption("backend — the TUI runs here and attaches to the guest", string(justcode.IsolationBackend)),
-				).
-				Value(&isolation))
-		}
-		var runtimeGroup *huh.Group
-		if len(runtimeFields) > 0 {
-			runtimeGroup = huh.NewGroup(runtimeFields...).Title("Runtime")
-		}
-
-		resourceFields := make([]huh.Field, 0, 3)
-		if !opts.Set["model"] {
-			resourceFields = append(resourceFields, huh.NewInput().
-				Title("Model").
-				Description("Leave empty for the built-in default ('just-code models' lists the catalogue).").
-				Value(&model))
-		}
-		if shouldAskGuestCPUs(opts) {
-			resourceFields = append(resourceFields, huh.NewInput().
-				Title("Guest CPUs").
-				Description(fmt.Sprintf("1 to %d CPUs; blank or 'default' restores the implicit default. The host has %d logical CPUs.", opts.maxCPUs, opts.hostCPUs)).
-				Validate(func(s string) error {
-					_, _, err := parseGuestCPUsInput(s, opts.maxCPUs)
-					return err
-				}).
-				Value(&cpusInput))
-		}
-		if !opts.Set["memory-mb"] {
-			resourceFields = append(resourceFields, huh.NewInput().
-				Title("Guest memory").
-				Description(fmt.Sprintf("Enter MiB or GiB (e.g. 4G or 2.5G); max %s. Blank or 'default' restores the implicit default.", justcode.FormatMemorySize(opts.maxMemoryMB))).
-				Validate(func(s string) error {
-					_, _, err := parseGuestMemoryInput(s, opts.maxMemoryMB)
-					return err
-				}).
-				Value(&memoryInput))
-		}
-		var resourceGroup *huh.Group
-		if len(resourceFields) > 0 {
-			resourceGroup = huh.NewGroup(resourceFields...).Title("Model and resources")
-		}
-
-		credentialFields := make([]huh.Field, 0, 2)
-		if !opts.Set["credential-ref"] {
-			credentialFields = append(credentialFields, huh.NewInput().
-				Title("Credential reference").
-				Description("The global Albert credential is used unless you name another (P08 reference).").
-				Validate(func(s string) error {
-					if strings.HasPrefix(strings.TrimSpace(s), "sk-") {
-						return fmt.Errorf("a reference names a stored credential, not a raw key")
-					}
-					return nil
-				}).
-				Value(&credentialRef))
-		}
-		var credentialGroup *huh.Group
-		if len(credentialFields) > 0 {
-			credentialGroup = huh.NewGroup(credentialFields...).Title("Credentials")
-		}
+		// Runtime, isolation, model, resources and the credential reference
+		// are expert settings: they no longer appear in the default path and
+		// live behind the review's "Réglages avancés" entry (#170).
 
 		skillsGroup := newInitSkillsGroup(skillOptionsPass, &skills, &skillsLocalOnly,
 			!opts.Set["skills"] && !skipSkills, !opts.Set["skills-storage"], initSkillsStepPrefix(opts))
@@ -715,7 +834,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		// never evaluates hide predicates, so a hidden group would still
 		// prompt there and its submitted value would override the flag.
 		var groups []*huh.Group
-		for _, g := range []*huh.Group{rootGroup, runtimeGroup, resourceGroup, credentialGroup, skillsGroup, mcpGroup} {
+		for _, g := range []*huh.Group{rootGroup, skillsGroup, mcpGroup} {
 			if g != nil {
 				groups = append(groups, g)
 			}
@@ -747,33 +866,6 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			continue
 		}
 		answers.Root = newRoot
-		answers.Runtime = justcode.Runtime(runtime)
-		answers.Isolation = justcode.Isolation(isolation)
-		answers.Model = strings.TrimSpace(model)
-		// An accepted default keeps the implicit (zero) value so the
-		// project keeps inheriting built-in default changes; only an
-		// edited input becomes an explicit number.
-		if shouldAskGuestCPUs(opts) {
-			cpus, useDefault, err := parseGuestCPUsInput(cpusInput, opts.maxCPUs)
-			if err != nil {
-				return answers, err
-			}
-			if useDefault {
-				answers.CPUs = 0
-			} else if cpus != resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)) {
-				answers.CPUs = cpus
-			}
-		}
-		memoryMB, useDefault, err := parseGuestMemoryInput(memoryInput, opts.maxMemoryMB)
-		if err != nil {
-			return answers, fmt.Errorf("memory: %w", err)
-		}
-		if useDefault {
-			answers.MemoryMB = 0
-		} else if memoryMB != resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)) {
-			answers.MemoryMB = memoryMB
-		}
-		answers.CredentialRef = strings.TrimSpace(credentialRef)
 		needsSkillsConfirm, retryMCPs, err := commitInitHuhSubmission(opts, &answers, skills, mcps, skillsLocalOnly, skillOptions, skipSkills)
 		if err != nil {
 			return answers, err

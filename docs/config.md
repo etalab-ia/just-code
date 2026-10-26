@@ -370,6 +370,20 @@ un champ managé et la config projet est affiché en diff avant lancement (la
 valeur gérée gagne) : si la config projet définit `model` différemment, les
 deux valeurs sont affichées (l'inverse serait un écrasement invisible).
 
+Dans `just-code init`, le récapitulatif donne accès aux **Réglages avancés** :
+type de machine isolée, isolation, processeurs, mémoire et modèle principal.
+Ces réglages ne sont pas demandés dans le parcours par défaut. Chaque
+modification validée est conservée lorsque vous revenez au récapitulatif avec
+Échap. Le modèle principal peut reprendre le défaut de `setup` ou être choisi
+pour ce projet ; `JUST_CODE_MODEL` conserve sa priorité au lancement.
+
+Le petit modèle OpenCode, utilisé notamment pour les titres et les résumés,
+reste identique au modèle principal. Son choix indépendant est suivi dans
+[#275](https://github.com/etalab-ia/just-code/issues/275). OpenCode reste le seul
+harnais pris en charge ; le support de Pi est suivi dans
+[#176](https://github.com/etalab-ia/just-code/issues/176). La référence d'identifiant
+Albert n'est plus demandée dans l'assistant ; `--credential-ref` reste disponible.
+
 `just-code models` valide la sélection contre le catalogue Albert
 (`text-generation` uniquement) ; le catalogue en échec réseau retombe sur le
 dernier-known-good persisté dans l'état hôte. Une sélection absente du

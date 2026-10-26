@@ -240,6 +240,9 @@ func stubWizardHuh(t *testing.T) {
 func initTestProject(t *testing.T) string {
 	t.Helper()
 	stubWizardHuh(t)
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
 	// The wizard resolves the GitHub origin, the stored credential and its
 	// rights before offering the approval question (#155, #169). Stub both
 	// seams so the scripted tests stay hermetic: the real ones read the host
@@ -321,24 +324,6 @@ func TestParseInitArgs(t *testing.T) {
 	}
 }
 
-func TestShouldAskGuestCPUs(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		opts initOptions
-		want bool
-	}{
-		{"multiple choices", initOptions{maxCPUs: 8}, true},
-		{"only one choice", initOptions{maxCPUs: 1}, false},
-		{"flag supplied", initOptions{maxCPUs: 8, Set: map[string]bool{"cpus": true}}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldAskGuestCPUs(tc.opts); got != tc.want {
-				t.Fatalf("shouldAskGuestCPUs() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestInitFlagsCannotExceedHostResourceCap(t *testing.T) {
 	root := initTestProject(t)
 	originalHostResources := detectHostResourcesFn
@@ -414,7 +399,7 @@ func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 		code int
 		err  error
 	)
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", "y"}, "\n") + "\n"
+	input := strings.Join([]string{"", "", "", "", "n", "y"}, "\n") + "\n"
 	out := captureStdout(t, func() {
 		code, err = initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	})
@@ -533,9 +518,8 @@ func TestInitNoOriginShowsCase2Screen(t *testing.T) {
 	approved := false
 	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
 	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, skills, skill
-	// storage, MCPs, github (continue), apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+	// Skills, no-skill confirmation, storage, MCPs, GitHub (continue), apply.
+	input := strings.Join([]string{"", "", "", "", "", ""}, "\n") + "\n"
 	var (
 		code int
 		err  error
@@ -580,9 +564,8 @@ func TestInitNoTokenShowsCase3Screen(t *testing.T) {
 	approved := false
 	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
 	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, skills, skill
-	// confirmation, storage, MCPs, github (later), apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+	// Skills, no-skill confirmation, storage, MCPs, GitHub (later), apply.
+	input := strings.Join([]string{"", "", "", "", "", ""}, "\n") + "\n"
 	var code int
 	var err error
 	out := captureStdout(t, func() {
@@ -626,9 +609,8 @@ func TestInitApprovedGitHubShowsCase1Screen(t *testing.T) {
 	approved := false
 	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
 	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, skills, skill
-	// confirmation, storage, MCPs, github (O), apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", "o", ""}, "\n") + "\n"
+	// Skills, no-skill confirmation, storage, MCPs, GitHub (O), apply.
+	input := strings.Join([]string{"", "", "", "", "o", ""}, "\n") + "\n"
 	var code int
 	var err error
 	out := captureStdout(t, func() {
@@ -681,9 +663,8 @@ func TestInitCase4InsufficientRightsAllowsReverify(t *testing.T) {
 	approved := false
 	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
 	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, skills, skill
-	// confirmation, storage, MCPs, github (R), github (O), apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", "r", "o", ""}, "\n") + "\n"
+	// Skills, no-skill confirmation, storage, MCPs, GitHub (R then O), apply.
+	input := strings.Join([]string{"", "", "", "", "r", "o", ""}, "\n") + "\n"
 	var code int
 	var err error
 	out := captureStdout(t, func() {
@@ -726,9 +707,8 @@ func TestInitCase4ContinueWithoutGitHub(t *testing.T) {
 	approved := false
 	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
 	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, skills, skill
-	// confirmation, storage, MCPs, github (continue), apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", "c", ""}, "\n") + "\n"
+	// Skills, no-skill confirmation, storage, MCPs, GitHub (continue), apply.
+	input := strings.Join([]string{"", "", "", "", "c", ""}, "\n") + "\n"
 	var code int
 	var err error
 	out := captureStdout(t, func() {
@@ -1194,19 +1174,24 @@ func TestClearingContext7WhenControlPlaneUnreachableProceedsWithWarning(t *testi
 
 // TestInitInteractiveUsesDefaultsOnEmptyAnswers pins that pressing enter
 // through the questions is a valid path: every question has a default, and the
-// engine's defaults are what get written.
+// engine's defaults are what get written. Since #170 the expert settings
+// (runtime, isolation, resources) are not part of this path at all: they live
+// behind the review's "Réglages avancés" entry.
 func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
-	input := root + "\n\n\n\n\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, skills, no-skill confirmation, storage, MCPs, apply
+	input := root + "\n\n\n\n\n\n\n" // root, GitHub, skills, no-skill confirmation, storage, MCPs, apply
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
 		}
 	})
-	if !strings.Contains(out, "Sharing mode") || !strings.Contains(out, "Guest resources") {
-		t.Fatalf("the questions must be asked: %q", out)
+	if strings.Contains(out, "Sharing mode") || strings.Contains(out, "Guest resources") || strings.Contains(out, "Credential") {
+		t.Fatalf("the expert settings must not be asked in the default path (#170): %q", out)
+	}
+	if !strings.Contains(out, "Apply? [Y/n/edit/advanced]: ") {
+		t.Fatalf("the review must offer the advanced settings entry: %q", out)
 	}
 	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
 	if err != nil {
@@ -1223,7 +1208,10 @@ func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	}
 }
 
-func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
+// TestInitReviewAdvancedSettingsApply pins the line path of #170: the review's
+// "advanced" entry opens the expert settings (runtime, isolation, resources),
+// the edited values land in the manifest, and the flow returns to the review.
+func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
 	stubInitSkillResolver(t)
@@ -1237,12 +1225,16 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	detectHostResourcesFn = func() (justcode.HostResources, error) {
 		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
 	}
-	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources; runtimeInstallHintFn = originalInstallHint })
 	input := strings.Join([]string{
-		"microsandbox", "backend", "test-model", "3", "2048", "work", "", "", "projet", "chrome-devtools", "",
-		"edit",
-		"", "", "", "", "", "", "", "", "", "", "", "",
-	}, "\n")
+		"", "projet", "chrome-devtools", "n", // skills, storage, MCPs, GitHub
+		"advanced",
+		"microsandbox", "backend", "3", "2048", // runtime, isolation, cpus, memory
+		"qwen3-coder", // main-model override
+		"",            // apply
+	}, "\n") + "\n"
 	code, err := initRun(initOptions{Root: root, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	if code != 0 || err != nil {
 		t.Fatalf("initRun: code=%d err=%v", code, err)
@@ -1251,8 +1243,119 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
-		t.Fatalf("edit/back lost prior choices: %+v", manifest)
+	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
+		t.Fatalf("the advanced settings must reach the manifest: %+v", manifest)
+	}
+	if manifest.Model != "albert/qwen3-coder" || manifest.CredentialRef != "" {
+		t.Fatalf("main model must be configurable; credential reference remains CLI-only: %+v", manifest)
+	}
+}
+
+func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
+	for _, kind := range []string{"cpus", "memory", "model", "runtime", "tart-windows", "agent-vm-windows"} {
+		t.Run(kind, func(t *testing.T) {
+			if strings.HasSuffix(kind, "-windows") && runtime.GOOS != "windows" {
+				t.Skip("host-incompatible runtime cases run on Windows CI")
+			}
+			root := initTestProject(t)
+			manifest := justcode.ProjectManifest{Runtime: "microsandbox", Isolation: "full", CPUs: 2, MemoryMB: 4096, CredentialRef: "retained-ref"}
+			switch kind {
+			case "cpus":
+				manifest.CPUs = 64
+			case "memory":
+				manifest.MemoryMB = 524288
+			case "model":
+				manifest.Model = "albert/removed"
+			case "runtime":
+				manifest.Runtime = "removed-runtime"
+			case "tart-windows":
+				manifest.Runtime = "tart"
+			case "agent-vm-windows":
+				manifest.Runtime = "agent-vm"
+			}
+			writeManifest(t, root, manifest)
+			stubCatalogueCheck(t, func(_, model string) (string, error) {
+				if model == "albert/removed" {
+					return "", fmt.Errorf("model removed from catalogue")
+				}
+				return "", nil
+			})
+			opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
+			// Repair runtime, isolation, CPUs, memory and model, then apply.
+			input := "microsandbox\n\n2\n4G\ndéfaut\ny\n"
+			code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
+			if err != nil || code != 0 {
+				t.Fatalf("inherited %s cannot be repaired: code=%d, %v", kind, code, err)
+			}
+			got, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+			if err != nil || got.Runtime != "microsandbox" || got.CPUs != 2 || got.MemoryMB != 4096 || got.Model != "" || got.CredentialRef != "retained-ref" {
+				t.Fatalf("repair not applied: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestInitInvalidInheritedSettingsStillRejectNonInteractiveAndEOF(t *testing.T) {
+	for _, mode := range []string{"non-interactive", "yes", "eof"} {
+		t.Run(mode, func(t *testing.T) {
+			root := initTestProject(t)
+			before := justcode.ProjectManifest{Runtime: "microsandbox", Isolation: "full", CPUs: 64, MemoryMB: 4096}
+			writeManifest(t, root, before)
+			opts := initOptions{Root: root, Replace: true, Yes: mode == "yes", Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
+			code, err := initRun(opts, bufio.NewReader(strings.NewReader("")), mode != "non-interactive")
+			if code == 0 || err == nil {
+				t.Fatal("invalid inherited setting must not be silently accepted")
+			}
+			if mode == "eof" && !strings.Contains(err.Error(), "aucune réponse") {
+				t.Fatalf("expected EOF cancellation, got %v", err)
+			}
+			got, readErr := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+			if readErr != nil || got.CPUs != before.CPUs {
+				t.Fatalf("rejected configuration modified manifest: %+v, %v", got, readErr)
+			}
+		})
+	}
+}
+
+// TestInitAdvancedLineWarnsOnSharedFolderRuntime pins two #170 acceptance
+// points on the line path: picking Tart or agent-vm displays the shared-folder
+// consequence, and a runtime that is not installed is flagged with the command
+// that installs it.
+func TestInitAdvancedLineWarnsOnSharedFolderRuntime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Tart is not a supported Windows runtime")
+	}
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(rt justcode.Runtime) (bool, string) {
+		if rt == justcode.RuntimeTart {
+			return false, "brew install openai/tools/tart"
+		}
+		return true, ""
+	}
+	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
+	// root, GitHub, skills, MCPs, storage, review=advanced, runtime=tart,
+	// isolation, cpus, memory, review=apply.
+	input := strings.Join([]string{root, "", "", "", "", "n", "advanced", "tart", "", "", "", "", ""}, "\n") + "\n"
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "l'agent voit tous les fichiers du projet, y compris .env") {
+		t.Fatalf("the shared-folder consequence must be displayed: %q", out)
+	}
+	if !strings.Contains(out, "n'est pas installé") || !strings.Contains(out, "brew install openai/tools/tart") {
+		t.Fatalf("an uninstalled runtime must name its install command: %q", out)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Runtime != "tart" {
+		t.Fatalf("runtime = %q, want tart", manifest.Runtime)
 	}
 }
 
@@ -1713,19 +1816,27 @@ func TestInitStopsOnAModelTheCatalogueDoesNotList(t *testing.T) {
 	}
 }
 
-// TestInitRejectsATypedZero pins parity with the flag: an empty answer means
-// "use the default", so a typed 0 is an out-of-range value rather than a
-// second way to say the same thing.
+// TestInitRejectsATypedZero pins parity with the flag in the advanced
+// settings screen (#170): an empty answer means "use the default", so a typed
+// 0 is an out-of-range value — and the screen re-asks instead of aborting,
+// so a typo never loses the answers already given.
 func TestInitRejectsATypedZero(t *testing.T) {
 	root := initTestProject(t)
-	// root, runtime, isolation, model, cpus(0)
-	input := root + "\n\n\n\n0\n"
-	var err error
-	_ = captureStdout(t, func() {
-		_, err = initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
+	stubProjectSkills(t)
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
+	// root, GitHub, skills, MCPs, storage, review=advanced, runtime,
+	// isolation, cpus(0) then a kept default, memory, review=cancel.
+	input := root + "\n\n\n\n\n\nadvanced\n\n\n0\n\n\n\nn\n"
+	out := captureStdout(t, func() {
+		_, _ = initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 	})
-	if err == nil || !strings.Contains(err.Error(), "cpus must be 1 to") {
-		t.Fatalf("a typed 0 must be rejected like the flag: %v", err)
+	if !strings.Contains(out, "Au moins 1 processeur.") {
+		t.Fatalf("a typed 0 must be rejected in the advanced screen without leaving it: %q", out)
+	}
+	if _, err := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("the cancelled run must leave nothing on disk (stat err = %v)", err)
 	}
 }
 
@@ -1808,8 +1919,10 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	stubProjectSkills(t)
 	root := initTestProject(t)
-	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, skills, storage, MCPs, apply
-	input := "\n\nbackend\n\n\n\n\n\n\n\n\n\n\n"
+	// confirm, GitHub, skills, no-skill confirmation, storage, MCPs, review=advanced, runtime,
+	// isolation(backend), cpus, memory, review=apply. The expert settings
+	// live behind the review's "advanced" entry since #170.
+	input := "\n\n\n\n\n\nadvanced\n\nbackend\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.
@@ -2078,13 +2191,13 @@ func TestInitReopensQuestionsWhenGitHubChangesBeforeWriting(t *testing.T) {
 	approveGitHubForProjectFn = func(string) error { approved = true; return nil }
 	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
 
-	// First pass: ten blank answers then Yes to GitHub (the token looks fine).
+	// First pass: skills, confirmation, storage, MCPs, then Yes to GitHub.
 	// The pre-write re-check then finds it unusable, so the questions reopen
 	// and the second pass continues without GitHub.
 	input := strings.Join([]string{
-		"", "", "", "", "", "", "", "", "", "", "o",
-		"", "", "", "", "", "", "", "", "", "", "c", "", "",
-	}, "\n")
+		"", "", "", "", "o",
+		"", "", "", "", "c", "",
+	}, "\n") + "\n"
 	var (
 		code int
 		err  error
@@ -2103,6 +2216,40 @@ func TestInitReopensQuestionsWhenGitHubChangesBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestInitReopensGitHubAfterAdvancedEdit(t *testing.T) {
+	root := initTestProject(t)
+	originalProbe, originalApprove := githubInitProbeFn, approveGitHubForProjectFn
+	t.Cleanup(func() { githubInitProbeFn, approveGitHubForProjectFn = originalProbe, originalApprove })
+	probes := 0
+	githubInitProbeFn = func(string) justcode.GitHubProjectStatus {
+		probes++
+		if probes > 4 {
+			t.Fatal("GitHub retry did not return to the questions")
+		}
+		rights := justcode.GitHubRepoRightsOK
+		if probes > 2 {
+			rights = justcode.GitHubRepoRightsInvalid
+		}
+		return justcode.GitHubProjectStatus{Remote: justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, HasOrigin: true, HasToken: true, Login: "owner", Rights: rights}
+	}
+	approveGitHubForProjectFn = func(string) error { t.Fatal("revoked credential must not be approved"); return nil }
+	// GitHub yes, advanced, runtime, isolation, CPU=3, memory, model,
+	// reopened GitHub without approval, then apply.
+	input := "o\nadvanced\n\n\n3\n\n\nc\ny\n"
+	opts := initOptions{Root: root, Set: map[string]bool{"root": true, "skills": true, "skills-storage": true, "mcps": true}}
+	code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
+	if err != nil || code != 0 {
+		t.Fatalf("GitHub retry after advanced failed: code=%d err=%v", code, err)
+	}
+	got, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil || got.CPUs != 3 {
+		t.Fatalf("advanced edit lost during GitHub retry: %+v, %v", got, err)
+	}
+	if probes != 4 {
+		t.Fatalf("expected initial step, two checks and reopened GitHub, got %d probes", probes)
+	}
+}
+
 // TestInitGitHubStepExplainsUnsupportedRuntime pins the #155 class of failure on
 // the runtime axis: the GitHub workflow needs Microsandbox, so choosing Tart or
 // agent-vm and then approving it used to fail only at the end, discarding every
@@ -2118,9 +2265,8 @@ func TestInitGitHubStepExplainsUnsupportedRuntime(t *testing.T) {
 			approveGitHubForProjectFn = func(string) error { approved = true; return nil }
 			t.Cleanup(func() { approveGitHubForProjectFn = originalApprove })
 
-			// runtime, isolation, model, cpus, memory, credential-ref, skills,
-			// MCPs, storage, GitHub (continue), apply.
-			input := strings.Join([]string{"", "", "", "", "", "", "", "", "", "", ""}, "\n") + "\n"
+			// Skills, no-skill confirmation, storage, MCPs, GitHub, apply.
+			input := strings.Join([]string{"", "", "", "", "", ""}, "\n") + "\n"
 			opts := initOptions{
 				Root: root, Runtime: runtimeName, Replace: true,
 				Set: map[string]bool{"root": true, "runtime": true},

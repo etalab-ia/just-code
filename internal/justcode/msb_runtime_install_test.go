@@ -214,6 +214,35 @@ func TestManagedMSBRuntimeTrustMarker(t *testing.T) {
 	}
 }
 
+func TestRuntimeInstallCheckRecognizesManagedMicrosandbox(t *testing.T) {
+	artifact, err := msbRuntimeArtifactFor(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported test platform: %v", err)
+	}
+	home := t.TempDir()
+	t.Setenv("MSB_HOME", home)
+	t.Setenv("MSB_PATH", "")
+	t.Setenv("MSB_LIBKRUNFW_PATH", "")
+	if installed, hint := RuntimeInstallCheck(RuntimeMicrosandbox); installed || hint != "just-code setup" {
+		t.Fatalf("missing runtime check = %v, %q", installed, hint)
+	}
+	archive := runtimeArchive(t, map[string]string{artifact.msbName: "runtime", artifact.libName: "library"})
+	if err := extractMSBRuntime(bytes.NewReader(archive), home, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMSBRuntimeMarker(home, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if installed, _ := RuntimeInstallCheck(RuntimeMicrosandbox); !installed {
+		t.Fatal("a trusted managed runtime must be recognized")
+	}
+	// An explicit but broken override must not be hidden by the managed copy.
+	t.Setenv("MSB_PATH", filepath.Join(home, "missing"))
+	if installed, _ := RuntimeInstallCheck(RuntimeMicrosandbox); installed {
+		t.Fatal("an invalid explicit runtime override must be reported")
+	}
+}
+
 func TestExternalMSBRuntimeRequiresBothPaths(t *testing.T) {
 	t.Setenv("MSB_PATH", filepath.Join(t.TempDir(), "msb"))
 	t.Setenv("MSB_LIBKRUNFW_PATH", "")
