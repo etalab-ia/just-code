@@ -46,6 +46,31 @@ func (d *Dispatcher) RecordLaunchSkills() {
 	d.Launch.RecordSkills(names)
 }
 
+// WaitLaunchReady includes backend installation in the measured launch. Full
+// isolation already waits for guest toolchain readiness inside StartOrReconcile.
+func (d *Dispatcher) WaitLaunchReady(ctx context.Context, b Backend) error {
+	if d.Launch == nil || d.cfg.Isolation == IsolationFull {
+		return nil
+	}
+	if d.cfg.StartTimeoutErr != nil {
+		return d.cfg.StartTimeoutErr
+	}
+	endpoint, err := b.Endpoint(ctx)
+	if err != nil {
+		return err
+	}
+	health := DefaultHealthConfig()
+	health.Deadline = d.cfg.StartTimeout
+	health.Quiet = d.Launch.Terminal
+	if !health.Quiet {
+		health.Progress = os.Stderr
+	}
+	if err := WaitHealthy(ctx, endpoint, d.cfg.Username, d.cfg.Password, health, nil); err != nil {
+		return fmt.Errorf("%w\n  Run 'just-code logs' to inspect the backend", err)
+	}
+	return nil
+}
+
 // NewDispatcher builds a dispatcher over the runtimes for a config. Without
 // a project context the backends operate on the legacy singleton instances,
 // so existing behavior is unchanged (P06).

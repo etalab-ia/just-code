@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,9 +18,56 @@ import (
 type launchReconciler struct {
 	justcode.Backend
 	reconcile func() error
+	endpoint  string
 }
 
-func (b launchReconciler) Reconcile(context.Context) error { return b.reconcile() }
+func (b launchReconciler) Reconcile(context.Context) error          { return b.reconcile() }
+func (b launchReconciler) Endpoint(context.Context) (string, error) { return b.endpoint, nil }
+
+func TestLaunchTimingWaitsForBackendReadiness(t *testing.T) {
+	for _, healthy := range []bool{true, false} {
+		t.Run(fmt.Sprint(healthy), func(t *testing.T) {
+			var elapsed atomic.Int64
+			oldNow := launchNowFn
+			launchNowFn = func() time.Time { return time.Unix(100+elapsed.Load(), 0) }
+			t.Cleanup(func() { launchNowFn = oldNow })
+			var probes atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				probes.Add(1)
+				elapsed.Add(140)
+				if !healthy {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				fmt.Fprint(w, `{"status":"healthy"}`)
+			}))
+			defer srv.Close()
+			store := justcode.NewLaunchTimingStore(justcode.DefaultFS, t.TempDir())
+			u := &justcode.LaunchUX{TimingStore: store, TimingKey: "backend"}
+			d := justcode.NewDispatcherWith(justcode.Config{Isolation: justcode.IsolationBackend, StartTimeout: time.Nanosecond}, nil)
+			d.Launch = u
+			b := launchReconciler{endpoint: srv.URL, reconcile: func() error {
+				elapsed.Add(3)
+				u.RecordFirstStart()
+				return nil
+			}}
+			err := startWithLaunchReport(context.Background(), d, b)
+			if probes.Load() == 0 {
+				t.Fatal("readiness was never checked")
+			}
+			if (err == nil) != healthy {
+				t.Fatalf("readiness error: %v", err)
+			}
+			low, high, ok := store.Observation("backend", justcode.LaunchCold)
+			if healthy && (!ok || low != 143 || high != 143) {
+				t.Fatalf("incomplete timing: %d..%d present=%v", low, high, ok)
+			}
+			if !healthy && ok {
+				t.Fatal("failed readiness persisted a successful timing")
+			}
+		})
+	}
+}
 
 func TestLaunchMeasuresCompleteReconciliationAndOnlySuccess(t *testing.T) {
 	for _, fail := range []bool{false, true} {
@@ -28,7 +78,7 @@ func TestLaunchMeasuresCompleteReconciliationAndOnlySuccess(t *testing.T) {
 			t.Cleanup(func() { launchNowFn = oldNow })
 			store := justcode.NewLaunchTimingStore(justcode.DefaultFS, t.TempDir())
 			u := &justcode.LaunchUX{TimingStore: store, TimingKey: "measured"}
-			d := justcode.NewDispatcherWith(justcode.Config{}, nil)
+			d := justcode.NewDispatcherWith(justcode.Config{Isolation: justcode.IsolationFull}, nil)
 			d.Launch = u
 			b := launchReconciler{reconcile: func() error {
 				now = now.Add(143 * time.Second)

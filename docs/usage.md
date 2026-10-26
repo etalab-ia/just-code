@@ -36,7 +36,7 @@ Dans un terminal interactif, le lancement affiche les étapes terminées : copie
 
 Si le projet contient des plugins ou des commandes MCP non approuvés, un menu propose **Approuver et démarrer**, **Voir le détail** ou **Quitter**. L'approbation reste sur le poste et porte sur le contenu présenté. Un fichier modifié exige une nouvelle approbation. Sans terminal interactif, le lancement reste bloqué : relire les entrées avec `just-code trust status`, puis les approuver explicitement avec `just-code trust approve`.
 
-La durée complète d'un démarrage réussi, y compris la mise à jour de la configuration de l'instance, est enregistrée dans le répertoire d'état local (`launch-timings.json`). Le premier démarrage avec installation des outils et les démarrages suivants ont des mesures séparées. Sans mesure préalable, aucune durée chiffrée n'est annoncée. La première durée avec installation reste conservée, même après de nouveaux démarrages.
+La durée complète d'un démarrage réussi, y compris la mise à jour de la configuration de l'instance, est enregistrée dans le répertoire d'état local (`launch-timings.json`). En mode backend, la mesure inclut l'attente de disponibilité de l'agent ; une attente qui échoue n'enregistre aucune durée. Le premier démarrage avec installation des outils et les démarrages suivants ont des mesures séparées. Sans mesure préalable, aucune durée chiffrée n'est annoncée. La première durée avec installation reste conservée, même après de nouveaux démarrages.
 
 OpenCode conserve la version installée dans l'invité : les mises à jour automatiques sont désactivées au lancement.
 

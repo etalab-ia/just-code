@@ -1002,15 +1002,15 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	if _, err := exec.LookPath("opencode"); err != nil {
 		return 0, fmt.Errorf("the 'opencode' CLI is required to attach the TUI but was not found on PATH; install it with 'npm install -g opencode-ai'")
 	}
-	fmt.Fprintln(os.Stderr, "Préparation de l'agent…")
-	health := justcode.DefaultHealthConfig()
-	health.Quiet = d.Launch != nil && d.Launch.Terminal
-	health.Deadline = cfg.StartTimeout
-	if d.Launch == nil || !d.Launch.Terminal {
+	// Microsandbox's launch report has already waited before saving its timing.
+	if d.Launch == nil {
+		fmt.Fprintln(os.Stderr, "Préparation de l'agent…")
+		health := justcode.DefaultHealthConfig()
+		health.Deadline = cfg.StartTimeout
 		health.Progress = os.Stderr
-	}
-	if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, health, nil); err != nil {
-		return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
+		if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, health, nil); err != nil {
+			return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
+		}
 	}
 
 	hasSessions, sessionErr := justcode.OpenCodeRemoteHasSessions(ctx, endpoint, cfg.Username, cfg.Password)
@@ -1100,6 +1100,9 @@ func startWithLaunchReport(ctx context.Context, d *justcode.Dispatcher, b justco
 	}
 	begun := launchNowFn()
 	if err := justcode.StartOrReconcile(ctx, b); err != nil {
+		return err
+	}
+	if err := d.WaitLaunchReady(ctx, b); err != nil {
 		return err
 	}
 	d.Launch.Observe(launchNowFn().Sub(begun))
