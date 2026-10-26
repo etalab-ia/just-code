@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -351,6 +352,45 @@ func TestInitAdvancedCtrlCCancels(t *testing.T) {
 	_, err := askInitAdvancedHuh(initOptions{}, justcode.InitAnswers{})
 	if !errors.Is(err, huh.ErrUserAborted) {
 		t.Fatalf("Ctrl+C must cancel, got %v", err)
+	}
+}
+
+func TestInitHuhRepairsInheritedResourcesBeforeReview(t *testing.T) {
+	root := initTestProject(t)
+	writeManifest(t, root, justcode.ProjectManifest{Runtime: "microsandbox", Isolation: "full", CPUs: 64, MemoryMB: 4096})
+	originalHuh, originalRun, originalAdvanced := wizardHuhFn, huhRun, runInitAdvancedForm
+	t.Cleanup(func() { wizardHuhFn, huhRun, runInitAdvancedForm = originalHuh, originalRun, originalAdvanced })
+	wizardHuhFn = func() bool { return true }
+	huhRun = func(*huh.Form) error { return nil }
+	calls := 0
+	runInitAdvancedForm = func(form *huh.Form) (bool, error) {
+		calls++
+		field := form.GetFocusedField()
+		field.Focus()
+		switch calls {
+		case 1:
+			field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		case 2:
+			field.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+			field.Update(tea.KeyPressMsg{Code: '3', Text: "3"})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		case 3:
+			return true, nil
+		default:
+			t.Fatal("repair reopened after becoming valid")
+		}
+		return false, nil
+	}
+	opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "mcps": true}}
+	code, err := initRun(opts, bufio.NewReader(strings.NewReader("")), true)
+	if err != nil || code != 0 || calls != 3 {
+		t.Fatalf("huh repair failed: code=%d calls=%d err=%v", code, calls, err)
+	}
+	got, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil || got.CPUs != 3 {
+		t.Fatalf("huh repair not applied: %+v, %v", got, err)
 	}
 }
 

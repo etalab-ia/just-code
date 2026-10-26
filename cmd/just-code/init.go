@@ -412,6 +412,27 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			// oversized legacy manifest value so init --replace can repair it.
 			answers.CPUs = 0
 		}
+		// Inherited settings may be invalid on this host or against today's
+		// catalogue. Let interactive replacement repair them before Plan can
+		// reject them, without weakening flag or non-interactive validation.
+		if tty && !opts.Yes && opts.Replace {
+			if repairErr := invalidInheritedInitSetting(opts, answers); repairErr != nil {
+				fmt.Printf("\nUn réglage du projet doit être corrigé avant le récapitulatif : %v\n", repairErr)
+				askQuestions = false
+				if useHuhReview {
+					answers, err = askInitAdvancedHuh(opts, answers)
+				} else {
+					if _, readErr := in.Peek(1); readErr != nil {
+						return 1, fmt.Errorf("aucune réponse ; rien n'a été enregistré : %w", readErr)
+					}
+					answers, err = askInitAdvancedLine(in, opts, answers)
+				}
+				if err != nil {
+					return 1, err
+				}
+				continue
+			}
+		}
 		answers = withBrowserResourceGuidance(answers)
 		guestCPUs := answers.CPUs
 		if guestCPUs <= 0 {
@@ -561,6 +582,20 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		fmt.Println("\nNext: run 'just-code' in this directory to start the agent in its sealed workspace.")
 	}
 	return 0, nil
+}
+
+func invalidInheritedInitSetting(opts initOptions, answers justcode.InitAnswers) error {
+	if !opts.Set["cpus"] && answers.CPUs != 0 && (answers.CPUs < 1 || answers.CPUs > opts.maxCPUs) {
+		return fmt.Errorf("processeurs demandés : %d. Maximum sur ce poste : %d processeurs", answers.CPUs, opts.maxCPUs)
+	}
+	if !opts.Set["memory-mb"] && answers.MemoryMB != 0 && (answers.MemoryMB < 1 || answers.MemoryMB > opts.maxMemoryMB) {
+		return fmt.Errorf("mémoire demandée : %s. Maximum sur ce poste : %s", justcode.FormatMemorySize(answers.MemoryMB), justcode.FormatMemorySize(opts.maxMemoryMB))
+	}
+	if !opts.Set["model"] && strings.TrimSpace(answers.Model) != "" {
+		_, err := validateInitModelInput(answers.Root, answers.Model)
+		return err
+	}
+	return nil
 }
 
 func withBrowserResourceGuidance(answers justcode.InitAnswers) justcode.InitAnswers {

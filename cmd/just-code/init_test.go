@@ -1058,6 +1058,63 @@ func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 	}
 }
 
+func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
+	for _, kind := range []string{"cpus", "memory", "model"} {
+		t.Run(kind, func(t *testing.T) {
+			root := initTestProject(t)
+			manifest := justcode.ProjectManifest{Runtime: "microsandbox", Isolation: "full", CPUs: 2, MemoryMB: 4096, CredentialRef: "retained-ref"}
+			switch kind {
+			case "cpus":
+				manifest.CPUs = 64
+			case "memory":
+				manifest.MemoryMB = 524288
+			case "model":
+				manifest.Model = "albert/removed"
+			}
+			writeManifest(t, root, manifest)
+			stubCatalogueCheck(t, func(_, model string) (string, error) {
+				if model == "albert/removed" {
+					return "", fmt.Errorf("model removed from catalogue")
+				}
+				return "", nil
+			})
+			opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
+			// Repair runtime, isolation, CPUs, memory and model, then apply.
+			input := "\n\n2\n4G\ndéfaut\ny\n"
+			code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
+			if err != nil || code != 0 {
+				t.Fatalf("inherited %s cannot be repaired: code=%d, %v", kind, code, err)
+			}
+			got, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+			if err != nil || got.CPUs != 2 || got.MemoryMB != 4096 || got.Model != "" || got.CredentialRef != "retained-ref" {
+				t.Fatalf("repair not applied: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestInitInvalidInheritedSettingsStillRejectNonInteractiveAndEOF(t *testing.T) {
+	for _, mode := range []string{"non-interactive", "yes", "eof"} {
+		t.Run(mode, func(t *testing.T) {
+			root := initTestProject(t)
+			before := justcode.ProjectManifest{Runtime: "microsandbox", Isolation: "full", CPUs: 64, MemoryMB: 4096}
+			writeManifest(t, root, before)
+			opts := initOptions{Root: root, Replace: true, Yes: mode == "yes", Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
+			code, err := initRun(opts, bufio.NewReader(strings.NewReader("")), mode != "non-interactive")
+			if code == 0 || err == nil {
+				t.Fatal("invalid inherited setting must not be silently accepted")
+			}
+			if mode == "eof" && !strings.Contains(err.Error(), "aucune réponse") {
+				t.Fatalf("expected EOF cancellation, got %v", err)
+			}
+			got, readErr := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+			if readErr != nil || got.CPUs != before.CPUs {
+				t.Fatalf("rejected configuration modified manifest: %+v, %v", got, readErr)
+			}
+		})
+	}
+}
+
 // TestInitAdvancedLineWarnsOnSharedFolderRuntime pins two #170 acceptance
 // points on the line path: picking Tart or agent-vm displays the shared-folder
 // consequence, and a runtime that is not installed is flagged with the command
