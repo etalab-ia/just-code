@@ -240,6 +240,9 @@ func stubWizardHuh(t *testing.T) {
 func initTestProject(t *testing.T) string {
 	t.Helper()
 	stubWizardHuh(t)
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
 	// The wizard resolves the GitHub origin and stored credential before
 	// offering the approval question (#155). Stub the seam so the scripted
 	// tests stay hermetic: the real one reads the host keychain and a real
@@ -306,24 +309,6 @@ func TestParseInitArgs(t *testing.T) {
 		if _, err := parseInitArgs(args); err == nil {
 			t.Fatalf("%v must be rejected", args)
 		}
-	}
-}
-
-func TestShouldAskGuestCPUs(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		opts initOptions
-		want bool
-	}{
-		{"multiple choices", initOptions{maxCPUs: 8}, true},
-		{"only one choice", initOptions{maxCPUs: 1}, false},
-		{"flag supplied", initOptions{maxCPUs: 8, Set: map[string]bool{"cpus": true}}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldAskGuestCPUs(tc.opts); got != tc.want {
-				t.Fatalf("shouldAskGuestCPUs() = %v, want %v", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -398,7 +383,9 @@ func TestInitAutoSelectsSingleCPUWithoutPrompting(t *testing.T) {
 		return justcode.HostResources{CPUs: 1, MemoryMB: 6000}, nil
 	}
 	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
-	input := strings.Join([]string{"", "", "", "", "", "n", "", "", "", "", "y"}, "\n")
+	// GitHub, skills, no-skill confirmation, storage, MCPs, no-MCP
+	// confirmation, apply. Resource questions are now advanced-only.
+	input := strings.Join([]string{"n", "", "", "", "", "", "y"}, "\n") + "\n"
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -538,9 +525,11 @@ func TestInitGitHubQuestionResolvesOriginUpfront(t *testing.T) {
 	}
 	approveGitHubForProjectFn = func(string) error { return nil }
 	t.Cleanup(func() { githubInitPreflightFn, approveGitHubForProjectFn = originalPreflight, originalApprove })
-	// runtime, isolation, model, cpus, memory, credential-ref, github=y,
-	// skills, MCPs, skill storage, apply.
-	input := strings.Join([]string{"", "", "", "", "", "", "y", "", "", "", "", ""}, "\n") + "\n"
+	// github=y, skills, no-skill confirmation, skill storage, MCPs, apply.
+	// The expert settings
+	// (runtime, isolation, model, resources, credential) left the default
+	// path with #170: nothing answers them here.
+	input := strings.Join([]string{"y", "", "", "", "", ""}, "\n") + "\n"
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -992,19 +981,24 @@ func TestClearingContext7WhenControlPlaneUnreachableProceedsWithWarning(t *testi
 
 // TestInitInteractiveUsesDefaultsOnEmptyAnswers pins that pressing enter
 // through the questions is a valid path: every question has a default, and the
-// engine's defaults are what get written.
+// engine's defaults are what get written. Since #170 the expert settings
+// (runtime, isolation, resources) are not part of this path at all: they live
+// behind the review's "Réglages avancés" entry.
 func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
-	input := root + "\n\n\n\n\n\n\n\n\n\n\n\n\n" // root, runtime, isolation, model, cpus, memory, credential, GitHub, skills, no-skill confirmation, storage, MCPs, apply
+	input := root + "\n\n\n\n\n\n\n" // root, GitHub, skills, no-skill confirmation, storage, MCPs, apply
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
 		}
 	})
-	if !strings.Contains(out, "Sharing mode") || !strings.Contains(out, "Guest resources") {
-		t.Fatalf("the questions must be asked: %q", out)
+	if strings.Contains(out, "Sharing mode") || strings.Contains(out, "Guest resources") || strings.Contains(out, "Credential") {
+		t.Fatalf("the expert settings must not be asked in the default path (#170): %q", out)
+	}
+	if !strings.Contains(out, "Apply? [Y/n/edit/advanced]: ") {
+		t.Fatalf("the review must offer the advanced settings entry: %q", out)
 	}
 	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
 	if err != nil {
@@ -1021,7 +1015,10 @@ func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	}
 }
 
-func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
+// TestInitReviewAdvancedSettingsApply pins the line path of #170: the review's
+// "advanced" entry opens the expert settings (runtime, isolation, resources),
+// the edited values land in the manifest, and the flow returns to the review.
+func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 	root := initTestProject(t)
 	stubProjectSkills(t)
 	stubInitSkillResolver(t)
@@ -1035,12 +1032,16 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	detectHostResourcesFn = func() (justcode.HostResources, error) {
 		return justcode.HostResources{CPUs: 8, MemoryMB: 16384}, nil
 	}
-	t.Cleanup(func() { detectHostResourcesFn = originalHostResources })
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	t.Cleanup(func() { detectHostResourcesFn = originalHostResources; runtimeInstallHintFn = originalInstallHint })
 	input := strings.Join([]string{
-		"microsandbox", "backend", "test-model", "3", "2048", "work", "n", "", "versioned", "chrome-devtools",
-		"edit",
-		"", "", "", "", "", "", "", "", "", "", "", "",
-	}, "\n")
+		"n", "", "versioned", "chrome-devtools", // GitHub, skills, storage, MCPs
+		"advanced",
+		"microsandbox", "backend", "3", "2048", // runtime, isolation, cpus, memory
+		"qwen3-coder", // main-model override
+		"",            // apply
+	}, "\n") + "\n"
 	code, err := initRun(initOptions{Root: root, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	if code != 0 || err != nil {
 		t.Fatalf("initRun: code=%d err=%v", code, err)
@@ -1049,8 +1050,53 @@ func TestInitReviewEditRetainsNonSecretChoices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.Model != "test-model" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || manifest.CredentialRef != "work" || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
-		t.Fatalf("edit/back lost prior choices: %+v", manifest)
+	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
+		t.Fatalf("the advanced settings must reach the manifest: %+v", manifest)
+	}
+	if manifest.Model != "albert/qwen3-coder" || manifest.CredentialRef != "" {
+		t.Fatalf("main model must be configurable; credential reference remains CLI-only: %+v", manifest)
+	}
+}
+
+// TestInitAdvancedLineWarnsOnSharedFolderRuntime pins two #170 acceptance
+// points on the line path: picking Tart or agent-vm displays the shared-folder
+// consequence, and a runtime that is not installed is flagged with the command
+// that installs it.
+func TestInitAdvancedLineWarnsOnSharedFolderRuntime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Tart is not a supported Windows runtime")
+	}
+	root := initTestProject(t)
+	stubProjectSkills(t)
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(rt justcode.Runtime) (bool, string) {
+		if rt == justcode.RuntimeTart {
+			return false, "brew install openai/tools/tart"
+		}
+		return true, ""
+	}
+	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
+	// root, GitHub, skills, MCPs, storage, review=advanced, runtime=tart,
+	// isolation, cpus, memory, review=apply.
+	input := root + "\n\n\n\n\n\nadvanced\ntart\n\n\n\n\n\n"
+	out := captureStdout(t, func() {
+		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
+		if code != 0 || err != nil {
+			t.Fatalf("initRun: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "l'agent voit tous les fichiers du projet, y compris .env") {
+		t.Fatalf("the shared-folder consequence must be displayed: %q", out)
+	}
+	if !strings.Contains(out, "n'est pas installé") || !strings.Contains(out, "brew install openai/tools/tart") {
+		t.Fatalf("an uninstalled runtime must name its install command: %q", out)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Runtime != "tart" {
+		t.Fatalf("runtime = %q, want tart", manifest.Runtime)
 	}
 }
 
@@ -1511,19 +1557,27 @@ func TestInitStopsOnAModelTheCatalogueDoesNotList(t *testing.T) {
 	}
 }
 
-// TestInitRejectsATypedZero pins parity with the flag: an empty answer means
-// "use the default", so a typed 0 is an out-of-range value rather than a
-// second way to say the same thing.
+// TestInitRejectsATypedZero pins parity with the flag in the advanced
+// settings screen (#170): an empty answer means "use the default", so a typed
+// 0 is an out-of-range value — and the screen re-asks instead of aborting,
+// so a typo never loses the answers already given.
 func TestInitRejectsATypedZero(t *testing.T) {
 	root := initTestProject(t)
-	// root, runtime, isolation, model, cpus(0)
-	input := root + "\n\n\n\n0\n"
-	var err error
-	_ = captureStdout(t, func() {
-		_, err = initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
+	stubProjectSkills(t)
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
+	// root, GitHub, skills, MCPs, storage, review=advanced, runtime,
+	// isolation, cpus(0) then a kept default, memory, review=cancel.
+	input := root + "\n\n\n\n\n\nadvanced\n\n\n0\n\n\n\nn\n"
+	out := captureStdout(t, func() {
+		_, _ = initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 	})
-	if err == nil || !strings.Contains(err.Error(), "cpus must be 1 to") {
-		t.Fatalf("a typed 0 must be rejected like the flag: %v", err)
+	if !strings.Contains(out, "Au moins 1 processeur.") {
+		t.Fatalf("a typed 0 must be rejected in the advanced screen without leaving it: %q", out)
+	}
+	if _, err := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("the cancelled run must leave nothing on disk (stat err = %v)", err)
 	}
 }
 
@@ -1606,8 +1660,10 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	stubCatalogueCheck(t, func(string, string) (string, error) { return "", nil })
 	stubProjectSkills(t)
 	root := initTestProject(t)
-	// root, runtime, isolation(backend), model, cpus, memory, credential, GitHub, skills, storage, MCPs, apply
-	input := "\n\nbackend\n\n\n\n\n\n\n\n\n\n\n"
+	// confirm, GitHub, skills, no-skill confirmation, storage, MCPs, review=advanced, runtime,
+	// isolation(backend), cpus, memory, review=apply. The expert settings
+	// live behind the review's "advanced" entry since #170.
+	input := "\n\n\n\n\n\nadvanced\n\nbackend\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.

@@ -388,9 +388,13 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 	}
 	var plan justcode.InitPlan
 	var err error
+	// askQuestions gates the default-path questions. The review's "edit"
+	// choice reopens them; the "Réglages avancés" choice (#170) edits only
+	// the expert settings and returns straight to the review.
+	askQuestions := true
 	for {
 		useHuhReview := tty && !opts.Yes && wizardHuhFn()
-		if tty && !opts.Yes {
+		if tty && !opts.Yes && askQuestions {
 			if useHuhReview {
 				answers, err = askInitQuestionsHuh(opts, answers)
 				if err != nil {
@@ -458,12 +462,21 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			case "cancel":
 				return 1, fmt.Errorf("cancelled; nothing was written")
 			case "edit":
-				fmt.Println("Reopening setup choices; blank CPU or memory fields reset to the implicit default, while other blank fields keep their current values.")
+				fmt.Println("Reopening the setup questions with the current answers.")
+				askQuestions = true
+				continue
+			case "advanced":
+				askQuestions = false
+				updated, advErr := askInitAdvancedHuh(opts, answers)
+				if advErr != nil {
+					return 1, advErr
+				}
+				answers = updated
 				continue
 			}
 			break
 		}
-		answer, ok := promptLine(in, "\nApply? [Y/n/edit]: ")
+		answer, ok := promptLine(in, "\nApply? [Y/n/edit/advanced]: ")
 		if !ok {
 			return 1, fmt.Errorf("no answer; nothing was written")
 		}
@@ -473,10 +486,18 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		case "n", "no":
 			return 1, fmt.Errorf("cancelled; nothing was written")
 		case "e", "edit", "back":
-			fmt.Println("Reopening setup choices; blank answers keep current values; enter `default` to reset resource sizing.")
+			fmt.Println("Reopening the setup questions; blank answers keep current values.")
+			askQuestions = true
+			continue
+		case "a", "advanced":
+			askQuestions = false
+			answers, err = askInitAdvancedLine(in, opts, answers)
+			if err != nil {
+				return 1, err
+			}
 			continue
 		default:
-			return 1, fmt.Errorf("enter yes, no, or edit")
+			return 1, fmt.Errorf("enter yes, no, edit, or advanced")
 		}
 		break
 	}
@@ -718,7 +739,9 @@ func validateInitOptions(opts initOptions) error {
 
 // askInitQuestions prompts only for the decisions the command line did not
 // supply, showing the value that will be used if the answer is empty — which
-// is the flag's value when one was given, not the engine default.
+// is the flag's value when one was given, not the engine default. The expert
+// settings (runtime, isolation, resources, credential reference) are not
+// asked here: they live behind the review's "Réglages avancés" entry (#170).
 func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitAnswers) (justcode.InitAnswers, error) {
 	fmt.Println("just-code init — project configuration")
 	fmt.Println()
@@ -733,115 +756,6 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		}
 	}
 
-	if !opts.Set["runtime"] {
-		fmt.Println()
-		fmt.Println("Runtime — where the guest comes from ('just-code doctor' checks the selected one):")
-		fmt.Println("  microsandbox (default): the sealed microVM")
-		fmt.Println("  tart / agent-vm: a full VM that mounts the project (see the review)")
-		current := answers.Runtime
-		if current == "" {
-			current = justcode.RuntimeMicrosandbox
-		}
-		if answer, ok := promptLine(in, "  runtime ["+string(current)+"] (type `default` for microsandbox): "); ok && strings.TrimSpace(answer) != "" {
-			if strings.EqualFold(strings.TrimSpace(answer), "default") {
-				answers.Runtime = justcode.RuntimeMicrosandbox
-			} else {
-				answers.Runtime = justcode.Runtime(strings.TrimSpace(answer))
-			}
-		}
-	}
-
-	if !opts.Set["isolation"] {
-		fmt.Println()
-		fmt.Println("Sharing mode — where the agent and its credentials run:")
-		fmt.Println("  full (default): inside the guest; your machine is only a terminal")
-		fmt.Println("  backend: the TUI runs here and attaches to the guest")
-		// Nothing has supplied this value at this point (the branch requires
-		// the flag to be absent), so the effective default is the engine's.
-		current := answers.Isolation
-		if current == "" {
-			current = justcode.IsolationFull
-		}
-		if answer, ok := promptLine(in, "  isolation ["+string(current)+"] (type `default` for full): "); ok && strings.TrimSpace(answer) != "" {
-			if strings.EqualFold(strings.TrimSpace(answer), "default") {
-				answers.Isolation = justcode.IsolationFull
-			} else {
-				answers.Isolation = justcode.Isolation(strings.TrimSpace(answer))
-			}
-		}
-	}
-
-	if !opts.Set["model"] {
-		fmt.Println()
-		current := answers.Model
-		if current == "" {
-			current = "built-in default"
-		}
-		fmt.Println("Model — enter `default` to use the built-in model ('just-code models' lists the catalogue):")
-		if answer, ok := promptLine(in, "  model ["+current+"]: "); ok && strings.TrimSpace(answer) != "" {
-			if strings.EqualFold(strings.TrimSpace(answer), "default") {
-				answers.Model = ""
-			} else {
-				answers.Model = strings.TrimSpace(answer)
-			}
-		}
-	}
-
-	if shouldAskGuestCPUs(opts) || !opts.Set["memory-mb"] {
-		fmt.Println()
-		fmt.Printf("Guest resources [%d CPUs, %s] (maximum: %d CPUs, %s):\n",
-			resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)),
-			justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB))),
-			opts.maxCPUs, justcode.FormatMemorySize(opts.maxMemoryMB))
-		if shouldAskGuestCPUs(opts) {
-			if answer, ok := promptLine(in, "  cpus (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
-				if strings.EqualFold(strings.TrimSpace(answer), "default") {
-					answers.CPUs = 0
-				} else {
-					n, err := strconv.Atoi(strings.TrimSpace(answer))
-					if err != nil {
-						return answers, fmt.Errorf("cpus must be a whole number, got %q", answer)
-					}
-					if n < 1 || n > opts.maxCPUs {
-						return answers, fmt.Errorf("cpus must be 1 to %d (detected host capacity), got %d", opts.maxCPUs, n)
-					}
-					answers.CPUs = n
-				}
-			}
-		}
-		if !opts.Set["memory-mb"] {
-			if answer, ok := promptLine(in, "  memory MiB or G, e.g. 4G or 2.5G (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
-				if strings.EqualFold(strings.TrimSpace(answer), "default") {
-					answers.MemoryMB = 0
-				} else {
-					n, err := justcode.ParseMemorySize(answer)
-					if err != nil {
-						return answers, fmt.Errorf("memory: %w", err)
-					}
-					if n < 1 || n > opts.maxMemoryMB {
-						return answers, fmt.Errorf("memory must be 1 to %s (detected host capacity), got %s", justcode.FormatMemorySize(opts.maxMemoryMB), justcode.FormatMemorySize(n))
-					}
-					answers.MemoryMB = n
-				}
-			}
-		}
-	}
-
-	if !opts.Set["credential-ref"] {
-		fmt.Println()
-		fmt.Println("Credential — the global Albert credential is used unless you name another (P08 reference):")
-		current := answers.CredentialRef
-		if current == "" {
-			current = "global Albert credential"
-		}
-		if answer, ok := promptLine(in, "  reference ["+current+"] (`default` resets): "); ok && strings.TrimSpace(answer) != "" {
-			if strings.EqualFold(strings.TrimSpace(answer), "default") {
-				answers.CredentialRef = ""
-			} else {
-				answers.CredentialRef = strings.TrimSpace(answer)
-			}
-		}
-	}
 	if !opts.Set["github"] {
 		// Resolve the origin and stored credential before offering the
 		// choice: a project without a usable GitHub.com origin cannot approve
@@ -1039,6 +953,173 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 	return answers, nil
 }
 
+// askInitAdvancedLine is the line-wizard half of the "Réglages avancés"
+// screen (#170): runtime, isolation and guest resources, reached from the
+// review. A bad value re-asks the question instead of aborting, so a typo
+// never loses the answers already given. Blank keeps the current value;
+// `default` resets to the built-in default.
+func askInitAdvancedLine(in *bufio.Reader, opts initOptions, answers justcode.InitAnswers) (justcode.InitAnswers, error) {
+	fmt.Println()
+	fmt.Println("Réglages avancés")
+	fmt.Println("Ces valeurs conviennent à la plupart des projets. Modifiez-les seulement si besoin.")
+	fmt.Println("Agent (harnais) : OpenCode (recommandé) — Pi n'est pas encore pris en charge.")
+	fmt.Println("Petit modèle : même modèle que le modèle principal — sert aux titres et aux résumés de session.")
+
+	if !opts.Set["runtime"] {
+		fmt.Println()
+		fmt.Println("Type de machine isolée :")
+		fmt.Println("  microsandbox : l'agent travaille sur une copie filtrée du projet (.env et secrets exclus) ; démarrage rapide")
+		fmt.Println("  tart : VM macOS complète ; votre dossier est partagé avec la VM")
+		fmt.Println("  agent-vm : VM Lima ; votre dossier est partagé avec la VM")
+		current := answers.Runtime
+		if current == "" {
+			current = justcode.RuntimeMicrosandbox
+		}
+		for {
+			answer, ok := promptLine(in, "  machine isolée ["+string(current)+"] (`default` revient à microsandbox) : ")
+			trimmed := strings.TrimSpace(answer)
+			if !ok || trimmed == "" {
+				break
+			}
+			if strings.EqualFold(trimmed, "default") {
+				answers.Runtime = justcode.RuntimeMicrosandbox
+				break
+			}
+			rt, rtErr := justcode.ResolveRuntime(trimmed, "")
+			if rtErr != nil {
+				fmt.Printf("  %s\n", rtErr)
+				continue
+			}
+			if answers.GitHubWorkflow && rt != justcode.RuntimeMicrosandbox {
+				fmt.Println("  Le workflow GitHub du projet nécessite Microsandbox.")
+				continue
+			}
+			answers.Runtime = rt
+			break
+		}
+	}
+
+	if !opts.Set["isolation"] {
+		fmt.Println()
+		fmt.Println("Mode d'isolation :")
+		fmt.Println("  complet : l'agent et son interface tournent dans la machine isolée")
+		fmt.Println("  partiel : l'interface tourne sur votre poste, l'agent dans la machine isolée")
+		current := answers.Isolation
+		if current == "" {
+			current = justcode.IsolationFull
+		}
+		for {
+			answer, ok := promptLine(in, "  isolation ["+isolationDisplayName(current)+"] (`default` revient à complet) : ")
+			if !ok || strings.TrimSpace(answer) == "" {
+				break
+			}
+			switch strings.ToLower(strings.TrimSpace(answer)) {
+			case "default", "défaut":
+				answers.Isolation = justcode.IsolationFull
+			case "complet", "full":
+				answers.Isolation = justcode.IsolationFull
+			case "partiel", "backend":
+				answers.Isolation = justcode.IsolationBackend
+			default:
+				fmt.Println("  Choisissez complet ou partiel.")
+				continue
+			}
+			break
+		}
+	}
+
+	if !opts.Set["cpus"] {
+		for {
+			answer, ok := promptLine(in, fmt.Sprintf("  processeurs [%d] (maximum sur ce poste : %d ; `default` revient à la valeur par défaut) : ",
+				resolvedOrDefault(answers.CPUs, justcode.RecommendedDefaultGuestCPUs(opts.hostCPUs)), opts.maxCPUs))
+			trimmed := strings.TrimSpace(answer)
+			if !ok || trimmed == "" {
+				break
+			}
+			if strings.EqualFold(trimmed, "default") {
+				answers.CPUs = 0
+				break
+			}
+			n, convErr := strconv.Atoi(trimmed)
+			if convErr != nil {
+				fmt.Println("  Entrez un nombre entier.")
+				continue
+			}
+			if n < 1 {
+				fmt.Println("  Au moins 1 processeur.")
+				continue
+			}
+			if n > opts.maxCPUs {
+				fmt.Printf("  Maximum sur ce poste : %d processeurs.\n", opts.maxCPUs)
+				continue
+			}
+			answers.CPUs = n
+			break
+		}
+	}
+
+	if !opts.Set["memory-mb"] {
+		for {
+			answer, ok := promptLine(in, fmt.Sprintf("  mémoire [%s] (6 Go conseillés avec chrome-devtools ; `default` revient à la valeur par défaut) : ",
+				justcode.FormatMemorySize(resolvedOrDefault(answers.MemoryMB, justcode.RecommendedDefaultGuestMemoryMB(opts.hostMemoryMB)))))
+			trimmed := strings.TrimSpace(answer)
+			if !ok || trimmed == "" {
+				break
+			}
+			if strings.EqualFold(trimmed, "default") {
+				answers.MemoryMB = 0
+				break
+			}
+			n, convErr := justcode.ParseMemorySize(trimmed)
+			if convErr != nil {
+				fmt.Println("  Format attendu : 4096, 4G ou 2.5G.")
+				continue
+			}
+			if n < 1 {
+				fmt.Println("  Au moins 1 MiB.")
+				continue
+			}
+			if n > opts.maxMemoryMB {
+				fmt.Printf("  Maximum sur ce poste : %s.\n", justcode.FormatMemorySize(opts.maxMemoryMB))
+				continue
+			}
+			answers.MemoryMB = n
+			break
+		}
+	}
+
+	if notice := initRuntimeNotice(effectiveInitRuntime(answers)); notice != "" {
+		fmt.Println(notice)
+	}
+	if !opts.Set["model"] {
+		for {
+			answer, ok := promptLine(in, "  modèle principal ["+initModelDisplayName(answers.Model)+"] ('défaut' reprend le modèle de setup ; Entrée conserve le choix) : ")
+			if !ok || strings.TrimSpace(answer) == "" {
+				break
+			}
+			warning, err := validateInitModelInput(answers.Root, answer)
+			if err != nil {
+				fmt.Printf("  %s\n", err)
+				continue
+			}
+			answers.Model = normalizeInitModelInput(answer)
+			if warning != "" {
+				fmt.Println("  " + warning)
+			}
+			break
+		}
+	}
+	return answers, nil
+}
+
+// isolationDisplayName renders the isolation mode in the wizard's wording.
+func isolationDisplayName(iso justcode.Isolation) string {
+	if iso == justcode.IsolationBackend {
+		return "partiel"
+	}
+	return "complet"
+}
+
 // promptNoMCPConfirmation asks the zero-selection confirmation and returns
 // true when the user keeps an empty MCP set. It reads through the wizard's
 // own buffered reader: wrapping `in` in a fresh bufio.Reader here would
@@ -1210,10 +1291,6 @@ func resolvedOrDefault(value, fallback int) int {
 		return fallback
 	}
 	return value
-}
-
-func shouldAskGuestCPUs(opts initOptions) bool {
-	return !opts.Set["cpus"] && opts.maxCPUs > 1
 }
 
 // catalogueModelWarning validates a model against the P10 catalogue through the

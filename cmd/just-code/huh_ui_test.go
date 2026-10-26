@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
@@ -253,8 +255,227 @@ func TestHuhDiagnosticsPreservesWindowsSeparatorsAndUnderscores(t *testing.T) {
 	}
 }
 
+func TestAskInitAdvancedHuhEscKeepsAnswers(t *testing.T) {
+	originalRun, originalInstall := runInitAdvancedForm, runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	runInitAdvancedForm = func(*huh.Form) (bool, error) { return true, nil }
+	t.Cleanup(func() { runInitAdvancedForm, runtimeInstallHintFn = originalRun, originalInstall })
+	before := justcode.InitAnswers{Root: "/tmp/example", Runtime: justcode.RuntimeTart, CPUs: 4}
+	opts := initOptions{hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384}
+	after, err := askInitAdvancedHuh(opts, before)
+	if err != nil {
+		t.Fatalf("Escape returns to the recap, got %v", err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("esc must not change a single answer: %+v became %+v", before, after)
+	}
+}
+
+// TestAskInitAdvancedHuhSubmitKeepsDefaults pins that a completed form leaves
+// accepted defaults implicit (zero CPU/memory answers), so the project keeps
+// inheriting built-in default changes.
+func TestAskInitAdvancedHuhSubmitKeepsDefaults(t *testing.T) {
+	originalRun := runInitAdvancedForm
+	runInitAdvancedForm = func(form *huh.Form) (bool, error) {
+		picker := form.GetFocusedField().(*huh.Select[string])
+		picker.Focus()
+		for i := 0; i < 5; i++ {
+			picker.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		}
+		picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		return false, nil
+	}
+	t.Cleanup(func() { runInitAdvancedForm = originalRun })
+	originalInstallHint := runtimeInstallHintFn
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
+	opts := initOptions{hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384}
+	answers, err := askInitAdvancedHuh(opts, justcode.InitAnswers{Root: "/tmp/example"})
+	if err != nil {
+		t.Fatalf("askInitAdvancedHuh: %v", err)
+	}
+	if answers.CPUs != 0 || answers.MemoryMB != 0 {
+		t.Fatalf("accepted defaults must stay implicit, got %d/%d", answers.CPUs, answers.MemoryMB)
+	}
+	if answers.Runtime != "" || answers.Isolation != "" {
+		t.Fatalf("opening advanced settings must not materialize defaults: %+v", answers)
+	}
+}
+
+func TestInitAdvancedRetainsAcceptedEditOnEscape(t *testing.T) {
+	originalRun, originalInstall := runInitAdvancedForm, runtimeInstallHintFn
+	t.Cleanup(func() { runInitAdvancedForm, runtimeInstallHintFn = originalRun, originalInstall })
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	calls := 0
+	runInitAdvancedForm = func(form *huh.Form) (bool, error) {
+		calls++
+		field := form.GetFocusedField()
+		field.Focus()
+		switch calls {
+		case 1:
+			field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		case 2:
+			if _, ok := field.(*huh.Input); !ok {
+				t.Fatalf("expected CPU editor, got %T", field)
+			}
+			field.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+			field.Update(tea.KeyPressMsg{Code: '3', Text: "3"})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		case 3:
+			return true, nil
+		default:
+			t.Fatal("advanced screen failed to return after Escape")
+		}
+		return false, nil
+	}
+	opts := initOptions{hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384}
+	before := justcode.InitAnswers{Root: "/tmp/example", Skills: []string{"official/rgaa"}, CredentialRef: "work"}
+	after, err := askInitAdvancedHuh(opts, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := before
+	want.CPUs = 3
+	if !reflect.DeepEqual(after, want) {
+		t.Fatalf("accepted edit lost on Escape: got %+v, want %+v", after, want)
+	}
+}
+
+func TestInitAdvancedCtrlCCancels(t *testing.T) {
+	originalRun, originalInstall := runInitAdvancedForm, runtimeInstallHintFn
+	t.Cleanup(func() { runInitAdvancedForm, runtimeInstallHintFn = originalRun, originalInstall })
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	runInitAdvancedForm = func(*huh.Form) (bool, error) { return false, huh.ErrUserAborted }
+	_, err := askInitAdvancedHuh(initOptions{}, justcode.InitAnswers{})
+	if !errors.Is(err, huh.ErrUserAborted) {
+		t.Fatalf("Ctrl+C must cancel, got %v", err)
+	}
+}
+
+func TestInitAdvancedModelEditSurvivesEscape(t *testing.T) {
+	originalRun, originalInstall := runInitAdvancedForm, runtimeInstallHintFn
+	t.Cleanup(func() { runInitAdvancedForm, runtimeInstallHintFn = originalRun, originalInstall })
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	stubCatalogueCheck(t, func(root, model string) (string, error) {
+		if root != "/tmp/example" || model != "albert/qwen3-coder" {
+			t.Fatalf("unexpected catalogue check: %q, %q", root, model)
+		}
+		return "", nil
+	})
+	calls := 0
+	runInitAdvancedForm = func(form *huh.Form) (bool, error) {
+		calls++
+		field := form.GetFocusedField()
+		field.Focus()
+		switch calls {
+		case 1:
+			for i := 0; i < 4; i++ {
+				field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			}
+			field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		case 2:
+			if _, ok := field.(*huh.Input); !ok {
+				t.Fatalf("expected model input, got %T", field)
+			}
+			for _, r := range "qwen3-coder" {
+				field.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+			}
+		case 3:
+			return true, nil
+		default:
+			t.Fatal("unexpected form after Escape")
+		}
+		return false, nil
+	}
+	opts := initOptions{hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384}
+	after, err := askInitAdvancedHuh(opts, justcode.InitAnswers{Root: "/tmp/example"})
+	if err != nil || after.Model != "albert/qwen3-coder" {
+		t.Fatalf("model edit lost: %+v, %v", after, err)
+	}
+}
+
+func TestInitModelInputDefaultsAndValidation(t *testing.T) {
+	calls := 0
+	stubCatalogueCheck(t, func(root, model string) (string, error) {
+		calls++
+		if root != "project" || model != "albert/qwen3-coder" {
+			t.Fatalf("unexpected catalogue arguments: %q, %q", root, model)
+		}
+		return "catalogue unavailable", nil
+	})
+	for _, value := range []string{"", "  ", "défaut", "default"} {
+		warning, err := validateInitModelInput("project", value)
+		if warning != "" || err != nil || normalizeInitModelInput(value) != "" {
+			t.Fatalf("default %q failed: %s, %v", value, warning, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatal("inherited model should not validate an empty identifier")
+	}
+	warning, err := validateInitModelInput("project", " qwen3-coder ")
+	if err != nil || warning != "catalogue unavailable" || calls != 1 {
+		t.Fatalf("validation result: %s, %v, calls=%d", warning, err, calls)
+	}
+}
+
+func TestInitAdvancedEditorEscapeKeepsPriorValue(t *testing.T) {
+	originalRun, originalInstall := runInitAdvancedForm, runtimeInstallHintFn
+	t.Cleanup(func() { runInitAdvancedForm, runtimeInstallHintFn = originalRun, originalInstall })
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	calls := 0
+	runInitAdvancedForm = func(form *huh.Form) (bool, error) {
+		calls++
+		field := form.GetFocusedField()
+		field.Focus()
+		switch calls {
+		case 1:
+			field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			return false, nil
+		case 2:
+			field.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+			field.Update(tea.KeyPressMsg{Code: '9', Text: "9"})
+			return true, nil
+		case 3:
+			return true, nil
+		default:
+			t.Fatal("unexpected form after Escape")
+			return false, nil
+		}
+	}
+	before := justcode.InitAnswers{CPUs: 4, MemoryMB: 8192}
+	after, err := askInitAdvancedHuh(initOptions{hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384}, before)
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("cancelled editor overwrote prior settings: %+v, %v", after, err)
+	}
+}
+
+func TestInitRuntimeNoticeNamesOnlySharedRuntimes(t *testing.T) {
+	original := runtimeInstallHintFn
+	t.Cleanup(func() { runtimeInstallHintFn = original })
+	for _, rt := range []justcode.Runtime{justcode.RuntimeMicrosandbox, justcode.RuntimeTart, justcode.RuntimeAgentVM} {
+		runtimeInstallHintFn = func(got justcode.Runtime) (bool, string) {
+			if got != rt {
+				t.Fatalf("probe = %q, want %q", got, rt)
+			}
+			return false, "install-example"
+		}
+		got := initRuntimeNotice(rt)
+		if !strings.Contains(got, "install-example") {
+			t.Fatalf("missing installation hint: %s", got)
+		}
+		shared := strings.Contains(got, "y compris .env")
+		if shared != (rt != justcode.RuntimeMicrosandbox) {
+			t.Fatalf("incorrect sharing warning for %s: %s", rt, got)
+		}
+	}
+}
+
 func TestHuhResourceInputsCanRestoreImplicitDefaults(t *testing.T) {
-	for _, input := range []string{"", "  ", "default", "DEFAULT"} {
+	for _, input := range []string{"", "  ", "default", "DEFAULT", "défaut", "DÉFAUT"} {
 		cpus, useDefault, err := parseGuestCPUsInput(input, 8)
 		if err != nil || !useDefault || cpus != 0 {
 			t.Errorf("CPU input %q = %d, %v, %v; want implicit default", input, cpus, useDefault, err)
