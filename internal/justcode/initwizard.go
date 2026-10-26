@@ -766,11 +766,11 @@ func writeInitFileChange(b *strings.Builder, root string, change InitFileChange)
 // the worktree, avoiding machine-specific paths in the confirmation screen.
 func initReviewPath(root, path string) string {
 	if rel, err := filepath.Rel(root, path); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return rel
+		return filepath.ToSlash(rel)
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		if rel, err := filepath.Rel(home, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return filepath.Join("~", rel)
+			return filepath.ToSlash(filepath.Join("~", rel))
 		}
 	}
 	return path
