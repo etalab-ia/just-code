@@ -613,6 +613,11 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 }
 
 func invalidInheritedInitSetting(opts initOptions, answers justcode.InitAnswers) error {
+	if !opts.Set["runtime"] {
+		if _, err := justcode.ResolveRuntime("", string(answers.Runtime)); err != nil {
+			return err
+		}
+	}
 	if !opts.Set["cpus"] && answers.CPUs != 0 && (answers.CPUs < 1 || answers.CPUs > opts.maxCPUs) {
 		return fmt.Errorf("processeurs demandés : %d. Maximum sur ce poste : %d processeurs", answers.CPUs, opts.maxCPUs)
 	}

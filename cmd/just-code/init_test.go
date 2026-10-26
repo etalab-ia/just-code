@@ -1252,8 +1252,11 @@ func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 }
 
 func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
-	for _, kind := range []string{"cpus", "memory", "model"} {
+	for _, kind := range []string{"cpus", "memory", "model", "runtime", "tart-windows", "agent-vm-windows"} {
 		t.Run(kind, func(t *testing.T) {
+			if strings.HasSuffix(kind, "-windows") && runtime.GOOS != "windows" {
+				t.Skip("host-incompatible runtime cases run on Windows CI")
+			}
 			root := initTestProject(t)
 			manifest := justcode.ProjectManifest{Runtime: "microsandbox", Isolation: "full", CPUs: 2, MemoryMB: 4096, CredentialRef: "retained-ref"}
 			switch kind {
@@ -1263,6 +1266,12 @@ func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
 				manifest.MemoryMB = 524288
 			case "model":
 				manifest.Model = "albert/removed"
+			case "runtime":
+				manifest.Runtime = "removed-runtime"
+			case "tart-windows":
+				manifest.Runtime = "tart"
+			case "agent-vm-windows":
+				manifest.Runtime = "agent-vm"
 			}
 			writeManifest(t, root, manifest)
 			stubCatalogueCheck(t, func(_, model string) (string, error) {
@@ -1273,13 +1282,13 @@ func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
 			})
 			opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
 			// Repair runtime, isolation, CPUs, memory and model, then apply.
-			input := "\n\n2\n4G\ndéfaut\ny\n"
+			input := "microsandbox\n\n2\n4G\ndéfaut\ny\n"
 			code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
 			if err != nil || code != 0 {
 				t.Fatalf("inherited %s cannot be repaired: code=%d, %v", kind, code, err)
 			}
 			got, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
-			if err != nil || got.CPUs != 2 || got.MemoryMB != 4096 || got.Model != "" || got.CredentialRef != "retained-ref" {
+			if err != nil || got.Runtime != "microsandbox" || got.CPUs != 2 || got.MemoryMB != 4096 || got.Model != "" || got.CredentialRef != "retained-ref" {
 				t.Fatalf("repair not applied: %+v, %v", got, err)
 			}
 		})
