@@ -1071,7 +1071,7 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 		// recreate is the explicit destructive rebuild. The destruction is
 		// named and confirmed; on a non-TTY (CI, scripts) it refuses rather
 		// than destroying silently.
-		if code, cerr := confirmDestructiveRecreate(rt); cerr != nil {
+		if code, cerr := confirmRecreateFn(rt); cerr != nil {
 			return code, cerr
 		}
 		err = b.Recreate(ctx)
@@ -1085,6 +1085,9 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 		err = b.Shell()
 	default:
 		err = fmt.Errorf("unsupported action %q", action)
+	}
+	if err == nil && (action == "restart" || action == "recreate") {
+		err = d.WaitLaunchReady(ctx, b)
 	}
 	if err == nil && (action == "start" || action == "restart" || action == "recreate") {
 		printLaunchReport(d.Launch)
@@ -1121,6 +1124,8 @@ func printLaunchReport(launch *justcode.LaunchUX) {
 		fmt.Fprintln(os.Stderr, line)
 	}
 }
+
+var confirmRecreateFn = confirmDestructiveRecreate
 
 // confirmDestructiveRecreate asks the user to name what recreate destroys.
 // On a non-TTY (CI, scripts) it refuses rather than destroying silently: the

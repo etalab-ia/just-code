@@ -27,12 +27,8 @@ func (d *Dispatcher) SetLaunchUX(u *LaunchUX) {
 	d.Launch = u
 	if m, ok := d.backends[RuntimeMicrosandbox].(*MicrosandboxRuntime); ok {
 		m.Launch = u
-		image := msbImage
-		if m.cfg.Isolation == IsolationFull {
-			image = msbBrowserImage
-		}
 		if u != nil {
-			u.TimingKey = LaunchTimingKeyFor(m.cfg, image)
+			u.TimingKey = LaunchTimingKeyFor(m.cfg, msbImageForMCPs(m.OpenCodeOverlay.MCPConnectors))
 		}
 	}
 }

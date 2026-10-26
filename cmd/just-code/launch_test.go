@@ -24,6 +24,67 @@ type launchReconciler struct {
 func (b launchReconciler) Reconcile(context.Context) error          { return b.reconcile() }
 func (b launchReconciler) Endpoint(context.Context) (string, error) { return b.endpoint, nil }
 
+type lifecycleLaunchBackend struct {
+	justcode.Backend
+	endpoint   string
+	operations int
+}
+
+func (b *lifecycleLaunchBackend) IsRunning(context.Context) (bool, error)  { return false, nil }
+func (b *lifecycleLaunchBackend) Endpoint(context.Context) (string, error) { return b.endpoint, nil }
+func (b *lifecycleLaunchBackend) Restart(context.Context) error            { b.operations++; return nil }
+func (b *lifecycleLaunchBackend) Recreate(context.Context) error           { b.operations++; return nil }
+
+type noLegacyLaunchRunner struct{ justcode.Runner }
+
+func (noLegacyLaunchRunner) Run(context.Context, string, ...string) (justcode.ExecResult, error) {
+	return justcode.ExecResult{ExitCode: 1}, nil
+}
+
+func TestLifecycleLaunchWaitsForBackendReadiness(t *testing.T) {
+	oldConfirm := confirmRecreateFn
+	confirmRecreateFn = func(justcode.Runtime) (int, error) { return 0, nil }
+	t.Cleanup(func() { confirmRecreateFn = oldConfirm })
+	for _, action := range []string{"restart", "recreate"} {
+		for _, healthy := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/%v", action, healthy), func(t *testing.T) {
+				var probes atomic.Int64
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					probes.Add(1)
+					if !healthy {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					fmt.Fprint(w, `{"status":"healthy"}`)
+				}))
+				defer srv.Close()
+				b := &lifecycleLaunchBackend{endpoint: srv.URL}
+				d := justcode.NewDispatcherWith(justcode.Config{Isolation: justcode.IsolationBackend, StartTimeout: time.Nanosecond}, map[justcode.Runtime]justcode.Backend{
+					justcode.RuntimeMicrosandbox: b, justcode.RuntimeTart: b, justcode.RuntimeAgentVM: b,
+				})
+				d.Runner = noLegacyLaunchRunner{}
+				d.Launch = &justcode.LaunchUX{Terminal: true}
+				var err error
+				output := captureStderr(t, func() {
+					_, err = lifecycleCmd(d, justcode.RuntimeMicrosandbox, action)
+				})
+				if b.operations != 1 {
+					t.Fatalf("runtime operation count = %d", b.operations)
+				}
+				if probes.Load() == 0 {
+					t.Fatal("readiness was never checked")
+				}
+				if (err == nil) != healthy {
+					t.Fatalf("readiness error: %v", err)
+				}
+				if strings.Contains(output, "Agent prêt") != healthy {
+					t.Fatalf("incorrect readiness checklist: %q", output)
+				}
+			})
+		}
+	}
+}
+
 func TestLaunchTimingWaitsForBackendReadiness(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(fmt.Sprint(healthy), func(t *testing.T) {

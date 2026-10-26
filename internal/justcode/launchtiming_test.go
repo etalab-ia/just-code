@@ -52,6 +52,22 @@ func TestLaunchTimingFingerprintIncludesImageDigest(t *testing.T) {
 	}
 }
 
+func TestLaunchTimingUsesSelectedGuestImage(t *testing.T) {
+	for _, isolation := range []Isolation{IsolationFull, IsolationBackend} {
+		for _, ids := range [][]string{nil, {"chrome-devtools"}} {
+			m := NewMicrosandboxRuntime(Config{Isolation: isolation})
+			m.OpenCodeOverlay.MCPConnectors = ids
+			d := NewDispatcherWith(m.cfg, map[Runtime]Backend{RuntimeMicrosandbox: m})
+			u := &LaunchUX{}
+			d.SetLaunchUX(u)
+			want := LaunchTimingKeyFor(m.cfg, msbImageForMCPs(ids))
+			if u.TimingKey != want {
+				t.Errorf("isolation=%s MCPs=%v: timing image differs from guest image", isolation, ids)
+			}
+		}
+	}
+}
+
 func TestLaunchUXMeasuredHintsAndWarningSynthesis(t *testing.T) {
 	u := &LaunchUX{TimingStore: NewLaunchTimingStore(DefaultFS, t.TempDir()), TimingKey: "test", AgentRuntime: "OpenCode"}
 	if strings.Contains(u.LaunchLine(), "30 secondes") {
