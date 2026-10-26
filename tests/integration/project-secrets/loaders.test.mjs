@@ -297,6 +297,31 @@ test("Node trims a raw edge but keeps an interior whitespace character", () => {
   assert.equal(dotenv.parse("K=a\ufeff\n").K, "a");
 });
 
+// The loader must never evaluate a value it is only reading: `dotenv-expand`
+// 12.0.3 and 13.0.0 keep `$(…)` verbatim with no, single, and double quotes,
+// while `1000.0.0` imports `child_process` (`execSync`) and returns the command
+// output in all three, so a project `.env` becomes code execution for any
+// application that has adopted an expanding loader. That is why the
+// `1000.0.0` major is refused. Just-code's own generated guest files cannot
+// carry the syntax anyway — `dotenvLiteral` refuses `$` in the quoted and the
+// unquoted form alike — so these tests pin the dependency property, not a
+// delivery path. The marker tests above cannot see the difference, because a
+// marker contains no substitution syntax.
+for (const quote of ["", "'", '"']) {
+  test(`dotenv-expand does not evaluate command substitution with ${quote || "no"} quotes`, () => {
+    const payload = "$(echo INJECTED)";
+    const result = expand({
+      parsed: dotenv.parse(`API_KEY=${quote}${payload}${quote}\n`),
+      processEnv: {},
+    });
+    assert.equal(
+      result.parsed.API_KEY,
+      payload,
+      "dotenv-expand must return the substitution text verbatim, never its result",
+    );
+  });
+}
+
 test("dotenv-expand reads a raw backslash pair and trailing backslash exactly", () => {
   const body = Object.entries(rawFallback)
     .map(([name, value]) => `K_${name}=${value}\n`)

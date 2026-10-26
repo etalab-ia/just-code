@@ -4,6 +4,18 @@ Date: 15 October 2026
 Status: transport qualified on macOS arm64; implementation pending
 Tracking: #145; phase 4 #151
 
+> Pin note: the dependency list below records the versions in force when the
+> contract was measured (Node `dotenv` 16.4.7, `dotenv-expand` 12.0.2,
+> `python-dotenv` 1.2.2). The fixtures now pin `dotenv` 16.6.1,
+> `dotenv-expand` 12.0.3 and `python-dotenv` 1.2.4. The behaviour assertions
+> that established this contract — quoted apostrophes, raw multiline values,
+> carriage returns, `$` and `#` — run on the current pins in the
+> `fixture-contracts` CI job and pass unchanged. What the current pins do *not*
+> yet inherit is the recorded end-to-end guest transcript: that evidence was
+> captured against the versions named below, and re-qualifying it on macOS
+> arm64 is a separate step (see
+> `tests/integration/project-secrets/native-phase3/evidence/README.md`).
+
 ## Context
 
 Phases 1–3 cover secrets the network proxy can substitute: the guest holds an

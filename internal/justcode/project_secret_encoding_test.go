@@ -9,9 +9,11 @@ import (
 // represented must be refused, never written in a form a loader would change.
 
 func TestDotenvLiteralRoundTripsThroughTheQualifiedLoaders(t *testing.T) {
-	// Verified against Node dotenv 16.4.7 (with and without dotenv-expand
-	// 12.0.2), python-dotenv 1.2.2 and godotenv 1.5.1: single quotes preserve
-	// all of these exactly.
+	// Verified against Node dotenv 16.6.1 (with and without dotenv-expand
+	// 12.0.3), python-dotenv 1.2.4 and godotenv 1.5.1: single quotes preserve
+	// all of these exactly. The Node and Python halves of that measurement run
+	// in tests/integration/project-secrets; this test covers godotenv, whose
+	// pin is unchanged.
 	for _, value := range []string{
 		"plain",
 		"line1\nline2",
