@@ -125,9 +125,16 @@ type TransferManifest struct {
 	// GitManaged reports whether candidates came from git's own view of the
 	// working tree (tracked + untracked + ignored, minus .git internals).
 	GitManaged bool
-	// GitleaksMissing records that gitleaks is not installed, so the
-	// detection half of the filter did not run. The dotenv half still did.
+	// GitleaksMissing records that the bundled scanner could not be prepared,
+	// so the detection half of the filter did not run. The dotenv half still
+	// did. The scanner is provisioned by just-code itself (issue #177); a
+	// missing host installation is not a state the user is told about.
 	GitleaksMissing bool
+	// GitleaksDetail carries the technical cause when the scanner could not
+	// be prepared. It is deliberately NOT rendered in Summary(): the cause can
+	// name the release URL or an archive, and the user-facing text must stay
+	// tool-agnostic (issue #177). It exists for diagnostics.
+	GitleaksDetail string
 	// Warnings are non-fatal resolution notes (an unreadable path, a
 	// skipped directory).
 	Warnings []string
@@ -208,7 +215,7 @@ func (m TransferManifest) Summary() string {
 		b.WriteString("Source set: the directory tree (no Git repository at this root).\n")
 	}
 	if m.GitleaksMissing {
-		b.WriteString("Warning: the secret-detection tool is not installed, so secret detection did not run; the dotenv name filter still applied.\n")
+		b.WriteString("Warning: secret detection did not run; the dotenv name filter still applied.\n")
 	}
 	if len(m.UnmappedFindings) > 0 {
 		b.WriteString("Warning: these secret-detection findings could not be attributed to a file; the transfer is refused while they are unresolved:\n")
@@ -257,6 +264,7 @@ func ResolveTransferSet(ctx context.Context, root string, opts TransferOptions) 
 		return man, err
 	}
 	man.GitleaksMissing = probe.missing
+	man.GitleaksDetail = probe.detail
 	for _, f := range probe.findings {
 		rel := findingRelPath(abs, f.File)
 		if rel == "" {
@@ -435,12 +443,15 @@ func gitAvailable() bool {
 	return err == nil
 }
 
-// gitleaksProbe is one secret-detection run: either findings, or the fact
-// that gitleaks is not installed (in which case the dotenv name filter still
-// applies and the caller warns).
+// gitleaksProbe is one secret-detection run: either findings, or the fact that
+// the bundled scanner could not be prepared (in which case the dotenv name
+// filter still applies and the caller warns).
 type gitleaksProbe struct {
 	findings []gitleaksFinding
 	missing  bool
+	// detail explains a missing scanner for the review screen; empty when the
+	// scan ran or when a test supplied the state directly.
+	detail string
 }
 
 // probeGitleaks is the detection seam. It is a variable so tests can supply
@@ -449,10 +460,11 @@ type gitleaksProbe struct {
 // differs from an unresolved one on macOS), and the mapping logic under test
 // is the code that consumes the findings, not the tool invocation.
 var probeGitleaks = func(ctx context.Context, dir string) (gitleaksProbe, error) {
-	if _, err := exec.LookPath("gitleaks"); err != nil {
-		return gitleaksProbe{missing: true}, nil
+	binary, err := gitleaksExecutable(ctx)
+	if err != nil {
+		return gitleaksProbe{missing: true, detail: err.Error()}, nil
 	}
-	findings, err := runGitleaksFindings(ctx, dir)
+	findings, err := runGitleaksFindings(ctx, binary, dir)
 	if err != nil {
 		return gitleaksProbe{}, err
 	}

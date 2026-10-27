@@ -7,7 +7,7 @@
 Chaque synchronisation — provisionnement initial et chaque rafraîchissement — résout un ensemble de fichiers concret, visible avant qu'un octet ne traverse. Sont **exclus par défaut** :
 
 - les fichiers `.env` / `.env.*` (hors `.env.example` / `.env.sample`) ;
-- les fichiers signalés par [gitleaks](https://github.com/gitleaks/gitleaks), si l'outil est installé sur l'hôte (sinon l'avertissement signale que la détection n'a pas tourné ; le filtre par nom, lui, s'applique toujours) ;
+- les fichiers signalés par le détecteur de secrets que just-code fournit lui-même : [gitleaks](https://github.com/gitleaks/gitleaks) version 8.30.1, téléchargé à la première utilisation depuis la publication officielle. Deux empreintes SHA-256 figées dans le binaire sont vérifiées : celle de l'archive avant toute extraction, puis celle de l'exécutable après extraction et à chaque réutilisation ; le cache n'est jamais un lien symbolique et vit dans un répertoire d'état absolu. Rien n'est à installer sur le poste. Si le binaire ne peut pas être préparé (première utilisation hors ligne, par exemple), l'avertissement indique que la détection n'a pas tourné ; le filtre par nom, lui, s'applique toujours ;
 - les fichiers ignorés par Git (c'est là que vivent les `.env` locaux et l'état dérivé) ;
 - les symlinks (un lien peut résoudre hors de l'ensemble résolu) ;
 - la métadonnée `.git` (le dépôt de l'invité est créé **dans** l'invité).

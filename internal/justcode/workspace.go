@@ -37,9 +37,14 @@ type ScanResult struct {
 	// GitleaksFindings are the redacted findings, one entry per detection,
 	// already formatted for display. Empty when gitleaks found nothing.
 	GitleaksFindings []string
-	// GitleaksMissing records that gitleaks was not found on the host, so the
-	// secret scan could not run.
+	// GitleaksMissing records that the bundled scanner could not be prepared,
+	// so the secret scan could not run. The scanner is provisioned by
+	// just-code itself (issue #177): a missing host installation is no longer
+	// a state the user is told about.
 	GitleaksMissing bool
+	// GitleaksDetail explains a missing scanner for diagnostics. Empty when the
+	// scan ran.
+	GitleaksDetail string
 }
 
 // Blocking reports whether the scan found a reason to refuse startup.
@@ -47,10 +52,10 @@ func (r ScanResult) Blocking() bool {
 	return len(r.DotenvFiles) > 0 || len(r.GitleaksFindings) > 0
 }
 
-// ScanWorkspace walks the workspace for dotenv files and, when gitleaks is
-// installed on the host, runs a redacted secret scan over it. Findings are
-// data, not errors; the returned error is reserved for failures to inspect the
-// workspace at all.
+// ScanWorkspace walks the workspace for dotenv files and runs a redacted
+// secret scan over it with the scanner just-code provisions itself (issue
+// #177). Findings are data, not errors; the returned error is reserved for
+// failures to inspect the workspace at all.
 func ScanWorkspace(ctx context.Context, dir string) (ScanResult, error) {
 	res := ScanResult{}
 
@@ -98,11 +103,13 @@ func ScanWorkspace(ctx context.Context, dir string) (ScanResult, error) {
 	}
 	sort.Strings(res.DotenvFiles)
 
-	if _, err := exec.LookPath("gitleaks"); err != nil {
+	binary, err := gitleaksExecutable(ctx)
+	if err != nil {
 		res.GitleaksMissing = true
+		res.GitleaksDetail = err.Error()
 		return res, nil
 	}
-	findings, err := runGitleaks(ctx, root)
+	findings, err := runGitleaks(ctx, binary, root)
 	if err != nil {
 		return res, err
 	}
@@ -150,29 +157,29 @@ type gitleaksFinding struct {
 // (the files that can cross into the guest, not git history) with findings
 // redacted. Gitleaks exits 1 on leaks and 0 when clean; both are normal
 // outcomes here.
-func runGitleaksFindings(ctx context.Context, dir string) ([]gitleaksFinding, error) {
-	cmd := exec.CommandContext(ctx, "gitleaks", "detect",
+func runGitleaksFindings(ctx context.Context, binary, dir string) ([]gitleaksFinding, error) {
+	cmd := exec.CommandContext(ctx, binary, "detect",
 		"--no-banner", "--no-git", "--redact",
 		"--report-format", "json", "--report-path", "-",
 		"--source", dir,
 	)
 	out, err := cmd.Output()
 	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() != 1 {
-		return nil, fmt.Errorf("gitleaks exited %d on %s: %s", ee.ExitCode(), dir, ee.Stderr)
+		return nil, fmt.Errorf("secret scanner exited %d on %s: %s", ee.ExitCode(), dir, ee.Stderr)
 	}
 	if err != nil && !isExitError(err) {
-		return nil, fmt.Errorf("running gitleaks on %s: %w", dir, err)
+		return nil, fmt.Errorf("running the secret scanner on %s: %w", dir, err)
 	}
 	var findings []gitleaksFinding
 	if err := json.Unmarshal(out, &findings); err != nil {
-		return nil, fmt.Errorf("parsing gitleaks report for %s: %w", dir, err)
+		return nil, fmt.Errorf("parsing the secret scanner report for %s: %w", dir, err)
 	}
 	return findings, nil
 }
 
 // runGitleaks formats the findings for display.
-func runGitleaks(ctx context.Context, dir string) ([]string, error) {
-	findings, err := runGitleaksFindings(ctx, dir)
+func runGitleaks(ctx context.Context, binary, dir string) ([]string, error) {
+	findings, err := runGitleaksFindings(ctx, binary, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -201,8 +208,8 @@ func relTo(root, path string) string {
 // CheckWorkspaceGate is the startup gate for the runtimes that still MOUNT the
 // host checkout: Tart and agent-vm. There the scan is a real boundary — the
 // guest reads whatever is in the mounted directory — so a finding refuses the
-// start. It prints a warning when gitleaks is missing so users know the secret
-// scan did not run.
+// start. When the bundled scanner could not be prepared it warns that the scan
+// did not run, without asking the user to install anything.
 //
 // Microsandbox does NOT call this: its workspace is sealed (P22), the checkout
 // is not mounted, and the enforceable boundary is the transfer filter
@@ -213,7 +220,7 @@ func CheckWorkspaceGate(ctx context.Context, dir string) error {
 		return err
 	}
 	if res.GitleaksMissing {
-		fmt.Fprintln(os.Stderr, "Warning: gitleaks is not installed; the workspace secret scan was skipped. Install it (https://github.com/gitleaks/gitleaks) for full coverage.")
+		fmt.Fprintln(os.Stderr, workspaceScanUnavailableWarning())
 	}
 	if !res.Blocking() {
 		return nil
@@ -224,9 +231,20 @@ func CheckWorkspaceGate(ctx context.Context, dir string) error {
 		fmt.Fprintf(&b, "  dotenv file: %s\n", f)
 	}
 	for _, f := range res.GitleaksFindings {
-		fmt.Fprintf(&b, "  gitleaks: %s\n", f)
+		fmt.Fprintf(&b, "  secret: %s\n", f)
 	}
 	b.WriteString("\nMove real secrets out of the workspace (the agent can read everything mounted there),\n" +
 		"or replace the files with non-secret .env.example templates, then run 'just-code start' again.")
 	return fmt.Errorf("%s", b.String())
+}
+
+// workspaceScanUnavailableWarning is the user-facing notice when the bundled
+// scanner could not be prepared. It names no tool and no install step: the
+// scanner is part of just-code, so there is nothing for the user to install
+// (issue #177). The technical cause is NOT appended: it can carry the release
+// URL or an archive name, and this sentence is the one place the criterion
+// says must stay tool-agnostic. The cause is kept on ScanResult for
+// diagnostics.
+func workspaceScanUnavailableWarning() string {
+	return "Warning: the workspace secret scan could not run."
 }
