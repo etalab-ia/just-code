@@ -1,17 +1,17 @@
 # Native Qualification Evidence
 
-Date: 2026-10-14, runs completed at approximately 12:20 and 12:21 UTC.
-Platform: macOS arm64; native Go 1.27.1; SDK/runtime 0.7.6.
-Project baseline: PR #159 merge `0af624b58b0d3eeb648bd0a398e74b741aaa5099`.
+Date: 2026-10-27, two runs completed at approximately 14:30 and 14:34 UTC.
+Platform: macOS 27.0.1 arm64; native Go 1.27.3; SDK/runtime 0.7.8.
+Project fixture source: Microsandbox pin commit `e10db59879912af341e8794fcf9b7c2357fddaa6`.
 
-The exact Cloud-authored v3 test artifact was downloaded and checksum-verified
+The Cloud-authored v3 test artifact was downloaded and checksum-verified
 before execution on the Mac:
 
 ```text
-kit SHA256: 562343a03356fb6753d144c055e883e498f99176fe5c0fa6b6c4764370c91d55
-runtime archive SHA256: a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89
-run-1 results SHA256: 5807c788d549d623b355240e2225488914d83644f765da3c272baa25c34fc231
-run-2 results SHA256: 5807c788d549d623b355240e2225488914d83644f765da3c272baa25c34fc231
+kit SHA256: ea1a46da0b1771573fa5838513c50366bd4f884ce160fb10abb5832202d7e12d
+runtime archive SHA256: 5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493
+run-1 results SHA256: bd135fecc29b40da987cc3521c72a2a7986e4b8019a56fb084dd98ae82b1153a
+run-2 results SHA256: bd135fecc29b40da987cc3521c72a2a7986e4b8019a56fb084dd98ae82b1153a
 ```
 
 Each run used a fresh random VM name, fresh isolated state, synthetic canaries,
@@ -19,8 +19,11 @@ temporary CA and independent lab journal. The sanitized transcripts are
 [run 1](darwin-arm64-run-1.txt) and [run 2](darwin-arm64-run-2.txt). They are
 byte-identical because they contain stable metadata and case names, not random
 values, paths, VM names or timestamps. Two separate native invocations passed
-all 29 assertions; independent cleanup also passed for each, and a subsequent
-isolated `msb list` confirmed no sandboxes remained.
+all 29 assertions; independent cleanup also passed for each, and isolated
+`msb list` confirmed no sandboxes remained. The first attempt at run 2 was
+refused before VM creation because the configured lab port was occupied. No
+process was killed; a fresh run 2 succeeded after the port became free. That
+preflight attempt is not counted as a native pass.
 
 ## Qualified Contract
 
@@ -50,10 +53,5 @@ native architectures. The disposable `python:3.12-alpine` image tag was not
 digest-pinned. Header/Basic transport is covered; local token signing and query/
 body substitution are not enabled or qualified by these results.
 
-An initial v1 attempt failed before any transport test because macOS's long
-default temporary path exceeded the Unix socket path limit. An independent
-no-secret CLI baseline exposed that error. The short `/tmp/jcp0-*` path fixes
-the fixture without changing the secret assertions. v1 (short TMPDIR) and v2
-then passed their 13-case subset; the recorded final evidence uses v3's expanded
-29-case matrix. No existing runtime, project checkout, host DNS or host trust
-store was modified. Raw private diagnostic logs and CA keys are not checked in.
+No existing runtime, project checkout, host DNS or host trust store was
+modified. Raw private diagnostic logs and CA keys are not checked in.
