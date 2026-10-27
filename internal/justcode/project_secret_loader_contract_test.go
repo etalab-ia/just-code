@@ -42,7 +42,7 @@ func TestDollarProjectSecretMarkerIsNotGuestGodotenvSafe(t *testing.T) {
 // Validate evidence integrity and agreement with the current runtime pins.
 // This does not boot a VM or turn CI into native qualification evidence.
 func TestProjectSecretNativeEvidenceMatchesRuntimePins(t *testing.T) {
-	if MSBSDKVersion() != "0.7.8" || msbRuntimeVersion != "0.7.8" {
+	if MSBSDKVersion() != "0.7.11" || msbRuntimeVersion != "0.7.11" {
 		t.Fatal("SDK/runtime changed; requalify and update the project-secret native evidence")
 	}
 	artifact, err := msbRuntimeArtifactFor("darwin", "arm64")
@@ -60,7 +60,7 @@ func TestProjectSecretNativeEvidenceMatchesRuntimePins(t *testing.T) {
 			t.Fatalf("native evidence %s changed", name)
 		}
 		text := string(data)
-		if !strings.Contains(text, "sdk=0.7.8 runtime=0.7.8 archive_sha256="+artifact.sha256) ||
+		if !strings.Contains(text, "sdk=0.7.11 runtime=0.7.11 archive_sha256="+artifact.sha256) ||
 			strings.Contains(text, "FAIL ") || strings.Count(text, "PASS ") != 29 {
 			t.Fatalf("native evidence %s does not match the recorded qualification", name)
 		}
