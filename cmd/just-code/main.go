@@ -376,7 +376,7 @@ func run(args []string) (int, error) {
 
 	switch parsed.action {
 	case "attach":
-		return attachCmd(d, cfg, rt)
+		return attachCmd(d, cfg, rt, instance, projectRoot)
 	case "start", "logs", "shell", "restart", "recreate", "clean", "doctor":
 		return lifecycleCmd(d, rt, parsed.action)
 	default:
@@ -966,7 +966,7 @@ func configImportEnvCmd(path string) (int, error) {
 	return 0, nil
 }
 
-func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime) (int, error) {
+func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime, instance, projectRoot string) (int, error) {
 	b, err := d.Backend(rt)
 	if err != nil {
 		return 0, err
@@ -986,7 +986,7 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 		// health endpoint, no attach. The host is only a terminal passthrough.
 		agentErr := b.RunAgent(ctx)
 		code := exitCodeOf(agentErr)
-		askToStop(ctx, d, rt)
+		exitScreen(ctx, d, cfg, rt, instance, projectRoot)
 		return code, agentErr
 	}
 	endpoint, err := b.Endpoint(ctx)
@@ -1030,7 +1030,7 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	printLaunchReport(d.Launch)
 	attachErr := justcode.RunInteractiveEnv([]string{"OPENCODE_DISABLE_AUTOUPDATE=1"}, "opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
 	code := exitCodeOf(attachErr)
-	askToStop(ctx, d, rt)
+	exitScreen(ctx, d, cfg, rt, instance, projectRoot)
 	return code, attachErr
 }
 
@@ -1142,29 +1142,6 @@ func confirmDestructiveRecreate(rt justcode.Runtime) (int, error) {
 		return 1, fmt.Errorf("not confirmed; nothing was destroyed")
 	}
 	return 0, nil
-}
-
-func askToStop(ctx context.Context, d *justcode.Dispatcher, rt justcode.Runtime) {
-	b, err := d.Backend(rt)
-	if err != nil {
-		return
-	}
-	running, err := b.IsRunning(ctx)
-	if err != nil || !running {
-		return
-	}
-	if !isTTY() {
-		fmt.Printf("%s left running. Run `just-code stop` when finished.\n", rt)
-		return
-	}
-	fmt.Printf("Stop the %s runtime? [y/N] ", rt)
-	reply, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(reply)) {
-	case "y", "yes":
-		_ = b.Stop(ctx)
-	default:
-		fmt.Printf("%s left running. Run `just-code stop` when finished.\n", rt)
-	}
 }
 
 // isTTY reports whether stdin can actually carry an interactive answer.

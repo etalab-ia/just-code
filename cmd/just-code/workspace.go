@@ -18,9 +18,10 @@ import (
 //	workspace allow <path>    # record a per-file re-inclusion past the filter
 //	workspace deny <path>     # drop a recorded re-inclusion
 //	workspace export [--out <file>]  # write the guest's diff to the host for review
+//	workspace apply [--all]   # apply the agent's changes to the host checkout
 func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRoot string) (int, error) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: just-code workspace status | sync [--force] | allow <path> | deny <path> | export [--out <file>]")
+		fmt.Fprintln(os.Stderr, "Usage: just-code workspace status | sync [--force] | allow <path> | deny <path> | export [--out <file>] | apply [--all]")
 		return 2, nil
 	}
 	stateDir := justcode.DefaultStateDir()
@@ -92,8 +93,21 @@ func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRo
 		}
 		fmt.Printf("Guest changes written for review: %s\nApply with 'git apply' after reviewing, or push them through the GitHub workflow (P13).\n", path)
 		return 0, nil
+	case "apply":
+		applyAll := false
+		for _, a := range args[1:] {
+			if a == "--all" {
+				applyAll = true
+				continue
+			}
+			// An unrecognized flag must not be ignored: `apply --al`
+			// skipping the review screen is the confusing half of a typo.
+			return 2, fmt.Errorf("Unknown workspace apply option: %s (expected --all)", a)
+		}
+		rt := justcode.NewMicrosandboxRuntimeForInstance(cfg, instance)
+		return runWorkspaceApply(rt, projectRoot, instance, applyAll)
 	default:
-		return 2, fmt.Errorf("Unknown workspace command: %s (expected status, sync, allow, deny or export)", args[0])
+		return 2, fmt.Errorf("Unknown workspace command: %s (expected status, sync, allow, deny, export or apply)", args[0])
 	}
 }
 
