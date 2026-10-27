@@ -18,9 +18,14 @@ import (
 //	workspace allow <path>    # record a per-file re-inclusion past the filter
 //	workspace deny <path>     # drop a recorded re-inclusion
 //	workspace export [--out <file>]  # write the guest's diff to the host for review
-func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRoot string) (int, error) {
+//	workspace apply [--all]   # apply the agent's changes to the host checkout
+//
+// The transfer source of status, allow and apply is the configured workspace
+// dir (WORKSPACE_DIR, or the discovered project root) — the same source
+// provisioning copies from, so the two sides of the boundary agree.
+func workspaceCmd(args []string, cfg justcode.Config, instance string) (int, error) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: just-code workspace status | sync [--force] | allow <path> | deny <path> | export [--out <file>]")
+		fmt.Fprintln(os.Stderr, "Usage: just-code workspace status | sync [--force] | allow <path> | deny <path> | export [--out <file>] | apply [--all]")
 		return 2, nil
 	}
 	stateDir := justcode.DefaultStateDir()
@@ -36,7 +41,7 @@ func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRo
 
 	switch args[0] {
 	case "status":
-		return workspaceStatusCmd(projectRoot, instance, records)
+		return workspaceStatusCmd(cfg.WorkspaceDir, instance, records)
 	case "sync":
 		force := false
 		for _, a := range args[1:] {
@@ -57,7 +62,7 @@ func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRo
 		if len(args) != 2 {
 			return 2, fmt.Errorf("workspace allow takes exactly one path relative to the project root")
 		}
-		return workspaceAllowCmd(store, projectRoot, args[1])
+		return workspaceAllowCmd(store, cfg.WorkspaceDir, args[1])
 	case "deny":
 		if len(args) != 2 {
 			return 2, fmt.Errorf("workspace deny takes exactly one path relative to the project root")
@@ -92,19 +97,32 @@ func workspaceCmd(args []string, cfg justcode.Config, instance string, projectRo
 		}
 		fmt.Printf("Guest changes written for review: %s\nApply with 'git apply' after reviewing, or push them through the GitHub workflow (P13).\n", path)
 		return 0, nil
+	case "apply":
+		applyAll := false
+		for _, a := range args[1:] {
+			if a == "--all" {
+				applyAll = true
+				continue
+			}
+			// An unrecognized flag must not be ignored: `apply --al`
+			// skipping the review screen is the confusing half of a typo.
+			return 2, fmt.Errorf("Unknown workspace apply option: %s (expected --all)", a)
+		}
+		rt := justcode.NewMicrosandboxRuntimeForInstance(cfg, instance)
+		return runWorkspaceApply(rt, cfg.WorkspaceDir, instance, applyAll)
 	default:
-		return 2, fmt.Errorf("Unknown workspace command: %s (expected status, sync, allow, deny or export)", args[0])
+		return 2, fmt.Errorf("Unknown workspace command: %s (expected status, sync, allow, deny, export or apply)", args[0])
 	}
 }
 
 // workspaceStatusCmd shows the transfer set. It is read-only: it resolves the
 // filter over the host checkout and reports, without sending anything.
-func workspaceStatusCmd(projectRoot, instance string, records map[string]justcode.TransferOptInRecord) (int, error) {
+func workspaceStatusCmd(sourceDir, instance string, records map[string]justcode.TransferOptInRecord) (int, error) {
 	optIn := map[string]bool{}
 	for rel := range records {
 		optIn[rel] = true
 	}
-	man, err := justcode.ResolveTransferSet(context.Background(), projectRoot, justcode.TransferOptions{OptIn: optIn})
+	man, err := justcode.ResolveTransferSet(context.Background(), sourceDir, justcode.TransferOptions{OptIn: optIn})
 	if err != nil {
 		return 1, err
 	}
@@ -142,7 +160,7 @@ func workspaceStatusCmd(projectRoot, instance string, records map[string]justcod
 // workspaceAllowCmd records a per-file re-inclusion. The path must be a
 // concrete file the filter refused: a blanket "include everything" is not an
 // option, and a path that was not excluded needs no decision.
-func workspaceAllowCmd(store justcode.TransferOptInStore, projectRoot, rawPath string) (int, error) {
+func workspaceAllowCmd(store justcode.TransferOptInStore, sourceDir, rawPath string) (int, error) {
 	rel := justcode.NormalizeTransferPath(rawPath)
 	if rel == "" {
 		return 2, fmt.Errorf("workspace allow needs a path relative to the project root")
@@ -150,7 +168,7 @@ func workspaceAllowCmd(store justcode.TransferOptInStore, projectRoot, rawPath s
 	// Resolve first so the decision is recorded against a path the filter
 	// actually evaluated; an unknown path would create a rule that never
 	// applies and silently mislead the next reader.
-	man, err := justcode.ResolveTransferSet(context.Background(), projectRoot, justcode.TransferOptions{})
+	man, err := justcode.ResolveTransferSet(context.Background(), sourceDir, justcode.TransferOptions{})
 	if err != nil {
 		return 1, err
 	}
