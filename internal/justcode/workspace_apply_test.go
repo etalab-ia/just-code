@@ -1061,11 +1061,15 @@ func TestApplyGuestPatchesSubdirectoryOfCheckoutApplies(t *testing.T) {
 	if len(applied) != 1 || len(conflicted) != 0 {
 		t.Fatalf("ApplyGuestPatches = (%+v, %+v), want the one file applied", applied, conflicted)
 	}
+	// A Windows runner with core.autocrlf smudges LF to CRLF when git
+	// apply writes the file, so compare through a CRLF-insensitive
+	// reading: the smudged content and the raw LF content are both the
+	// patch applied, and the old content fails either way.
 	got, err := os.ReadFile(filepath.Join(root, "app.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "new\n" {
+	if strings.ReplaceAll(string(got), "\r\n", "\n") != "new\n" {
 		t.Fatalf("app.js = %q, want the patch applied to the subdirectory: without the ceiling git reports the change as applied while leaving the file untouched", got)
 	}
 }
