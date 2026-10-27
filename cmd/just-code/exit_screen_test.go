@@ -177,6 +177,13 @@ func TestFormatApplyList(t *testing.T) {
 			"  + logo.png binaire\n"; got != want {
 		t.Errorf("formatApplyList(binary) =\n%q\nwant\n%q", got, want)
 	}
+
+	synthetic := []justcode.GuestChange{{Rel: "src/app.js", Status: 'M', Synthetic: true}}
+	if got, want := formatApplyList(synthetic, nil, nil),
+		"Modifications de l'agent dans la machine isolée : 1 fichier\n\n"+
+			"  ~ src/app.js rétabli\n"; got != want {
+		t.Errorf("formatApplyList(synthetic) =\n%q\nwant\n%q", got, want)
+	}
 }
 
 func TestExitStopQuestionCostLines(t *testing.T) {

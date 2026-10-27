@@ -79,7 +79,16 @@ func runWorkspaceApply(rt *justcode.MicrosandboxRuntime, sourceDir, instance str
 	}
 	preservePath := ""
 	if len(conflicted) > 0 {
-		preservePath, err = justcode.PreserveUnappliedPatches(stateDir, instance, conflicted)
+		// Synthetic changes carry no patch: preserving them would
+		// write an empty entry and print a misleading "patch kept"
+		// line for work the user can only redo by hand.
+		patchable := make([]justcode.GuestChange, 0, len(conflicted))
+		for _, c := range conflicted {
+			if !c.Synthetic {
+				patchable = append(patchable, c)
+			}
+		}
+		preservePath, err = justcode.PreserveUnappliedPatches(stateDir, instance, patchable)
 		if err != nil {
 			return 1, err
 		}
@@ -148,6 +157,9 @@ func guestChangeMarker(status byte) string {
 func guestChangeCounts(c justcode.GuestChange) string {
 	if c.Binary {
 		return "binaire"
+	}
+	if c.Synthetic {
+		return "rétabli"
 	}
 	return fmt.Sprintf("+%d −%d", c.Additions, c.Deletions)
 }

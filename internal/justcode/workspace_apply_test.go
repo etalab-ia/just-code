@@ -2,6 +2,7 @@ package justcode
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,10 +225,10 @@ func TestApplyRecordStoreRoundtrip(t *testing.T) {
 	if got, err := store.Load(); err != nil || len(got) != 0 {
 		t.Fatalf("Load on a missing record = (%v, %v), want empty and no error", got, err)
 	}
-	if err := store.Record("src/app.js", "digest-one", "content-one"); err != nil {
+	if err := store.Record("src/app.js", "digest-one", "host-one", "guest-one"); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
-	if err := store.Record("README.md", "digest-two", "content-two"); err != nil {
+	if err := store.Record("README.md", "digest-two", "host-two", ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	got, err := store.Load()
@@ -238,13 +239,16 @@ func TestApplyRecordStoreRoundtrip(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load = %v, want %v", got, want)
 	}
-	recovered, err := store.LoadRecoveredContent()
+	baselines, err := store.LoadRecoveredBaselines()
 	if err != nil {
-		t.Fatalf("LoadRecoveredContent: %v", err)
+		t.Fatalf("LoadRecoveredBaselines: %v", err)
 	}
-	wantRecovered := map[string]string{"src/app.js": "content-one", "README.md": "content-two"}
-	if !reflect.DeepEqual(recovered, wantRecovered) {
-		t.Fatalf("LoadRecoveredContent = %v, want %v", recovered, wantRecovered)
+	wantBaselines := map[string]RecoveredBaseline{
+		"src/app.js": {Host: "host-one", Guest: "guest-one"},
+		"README.md":  {Host: "host-two"}, // empty guest digest leaves the half unset
+	}
+	if !reflect.DeepEqual(baselines, wantBaselines) {
+		t.Fatalf("LoadRecoveredBaselines = %v, want %v", baselines, wantBaselines)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -261,11 +265,12 @@ func TestApplyRecordStoreRoundtrip(t *testing.T) {
 	}
 }
 
-// TestApplyRecordStoreLoadsV1WithoutRecoveredContent pins the back-compat
-// half of the v2 record: a file written before the recovered-content field
-// existed still classifies its patches, and its files fall back to the
-// patch-only behavior until they are applied once more.
-func TestApplyRecordStoreLoadsV1WithoutRecoveredContent(t *testing.T) {
+// TestApplyRecordStoreLoadsOldSchemasWithoutBaselines pins the back-compat
+// halves of the v3 record: a file written before the recovered-content
+// fields existed (v1), or with the host half only (v2), still classifies its
+// patches, and its files fall back to the conservative paths until they
+// are applied once more.
+func TestApplyRecordStoreLoadsOldSchemasWithoutBaselines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "applied-guest-changes.json")
 	v1 := `{"schemaVersion":1,"digests":{"src/app.js":"digest-one"}}`
 	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
@@ -279,16 +284,16 @@ func TestApplyRecordStoreLoadsV1WithoutRecoveredContent(t *testing.T) {
 	if want := map[string]string{"src/app.js": "digest-one"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load = %v, want %v", got, want)
 	}
-	recovered, err := store.LoadRecoveredContent()
+	baselines, err := store.LoadRecoveredBaselines()
 	if err != nil {
-		t.Fatalf("LoadRecoveredContent: %v", err)
+		t.Fatalf("LoadRecoveredBaselines: %v", err)
 	}
-	if len(recovered) != 0 {
-		t.Fatalf("LoadRecoveredContent = %v, want empty for a v1 record", recovered)
+	if len(baselines) != 0 {
+		t.Fatalf("LoadRecoveredBaselines = %v, want empty for a v1 record", baselines)
 	}
 	// Recording on top of a v1 file upgrades it without losing the old
 	// patch classification.
-	if err := store.Record("README.md", "digest-two", "content-two"); err != nil {
+	if err := store.Record("README.md", "digest-two", "host-two", "guest-two"); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	got, err = store.Load()
@@ -299,12 +304,28 @@ func TestApplyRecordStoreLoadsV1WithoutRecoveredContent(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load after upgrade = %v, want %v", got, want)
 	}
-	recovered, err = store.LoadRecoveredContent()
+	baselines, err = store.LoadRecoveredBaselines()
 	if err != nil {
-		t.Fatalf("LoadRecoveredContent after upgrade: %v", err)
+		t.Fatalf("LoadRecoveredBaselines after upgrade: %v", err)
 	}
-	if want := map[string]string{"README.md": "content-two"}; !reflect.DeepEqual(recovered, want) {
-		t.Fatalf("LoadRecoveredContent after upgrade = %v, want %v", recovered, want)
+	if want := map[string]RecoveredBaseline{"README.md": {Host: "host-two", Guest: "guest-two"}}; !reflect.DeepEqual(baselines, want) {
+		t.Fatalf("LoadRecoveredBaselines after upgrade = %v, want %v", baselines, want)
+	}
+
+	// A v2 file carries the host half of the baseline only: its guest
+	// half stays unset until the file is recovered once more, which
+	// keeps reversal synthesis and re-delivery detection off files
+	// whose recorded state is incomplete.
+	v2 := `{"schemaVersion":2,"digests":{"legacy.js":"digest-old"},"recoveredContent":{"legacy.js":"host-old"}}`
+	if err := os.WriteFile(path, []byte(v2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baselines, err = store.LoadRecoveredBaselines()
+	if err != nil {
+		t.Fatalf("LoadRecoveredBaselines on v2: %v", err)
+	}
+	if want := map[string]RecoveredBaseline{"legacy.js": {Host: "host-old"}}; !reflect.DeepEqual(baselines, want) {
+		t.Fatalf("LoadRecoveredBaselines on v2 = %v, want %v", baselines, want)
 	}
 }
 
@@ -650,6 +671,10 @@ func TestApplySelectedChangesReAppliesRecoveredFile(t *testing.T) {
 	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n")}
 	client := sealedFakeMSB()
 	m, _ := applyTestRuntime(t, client)
+	// The first apply goes through git apply; the batch digest exec
+	// then records the guest's current content ("new\n") as the guest
+	// half of the baseline.
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: contentDigest([]byte("new\n"))}}
 	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first})
 	if err != nil {
 		t.Fatalf("first apply: %v", err)
@@ -661,9 +686,10 @@ func TestApplySelectedChangesReAppliesRecoveredFile(t *testing.T) {
 		t.Fatalf("src/app.js = %q after the first apply, want the patch applied", got)
 	}
 
-	// The agent edits the file again in the guest: its patch is still
-	// cumulative from the guest's HEAD ("old"), which the host no longer
-	// matches. The whole-file read crosses as base64: 644, 6 bytes, "newer\n".
+	// The agent edits the file again in the guest. The host sits at its
+	// recorded baseline and the last recovery copied the file verbatim
+	// (host half equals guest half), so the direct path brings the whole
+	// file over: the base64 read is 644, 6 bytes, "newer\n".
 	second := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+newer\n")}
 	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "644 6\nbmV3ZXIK"}}
 	applied, conflicted, err = ApplySelectedChanges(ctx, m, root, []GuestChange{second})
@@ -678,7 +704,8 @@ func TestApplySelectedChangesReAppliesRecoveredFile(t *testing.T) {
 	}
 
 	// The next review must classify the re-delivered file as recovered,
-	// not offer it again.
+	// not offer it again. The diff still reports the file, so reversal
+	// synthesis has nothing to add and consumes no batch read.
 	client.execCaptureResults = []fakeMSBExecCaptureResult{
 		{stdout: "yes"},
 		{stdout: "1\t1\tsrc/app.js\x00"},
@@ -712,6 +739,7 @@ func TestApplySelectedChangesConflictsWhenHostEditedAfterRecovery(t *testing.T) 
 	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n")}
 	client := sealedFakeMSB()
 	m, _ := applyTestRuntime(t, client)
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: contentDigest([]byte("new\n"))}}
 	if _, _, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first}); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
@@ -752,6 +780,7 @@ func TestApplySelectedChangesAppliesDeletionAfterRecovery(t *testing.T) {
 	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n")}
 	client := sealedFakeMSB()
 	m, stateDir := applyTestRuntime(t, client)
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: contentDigest([]byte("new\n"))}}
 	if _, _, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first}); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
@@ -768,12 +797,12 @@ func TestApplySelectedChangesAppliesDeletionAfterRecovery(t *testing.T) {
 		t.Fatalf("src/app.js must be gone from the host, stat err = %v", err)
 	}
 	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
-	recovered, err := store.LoadRecoveredContent()
+	baselines, err := store.LoadRecoveredBaselines()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := recovered["src/app.js"]; got != "deleted" {
-		t.Fatalf("recovered content = %q, want the deleted sentinel", got)
+	if base := baselines["src/app.js"]; base.Host != "deleted" || base.Guest != "deleted" {
+		t.Fatalf("recovered baseline = %+v, want the deleted sentinel on both halves", base)
 	}
 }
 
@@ -794,7 +823,7 @@ func TestApplySelectedChangesRefusesUnsafeRecoveredPath(t *testing.T) {
 	// The seeded baseline matches the host state (the file is absent, so
 	// "deleted"): without the path guard the direct write would fire and
 	// land outside the host root, which is exactly what must never happen.
-	if err := store.Record("../escape.txt", "patch-digest", "deleted"); err != nil {
+	if err := store.Record("../escape.txt", "patch-digest", "deleted", "deleted"); err != nil {
 		t.Fatal(err)
 	}
 	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "644 6\nbmV3ZXIK"}}
@@ -812,6 +841,309 @@ func TestApplySelectedChangesRefusesUnsafeRecoveredPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "..", "escape.txt")); !os.IsNotExist(err) {
 		t.Fatalf("nothing may be written outside the host root, stat err = %v", err)
+	}
+}
+
+// TestApplySelectedChangesPreservesHostEditsMergedByPatch is the F1 guard
+// of PR #280's review: a host edit that the first patch apply merged into
+// the file must survive the second recovery. The host sits at its recorded
+// baseline but the baseline's halves differ (the host holds an edit the
+// guest does not), so the direct copy must not fire — the new guest work
+// goes through git apply, which reports the conflict instead of silently
+// deleting the host edit.
+func TestApplySelectedChangesPreservesHostEditsMergedByPatch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	writeFile(t, root, "src/app.js", "line1\nold\nline3\n")
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-q", "-m", "base")
+	// The user edits the host file outside the patch's hunk before any
+	// recovery happened.
+	writeFile(t, root, "src/app.js", "line1\nold\nline3\nhost-line\n")
+	ctx := context.Background()
+
+	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,3 +1,3 @@\n line1\n-old\n+new\n line3\n")}
+	client := sealedFakeMSB()
+	m, _ := applyTestRuntime(t, client)
+	// The guest's current content after its own edit: the patch applied
+	// to the guest's HEAD, without the host-only line.
+	guestAfterFirst := []byte("line1\nnew\nline3\n")
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: contentDigest(guestAfterFirst)}}
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first})
+	if err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if len(applied) != 1 || len(conflicted) != 0 {
+		t.Fatalf("first apply = (%+v, %+v), want the patch applied", applied, conflicted)
+	}
+	wantMerged := "line1\nnew\nline3\nhost-line\n"
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != wantMerged {
+		t.Fatalf("src/app.js = %q after the first apply, want the patch merged with the host edit kept", got)
+	}
+
+	// The agent edits the guest file again: the cumulative patch still
+	// expects "old" at that line, which the host no longer has.
+	second := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,3 +1,3 @@\n line1\n-old\n+newer\n line3\n")}
+	guestAfterSecond := []byte("line1\nnewer\nline3\n")
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{
+		stdout: "644 " + strconv.Itoa(len(guestAfterSecond)) + "\n" + base64.StdEncoding.EncodeToString(guestAfterSecond),
+	}}
+	applied, conflicted, err = ApplySelectedChanges(ctx, m, root, []GuestChange{second})
+	if err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("applied = %+v, want none: the host edit merged by the first patch must block the direct copy", applied)
+	}
+	if len(conflicted) != 1 || conflicted[0].Rel != "src/app.js" {
+		t.Fatalf("conflicted = %+v, want exactly src/app.js reported as a conflict", conflicted)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != wantMerged {
+		t.Fatalf("src/app.js = %q after the second apply, want the host edit preserved", got)
+	}
+}
+
+// TestApplyGuestPatchesSubdirectoryOfCheckoutApplies is the F2 guard of
+// PR #280's review: when the host folder is a subdirectory of a git
+// checkout, git apply resolves the patch paths against the outer repo's
+// root and silently skips them (exit 0, file unchanged) — the change is
+// then recorded as recovered while nothing crossed. The ceiling on the
+// folder's parent stops the repo discovery, so the patch applies to the
+// folder itself.
+func TestApplyGuestPatchesSubdirectoryOfCheckoutApplies(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	outer := t.TempDir()
+	gitInitForTransfer(t, outer)
+	writeFile(t, outer, "w/app.js", "old\n")
+	runGitTest(t, outer, "add", "-A")
+	runGitTest(t, outer, "commit", "-q", "-m", "base")
+	root := filepath.Join(outer, "w")
+
+	patch := []byte("diff --git a/app.js b/app.js\n--- a/app.js\n+++ b/app.js\n@@ -1 +1 @@\n-old\n+new\n")
+	applied, conflicted, err := ApplyGuestPatches(context.Background(), root, []GuestChange{{Rel: "app.js", Status: 'M', Patch: patch}})
+	if err != nil {
+		t.Fatalf("ApplyGuestPatches: %v", err)
+	}
+	if len(applied) != 1 || len(conflicted) != 0 {
+		t.Fatalf("ApplyGuestPatches = (%+v, %+v), want the one file applied", applied, conflicted)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "app.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new\n" {
+		t.Fatalf("app.js = %q, want the patch applied to the subdirectory: without the ceiling git reports the change as applied while leaving the file untouched", got)
+	}
+}
+
+// TestCollectGuestChangesSynthesizesReversals covers the F3 guard of PR
+// #280's review: a guest that reverted (or deleted) a file recovered before
+// is invisible to the diff against its HEAD, so the recovery screens would
+// show nothing. The synthesis compares the guest's current content against
+// the recorded guest baseline and offers the reversal as a synthetic
+// change.
+func TestCollectGuestChangesSynthesizesReversals(t *testing.T) {
+	head := []byte("old\n")
+	recovered := []byte("new\n")
+
+	t.Run("reverted file comes back as a synthetic change", func(t *testing.T) {
+		client := sealedFakeMSB()
+		m, stateDir := applyTestRuntime(t, client)
+		store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+		if err := store.Record("src/app.js", "patch-digest", contentDigest(recovered), contentDigest(recovered)); err != nil {
+			t.Fatal(err)
+		}
+		client.execCaptureResults = []fakeMSBExecCaptureResult{
+			{stdout: "yes"}, // provisioned
+			{stdout: ""},    // numstat: the diff is empty
+			{stdout: ""},    // diff
+			{stdout: contentDigest(head)},
+		}
+		changes, err := m.CollectGuestChanges(context.Background())
+		if err != nil {
+			t.Fatalf("CollectGuestChanges: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("changes = %+v, want the reverted file synthesized", changes)
+		}
+		c := changes[0]
+		if c.Rel != "src/app.js" || c.Status != 'M' || !c.Synthetic {
+			t.Fatalf("synthesized change = %+v, want a synthetic modification of src/app.js", c)
+		}
+	})
+
+	t.Run("deleted file comes back as a synthetic deletion", func(t *testing.T) {
+		client := sealedFakeMSB()
+		m, stateDir := applyTestRuntime(t, client)
+		store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+		if err := store.Record("src/app.js", "patch-digest", contentDigest(recovered), contentDigest(recovered)); err != nil {
+			t.Fatal(err)
+		}
+		client.execCaptureResults = []fakeMSBExecCaptureResult{
+			{stdout: "yes"},
+			{stdout: ""},
+			{stdout: ""},
+			{stdout: "deleted"},
+		}
+		changes, err := m.CollectGuestChanges(context.Background())
+		if err != nil {
+			t.Fatalf("CollectGuestChanges: %v", err)
+		}
+		if len(changes) != 1 || changes[0].Rel != "src/app.js" || changes[0].Status != 'D' || !changes[0].Synthetic {
+			t.Fatalf("changes = %+v, want a synthetic deletion of src/app.js", changes)
+		}
+	})
+
+	t.Run("file still at its recovered content stays quiet", func(t *testing.T) {
+		client := sealedFakeMSB()
+		m, stateDir := applyTestRuntime(t, client)
+		store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+		if err := store.Record("src/app.js", "patch-digest", contentDigest(recovered), contentDigest(recovered)); err != nil {
+			t.Fatal(err)
+		}
+		client.execCaptureResults = []fakeMSBExecCaptureResult{
+			{stdout: "yes"},
+			{stdout: ""},
+			{stdout: ""},
+			{stdout: contentDigest(recovered)},
+		}
+		changes, err := m.CollectGuestChanges(context.Background())
+		if err != nil {
+			t.Fatalf("CollectGuestChanges: %v", err)
+		}
+		if len(changes) != 0 {
+			t.Fatalf("changes = %+v, want none: the guest content matches the recorded baseline", changes)
+		}
+	})
+
+	t.Run("file reported by the diff is not re-synthesized", func(t *testing.T) {
+		client := sealedFakeMSB()
+		m, stateDir := applyTestRuntime(t, client)
+		store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+		if err := store.Record("src/app.js", "patch-digest", contentDigest(recovered), contentDigest(recovered)); err != nil {
+			t.Fatal(err)
+		}
+		client.execCaptureResults = []fakeMSBExecCaptureResult{
+			{stdout: "yes"},
+			{stdout: "1\t1\tsrc/app.js\x00"},
+			{stdout: applyFirstSection},
+		}
+		changes, err := m.CollectGuestChanges(context.Background())
+		if err != nil {
+			t.Fatalf("CollectGuestChanges: %v", err)
+		}
+		if len(changes) != 1 || changes[0].Synthetic {
+			t.Fatalf("changes = %+v, want only the diff's own change", changes)
+		}
+		if got := countCalls(client, "execcapture"); got != 3 {
+			t.Fatalf("exec captures = %d, want 3: no batch digest read for a path the diff already reports", got)
+		}
+	})
+
+	t.Run("record without a guest baseline is skipped", func(t *testing.T) {
+		client := sealedFakeMSB()
+		m, stateDir := applyTestRuntime(t, client)
+		store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+		// A v2-era record: host half only. A reversal cannot be told
+		// from a file still carrying the recovered content.
+		if err := store.Record("src/app.js", "patch-digest", contentDigest(recovered), ""); err != nil {
+			t.Fatal(err)
+		}
+		client.execCaptureResults = []fakeMSBExecCaptureResult{
+			{stdout: "yes"},
+			{stdout: ""},
+			{stdout: ""},
+		}
+		changes, err := m.CollectGuestChanges(context.Background())
+		if err != nil {
+			t.Fatalf("CollectGuestChanges: %v", err)
+		}
+		if len(changes) != 0 {
+			t.Fatalf("changes = %+v, want none: an incomplete baseline must not guess", changes)
+		}
+		if got := countCalls(client, "execcapture"); got != 3 {
+			t.Fatalf("exec captures = %d, want 3: no batch digest read without a guest baseline", got)
+		}
+	})
+}
+
+// TestApplySelectedChangesReversalLoopThenQuiet runs the F3 end-to-end
+// shape: the synthesis offers a reverted file, the apply brings the host
+// back to the guest's reverted content, and the next collection is quiet —
+// the reversal is recovered, not an endless loop.
+func TestApplySelectedChangesReversalLoopThenQuiet(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	writeFile(t, root, "src/app.js", "old\n")
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-q", "-m", "base")
+	ctx := context.Background()
+
+	recovered := []byte("new\n")
+	head := []byte("old\n")
+	client := sealedFakeMSB()
+	m, stateDir := applyTestRuntime(t, client)
+	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+	// The last recovery left "new\n" on both sides; the host file
+	// matches so the baseline holds.
+	writeFile(t, root, "src/app.js", string(recovered))
+	if err := store.Record("src/app.js", "patch-digest", contentDigest(recovered), contentDigest(recovered)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The guest reverted: the diff is empty, the synthesis offers the
+	// reversal.
+	client.execCaptureResults = []fakeMSBExecCaptureResult{
+		{stdout: "yes"},
+		{stdout: ""},
+		{stdout: ""},
+		{stdout: contentDigest(head)},
+	}
+	changes, err := m.CollectGuestChanges(ctx)
+	if err != nil {
+		t.Fatalf("CollectGuestChanges: %v", err)
+	}
+	if len(changes) != 1 || !changes[0].Synthetic || changes[0].Rel != "src/app.js" {
+		t.Fatalf("changes = %+v, want the synthesized reversal", changes)
+	}
+
+	// Applying it brings the host back to the guest's reverted content.
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{
+		stdout: "644 " + strconv.Itoa(len(head)) + "\n" + base64.StdEncoding.EncodeToString(head),
+	}}
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, changes)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(applied) != 1 || len(conflicted) != 0 {
+		t.Fatalf("apply = (%+v, %+v), want the reversal applied", applied, conflicted)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != string(head) {
+		t.Fatalf("src/app.js = %q, want the reverted content brought back", got)
+	}
+
+	// The next collection is quiet: the guest matches the recorded
+	// baseline again.
+	client.execCaptureResults = []fakeMSBExecCaptureResult{
+		{stdout: "yes"},
+		{stdout: ""},
+		{stdout: ""},
+		{stdout: contentDigest(head)},
+	}
+	after, err := m.CollectGuestChanges(ctx)
+	if err != nil {
+		t.Fatalf("CollectGuestChanges after the reversal: %v", err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("changes = %+v, want none after the reversal was recovered", after)
 	}
 }
 
@@ -866,6 +1198,53 @@ func TestReadGuestFile(t *testing.T) {
 		_, _, err := m.ReadGuestFile(ctx, "src/app.js")
 		if err == nil || !strings.Contains(err.Error(), "unreadable content") {
 			t.Fatalf("err = %v, want an unreadable-content error", err)
+		}
+	})
+}
+
+func TestGuestContentDigests(t *testing.T) {
+	ctx := context.Background()
+	t.Run("pairs digest lines with rels by position", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "aaa\nbbb\n"}}
+		m, _ := applyTestRuntime(t, client)
+		got, err := m.guestContentDigests(ctx, []string{"b.txt", "a.txt"})
+		if err != nil {
+			t.Fatalf("guestContentDigests: %v", err)
+		}
+		want := map[string]string{"b.txt": "aaa", "a.txt": "bbb"}
+		if len(got) != 2 || got["b.txt"] != want["b.txt"] || got["a.txt"] != want["a.txt"] {
+			t.Fatalf("digests = %v, want %v", got, want)
+		}
+	})
+	t.Run("reports deleted files as deleted", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "deleted"}}
+		m, _ := applyTestRuntime(t, client)
+		got, err := m.guestContentDigests(ctx, []string{"gone.txt"})
+		if err != nil {
+			t.Fatalf("guestContentDigests: %v", err)
+		}
+		if len(got) != 1 || got["gone.txt"] != "deleted" {
+			t.Fatalf("digests = %v, want gone.txt reported as deleted", got)
+		}
+	})
+	t.Run("count mismatch fails closed", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "only-one"}}
+		m, _ := applyTestRuntime(t, client)
+		_, err := m.guestContentDigests(ctx, []string{"a.txt", "b.txt"})
+		if err == nil || !strings.Contains(err.Error(), "files asked") {
+			t.Fatalf("err = %v, want a digest-count mismatch error", err)
+		}
+	})
+	t.Run("empty digest fails closed", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: ""}}
+		m, _ := applyTestRuntime(t, client)
+		_, err := m.guestContentDigests(ctx, []string{"a.txt"})
+		if err == nil || !strings.Contains(err.Error(), "files asked") {
+			t.Fatalf("err = %v, want a digest-count mismatch error", err)
 		}
 	})
 }
@@ -944,7 +1323,9 @@ func TestUnrecoveredGuestChangesSkipsRecorded(t *testing.T) {
 	m, stateDir := applyTestRuntime(t, client)
 	recorded := GuestChange{Rel: "src/app.js", Patch: []byte(applyFirstSection)}
 	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
-	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded), ""); err != nil {
+	// No baseline halves: reversal synthesis must stay off a record
+	// whose guest half was never written.
+	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded), "", ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -973,7 +1354,7 @@ func TestPrepareApplyReviewMarksRecoveredAndRefused(t *testing.T) {
 	m, stateDir := applyTestRuntime(t, client)
 	recorded := GuestChange{Rel: "src/app.js", Patch: []byte(applyFirstSection)}
 	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
-	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded), ""); err != nil {
+	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded), "", ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 

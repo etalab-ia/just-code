@@ -33,6 +33,11 @@ type GuestChange struct {
 	Binary bool
 	// Patch is this file's own patch, appliable on its own with git apply.
 	Patch []byte
+	// Synthetic marks a change that carries no patch: the guest reverted
+	// (or deleted) a file recovered before, so the diff against its HEAD
+	// shows nothing while the host still holds the recovered content. It
+	// comes back through the direct path only, never git apply.
+	Synthetic bool
 }
 
 // GuestChangeDigest fingerprints one change (path + patch bytes) so a later
@@ -94,7 +99,11 @@ func (m *MicrosandboxRuntime) CollectGuestChanges(ctx context.Context) ([]GuestC
 		return nil, fmt.Errorf("the guest could not produce a diff (exit %d): %s", code, strings.TrimSpace(stderr))
 	}
 	if len(stats) == 0 && strings.TrimSpace(diffOut) == "" {
-		return nil, nil
+		// The diff is empty, but a guest that reverted a file recovered
+		// before is invisible to it: the content matches HEAD again.
+		// Synthesize those reversals so both recovery screens still
+		// offer them (PR #280 review).
+		return m.synthesizeReversalChanges(ctx, stats)
 	}
 	sections := splitDiffSections(diffOut)
 	if len(sections) != len(stats) {
@@ -112,7 +121,98 @@ func (m *MicrosandboxRuntime) CollectGuestChanges(ctx context.Context) ([]GuestC
 		c.Status = guestSectionStatus(section)
 		changes = append(changes, c)
 	}
-	return changes, nil
+	reversals, err := m.synthesizeReversalChanges(ctx, stats)
+	if err != nil {
+		return nil, err
+	}
+	return append(changes, reversals...), nil
+}
+
+// synthesizeReversalChanges returns one change per previously recovered
+// file the guest has since reverted or deleted, so the recovery screens
+// still offer it even though the diff against the guest's HEAD shows
+// nothing (PR #280 review). stats is the diff's numstat entries, used to
+// skip the paths the diff already reports.
+func (m *MicrosandboxRuntime) synthesizeReversalChanges(ctx context.Context, stats []guestNumstat) ([]GuestChange, error) {
+	store := ApplyRecordStore{Path: ApplyRecordPath(m.stateDirOrDefault(), m.InstanceName())}
+	baselines, err := store.LoadRecoveredBaselines()
+	if err != nil {
+		return nil, err
+	}
+	inDiff := make(map[string]bool, len(stats))
+	for _, s := range stats {
+		inDiff[s.rel] = true
+	}
+	// Map iteration order is random; sort for a stable screen.
+	var candidates []string
+	for rel, base := range baselines {
+		// Without a recorded guest baseline (schema v1 and v2 records)
+		// a reversal cannot be told from a file still carrying the
+		// recovered content; skip rather than guess.
+		if base.Guest == "" || inDiff[rel] {
+			continue
+		}
+		candidates = append(candidates, rel)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	sort.Strings(candidates)
+	digests, err := m.guestContentDigests(ctx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	var out []GuestChange
+	for _, rel := range candidates {
+		if digests[rel] == baselines[rel].Guest {
+			continue
+		}
+		status := byte('M')
+		if digests[rel] == "deleted" {
+			status = 'D'
+		}
+		out = append(out, GuestChange{Rel: rel, Status: status, Synthetic: true})
+	}
+	return out, nil
+}
+
+// guestContentDigests returns the sha256 of each file's current content in
+// the isolated machine, one exec for the whole batch ("deleted" for a path
+// that no longer exists). The output lines pair with rels by position, and
+// a count mismatch fails closed: the guest changed while it was read.
+func (m *MicrosandboxRuntime) guestContentDigests(ctx context.Context, rels []string) (map[string]string, error) {
+	out := make(map[string]string, len(rels))
+	if len(rels) == 0 {
+		return out, nil
+	}
+	var b strings.Builder
+	b.WriteString("cd " + shellQuote(msbGuestWorkspace) + " && for f in")
+	for _, rel := range rels {
+		b.WriteString(" " + shellQuote(rel))
+	}
+	b.WriteString("; do if [ -f \"$f\" ]; then sha256sum -- \"$f\" | cut -d' ' -f1; else echo deleted; fi; done")
+	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), b.String())
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("the guest could not read the recovered files (exit %d): %s", code, strings.TrimSpace(stderr))
+	}
+	var lines []string
+	if trimmed := strings.TrimSpace(stdout); trimmed != "" {
+		lines = strings.Split(trimmed, "\n")
+	}
+	if len(lines) != len(rels) {
+		return nil, fmt.Errorf("the guest workspace changed while it was being read (%d files asked, %d answered); run the command again", len(rels), len(lines))
+	}
+	for i, rel := range rels {
+		digest := strings.TrimSpace(lines[i])
+		if digest == "" {
+			return nil, fmt.Errorf("the guest returned no digest for %s", rel)
+		}
+		out[rel] = digest
+	}
+	return out, nil
 }
 
 // guestNumstat is one --numstat -z entry.
@@ -301,9 +401,16 @@ type appliedGuestChangeFile struct {
 	// against to tell a folder still at its last recovered state from one
 	// the user edited since.
 	RecoveredContent map[string]string `json:"recoveredContent,omitempty"`
+	// RecoveredGuestContent records, per path, the digest of the guest
+	// file's content at the moment the change was applied ("deleted" when
+	// the guest no longer had it). Compared against the guest's current
+	// content, it tells a re-delivered identical change from a new edit,
+	// and a reverted recovered file from one still carrying the
+	// recovered content.
+	RecoveredGuestContent map[string]string `json:"recoveredGuestContent,omitempty"`
 }
 
-const appliedGuestChangeSchemaVersion = 2
+const appliedGuestChangeSchemaVersion = 3
 
 // Load returns the recorded digests keyed by relative path. A missing record
 // is an empty history, not an error.
@@ -332,11 +439,20 @@ func (s ApplyRecordStore) Load() (map[string]string, error) {
 	return out, nil
 }
 
-// LoadRecoveredContent returns the per-path content digests recorded at the
-// last successful apply. A record written before the field existed (schema
-// v1) has none: those files fall back to the patch-only behavior.
-func (s ApplyRecordStore) LoadRecoveredContent() (map[string]string, error) {
-	out := map[string]string{}
+// RecoveredBaseline is the recorded state of one path after its last
+// recovery: the host content the apply left behind, and the guest content
+// it came from. Either digest is empty when the record predates it.
+type RecoveredBaseline struct {
+	Host  string
+	Guest string
+}
+
+// LoadRecoveredBaselines returns the per-path baselines recorded at the
+// last successful apply. A record written before a field existed (schema
+// v1, v2) carries the older half only: those files fall back to the
+// conservative paths until they are applied once more.
+func (s ApplyRecordStore) LoadRecoveredBaselines() (map[string]RecoveredBaseline, error) {
+	out := map[string]RecoveredBaseline{}
 	fsys := s.FS
 	if fsys == nil {
 		fsys = DefaultFS
@@ -354,28 +470,45 @@ func (s ApplyRecordStore) LoadRecoveredContent() (map[string]string, error) {
 	}
 	for rel, digest := range raw.RecoveredContent {
 		if rel != "" && digest != "" {
-			out[rel] = digest
+			out[rel] = RecoveredBaseline{Host: digest}
 		}
+	}
+	for rel, digest := range raw.RecoveredGuestContent {
+		if rel == "" || digest == "" {
+			continue
+		}
+		base := out[rel]
+		base.Guest = digest
+		out[rel] = base
 	}
 	return out, nil
 }
 
-// Record marks one guest change as applied: the digest of its patch, for the
-// already-recovered classification, and the digest of the host content the
-// apply left behind, as the baseline for the next recovery.
-func (s ApplyRecordStore) Record(rel, patchDigest, contentDigest string) error {
+// Record marks one guest change as applied: the digest of its patch, for
+// the already-recovered classification, and the digests of the host
+// content the apply left behind and of the guest content it came from, as
+// the baselines for the next recovery. An empty digest leaves the
+// corresponding baseline unset.
+func (s ApplyRecordStore) Record(rel, patchDigest, hostDigest, guestDigest string) error {
 	return s.mutate(func(file *appliedGuestChangeFile) {
 		if file.Digests == nil {
 			file.Digests = map[string]string{}
 		}
 		file.Digests[rel] = patchDigest
-		if contentDigest == "" {
+		if hostDigest == "" {
 			return
 		}
 		if file.RecoveredContent == nil {
 			file.RecoveredContent = map[string]string{}
 		}
-		file.RecoveredContent[rel] = contentDigest
+		file.RecoveredContent[rel] = hostDigest
+		if guestDigest == "" {
+			return
+		}
+		if file.RecoveredGuestContent == nil {
+			file.RecoveredGuestContent = map[string]string{}
+		}
+		file.RecoveredGuestContent[rel] = guestDigest
 	})
 }
 
@@ -585,6 +718,16 @@ func ApplyGuestPatches(ctx context.Context, root string, files []GuestChange) (a
 		return nil, nil, err
 	}
 	defer os.RemoveAll(dir)
+	// When the host folder sits inside a git checkout (the guest sandbox
+	// is a subdirectory of the user's repo), git apply would resolve
+	// paths against the outer repo's root and silently ignore patch
+	// paths outside the subdirectory — exit 0, file untouched. The
+	// ceiling stops the discovery walk at the folder itself (PR #280
+	// review).
+	env := os.Environ()
+	if ceiling, ok := gitCeilingDirectory(root); ok {
+		env = append(env, "GIT_CEILING_DIRECTORIES="+ceiling)
+	}
 	for i, c := range files {
 		patchPath := filepath.Join(dir, fmt.Sprintf("change-%d.patch", i))
 		if err := os.WriteFile(patchPath, c.Patch, 0o600); err != nil {
@@ -592,12 +735,14 @@ func ApplyGuestPatches(ctx context.Context, root string, files []GuestChange) (a
 		}
 		check := exec.CommandContext(ctx, git, "apply", "--check", patchPath)
 		check.Dir = root
+		check.Env = env
 		if err := check.Run(); err != nil {
 			conflicted = append(conflicted, c)
 			continue
 		}
 		apply := exec.CommandContext(ctx, git, "apply", patchPath)
 		apply.Dir = root
+		apply.Env = env
 		if err := apply.Run(); err != nil {
 			// The check passed but the apply failed: report the file as
 			// unapplied rather than claiming success for a half-written one.
@@ -607,6 +752,21 @@ func ApplyGuestPatches(ctx context.Context, root string, files []GuestChange) (a
 		applied = append(applied, c)
 	}
 	return applied, conflicted, nil
+}
+
+// gitCeilingDirectory returns the directory at which git should stop
+// looking for a repository root above root: root's own parent. An empty
+// answer means no ceiling is needed (root could not be resolved, or is
+// the filesystem root, whose parent is itself).
+func gitCeilingDirectory(root string) (string, bool) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	if abs == string(filepath.Separator) {
+		return "", false
+	}
+	return filepath.Dir(abs), true
 }
 
 // ReadGuestFile returns one file's current content and permission bits from
@@ -672,94 +832,205 @@ func safeGuestRel(rel string) bool {
 	return path.Base(rel) != ".git" && !strings.HasPrefix(rel, ".git/")
 }
 
-// directEligible reports whether the host file is exactly at the state the
-// last recovery left it in: the recorded content digest matches the host's
-// current content. Only then may the guest's newer content overwrite it
-// directly; any other host state goes through git apply, which keeps the
-// user's local edits.
-func directEligible(root string, recovered map[string]string, c GuestChange) bool {
-	recorded, ok := recovered[c.Rel]
-	if !ok || recorded == "" || !safeGuestRel(c.Rel) {
-		return false
+// removeHostFile deletes one recovered file from the host folder. A file
+// that is already absent counts as removed: the guest's deletion and the
+// host's state agree.
+func removeHostFile(root, rel string) error {
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(rel))); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	digest, err := hostContentDigest(root, c.Rel)
-	if err != nil {
-		return false
+	return nil
+}
+
+// writeRecoveredFile writes one file's guest content and mode to the host
+// folder and records both baselines. The caller has already read the
+// content from the guest and checked it against the transfer cap.
+func writeRecoveredFile(store ApplyRecordStore, root string, c GuestChange, content []byte, mode os.FileMode) error {
+	hostPath := filepath.Join(root, filepath.FromSlash(c.Rel))
+	if err := os.MkdirAll(filepath.Dir(hostPath), 0o755); err != nil {
+		return err
 	}
-	return digest == recorded
+	if err := os.WriteFile(hostPath, content, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(hostPath, mode); err != nil {
+		return err
+	}
+	digest := contentDigest(content)
+	return store.Record(c.Rel, GuestChangeDigest(c), digest, digest)
 }
 
 // ApplySelectedChanges applies the user's selection from the apply screen.
-// A file whose host content still matches the content recorded at its last
-// recovery is brought to the guest's current content directly: the guest's
-// cumulative patch is based on its HEAD, which no longer matches a host
-// that already recovered once, so applying it would report a false conflict
-// (PR #280 review). Every other file keeps the git-apply path, which refuses
-// to overwrite a host-modified file. Both paths record the new recovered
-// baseline so the next run classifies honestly.
+//
+// The recovered baseline recorded at the last apply decides each file's
+// path (PR #280 review):
+//
+//   - A host file still at its recorded baseline may be brought to the
+//     guest's current content directly — the guest's cumulative patch is
+//     based on its HEAD, which no longer matches a host that recovered
+//     once, so applying it would report a false conflict.
+//   - A re-delivered change whose guest content also matches its recorded
+//     baseline is a no-op: re-recording it preserves any host edit merged
+//     in by the first apply instead of silently deleting it.
+//   - A host file the user edited since is never overwritten directly: it
+//     goes through git apply, which either merges the new work or reports
+//     a visible conflict.
+//   - A synthetic change (the guest reverted a recovered file; no patch)
+//     is applied directly or reported as a conflict — git apply has
+//     nothing to merge.
+//
+// Every applied file records its new host and guest baselines so the next
+// run classifies honestly.
 func ApplySelectedChanges(ctx context.Context, m *MicrosandboxRuntime, root string, selected []GuestChange) (applied, conflicted []GuestChange, err error) {
 	store := ApplyRecordStore{Path: ApplyRecordPath(m.stateDirOrDefault(), m.InstanceName())}
-	recovered, err := store.LoadRecoveredContent()
+	baselines, err := store.LoadRecoveredBaselines()
 	if err != nil {
 		return nil, nil, err
 	}
-	var direct, patches []GuestChange
+	var patches []GuestChange
 	for _, c := range selected {
-		if directEligible(root, recovered, c) {
-			direct = append(direct, c)
-		} else {
-			patches = append(patches, c)
+		base, recorded := baselines[c.Rel]
+		hostNow, err := hostContentDigest(root, c.Rel)
+		if err != nil {
+			return nil, nil, err
 		}
-	}
-	for _, c := range direct {
-		if c.Status == 'D' {
-			if err := os.Remove(filepath.Join(root, filepath.FromSlash(c.Rel))); err != nil && !os.IsNotExist(err) {
-				return nil, nil, err
-			}
-			if err := store.Record(c.Rel, GuestChangeDigest(c), "deleted"); err != nil {
+		atBaseline := recorded && hostNow == base.Host && safeGuestRel(c.Rel)
+		if c.Status == 'D' && hostNow == "deleted" {
+			// The guest deleted the file and the host does not have
+			// it either: nothing to transfer, and recording keeps
+			// the classification honest on the next run.
+			if err := store.Record(c.Rel, GuestChangeDigest(c), "deleted", "deleted"); err != nil {
 				return nil, nil, err
 			}
 			applied = append(applied, c)
 			continue
 		}
-		content, mode, err := m.ReadGuestFile(ctx, c.Rel)
-		if err != nil {
-			return nil, nil, err
+		if c.Synthetic {
+			// The guest reverted a recovered file: there is no
+			// patch to apply, so only a host still at its baseline
+			// can take the direct path. Anything else is a
+			// conflict the user must see, never a silent skip.
+			if !atBaseline {
+				conflicted = append(conflicted, c)
+				continue
+			}
+			if c.Status == 'D' {
+				// The guest deleted the reverted file: the
+				// host loses its recovered copy, nothing to
+				// read from the guest.
+				if err := removeHostFile(root, c.Rel); err != nil {
+					return nil, nil, err
+				}
+				if err := store.Record(c.Rel, GuestChangeDigest(c), "deleted", "deleted"); err != nil {
+					return nil, nil, err
+				}
+				applied = append(applied, c)
+				continue
+			}
+			content, mode, err := m.ReadGuestFile(ctx, c.Rel)
+			if err != nil {
+				return nil, nil, err
+			}
+			if int64(len(content)) > DefaultTransferMaxFileBytes {
+				// No patch exists to fall back to: report the
+				// reversal as a conflict rather than dropping
+				// it silently.
+				conflicted = append(conflicted, c)
+				continue
+			}
+			if err := writeRecoveredFile(store, root, c, content, mode); err != nil {
+				return nil, nil, err
+			}
+			applied = append(applied, c)
+			continue
 		}
-		if int64(len(content)) > DefaultTransferMaxFileBytes {
-			// The whole file is too large to transfer: fall back to its
-			// patch, which preserves the user's ability to review it.
+		if !atBaseline {
 			patches = append(patches, c)
 			continue
 		}
-		hostPath := filepath.Join(root, filepath.FromSlash(c.Rel))
-		if err := os.MkdirAll(filepath.Dir(hostPath), 0o755); err != nil {
+		if c.Status == 'D' {
+			// The guest deleted the file while the host still
+			// sits at its recorded baseline: remove it directly.
+			// There is nothing to read from the guest — the
+			// file is gone there.
+			if err := removeHostFile(root, c.Rel); err != nil {
+				return nil, nil, err
+			}
+			if err := store.Record(c.Rel, GuestChangeDigest(c), "deleted", "deleted"); err != nil {
+				return nil, nil, err
+			}
+			applied = append(applied, c)
+			continue
+		}
+		// The host is still at the last recovery's baseline. Compare
+		// the guest's current content against its recorded half to
+		// tell a re-delivered identical change (no-op) from new work.
+		guestContent, mode, err := m.ReadGuestFile(ctx, c.Rel)
+		if err != nil {
 			return nil, nil, err
 		}
-		if err := os.WriteFile(hostPath, content, mode); err != nil {
-			return nil, nil, err
+		guestNow := contentDigest(guestContent)
+		if base.Guest != "" && guestNow == base.Guest {
+			// The guest re-delivered exactly what the last
+			// recovery already brought over. Re-record without
+			// touching the host, so an edit the patch path merged
+			// into the host file survives (PR #280 review).
+			if err := store.Record(c.Rel, GuestChangeDigest(c), hostNow, base.Guest); err != nil {
+				return nil, nil, err
+			}
+			applied = append(applied, c)
+			continue
 		}
-		if err := os.Chmod(hostPath, mode); err != nil {
-			return nil, nil, err
+		if base.Guest != "" && base.Host == base.Guest {
+			// The last recovery copied this file verbatim: no
+			// host edit can be lost by bringing the folder to
+			// the guest's current state.
+			if int64(len(guestContent)) > DefaultTransferMaxFileBytes {
+				// Above the transfer cap: fall back to
+				// the patch, which preserves review.
+				patches = append(patches, c)
+				continue
+			}
+			if err := writeRecoveredFile(store, root, c, guestContent, mode); err != nil {
+				return nil, nil, err
+			}
+			applied = append(applied, c)
+			continue
 		}
-		if err := store.Record(c.Rel, GuestChangeDigest(c), contentDigest(content)); err != nil {
-			return nil, nil, err
-		}
-		applied = append(applied, c)
+		// The host is at its baseline but the last apply went through
+		// the patch path, so the host may hold edits merged from an
+		// older patch. Only git apply can merge the new work without
+		// losing them.
+		patches = append(patches, c)
 	}
 	patchApplied, patchConflicted, err := ApplyGuestPatches(ctx, root, patches)
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, c := range patchApplied {
-		digest, err := hostContentDigest(root, c.Rel)
-		if err != nil {
-			return nil, nil, err
+	if len(patchApplied) > 0 {
+		rels := make([]string, len(patchApplied))
+		for i, c := range patchApplied {
+			rels[i] = c.Rel
 		}
-		if err := store.Record(c.Rel, GuestChangeDigest(c), digest); err != nil {
-			return nil, nil, err
+		guestDigests, digestErr := m.guestContentDigests(ctx, rels)
+		for _, c := range patchApplied {
+			hostDigest, err := hostContentDigest(root, c.Rel)
+			if err != nil {
+				return nil, nil, err
+			}
+			guestDigest := ""
+			if digestErr == nil {
+				guestDigest = guestDigests[c.Rel]
+			}
+			// The files are already on the host: a failure to
+			// refine the record must not turn an applied change
+			// into an error. Record the host half only and let
+			// the next run re-derive the guest half.
+			if err := store.Record(c.Rel, GuestChangeDigest(c), hostDigest, guestDigest); err != nil {
+				return nil, nil, err
+			}
+			applied = append(applied, c)
 		}
-		applied = append(applied, c)
 	}
 	conflicted = append(conflicted, patchConflicted...)
 	return applied, conflicted, nil
