@@ -44,6 +44,10 @@ Champs collectés :
   avancés ouverts (0/1), harnais, runtime, isolation, stockage des skills ;
 - abandon : dernière étape atteinte quand l'assistant est quitté.
 
+Un abandon n'est enregistré que si la question de consentement a déjà reçu une
+réponse (y compris un refus) : quitter un assistant avant d'atteindre cet écran
+ne produit rien, même si le partage a été activé plus tard avec `stats on`.
+
 Ne sont **jamais** collectés : code, prompts, réponses de l'agent, noms de
 projet ou de dépôt, chemins, clés, jetons, identité git, adresse IP.
 Le nom saisi pour une plateforme compatible OpenAI n'est pas envoyé : seul son

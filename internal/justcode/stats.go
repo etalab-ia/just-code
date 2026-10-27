@@ -502,9 +502,19 @@ func StatsEnabled(fs FS, path string) bool {
 // RecordStatsEvent is the guarded entry point: it does nothing unless the
 // host opted in, and it never returns an error to the caller (statistics must
 // never break a wizard). When the event is queued, a detached flush starts.
+//
+// An abandonment event is additionally gated on the consent question having
+// been ANSWERED already. Consent is asked at the end of setup, so recording a
+// quit before that screen would ask about a run that never reached the
+// question, exactly what the "asked once, at the end" rule forbids. A host
+// that already answered (including opted out) keeps its normal behaviour.
 func RecordStatsEvent(fs FS, stateDir string, in StatsEventInput) {
 	path, err := UserSettingsPath()
-	if err != nil || !StatsEnabled(fs, path) {
+	if err != nil {
+		return
+	}
+	enabled, asked := ReadStatsConsent(fs, path)
+	if !enabled || (in.Kind == "abandon" && !asked) {
 		return
 	}
 	event, err := BuildStatsEvent(fs, stateDir, in)

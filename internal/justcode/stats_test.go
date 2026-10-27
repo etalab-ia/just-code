@@ -257,3 +257,27 @@ func TestRecordStatsEventIsANoOpWithoutConsent(t *testing.T) {
 		t.Fatalf("no consent must queue nothing: %v", events)
 	}
 }
+
+func TestRecordStatsAbandonRequiresAnAnsweredConsent(t *testing.T) {
+	settingsPath := statsTestHome(t)
+	stateDir := t.TempDir()
+	// Opt-in recorded manually (stats on) before any wizard answered the
+	// question: a run abandoned before the review must stay silent.
+	if err := WriteUserSettings(DefaultFS, settingsPath, UserSettings{SchemaVersion: 1, StatsEnabled: true, StatsConsentAsked: false}); err != nil {
+		t.Fatal(err)
+	}
+	RecordStatsEvent(DefaultFS, stateDir, StatsEventInput{Kind: "abandon", Stage: "credentials"})
+	if events, _ := PendingStatsEvents(DefaultFS, stateDir); len(events) != 0 {
+		t.Fatalf("an unanswered consent must queue no abandonment: %v", events)
+	}
+	if err := WriteStatsConsent(DefaultFS, settingsPath, true, true); err != nil {
+		t.Fatal(err)
+	}
+	previousSpawn := StatsFlushSpawn
+	StatsFlushSpawn = func() {}
+	t.Cleanup(func() { StatsFlushSpawn = previousSpawn })
+	RecordStatsEvent(DefaultFS, stateDir, StatsEventInput{Kind: "abandon", Stage: "credentials"})
+	if events, _ := PendingStatsEvents(DefaultFS, stateDir); len(events) != 1 {
+		t.Fatalf("an answered opt-in must queue the abandonment: %v", events)
+	}
+}
