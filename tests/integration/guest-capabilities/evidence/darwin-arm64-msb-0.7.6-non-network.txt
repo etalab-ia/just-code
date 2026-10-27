@@ -1,3 +1,9 @@
+META issue=235 source=7f8b3dec70c7738989a4f97a62f2ad24d228194f date=2026-10-27 platform=darwin/arm64 host=MacBook-Pro-Luis.local os=macOS-27.0.1 backend=libkrun runtime=msb-0.7.6 sdk_declared=v0.7.6 archive_sha256=ab6ff6ce2710094de1427bab5a9bd797e8d534f96f18a494e24de5a714f5b598
+SOURCE extracted archive of commit 7f8b3de; no .git. The non-network run needs no host mount. This CLI matrix does not execute the Go SDK.
+INTEGRITY run.sh_sha256=7e593bea3f1237711207117623c7d764b5f729550cfe3fdf198835d73a2bd844 in the extracted source archive and in the final worktree.
+SETUP source=/tmp/issue-235-7f8b3de runtime_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89 user_MSB_HOME_untouched=yes
+INVOCATION cd /tmp/issue-235-7f8b3de && env MSB_HOME=/tmp/issue235-msb076/msb-home MSB_PATH=/tmp/issue235-msb076/runtime/bin/msb MSB_LIBKRUNFW_PATH=/tmp/issue235-msb076/runtime/lib/libkrunfw.5.dylib MSB_BIN=/tmp/issue235-msb076/runtime/bin/msb tests/integration/guest-capabilities/run.sh
+RAW resolved_msb_version_begin
 msb 0.7.6
 VERSION_EXIT=0
 RAW resolved_msb_version_end
