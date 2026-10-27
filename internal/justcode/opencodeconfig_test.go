@@ -173,18 +173,14 @@ func TestDeepMergeMaps(t *testing.T) {
 	}
 }
 
-// TestOpenCodeUpdateCheckMechanism pins the mechanism, not just the spelling.
-// At the pinned version the updater reads `autoupdate` from the user global
-// config only, so the managed inline configuration cannot turn the check off.
-// A later change that "simplifies" this into an overlay field would compile,
-// pass a naive content assertion, and silently bring the notice back.
-func TestOpenCodeUpdateCheckMechanism(t *testing.T) {
-	if OpenCodeDisableUpdateEnv != "OPENCODE_DISABLE_AUTOUPDATE" {
-		t.Fatalf("update-check variable = %q, want OPENCODE_DISABLE_AUTOUPDATE", OpenCodeDisableUpdateEnv)
-	}
-	if OpenCodeDisableUpdateAssignment != "OPENCODE_DISABLE_AUTOUPDATE=1" {
-		t.Fatalf("assignment = %q, want OPENCODE_DISABLE_AUTOUPDATE=1", OpenCodeDisableUpdateAssignment)
-	}
+// TestManagedConfigDoesNotRelyOnAutoupdate guards the one mistake that would
+// silently restore the notice: moving the opt-out into the managed overlay.
+// At the pinned version the updater reads `autoupdate` from the guest global
+// config only, so an overlay field compiles, looks right in the composed
+// document, and does nothing. The load-bearing mechanism is the environment
+// variable, and its presence at each launch site is asserted by the runtime
+// tests (guest, agent-vm, Microsandbox).
+func TestManagedConfigDoesNotRelyOnAutoupdate(t *testing.T) {
 	content, err := ComposeConfigContent(ManagedOverlay{})
 	if err != nil {
 		t.Fatalf("ComposeConfigContent: %v", err)

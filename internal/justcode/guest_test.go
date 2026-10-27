@@ -266,11 +266,13 @@ func TestGuestExecArgvAndEnv(t *testing.T) {
 	}
 }
 
-// TestGuestDisablesOpenCodeUpdateCheck covers issue #178 for the Tart backend
-// path: the guest runs a version just-code pinned, so the update notice must
-// not reach the user. The variable has to be in the process environment —
-// the managed OPENCODE_CONFIG_CONTENT cannot carry it (OpenCode 1.18.32 reads
-// autoupdate from the user global config only).
+// TestGuestDisablesOpenCodeUpdateCheck covers the Tart backend path. `opencode
+// serve` runs no updater today, so the assertion is about uniformity: the
+// variable belongs to the launcher environment so every process derived from
+// it inherits the opt-out. The full-mode TUI, which does run the updater, is
+// covered separately by TestGuestSecretsEnvCarriesProviderConfig. The managed
+// OPENCODE_CONFIG_CONTENT cannot carry the setting (see
+// OpenCodeDisableUpdateEnv).
 func TestGuestDisablesOpenCodeUpdateCheck(t *testing.T) {
 	skipUnixGuest(t)
 	cfg, execer := guestTest(t, &fakeRunner{}, "pw\nkey\n", "opencode")

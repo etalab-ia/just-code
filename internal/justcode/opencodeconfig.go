@@ -283,17 +283,23 @@ func FormatConflicts(conflicts []ConfigConflict) string {
 
 // OpenCodeDisableUpdateEnv turns off OpenCode's update check in a process.
 //
-// The guest runs a version just-code pins, so an update notice can only
-// mislead: the user cannot act on it without leaving the supported set. The
-// environment variable is also the ONLY mechanism that works here. Verified
-// against the pinned 1.18.32 sources (packages/opencode/src/config/config.ts
-// and cli/upgrade.ts): upgrade() reads autoupdate from getGlobal(), which
-// loads only the user global config files (Global.Path.config/config.json,
-// opencode.json, opencode.jsonc). just-code's managed configuration travels
-// inline in OPENCODE_CONFIG_CONTENT, which getGlobal() never sees, so setting
-// "autoupdate": false there is silently inert. upgrade() checks
-// OPENCODE_DISABLE_AUTOUPDATE before anything else, so every launch path must
-// carry it.
+// The guest belongs to just-code: its OpenCode is either the pinned version
+// (Microsandbox) or the vendor default just-code installed at first launch
+// (Tart, agent-vm). An update notice invites the user out of the set just-code
+// supports, and in the pinned case it cannot even be honoured. `opencode
+// upgrade` stays available for a deliberate upgrade.
+//
+// Why the environment variable and not the `autoupdate` setting: in the pinned
+// 1.18.32 sources (packages/core/src/flag/flag.ts, config/config.ts,
+// cli/upgrade.ts), upgrade() reads `autoupdate` through getGlobal(), which
+// loads only the guest's global config files (Global.Path.config/config.json,
+// opencode.json, opencode.jsonc). just-code's managed settings travel inline in
+// OPENCODE_CONFIG_CONTENT, which getGlobal() never reads, so "autoupdate":
+// false there is silently inert. Writing the guest's global config would work,
+// but managed settings do not live in a file the user also edits. upgrade()
+// tests OPENCODE_DISABLE_AUTOUPDATE before anything else, so every launch path
+// must carry it. A bare `just-code shell` is the one path it cannot reach: that
+// shell sources neither the managed config nor these variables.
 const OpenCodeDisableUpdateEnv = "OPENCODE_DISABLE_AUTOUPDATE"
 
 // OpenCodeDisableUpdateAssignment is the KEY=VALUE form for exec environments
