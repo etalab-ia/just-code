@@ -352,6 +352,11 @@ func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	if !strings.Contains(content, "albert.api.etalab.gouv.fr") {
 		t.Errorf("env file must carry the real provider config content: %q", content)
 	}
+	// Issue #178: the guest runs a pinned OpenCode; its update check is opt-out
+	// by environment variable only, and this file is the guest's environment.
+	if !strings.Contains(content, "OPENCODE_DISABLE_AUTOUPDATE=1") {
+		t.Errorf("env file must disable the OpenCode update check: %q", content)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

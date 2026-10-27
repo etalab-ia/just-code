@@ -38,7 +38,11 @@ Si le projet contient des plugins ou des commandes MCP non approuvés, un menu p
 
 La durée complète d'un démarrage réussi, y compris la mise à jour de la configuration de l'instance, est enregistrée dans le répertoire d'état local (`launch-timings.json`). En mode backend, la mesure inclut l'attente de disponibilité de l'agent ; une attente qui échoue n'enregistre aucune durée. Le premier démarrage avec installation des outils et les démarrages suivants ont des mesures séparées. Sans mesure préalable, aucune durée chiffrée n'est annoncée. La première durée avec installation reste conservée, même après de nouveaux démarrages.
 
-OpenCode conserve la version installée dans l'invité : les mises à jour automatiques sont désactivées au lancement.
+OpenCode conserve la version installée dans l'invité : la vérification de mise à jour est
+désactivée au lancement, quel que soit le runtime (Microsandbox, Tart, agent-vm), par la
+variable d'environnement `OPENCODE_DISABLE_AUTOUPDATE=1`. Le réglage de configuration
+`autoupdate` ne suffirait pas : à la version épinglée, OpenCode ne lit ce champ que dans la
+configuration globale de l'utilisateur, jamais dans la configuration fournie par just-code.
 
 ## Niveaux d'isolation
 

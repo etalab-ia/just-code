@@ -172,3 +172,29 @@ func TestDeepMergeMaps(t *testing.T) {
 		t.Fatal("dst was mutated")
 	}
 }
+
+// TestOpenCodeUpdateCheckMechanism pins the mechanism, not just the spelling.
+// At the pinned version the updater reads `autoupdate` from the user global
+// config only, so the managed inline configuration cannot turn the check off.
+// A later change that "simplifies" this into an overlay field would compile,
+// pass a naive content assertion, and silently bring the notice back.
+func TestOpenCodeUpdateCheckMechanism(t *testing.T) {
+	if OpenCodeDisableUpdateEnv != "OPENCODE_DISABLE_AUTOUPDATE" {
+		t.Fatalf("update-check variable = %q, want OPENCODE_DISABLE_AUTOUPDATE", OpenCodeDisableUpdateEnv)
+	}
+	if OpenCodeDisableUpdateAssignment != "OPENCODE_DISABLE_AUTOUPDATE=1" {
+		t.Fatalf("assignment = %q, want OPENCODE_DISABLE_AUTOUPDATE=1", OpenCodeDisableUpdateAssignment)
+	}
+	content, err := ComposeConfigContent(ManagedOverlay{})
+	if err != nil {
+		t.Fatalf("ComposeConfigContent: %v", err)
+	}
+	// The positive half: the composed config is real and reachable, so the
+	// negative assertion below is not passing on an empty document.
+	if !strings.Contains(content, `"albert"`) {
+		t.Fatalf("composed config lost the provider block: %s", content)
+	}
+	if strings.Contains(content, "autoupdate") {
+		t.Fatalf("managed config must not carry an inert autoupdate field: %s", content)
+	}
+}

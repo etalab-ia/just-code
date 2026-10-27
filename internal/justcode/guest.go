@@ -177,6 +177,7 @@ func RunGuestBootstrap(ctx context.Context, cfg GuestConfig) error {
 		configContent = opencodeConfigContent
 	}
 	childEnv := withEnv(env,
+		OpenCodeDisableUpdateAssignment,
 		"OPENCODE_SERVER_PASSWORD="+password,
 		"OPENCODE_SERVER_USERNAME="+cfg.Username,
 		"ALBERT_API_KEY="+apiKey,
@@ -455,6 +456,10 @@ func guestSecretsEnv(password, username, apiKey string, overlay ManagedOverlay) 
 	if err != nil {
 		configContent = opencodeConfigContent
 	}
-	return fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
-		shellQuote(password), shellQuote(username), shellQuote(apiKey), shellQuote(configContent))
+	// The update-check opt-out rides in the same file for the full-mode TUI:
+	// it is the only process-level lever OpenCode honours (see
+	// OpenCodeDisableUpdateEnv), and this file is the only environment that
+	// TUI receives.
+	return fmt.Sprintf("%s\nOPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
+		OpenCodeDisableUpdateAssignment, shellQuote(password), shellQuote(username), shellQuote(apiKey), shellQuote(configContent))
 }

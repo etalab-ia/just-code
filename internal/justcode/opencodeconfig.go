@@ -280,3 +280,22 @@ func FormatConflicts(conflicts []ConfigConflict) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// OpenCodeDisableUpdateEnv turns off OpenCode's update check in a process.
+//
+// The guest runs a version just-code pins, so an update notice can only
+// mislead: the user cannot act on it without leaving the supported set. The
+// environment variable is also the ONLY mechanism that works here. Verified
+// against the pinned 1.18.32 sources (packages/opencode/src/config/config.ts
+// and cli/upgrade.ts): upgrade() reads autoupdate from getGlobal(), which
+// loads only the user global config files (Global.Path.config/config.json,
+// opencode.json, opencode.jsonc). just-code's managed configuration travels
+// inline in OPENCODE_CONFIG_CONTENT, which getGlobal() never sees, so setting
+// "autoupdate": false there is silently inert. upgrade() checks
+// OPENCODE_DISABLE_AUTOUPDATE before anything else, so every launch path must
+// carry it.
+const OpenCodeDisableUpdateEnv = "OPENCODE_DISABLE_AUTOUPDATE"
+
+// OpenCodeDisableUpdateAssignment is the KEY=VALUE form for exec environments
+// and sourced secrets files.
+const OpenCodeDisableUpdateAssignment = OpenCodeDisableUpdateEnv + "=1"

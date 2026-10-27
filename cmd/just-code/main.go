@@ -1029,7 +1029,7 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime,
 		}
 	}
 	printLaunchReport(d.Launch)
-	attachErr := justcode.RunInteractiveEnv([]string{"OPENCODE_DISABLE_AUTOUPDATE=1"}, "opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
+	attachErr := justcode.RunInteractiveEnv([]string{justcode.OpenCodeDisableUpdateAssignment}, "opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
 	code := exitCodeOf(attachErr)
 	exitScreen(ctx, d, cfg, rt, instance)
 	return code, attachErr
