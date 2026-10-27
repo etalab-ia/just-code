@@ -1,4 +1,4 @@
-META kit=v3 source=0af624b58b0d3eeb648bd0a398e74b741aaa5099 sdk=0.7.6 runtime=0.7.6 archive_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89 go=go1.27.1
+META kit=v3 source=e10db59879912af341e8794fcf9b7c2357fddaa6 sdk=0.7.8 runtime=0.7.8 archive_sha256=5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493 go=go1.27.3
 PASS create-inert-sentinels
 PASS rotate-to-envrefs
 PASS exact-guest-markers-no-canary
