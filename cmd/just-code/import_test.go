@@ -681,3 +681,47 @@ func TestValidateImportedPlatformsRejectsASharedDestination(t *testing.T) {
 		t.Fatalf("a shared destination must be refused: %v", err)
 	}
 }
+
+// TestMergeImportedProvidersKeepsAnOpenRouterOnlySetup pins the substitute
+// review's finding on #287: importing a legacy config with no Albert provider
+// must not implicitly connect Albert (and then require its credential).
+func TestMergeImportedProvidersKeepsAnOpenRouterOnlySetup(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := justcode.AlbertCodeImport{
+		Platforms: []justcode.ProviderSettings{{
+			Kind: justcode.ProviderOpenAICompatible, Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
+		}},
+		ProviderModels: []string{"openai-compatible/z-ai/glm-4.6"},
+		Model:          "openai-compatible/z-ai/glm-4.6",
+		AlbertPresent:  false,
+	}
+	if err := mergeImportedProviders(plan); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(us.Providers) != 1 || us.Providers[0].Kind != justcode.ProviderOpenAICompatible {
+		t.Fatalf("an OpenRouter-only import must not add Albert: %+v", us.Providers)
+	}
+}
+
+// TestImportModelValidationSkipsNonAlbertReferences pins the second finding:
+// an OpenAI-compatible default must never be checked against Albert's
+// catalogue.
+func TestImportModelValidationSkipsNonAlbertReferences(t *testing.T) {
+	previous := catalogueModelWarningFn
+	catalogueModelWarningFn = func(string, string) (string, error) {
+		t.Fatal("an OpenAI-compatible model must not be validated against Albert")
+		return "", nil
+	}
+	t.Cleanup(func() { catalogueModelWarningFn = previous })
+	if kind := justcode.ModelRefProvider("openai-compatible/z-ai/glm-4.6"); kind != justcode.ProviderOpenAICompatible {
+		t.Fatalf("reference classified as %s", kind)
+	}
+}

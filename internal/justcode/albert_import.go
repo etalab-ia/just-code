@@ -49,6 +49,9 @@ type AlbertCodeImport struct {
 	// setup). Models are full provider references.
 	Platforms      []ProviderSettings
 	ProviderModels []string
+	// AlbertPresent records that the legacy configuration declared an Albert
+	// provider. An import without it must not implicitly connect Albert.
+	AlbertPresent bool
 }
 
 // DiscoverAlbertCodeImport detects the documented legacy files and extracts
@@ -218,6 +221,7 @@ func (p *AlbertCodeImport) importOpenCodeConfig(config map[string]any) {
 	modelKnown := false
 	if providers, ok := config["provider"].(map[string]any); ok {
 		if albert, ok := providers["albert"].(map[string]any); ok {
+			p.AlbertPresent = true
 			options, optionsOK := albert["options"].(map[string]any)
 			if optionsOK && len(options) == 2 && options["baseURL"] == albertAPIEndpoint && options["apiKey"] == "{env:ALBERT_API_KEY}" && albert["npm"] == "@ai-sdk/openai-compatible" && albert["name"] != nil {
 				providerOK = true

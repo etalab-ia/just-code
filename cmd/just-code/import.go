@@ -169,7 +169,9 @@ func albertCodeImportCmd(args []string) (int, error) {
 		return 1, err
 	}
 
-	if !existingMatches && plan.Model != "" {
+	if !existingMatches && plan.Model != "" && justcode.ModelRefProvider(plan.Model) == justcode.ProviderAlbert {
+		// Only Albert references are validated against the Albert catalogue:
+		// an imported OpenAI-compatible model lives on its own platform.
 		warning, err := catalogueModelWarningFn(plan.Root, plan.Model)
 		if err != nil {
 			return 1, fmt.Errorf("validate imported model: %w", err)
@@ -210,7 +212,10 @@ func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
 	if err != nil {
 		return err
 	}
-	if len(us.Providers) == 0 {
+	if len(us.Providers) == 0 && plan.AlbertPresent {
+		// Default to Albert only when the legacy configuration actually
+		// declared it: an OpenRouter-only import must not implicitly require
+		// an Albert credential at launch.
 		us.Providers = justcode.DefaultProviderSettings()
 	}
 	for _, platform := range plan.Platforms {
@@ -259,7 +264,7 @@ func validateImportedPlatforms(plan justcode.AlbertCodeImport) error {
 		return err
 	}
 	existing := us.Providers
-	if len(existing) == 0 {
+	if len(existing) == 0 && plan.AlbertPresent {
 		existing = justcode.DefaultProviderSettings()
 	}
 	for _, platform := range plan.Platforms {
