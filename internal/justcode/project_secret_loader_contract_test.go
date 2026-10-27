@@ -9,7 +9,12 @@ import (
 	"testing"
 
 	"github.com/joho/godotenv"
+	"golang.org/x/mod/modfile"
 )
+
+// sdkModulePath is the Microsandbox SDK module, shared by this build and the
+// separate native qualification kit module so both pins stay visible.
+const sdkModulePath = "github.com/superradcompany/microsandbox/sdk/go"
 
 // Test the guest loader itself, not ParseProjectDotenv: the host importer
 // deliberately disables interpolation, but guest applications may not.
@@ -42,7 +47,7 @@ func TestDollarProjectSecretMarkerIsNotGuestGodotenvSafe(t *testing.T) {
 // Validate evidence integrity and agreement with the current runtime pins.
 // This does not boot a VM or turn CI into native qualification evidence.
 func TestProjectSecretNativeEvidenceMatchesRuntimePins(t *testing.T) {
-	if MSBSDKVersion() != "0.7.8" || msbRuntimeVersion != "0.7.8" {
+	if MSBSDKVersion() != "0.7.11" || msbRuntimeVersion != "0.7.11" {
 		t.Fatal("SDK/runtime changed; requalify and update the project-secret native evidence")
 	}
 	artifact, err := msbRuntimeArtifactFor("darwin", "arm64")
@@ -56,13 +61,55 @@ func TestProjectSecretNativeEvidenceMatchesRuntimePins(t *testing.T) {
 			t.Fatal(err)
 		}
 		hash := sha256.Sum256(data)
-		if fmt.Sprintf("%x", hash) != "bd135fecc29b40da987cc3521c72a2a7986e4b8019a56fb084dd98ae82b1153a" {
+		if fmt.Sprintf("%x", hash) != "4245c72e2dbf47f6172d4f0559c284dc5336443157592385781cbc7523619691" {
 			t.Fatalf("native evidence %s changed", name)
 		}
 		text := string(data)
-		if !strings.Contains(text, "sdk=0.7.8 runtime=0.7.8 archive_sha256="+artifact.sha256) ||
+		if !strings.Contains(text, "sdk=0.7.11 runtime=0.7.11 archive_sha256="+artifact.sha256) ||
 			strings.Contains(text, "FAIL ") || strings.Count(text, "PASS ") != 29 {
 			t.Fatalf("native evidence %s does not match the recorded qualification", name)
 		}
+	}
+}
+
+// The native kit is a separate Go module, so the root build never compiles it
+// and nothing else noticed when its SDK pin lagged the runtime it drives. A
+// kit on an older SDK cannot launch a newer runtime (the probe then fails
+// create-inert-sentinels with "no tested sandbox launch contract"), and that
+// failure only appears on the machine that runs the qualification.
+func TestProjectSecretNativeKitMatchesRuntimeSDK(t *testing.T) {
+	kitMod := filepath.Join("..", "..", "tests", "integration", "project-secrets", "native", "go.mod")
+	data, err := os.ReadFile(kitMod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Parse rather than token-scan: a module path mentioned in a comment or a
+	// non-require directive must not satisfy the check, and a duplicate entry
+	// must fail instead of the last one winning.
+	file, err := modfile.Parse(kitMod, data, nil)
+	if err != nil {
+		t.Fatalf("parse the native kit go.mod: %v", err)
+	}
+	pinned := ""
+	seen := 0
+	for _, require := range file.Require {
+		if require.Mod.Path != sdkModulePath {
+			continue
+		}
+		seen++
+		pinned = require.Mod.Version
+	}
+	if seen != 1 {
+		t.Fatalf("native kit go.mod must require %s exactly once, found %d", sdkModulePath, seen)
+	}
+	if pinned != "v"+msbRuntimeVersion {
+		t.Fatalf("native kit pins %s %q, but the embedded runtime is v%s; update both together", sdkModulePath, pinned, msbRuntimeVersion)
+	}
+	sums, err := os.ReadFile(filepath.Join("..", "..", "tests", "integration", "project-secrets", "native", "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sums), sdkModulePath+" "+pinned+" ") {
+		t.Fatalf("native kit go.sum does not cover the %s %s pin", sdkModulePath, pinned)
 	}
 }
