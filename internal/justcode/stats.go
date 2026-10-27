@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -296,22 +298,17 @@ func statsProjectID(fs FS, stateDir, root string) (string, error) {
 // EnqueueStatsEvent appends one event, keeping the queue bounded. Callers
 // must check StatsEnabled first.
 func EnqueueStatsEvent(fs FS, stateDir string, event StatsEvent) error {
-	events, err := PendingStatsEvents(fs, stateDir)
-	if err != nil {
-		return err
-	}
-	events = append(events, event)
-	if len(events) > statsQueueLimit {
-		events = events[len(events)-statsQueueLimit:]
-	}
-	data, err := json.MarshalIndent(events, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := fs.MkdirAll(statsDir(stateDir), 0o700); err != nil {
-		return err
-	}
-	return atomicWrite(fs, statsQueuePath(stateDir), append(data, '\n'), 0o600)
+	return withStatsQueueLock(fs, stateDir, func() error {
+		events, err := PendingStatsEvents(fs, stateDir)
+		if err != nil {
+			return err
+		}
+		events = append(events, event)
+		if len(events) > statsQueueLimit {
+			events = events[len(events)-statsQueueLimit:]
+		}
+		return writeStatsQueue(fs, stateDir, events)
+	})
 }
 
 // PendingStatsEvents reads the local queue. A missing file is empty.
@@ -333,11 +330,75 @@ func PendingStatsEvents(fs FS, stateDir string) ([]StatsEvent, error) {
 // ClearStatsQueue removes every pending event. `stats off` calls it so the
 // next flush has nothing to send.
 func ClearStatsQueue(fs FS, stateDir string) error {
-	err := fs.Remove(statsQueuePath(stateDir))
-	if err != nil && !os.IsNotExist(err) {
+	return withStatsQueueLock(fs, stateDir, func() error {
+		return writeStatsQueue(fs, stateDir, nil)
+	})
+}
+
+// writeStatsQueue replaces the queue; an empty set removes the file.
+func writeStatsQueue(fs FS, stateDir string, events []StatsEvent) error {
+	if len(events) == 0 {
+		err := fs.Remove(statsQueuePath(stateDir))
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.MarshalIndent(events, "", "  ")
+	if err != nil {
 		return err
 	}
-	return nil
+	if err := fs.MkdirAll(statsDir(stateDir), 0o700); err != nil {
+		return err
+	}
+	return atomicWrite(fs, statsQueuePath(stateDir), append(data, '\n'), 0o600)
+}
+
+// withStatsQueueLock serialises queue mutations across processes. The lock is
+// a create-exclusive file: the OS guarantees a single creator. A stale lock
+// (a process killed mid-write) is removed once after a short wait.
+func withStatsQueueLock(fs FS, stateDir string, fn func() error) error {
+	if err := fs.MkdirAll(statsDir(stateDir), 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(statsDir(stateDir), "queue.lock")
+	deadline := time.Now().Add(2 * time.Second)
+	for attempt := 0; ; attempt++ {
+		err := fs.CreateExclusive(path, []byte("lock"), 0o600)
+		if err == nil {
+			defer func() { _ = fs.Remove(path) }()
+			return fn()
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			if attempt > 0 {
+				return err
+			}
+			_ = fs.Remove(path)
+			continue
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// removeFlushedStatsEvents drops the events the endpoint acknowledged, while
+// preserving anything another process queued during the request.
+func removeFlushedStatsEvents(fs FS, stateDir string, sent map[string]bool) error {
+	return withStatsQueueLock(fs, stateDir, func() error {
+		events, err := PendingStatsEvents(fs, stateDir)
+		if err != nil {
+			return err
+		}
+		remaining := events[:0]
+		for _, event := range events {
+			if !sent[event.EventID] {
+				remaining = append(remaining, event)
+			}
+		}
+		return writeStatsQueue(fs, stateDir, remaining)
+	})
 }
 
 // FlushStats posts every queued event and removes the ones accepted. It is
@@ -380,7 +441,11 @@ func FlushStats(ctx context.Context, fs FS, stateDir string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("statistics endpoint returned HTTP %d", resp.StatusCode)
 	}
-	return ClearStatsQueue(fs, stateDir)
+	sent := make(map[string]bool, len(events))
+	for _, event := range events {
+		sent[event.EventID] = true
+	}
+	return removeFlushedStatsEvents(fs, stateDir, sent)
 }
 
 // SpawnStatsFlush starts the detached flusher and returns immediately. The
@@ -390,10 +455,8 @@ func SpawnStatsFlush() {
 	if err != nil {
 		return
 	}
-	cmd := newDetachedCommand(exe, StatsFlushCommand)
-	if cmd == nil {
-		return
-	}
+	cmd := exec.Command(exe, StatsFlushCommand)
+	detachProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		return
 	}

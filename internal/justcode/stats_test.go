@@ -191,6 +191,38 @@ func TestFlushStatsRespectsConsent(t *testing.T) {
 	}
 }
 
+func TestFlushPreservesEventsQueuedDuringTheRequest(t *testing.T) {
+	settingsPath := statsTestHome(t)
+	if err := WriteStatsConsent(DefaultFS, settingsPath, true, true); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	first := StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: "first", Kind: "setup"}
+	if err := EnqueueStatsEvent(DefaultFS, stateDir, first); err != nil {
+		t.Fatal(err)
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Another wizard queues an event while this flush is in flight.
+		if err := EnqueueStatsEvent(DefaultFS, stateDir, StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: "second", Kind: "init"}); err != nil {
+			t.Errorf("concurrent enqueue: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	t.Setenv("JUST_CODE_STATS_URL", server.URL)
+	if err := FlushStats(context.Background(), DefaultFS, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	events, err := PendingStatsEvents(DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].EventID != "second" {
+		t.Fatalf("an event queued during the request must survive: %+v", events)
+	}
+}
+
 func TestRecordStatsEventIsANoOpWithoutConsent(t *testing.T) {
 	statsTestHome(t)
 	stateDir := t.TempDir()

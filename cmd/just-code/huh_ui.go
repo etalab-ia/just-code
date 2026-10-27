@@ -745,6 +745,10 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 		catalogue, catalogueErr = projectSkillCatalogueFn(context.Background())
 		if catalogueErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", catalogueErr)
+		} else {
+			for _, skill := range catalogue {
+				answers.KnownSkills = append(answers.KnownSkills, skill.ID)
+			}
 		}
 	}
 
@@ -983,6 +987,7 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 			answers.GitHubRemote = justcode.GitHubRemote{}
 			return answers, nil
 		case !probe.HasOrigin:
+			answers.GitHubCase = 2
 			choice := "continue"
 			err := huhRun(huh.NewForm(
 				huh.NewGroup(
@@ -1008,6 +1013,7 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 			answers.GitHubRemote = justcode.GitHubRemote{}
 			return answers, nil
 		case probe.TokenError != nil:
+			answers.GitHubCase = 3
 			// Same rule as the line wizard: a store that cannot be read is
 			// not the same situation as having no token, and its remedy is
 			// different. GitHub stays optional, so offer a way out.
@@ -1036,6 +1042,7 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 			answers.GitHubRemote = justcode.GitHubRemote{}
 			return answers, nil
 		case !probe.HasToken:
+			answers.GitHubCase = 3
 			choice := "later"
 			err := huhRun(huh.NewForm(
 				huh.NewGroup(
@@ -1071,6 +1078,7 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 			answers.GitHubRemote = justcode.GitHubRemote{}
 			return answers, nil
 		case probe.Rights == justcode.GitHubRepoRightsOK:
+			answers.GitHubCase = 1
 			yes := true
 			err := huhRun(huh.NewForm(
 				huh.NewGroup(
@@ -1090,6 +1098,7 @@ func askGitHubStepHuh(answers justcode.InitAnswers) (justcode.InitAnswers, error
 			answers.GitHubWorkflow = yes
 			return answers, nil
 		default:
+			answers.GitHubCase = 4
 			choice := "continue"
 			err := huhRun(huh.NewForm(
 				huh.NewGroup(
