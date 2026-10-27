@@ -688,6 +688,13 @@ setupStages:
 // setupPlatformStage asks which inference platforms to connect and stores one
 // key per platform. A resumed run reuses the journal's platform set and skips
 // the platforms whose key is already stored; "Modifier" re-asks everything.
+// setupCredentialPresentFn reports whether a platform's credential actually
+// exists in the store. It is a seam so tests do not read the host keychain.
+var setupCredentialPresentFn = func(ctx context.Context, kind justcode.CredentialKind) bool {
+	_, err := justcode.ReadStoredCredential(ctx, kind)
+	return err == nil
+}
+
 func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, fallback bool, j *justcode.SetupJournal, editing bool, fs justcode.FS, stateDir string) ([]justcode.InferenceProvider, error) {
 	platforms := j.Platforms
 	if len(platforms) == 0 && len(j.CredentialKinds) == 0 {
@@ -703,7 +710,12 @@ func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.R
 				platforms = append(platforms, justcode.SetupPlatform{
 					Kind: string(provider.Kind), Name: provider.Name, BaseURL: provider.BaseURL,
 				})
-				j.CredentialKinds = addCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
+				// Only mark a credential as already stored when it actually
+				// exists: a removed key (or an import that never stored one)
+				// must be asked again, not skipped as "already recorded".
+				if setupCredentialPresentFn(ctx, provider.CredentialKind) {
+					j.CredentialKinds = addCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
+				}
 			}
 		}
 	}

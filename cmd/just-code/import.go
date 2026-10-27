@@ -212,11 +212,14 @@ func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
 	if err != nil {
 		return err
 	}
-	if len(us.Providers) == 0 && plan.AlbertPresent {
-		// Default to Albert only when the legacy configuration actually
-		// declared it: an OpenRouter-only import must not implicitly require
-		// an Albert credential at launch.
-		us.Providers = justcode.DefaultProviderSettings()
+	if len(us.Providers) == 0 {
+		// Preserve the host's existing implicit Albert connection: settings
+		// written before #180 have no providers list, and an empty list means
+		// Albert is connected. On a truly fresh install, only retain Albert
+		// when the imported configuration actually declared it.
+		if plan.AlbertPresent || us.DefaultModel != "" || len(us.Models) > 0 || us.GitName != "" || us.GitEmail != "" || us.CredentialRef != "" {
+			us.Providers = justcode.DefaultProviderSettings()
+		}
 	}
 	for _, platform := range plan.Platforms {
 		configured := false
@@ -264,8 +267,10 @@ func validateImportedPlatforms(plan justcode.AlbertCodeImport) error {
 		return err
 	}
 	existing := us.Providers
-	if len(existing) == 0 && plan.AlbertPresent {
-		existing = justcode.DefaultProviderSettings()
+	if len(existing) == 0 {
+		if plan.AlbertPresent || us.DefaultModel != "" || len(us.Models) > 0 || us.GitName != "" || us.GitEmail != "" || us.CredentialRef != "" {
+			existing = justcode.DefaultProviderSettings()
+		}
 	}
 	for _, platform := range plan.Platforms {
 		if _, err := justcode.ResolveProvider(platform); err != nil {

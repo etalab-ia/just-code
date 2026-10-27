@@ -193,6 +193,9 @@ func TestPromptSetupModelsReplacesADisconnectedPlatformDefault(t *testing.T) {
 func TestSetupPlatformStageSeedsFromSavedSettings(t *testing.T) {
 	stateDir, _ := setupTestEnv(t)
 	forceNonTTY(t)
+	previousPresent := setupCredentialPresentFn
+	setupCredentialPresentFn = func(context.Context, justcode.CredentialKind) bool { return true }
+	t.Cleanup(func() { setupCredentialPresentFn = previousPresent })
 	settingsPath, err := justcode.UserSettingsPath()
 	if err != nil {
 		t.Fatal(err)
@@ -230,6 +233,42 @@ func TestSetupPlatformStageSeedsFromSavedSettings(t *testing.T) {
 	}
 	if len(store.puts) != 0 {
 		t.Fatalf("no key should be re-stored: %+v", store.puts)
+	}
+}
+
+func TestSetupPlatformStageReasksAMissingCredential(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	previousPresent := setupCredentialPresentFn
+	setupCredentialPresentFn = func(_ context.Context, kind justcode.CredentialKind) bool {
+		return kind == justcode.CredentialAlbert
+	}
+	t.Cleanup(func() { setupCredentialPresentFn = previousPresent })
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers:     []justcode.ProviderSettings{{Kind: justcode.ProviderAlbert}, {Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{SchemaVersion: 1, Stage: justcode.StageCredential}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(context.Context, justcode.InferenceProvider, string) justcode.CredentialProbe {
+			return justcode.CredentialProbe{}
+		},
+	}
+	if _, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("new-mistral-key\n")), true, &j, false, fs, stateDir); err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if store.puts[justcode.CredentialMistral] != "new-mistral-key" {
+		t.Fatalf("a missing credential must be asked again: %+v", store.puts)
 	}
 }
 

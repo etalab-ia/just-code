@@ -630,3 +630,12 @@ func TestStoreGenerationFollowsTheResolvedStore(t *testing.T) {
 		t.Fatalf("a file-sourced binding must use the file store's counter: %q", got)
 	}
 }
+
+func TestProjectSecretsCannotShadowAProviderVariable(t *testing.T) {
+	reserved := reservedGuestEnvs()
+	for _, env := range []string{msbAPISecretEnv, MistralAPIKeyEnv, OpenAICompatibleAPIKeyEnv, "GITHUB_TOKEN", "CONTEXT7_API_KEY"} {
+		if !reserved[env] {
+			t.Fatalf("%s must be reserved against project-secret shadowing", env)
+		}
+	}
+}

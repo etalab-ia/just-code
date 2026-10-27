@@ -725,3 +725,38 @@ func TestImportModelValidationSkipsNonAlbertReferences(t *testing.T) {
 		t.Fatalf("reference classified as %s", kind)
 	}
 }
+
+func TestMergeImportedProvidersPreservesImplicitAlbert(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Settings written before #180: no providers list, but an Albert model.
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1, DefaultModel: "albert/qwen3-coder", Models: []string{"qwen3-coder"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := justcode.AlbertCodeImport{
+		Platforms: []justcode.ProviderSettings{{
+			Kind: justcode.ProviderOpenAICompatible, Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
+		}},
+		ProviderModels: []string{"openai-compatible/z-ai/glm-4.6"},
+		Model:          "openai-compatible/z-ai/glm-4.6",
+	}
+	if err := mergeImportedProviders(plan); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, provider := range us.Providers {
+		kinds[string(provider.Kind)] = true
+	}
+	if !kinds["albert"] || !kinds["openai-compatible"] {
+		t.Fatalf("an existing implicit Albert connection must survive the import: %+v", us.Providers)
+	}
+}
