@@ -20,8 +20,12 @@ func statsTestHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	// os.UserConfigDir reads XDG_CONFIG_HOME on unix and AppData on windows;
+	// without the latter, a test writes the real host settings file.
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	t.Setenv("JUST_CODE_STATS_URL", "")
 	path, err := UserSettingsPath()
 	if err != nil {
@@ -31,8 +35,8 @@ func statsTestHome(t *testing.T) string {
 }
 
 func TestStatsMachineIDIsStableAndPrivate(t *testing.T) {
+	statsTestHome(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	stateDir := filepath.Join(home, "state")
 	first, err := statsMachineID(DefaultFS, stateDir)
 	if err != nil {
