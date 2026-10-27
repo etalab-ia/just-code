@@ -2,9 +2,9 @@
 
 v3 adds an independently authorized third binding and removed-binding re-add/next-boot lifecycle gates. The parent reported all v1 native assertions PASS with `TMPDIR=/tmp`, and all v2 native assertions PASS with the built-in short root. No v3 native pass is claimed here. The established v1 fixture defect was the long default macOS temp path: runtime Unix socket derivation exceeded its <104-byte limit. The runner explicitly creates `/tmp/jcp0-*` with mode 0700 and a conservative MSB_HOME length preflight, ignoring host TMPDIR. Results metadata includes `kit=v3` alongside pinned source, SDK, runtime, and archive hash. v2 diagnostics and isolation remain intact; no earlier assertion has been removed or weakened.
 
-Pinned just-code source: `0af624b58b0d3eeb648bd0a398e74b741aaa5099` (PR159 merge).
+Pinned just-code source: `e10db59879912af341e8794fcf9b7c2357fddaa6` (Microsandbox v0.7.8 pin update).
 Go SDK: `github.com/superradcompany/microsandbox/sdk/go v0.7.8`; verified APIs against the module and native source at upstream tag v0.7.8, commit `8352bb67d4ed51f5eb086dc80b16c3184a22b3a6`.
-Runtime source is that merge's `internal/justcode/msb_runtime_install.go`, darwin/arm64:
+Runtime source is the pinned commit's `internal/justcode/msb_runtime_install.go`, darwin/arm64:
 
 - URL: https://github.com/superradcompany/microsandbox/releases/download/v0.7.8/microsandbox-darwin-aarch64.tar.gz
 - SHA256: `5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493`
@@ -91,7 +91,7 @@ Do not use `msb` from PATH, kill unrelated processes, enumerate/delete user VMs,
 
 ## Qualification Evidence
 
-The native v3 probe passed twice on macOS arm64 on 2026-10-14: 29 probe
+The native v3 probe passed twice on macOS arm64 on 2026-10-27: 29 probe
 assertions per run plus successful independent cleanup. Sanitized transcripts,
 artifact/runtime checksums and explicit scope limitations are in
 [evidence/README.md](evidence/README.md). Repository integration makes the lab
