@@ -223,9 +223,31 @@ le transport des identifiants P02, ni les parcours intégrés à just-code. Le
 profil navigateur P16 et les autres limites déjà documentées restent hors de
 cette matrice.
 
-**Version ultérieure :** `main` est passé à MSB 0.7.8 après ces tests. Cette
-qualification 0.7.6 est donc historique pour la version livrée lors de #235 ;
-elle ne qualifie pas 0.7.8.
+## Requalification v0.7.8 (#235, 2026-10-27)
+
+`main` a livré MSB 0.7.8 pendant cette requalification (PR #283). La matrice a
+donc été rejouée sur cette version, qui est celle que le harnais doit suivre.
+Les résultats 0.7.6 ci-dessus restent dans l'historique comme mesures de la
+version livrée à l'ouverture de l'issue.
+
+**Résultats observés sur macOS 27.0.1 arm64, libkrun :**
+
+- Sans les cas réseau : 8 réussites, 0 échec, avec un `MSB_HOME` vidé au
+  préalable. T1 télécharge les images absentes avant de les inspecter.
+- Avec `MSB_GUEST_INTEGRATION_NETWORK=1` : 18 réussites, 0 échec, T1-T10c.
+- Sans checkout Git : sortie 2 au prévol T10, avant l'arrêt de la sandbox.
+- `msb list` final vide après chacun des trois runs.
+
+Le runtime temporaire a été vérifié par le SHA-256 gravé dans just-code
+(`5dbe0d92…`) et `msb doctor` confirme libkrunfw et Apple Silicon. Les
+transcripts de `e1484a7` sont dans
+`tests/integration/guest-capabilities/evidence/`.
+
+Une correction du harnais a été nécessaire : sur un `MSB_HOME` neuf, l'ancien
+T1 échouait en `image not found`. `ensure_image` télécharge désormais l'image
+absente, ce que le transcript `darwin-arm64-msb-0.7.8-t1-precondition.txt`
+documente. Cette qualification 0.7.8 reste une matrice CLI P03 : elle ne
+requalifie ni P02, ni les parcours intégrés, ni le profil navigateur P16.
 
 ## État d'implémentation navigateur P16 (2026-10-04, qualification en attente)
 

@@ -1,49 +1,62 @@
 # Preuves de qualification guest-capabilities (P03)
 
-Ces transcripts documentent la matrice P03 sur MSB 0.7.6. Ils couvrent les
-capacités de base d'un invité Microsandbox, pilotées par le CLI `msb`. Ils ne
-qualifient ni le transport des identifiants P02, ni les parcours intégrés à
-just-code, ni l'exécution du SDK Go.
+Ces transcripts documentent la matrice P03 sur MSB 0.7.8, le runtime livré par
+`main`. Ils couvrent les capacités de base d'un invité Microsandbox, pilotées
+par le CLI `msb`. Ils ne qualifient ni le transport des identifiants P02, ni
+les parcours intégrés à just-code, ni l'exécution du SDK Go.
 
 ## Résultats du 27 octobre 2026
 
 Les tests ont été exécutés sur MacBook-Pro-Luis.local, sous macOS 27.0.1
-(arm64), avec libkrun. Le harnais provient de la révision
-`7f8b3dec70c7738989a4f97a62f2ad24d228194f`.
+(arm64), avec libkrun. Deux passages sont conservés : la qualification
+courante sur 0.7.8, puis l'historique sur 0.7.6.
 
-- `darwin-arm64-msb-0.7.6-non-network.txt` : **8 réussites, 0 échec**,
-  sortie 0. T1 vérifie les références des deux images et leur architecture
+### Qualification courante : runtime 0.7.8
+
+Harnais issu de `e1484a7fd27ee5252c315403858d74c733c0da24`.
+
+- `darwin-arm64-msb-0.7.8-non-network.txt` : **8 réussites, 0 échec**,
+  sortie 0. Le `MSB_HOME` a été vidé avant le run : T1 télécharge lui-même
+  les deux images absentes, puis vérifie leurs références et l'architecture
   arm64. Le script indique explicitement que les cas réseau sont ignorés.
-- `darwin-arm64-msb-0.7.6-network.txt` : **18 réussites, 0 échec**, sortie 0.
+- `darwin-arm64-msb-0.7.8-network.txt` : **18 réussites, 0 échec**, sortie 0.
   `MSB_GUEST_INTEGRATION_NETWORK=1` active les outils invités, Chromium,
   Playwright MCP et les clones Git. T10a-T10c passent depuis un clone Git
-  principal temporaire.
-- `darwin-arm64-msb-0.7.6-archive-failure.txt` : **échec de préparation
-  attendu**, sortie 2. T1-T9b passent depuis une archive sans `.git`, puis le
+  principal.
+- `darwin-arm64-msb-0.7.8-archive-failure.txt` : **échec de préparation
+  attendu**, sortie 2. T1-T9b passent depuis une copie sans `.git`, puis le
   prévol T10 affiche que le clone principal est introuvable. Le diagnostic
-  apparaît avant tout arrêt ou retrait de la sandbox T10. Ce run ne qualifie
-  pas la matrice ; il prouve que le prérequis Git échoue clairement.
+  apparaît avant tout arrêt ou retrait de la sandbox T10.
+- `darwin-arm64-msb-0.7.8-t1-precondition.txt` : trace historique du défaut
+  corrigé. Sur un `MSB_HOME` neuf, l'ancien T1 échouait avec
+  `image not found: alpine` et sortait 2. `ensure_image` a été ajouté pour
+  que T1 télécharge une image absente au lieu d'exiger un cache préexistant.
 
 T1 comporte trois assertions : référence Alpine, référence Debian et
 architecture arm64 des deux images. Il ne valide pas leur taille. Les comptes
 8 et 18 incluent ces trois assertions.
 
+### Historique : runtime 0.7.6
+
+Harnais issu de `7f8b3dec70c7738989a4f97a62f2ad24d228194f`. Ce runtime était
+livré lors de l'ouverture de l'issue #235 ; il a depuis été remplacé par
+0.7.8. Les fichiers `darwin-arm64-msb-0.7.6-*.txt` conservent ces mesures.
+Elles ne qualifient pas le runtime actuel.
+
 ## Environnement et versions
 
 Chaque transcript conserve la commande complète, dont `MSB_BIN`, `MSB_HOME`,
-`MSB_PATH` et `MSB_LIBKRUNFW_PATH`. Le binaire temporaire répond `msb 0.7.6`.
-`msb doctor` confirme libkrunfw et Apple Silicon. Le SHA-256 du runtime est
-`a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89`,
-identique à celui gravé dans just-code.
+`MSB_PATH` et `MSB_LIBKRUNFW_PATH`, la version brute du binaire et `msb
+doctor`. Le runtime 0.7.8 installé pour la qualification courante a le
+SHA-256 `5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493`,
+identique à celui gravé dans just-code ; l'historique 0.7.6 porte
+`a4f1722f…`. Dans les deux cas `msb doctor` confirme libkrunfw et Apple
+Silicon.
 
-La sortie brute `go list -m` déclare le SDK Go v0.7.6 dans la révision testée.
-La matrice P03 appelle le CLI : elle n'exécute pas ce SDK. Le `MSB_HOME`
-temporaire évite de modifier le runtime 0.7.9 déjà installé sur le Mac.
-
-**Portée dans le temps :** ces tests qualifient le runtime 0.7.6 livré lors de
-l'ouverture de l'issue #235. La branche `main` est ensuite passée à 0.7.8.
-Ces preuves ne qualifient pas cette nouvelle version ; son éventuelle
-requalification P03 fera l'objet d'un autre passage.
+La sortie brute `go list -m` déclare le SDK Go de la révision testée (v0.7.8
+pour la qualification courante). La matrice P03 appelle le CLI : elle
+n'exécute pas ce SDK. Le `MSB_HOME` temporaire évite de modifier le runtime
+0.7.9 déjà installé sur le Mac.
 
 ## Nettoyage et limites
 

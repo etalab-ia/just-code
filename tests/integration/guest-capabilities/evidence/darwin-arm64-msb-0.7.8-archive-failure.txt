@@ -1,0 +1,49 @@
+META issue=235 source=e1484a7fd27ee5252c315403858d74c733c0da24 date=2026-10-27 platform=darwin/arm64 host=MacBook-Pro-Luis.local os=macOS-27.0.1 backend=libkrun runtime=msb-0.7.8 sdk_declared=v0.7.8 archive_sha256=0396a311e6aa35ad538db889ac3af656aaed6d325213f035825a14937f5f0e65
+OUTCOME expected preparation failure: identical harness in a copy without .git; the T10 preflight rejects the missing host checkout before stopping or removing its sandbox.
+INTEGRITY run.sh_sha256=a6bba7afd289ce0fe8c11ba312f3d459f051230616f62970896b42fdea1b32e9 pin.json_sha256=7dc591c36b862366ab646afa58a8f137a87823ed7b80cfb98a9ff78a4000acee runtime_binary_sha256=5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493
+SETUP runtime and state isolated under /tmp/issue235-msb078; user MSB_HOME untouched; no user repositories modified
+INVOCATION cd /tmp/issue235-078b-nogit && env MSB_HOME=/tmp/issue235-msb078/msb-home MSB_PATH=/tmp/issue235-msb078/runtime/bin/msb MSB_LIBKRUNFW_PATH=/tmp/issue235-msb078/runtime/lib/libkrunfw.5.dylib MSB_BIN=/tmp/issue235-msb078/runtime/bin/msb MSB_GUEST_INTEGRATION_NETWORK=1 tests/integration/guest-capabilities/run.sh
+RAW resolved_msb_version_begin
+msb 0.7.8
+EXIT=0
+RAW resolved_msb_version_end
+RAW doctor_begin
+  • Platform            macOS aarch64
+  • Version             v0.7.8
+  • MSB_HOME            /tmp/issue235-msb078/msb-home
+  ✓ msb                 /tmp/issue235-msb078/runtime/bin/msb
+  ✓ libkrunfw           /tmp/issue235-msb078/runtime/lib/libkrunfw.5.dylib
+  ✓ Root clone          reflink supported
+  ✓ Architecture        Apple silicon (arm64)
+  ✓ Host setup is ready.
+EXIT=0
+RAW doctor_end
+RAW sdk_module_declaration_begin
+github.com/superradcompany/microsandbox/sdk/go v0.7.8
+EXIT=0
+RAW sdk_module_declaration_end
+RAW harness_stdout_stderr_begin
+  ok  CLI msb épinglée
+  ok  T1a image alpine inspectée
+  ok  T1b image debian:bookworm-slim inspectée
+  ok  T1c images invité arm64
+  ok  T2 démarrage à froid (alpine=288ms debian=275ms)
+  ✓ Stopped             p03-guest-harness-debian
+  ✓ Started             p03-guest-harness-debian
+  ok  T3 état invité persiste après redémarrage
+  ok  T4a PTY propage la taille 40x120
+  ok  T5 exec est non-TTY par défaut
+  ok  T6a Node invité
+  ok  T6b OpenCode invité
+  ok  T7a navigation + DOM (title)
+  ok  T7b capture d'écran non vide
+  ok  T8 Playwright MCP navigate (chromium système)
+  ok  T9a clone origine distante valide (1448ms)
+  ok  T9b empreinte .git clone profondeur 1 (2 Mo)
+préparation T10: clone principal introuvable depuis /tmp/issue235-078b-nogit/tests/integration/guest-capabilities; exécute le harnais depuis un checkout Git (pas une archive sans .git)
+HARNESS_EXIT=2
+RAW harness_stdout_stderr_end
+RAW final_msb_list_begin
+No sandboxes found.
+EXIT=0
+RAW final_msb_list_end
