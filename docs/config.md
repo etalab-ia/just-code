@@ -46,6 +46,10 @@ d'environnement, magasin d'identifiants) est détaillée dans
 | `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 5 |
 | `.just-code/lock.json` | Verrou : révisions et digests des éléments épinglés | 3 |
 
+`settings.json` conserve aussi `statsEnabled` et `statsConsentAsked` : l'état
+du consentement aux statistiques d'usage, jamais une donnée d'usage elle-même.
+La file d'événements vit dans l'état local de l'hôte, pas dans les réglages.
+
 ## Ports publiés Microsandbox
 
 `just-code ports list` affiche les redirections TCP configurées. Les commandes
@@ -73,7 +77,9 @@ l'invité ; confirmer la perte avant de l'exécuter.
 (parcours annoncé, Entrée pour commencer) → clé Albert API (masquée, validée
 contre Albert API ; rejet et indisponibilité réseau distincts) → sélection des
 modèles disponibles et modèle par défaut → identifiant GitHub optionnel →
-identité git → revue → application (réglages globaux + runtime managé).
+identité git → consentement aux statistiques d'usage → revue → application
+(réglages globaux + runtime managé). Le consentement et les données concernées
+sont décrits dans [Statistiques d'usage](stats.md).
 
 L'ordre suit celui annoncé par l'écran d'introduction : clé, modèles, puis
 GitHub. L'écran de sélection présente les quatre modèles Albert API retenus,

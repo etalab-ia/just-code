@@ -283,6 +283,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		// for. A resumed run skips it (the else branch below).
 		if setupIntroFn() {
 			if !printSetupIntro() {
+				recordSetupAbandon(stateDir, "intro")
 				return 1, nil
 			}
 		}
@@ -351,12 +352,14 @@ setupStages:
 			} else {
 				value, ok := promptSecret(in, albertKeyPrompt)
 				if !ok {
-					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+					recordSetupAbandon(stateDir, "credentials")
+					return 1, cancelledSetupError(stateDir)
 				}
 				key = value
 			}
 			if key == "" {
-				return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+				recordSetupAbandon(stateDir, "credentials")
+				return 1, cancelledSetupError(stateDir)
 			}
 			// Validate BEFORE writing: an unreachable endpoint must not leave
 			// a key in the store that the user never accepted, or a later
@@ -376,7 +379,8 @@ setupStages:
 				if abort {
 					// Aborted or unanswerable: cancel rather than store a key
 					// the user never agreed to continue with.
-					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
+					recordSetupAbandon(stateDir, "credentials")
+					return 1, cancelledSetupError(stateDir)
 				}
 				if retry {
 					fmt.Println()
@@ -440,6 +444,7 @@ setupStages:
 		selected, defaultModel, ok, err := promptSetupModels(models, model)
 		if errors.Is(err, huh.ErrUserAborted) {
 			fmt.Println("Setup cancelled.")
+			recordSetupAbandon(stateDir, "models")
 			return 1, nil
 		}
 		if err != nil {
@@ -612,6 +617,7 @@ setupStages:
 				// Identity is persisted here, not at final apply: an
 				// abort must cancel setup, not save partial values.
 				fmt.Println("\nSetup cancelled.")
+				recordSetupAbandon(stateDir, "identity")
 				return 1, nil
 			}
 			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
@@ -643,6 +649,25 @@ setupStages:
 	// Review.
 	fmt.Println()
 	fmt.Println("Récapitulatif")
+	// Consent is asked once, at the end, and covers the later `init` runs.
+	// It is asked before the recap so the recap can state the answer, and its
+	// default is No.
+	statsEnabled, statsAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty())
+	if !statsAsked || editing {
+		answer, answered, err := setupStatsConsent(in)
+		if err != nil {
+			return 1, err
+		}
+		statsEnabled = answer
+		if answered {
+			statsAsked = true
+			j.StatsConsentAsked = true
+			if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+				return 1, err
+			}
+		}
+	}
+	j.StatsEnabled = statsEnabled
 	albertStore := "le trousseau"
 	if fallback {
 		albertStore = "un fichier protégé"
@@ -690,6 +715,11 @@ setupStages:
 	} else {
 		fmt.Println("  Modèles             Qwen3 Coder (par défaut)")
 	}
+	if statsEnabled {
+		fmt.Println("  Statistiques d'usage : partagées")
+	} else {
+		fmt.Println("  Statistiques d'usage : non partagées")
+	}
 	fmt.Println()
 	fmt.Println(setupRuntimeSummary(j.Preflight))
 	choice, err := setupReviewChoice(in)
@@ -701,6 +731,7 @@ setupStages:
 		editing = true
 		goto setupStages
 	case "quit":
+		recordSetupAbandon(stateDir, "review")
 		return 1, fmt.Errorf("configuration non appliquée; aucun paramètre ni runtime n'a été appliqué")
 	}
 	if j.GitHubReplacePending {
@@ -716,7 +747,7 @@ setupStages:
 	if err := w.SaveIdentity(j.GitName, j.GitEmail); err != nil {
 		return 1, err
 	}
-	if err := w.SaveSettings(model, models, modelAnswered); err != nil {
+	if err := w.SaveSettings(model, models, modelAnswered, statsEnabled, statsAsked); err != nil {
 		return 1, err
 	}
 	fmt.Println()
@@ -725,6 +756,17 @@ setupStages:
 		// Journal preserved: the retry skips the credential prompts.
 		return 1, fmt.Errorf("runtime installation failed: %v (re-run 'just-code setup' to resume; the credential prompts will be skipped)", err)
 	}
+	justcode.RecordStatsEvent(fs, stateDir, justcode.StatsEventInput{
+		Kind:    "setup",
+		Version: version,
+		Setup: &justcode.SetupStats{
+			Platforms:    setupStatsPlatforms(j.CredentialKinds),
+			Models:       append([]string(nil), j.Models...),
+			DefaultModel: j.DefaultModel,
+			GitHubToken:  justcode.ContainsCredentialKind(j.CredentialKinds, "github"),
+			GitConfig:    strings.TrimSpace(j.GitName) != "" && strings.TrimSpace(j.GitEmail) != "",
+		},
+	})
 	fmt.Println()
 	fmt.Println(setupCompletionMessage())
 	return 0, nil
@@ -732,6 +774,50 @@ setupStages:
 
 func setupCompletionMessage() string {
 	return "Configuration terminée.\n\nÉtape suivante, dans le dossier d'un projet :\n  cd mon-projet\n  just-code\n\nVérifier l'installation à tout moment : just-code setup doctor"
+}
+
+// statsConsentText is the single consent question, asked once at the end of
+// setup (#181). Its default is No.
+const statsConsentText = `À des fins d'analyse du produit, acceptez-vous de partager avec l'équipe just-code
+des informations non nominatives sur votre configuration (les choix faits dans
+cet assistant) ? Jamais votre code, vos fichiers ni vos échanges avec l'agent.
+Modifiable à tout moment : just-code stats off`
+
+// setupStatsConsent asks the question. Only an explicit yes enables sending;
+// an empty answer, EOF or anything else keeps the default No. The bool is the
+// answer, the second bool reports whether the user actually answered.
+func setupStatsConsent(in *bufio.Reader) (enabled bool, answered bool, err error) {
+	if !wizardHuhFn() {
+		// A piped run cannot answer a consent question meaningfully: its
+		// next line belongs to another prompt. Keep the default No and leave
+		// the question unasked; `just-code stats on` is the non-interactive
+		// opt-in.
+		return false, false, nil
+	}
+	value := false
+	if ferr := huhRun(huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title(statsConsentText).
+			Affirmative("Oui").
+			Negative("Non").
+			Value(&value),
+	))); ferr != nil {
+		if errors.Is(ferr, huh.ErrUserAborted) {
+			return false, false, fmt.Errorf("setup cancelled")
+		}
+		return false, false, ferr
+	}
+	return value, true, nil
+}
+
+// userSettingsPathOrEmpty is the settings path, or "" when it cannot be
+// resolved (the consent read then reports "not asked").
+func userSettingsPathOrEmpty() string {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 func runSetupIdentityForm(fields []huh.Field) error {
@@ -1261,8 +1347,35 @@ func validateModelAgainstCatalogue(model string) string {
 	return ""
 }
 
-func cancelMsg(stateDir string) string {
-	return fmt.Sprintf("setup cancelled; run 'just-code setup' to resume from where it stopped (journal: %s)", justcode.SetupJournalPath(stateDir))
+// errSetupCancelled marks a user cancellation, so abandonment statistics are
+// only recorded for an explicit quit, never for a fatal error.
+var errSetupCancelled = errors.New("setup cancelled")
+
+func cancelledSetupError(stateDir string) error {
+	return fmt.Errorf("%w; run 'just-code setup' to resume from where it stopped (journal: %s)", errSetupCancelled, justcode.SetupJournalPath(stateDir))
+}
+
+// recordSetupAbandon queues the last stage reached when the user leaves the
+// wizard. RecordStatsEvent is a no-op without consent.
+func recordSetupAbandon(stateDir, stage string) {
+	justcode.RecordStatsEvent(justcode.DefaultFS, stateDir, justcode.StatsEventInput{
+		Kind:    "abandon",
+		Stage:   stage,
+		Version: version,
+	})
+}
+
+// setupStatsPlatforms lists the connected inference platforms by kind. It
+// reads the credential kinds so it works before and after the multi-platform
+// settings land, and it never records a user-supplied platform name.
+func setupStatsPlatforms(kinds []string) []string {
+	var platforms []string
+	for _, kind := range []string{"albert", "mistral", "openai-compatible"} {
+		if justcode.ContainsCredentialKind(kinds, kind) {
+			platforms = append(platforms, kind)
+		}
+	}
+	return platforms
 }
 
 // Albert API links shown on the key screen: where to create a key, and the

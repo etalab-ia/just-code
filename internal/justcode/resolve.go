@@ -128,6 +128,14 @@ type UserSettings struct {
 	// CredentialRef names the default global credential (P08 reference,
 	// never a literal).
 	CredentialRef string `json:"credentialRef,omitempty"`
+
+	// StatsEnabled records the explicit "o" to sharing non-nominative
+	// configuration choices (issue #181). False is the default and means
+	// nothing is queued or sent.
+	StatsEnabled bool `json:"statsEnabled,omitempty"`
+	// StatsConsentAsked records that the setup wizard asked the question, so
+	// it is asked once and the answer also covers later `init` runs.
+	StatsConsentAsked bool `json:"statsConsentAsked,omitempty"`
 }
 
 // userSettingsSchemaVersion is the current settings.json format version.

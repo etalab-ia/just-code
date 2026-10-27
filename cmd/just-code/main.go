@@ -84,6 +84,13 @@ func run(args []string) (int, error) {
 		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: overlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
+	// The detached statistics flusher is a hidden subcommand: it never
+	// blocks the wizard that started it, and it re-checks consent before
+	// sending anything.
+	if len(args) > 0 && args[0] == justcode.StatsFlushCommand {
+		_ = justcode.FlushStats(context.Background(), justcode.DefaultFS, justcode.DefaultStateDir())
+		return 0, nil
+	}
 
 	// Parse arguments before the legacy dotenv load: `config explain`
 	// reports the new resolver's view (flags > JUST_CODE_* env > project >
@@ -119,6 +126,11 @@ func run(args []string) (int, error) {
 	// on a .env or a resolved runtime (P11).
 	if parsed.action == "setup" {
 		return setupCmd(parsed.setupArgs)
+	}
+	// stats manages the product-statistics consent and the local queue. It
+	// needs no project config and must work before any credential resolves.
+	if parsed.action == "stats" {
+		return statsCmd(parsed.statsArgs)
 	}
 
 	cfg := justcode.LoadConfigEnv()
@@ -530,6 +542,8 @@ type parsedArgs struct {
 	initArgs []string
 	// setupArgs holds the words after the setup command.
 	setupArgs []string
+	// statsArgs holds the words after the stats command.
+	statsArgs []string
 	// updateArgs holds the words after the update command.
 	updateArgs []string
 }
@@ -661,6 +675,11 @@ func parseArgs(args []string) (parsedArgs, error) {
 			actionSet = true
 			// Everything after the setup command belongs to it.
 			p.setupArgs = args[i+1:]
+			return p, nil
+		case a == "stats" && !actionSet:
+			p.action = "stats"
+			actionSet = true
+			p.statsArgs = args[i+1:]
 			return p, nil
 		case a == "update" && !actionSet:
 			p.action = "update"

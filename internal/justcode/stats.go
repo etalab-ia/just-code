@@ -1,0 +1,447 @@
+package justcode
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+)
+
+// This file implements the opt-in product statistics introduced by issue
+// #181. The contract is deliberately narrow:
+//
+//   - nothing is built or queued unless the user answered "o" (or ran
+//     `just-code stats on`); the default is No;
+//   - every payload is assembled from typed fields below, never from free
+//     text, a path, a repository name, a prompt, a response, a key or an
+//     identity;
+//   - sending is fire-and-forget: a detached child flushes the queue, so an
+//     unreachable endpoint can neither slow nor block the wizard.
+//
+// The queue is bounded and local: a host that never reaches an endpoint keeps
+// at most statsQueueLimit events.
+
+const (
+	// StatsFlushCommand is the hidden subcommand that flushes the queue.
+	StatsFlushCommand = "__stats-flush"
+	// statsQueueLimit bounds the local queue.
+	statsQueueLimit = 32
+	// StatsSchemaVersion is the wire schema version.
+	StatsSchemaVersion = 1
+)
+
+// StatsEndpointDefault is the build-time endpoint. It is intentionally empty:
+// no endpoint is invented, and a release build may set it with
+// -ldflags "-X github.com/etalab-ia/just-code/internal/justcode.StatsEndpointDefault=...".
+// JUST_CODE_STATS_URL overrides it for tests and development.
+var StatsEndpointDefault = ""
+
+// StatsFlushSpawn is the flusher starter. Tests in other packages replace it
+// so they never start a detached copy of the test binary.
+var StatsFlushSpawn = SpawnStatsFlush
+
+// StatsEndpoint resolves the configured endpoint, or "" when sending is
+// disabled.
+func StatsEndpoint() string {
+	if v := strings.TrimSpace(os.Getenv("JUST_CODE_STATS_URL")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(StatsEndpointDefault)
+}
+
+// ReadStatsMachineID returns the local identifier when it exists.
+func ReadStatsMachineID(fs FS, stateDir string) string {
+	data, err := fs.ReadFile(statsMachineIDPath(stateDir))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// ReadStatsProjectID returns the local project identifier when it exists.
+func ReadStatsProjectID(fs FS, stateDir, root string) string {
+	canonical, err := filepath.Abs(root)
+	if err != nil {
+		canonical = root
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	path := filepath.Join(statsDir(stateDir), "projects", hex.EncodeToString(sum[:])[:16])
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// SetupStats is the setup payload. Platform kinds and model references are
+// non-nominative; a user-supplied platform name is never included.
+type SetupStats struct {
+	Platforms    []string `json:"platforms"`
+	Models       []string `json:"models"`
+	DefaultModel string   `json:"defaultModel,omitempty"`
+	GitHubToken  bool     `json:"githubToken"`
+	GitConfig    bool     `json:"gitConfig"`
+}
+
+// InitStats is the init payload. Skills and MCPs are 0/1 maps keyed by
+// catalogue ID.
+type InitStats struct {
+	Skills        map[string]bool `json:"skills,omitempty"`
+	MCPs          map[string]bool `json:"mcps,omitempty"`
+	GitHubCase    int             `json:"githubCase,omitempty"`
+	Advanced      bool            `json:"advanced"`
+	Harness       string          `json:"harness"`
+	Runtime       string          `json:"runtime"`
+	Isolation     string          `json:"isolation"`
+	SkillsStorage string          `json:"skillsStorage"`
+}
+
+// AbandonStats records where a user left the wizard.
+type AbandonStats struct {
+	Stage string `json:"stage"`
+}
+
+// StatsPayload is the non-nominative configuration summary.
+type StatsPayload struct {
+	Version string        `json:"version,omitempty"`
+	OS      string        `json:"os"`
+	Arch    string        `json:"arch"`
+	Setup   *SetupStats   `json:"setup,omitempty"`
+	Init    *InitStats    `json:"init,omitempty"`
+	Abandon *AbandonStats `json:"abandon,omitempty"`
+}
+
+// StatsEvent is one queued event.
+type StatsEvent struct {
+	SchemaVersion int          `json:"schemaVersion"`
+	EventID       string       `json:"eventId"`
+	At            string       `json:"at"`
+	MachineID     string       `json:"machineId"`
+	ProjectID     string       `json:"projectId,omitempty"`
+	Kind          string       `json:"kind"`
+	Payload       StatsPayload `json:"payload"`
+}
+
+// StatsEventInput describes one event to build.
+type StatsEventInput struct {
+	Kind    string // setup | init | abandon
+	Stage   string
+	Version string
+	// ProjectRoot is used only to derive a local project identifier. It is
+	// never serialised.
+	ProjectRoot string
+	Setup       *SetupStats
+	Init        *InitStats
+}
+
+// BuildStatsEvent assembles an event without any free-form input.
+func BuildStatsEvent(fs FS, stateDir string, in StatsEventInput) (StatsEvent, error) {
+	machine, err := statsMachineID(fs, stateDir)
+	if err != nil {
+		return StatsEvent{}, err
+	}
+	event := StatsEvent{
+		SchemaVersion: StatsSchemaVersion,
+		EventID:       statsRandomID(),
+		At:            time.Now().UTC().Format(time.RFC3339),
+		MachineID:     machine,
+		Kind:          in.Kind,
+		Payload: StatsPayload{
+			Version: in.Version,
+			OS:      runtime.GOOS,
+			Arch:    runtime.GOARCH,
+			Setup:   sanitizeSetupStats(in.Setup),
+			Init:    sanitizeInitStats(in.Init),
+		},
+	}
+	if in.Kind == "abandon" {
+		event.Payload.Abandon = &AbandonStats{Stage: in.Stage}
+	}
+	if strings.TrimSpace(in.ProjectRoot) != "" {
+		project, perr := statsProjectID(fs, stateDir, in.ProjectRoot)
+		if perr != nil {
+			return StatsEvent{}, perr
+		}
+		event.ProjectID = project
+	}
+	return event, nil
+}
+
+// sanitizeSetupStats keeps only the documented fields and copies them.
+func sanitizeSetupStats(in *SetupStats) *SetupStats {
+	if in == nil {
+		return nil
+	}
+	out := &SetupStats{
+		Platforms:    append([]string(nil), in.Platforms...),
+		Models:       append([]string(nil), in.Models...),
+		DefaultModel: in.DefaultModel,
+		GitHubToken:  in.GitHubToken,
+		GitConfig:    in.GitConfig,
+	}
+	sort.Strings(out.Platforms)
+	sort.Strings(out.Models)
+	return out
+}
+
+func sanitizeInitStats(in *InitStats) *InitStats {
+	if in == nil {
+		return nil
+	}
+	out := &InitStats{
+		Skills:        copyBoolMap(in.Skills),
+		MCPs:          copyBoolMap(in.MCPs),
+		GitHubCase:    in.GitHubCase,
+		Advanced:      in.Advanced,
+		Harness:       in.Harness,
+		Runtime:       in.Runtime,
+		Isolation:     in.Isolation,
+		SkillsStorage: in.SkillsStorage,
+	}
+	return out
+}
+
+func copyBoolMap(in map[string]bool) map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// statsDir is the host-local statistics directory.
+func statsDir(stateDir string) string { return filepath.Join(stateDir, "stats") }
+
+func statsQueuePath(stateDir string) string { return filepath.Join(statsDir(stateDir), "queue.json") }
+
+func statsMachineIDPath(stateDir string) string {
+	return filepath.Join(statsDir(stateDir), "machine-id")
+}
+
+// statsRandomID returns 16 random bytes as hex. It is never derived from
+// host or user data.
+func statsRandomID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// statsMachineID returns the local random identifier, creating it on first
+// use with owner-only permissions.
+func statsMachineID(fs FS, stateDir string) (string, error) {
+	path := statsMachineIDPath(stateDir)
+	if data, err := fs.ReadFile(path); err == nil {
+		id := strings.TrimSpace(string(data))
+		if id != "" {
+			return id, nil
+		}
+	}
+	id := statsRandomID()
+	if id == "" {
+		return "", fmt.Errorf("cannot generate the local statistics identifier")
+	}
+	if err := fs.MkdirAll(statsDir(stateDir), 0o700); err != nil {
+		return "", err
+	}
+	if err := atomicWrite(fs, path, []byte(id+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// statsProjectID returns a random per-project identifier. The project is
+// identified by the SHA-256 of its canonical root, which is only used as a
+// local filename: the root itself never leaves the host.
+func statsProjectID(fs FS, stateDir, root string) (string, error) {
+	canonical, err := filepath.Abs(root)
+	if err != nil {
+		canonical = root
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	path := filepath.Join(statsDir(stateDir), "projects", hex.EncodeToString(sum[:])[:16])
+	if data, err := fs.ReadFile(path); err == nil {
+		id := strings.TrimSpace(string(data))
+		if id != "" {
+			return id, nil
+		}
+	}
+	id := statsRandomID()
+	if id == "" {
+		return "", fmt.Errorf("cannot generate the project statistics identifier")
+	}
+	if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	if err := atomicWrite(fs, path, []byte(id+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// EnqueueStatsEvent appends one event, keeping the queue bounded. Callers
+// must check StatsEnabled first.
+func EnqueueStatsEvent(fs FS, stateDir string, event StatsEvent) error {
+	events, err := PendingStatsEvents(fs, stateDir)
+	if err != nil {
+		return err
+	}
+	events = append(events, event)
+	if len(events) > statsQueueLimit {
+		events = events[len(events)-statsQueueLimit:]
+	}
+	data, err := json.MarshalIndent(events, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := fs.MkdirAll(statsDir(stateDir), 0o700); err != nil {
+		return err
+	}
+	return atomicWrite(fs, statsQueuePath(stateDir), append(data, '\n'), 0o600)
+}
+
+// PendingStatsEvents reads the local queue. A missing file is empty.
+func PendingStatsEvents(fs FS, stateDir string) ([]StatsEvent, error) {
+	data, err := fs.ReadFile(statsQueuePath(stateDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var events []StatsEvent
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, fmt.Errorf("parse statistics queue: %w", err)
+	}
+	return events, nil
+}
+
+// ClearStatsQueue removes every pending event. `stats off` calls it so the
+// next flush has nothing to send.
+func ClearStatsQueue(fs FS, stateDir string) error {
+	err := fs.Remove(statsQueuePath(stateDir))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// FlushStats posts every queued event and removes the ones accepted. It is
+// silent by design: callers ignore its error (the queue survives).
+func FlushStats(ctx context.Context, fs FS, stateDir string) error {
+	settingsPath, err := UserSettingsPath()
+	if err != nil || !StatsEnabled(fs, settingsPath) {
+		// Consent was withdrawn between enqueue and flush: send nothing.
+		return nil
+	}
+	endpoint := StatsEndpoint()
+	if endpoint == "" {
+		return nil
+	}
+	events, err := PendingStatsEvents(fs, stateDir)
+	if err != nil || len(events) == 0 {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{"schemaVersion": StatsSchemaVersion, "events": events})
+	if err != nil {
+		return err
+	}
+	// Re-check immediately before the request: `stats off` must stop an
+	// in-flight flush as early as the process boundary allows.
+	if !StatsEnabled(fs, settingsPath) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("statistics endpoint returned HTTP %d", resp.StatusCode)
+	}
+	return ClearStatsQueue(fs, stateDir)
+}
+
+// SpawnStatsFlush starts the detached flusher and returns immediately. The
+// caller never waits: an unreachable endpoint must not slow the wizard.
+func SpawnStatsFlush() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	cmd := newDetachedCommand(exe, StatsFlushCommand)
+	if cmd == nil {
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	_ = cmd.Process.Release()
+}
+
+// ReadStatsConsent returns the durable consent state. A missing settings file
+// is "not asked, disabled".
+func ReadStatsConsent(fs FS, path string) (enabled, asked bool) {
+	us, err := ReadUserSettings(fs, path)
+	if err != nil {
+		return false, false
+	}
+	return us.StatsEnabled, us.StatsConsentAsked
+}
+
+// WriteStatsConsent persists the consent decision. Enabling is always an
+// explicit answer, so it also marks the question as asked.
+func WriteStatsConsent(fs FS, path string, enabled, asked bool) error {
+	us, err := ReadUserSettings(fs, path)
+	if err != nil {
+		return err
+	}
+	us.StatsEnabled = enabled
+	us.StatsConsentAsked = asked || enabled
+	return WriteUserSettings(fs, path, us)
+}
+
+// StatsEnabled reports whether this host opted in.
+func StatsEnabled(fs FS, path string) bool {
+	enabled, _ := ReadStatsConsent(fs, path)
+	return enabled
+}
+
+// RecordStatsEvent is the guarded entry point: it does nothing unless the
+// host opted in, and it never returns an error to the caller (statistics must
+// never break a wizard). When the event is queued, a detached flush starts.
+func RecordStatsEvent(fs FS, stateDir string, in StatsEventInput) {
+	path, err := UserSettingsPath()
+	if err != nil || !StatsEnabled(fs, path) {
+		return
+	}
+	event, err := BuildStatsEvent(fs, stateDir, in)
+	if err != nil {
+		return
+	}
+	if err := EnqueueStatsEvent(fs, stateDir, event); err != nil {
+		return
+	}
+	StatsFlushSpawn()
+}

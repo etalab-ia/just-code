@@ -93,6 +93,7 @@ Quatre autres prompts (toolchain polyglotte, édition et revue de diff, continui
 | [Démarrage rapide](docs/quickstart.md) | Premier lancement et prompts d'exemple complets |
 | [Configuration](docs/config.md) | Assistant `setup`, variables d'environnement, fichiers gérés, redirections de ports par projet, skills, MCP, modèle OpenCode |
 | [Identifiants et secrets](docs/credentials.md) | Magasin d'identifiants, résolution de la clé Albert, protection par runtime, GitHub dans l'invité |
+| [Statistiques d'usage](docs/stats.md) | Consentement, commandes `stats`, données partagées et jamais collectées, envoi non bloquant |
 | [Sécurité du workspace](docs/workspace-security.md) | Workspace scellé, filtre de transfert, export des changements |
 | [Utilisation](docs/usage.md) | Commandes, instances par projet, niveaux d'isolation, répertoire de travail |
 | [Runtime Microsandbox](docs/runtime-microsandbox.md) | Téléchargement vérifié, mode manuel (`MSB_PATH`), prérequis plateforme |

@@ -357,7 +357,7 @@ func (w SetupWizard) SaveIdentity(name, email string) error {
 // modelChosen is false when the model prompt was never answered (EOF, Ctrl-D):
 // the stored model is then left exactly as it was, so an unanswered run cannot
 // silently reset a configuration the user never asked to change.
-func (w SetupWizard) SaveSettings(model string, models []string, modelChosen bool) error {
+func (w SetupWizard) SaveSettings(model string, models []string, modelChosen, statsEnabled, statsConsentAsked bool) error {
 	path, err := UserSettingsPath()
 	if err != nil {
 		return err
@@ -370,6 +370,8 @@ func (w SetupWizard) SaveSettings(model string, models []string, modelChosen boo
 		us.DefaultModel = model
 		us.Models = append([]string(nil), models...)
 	}
+	us.StatsEnabled = statsEnabled
+	us.StatsConsentAsked = statsConsentAsked
 	if err := WriteUserSettings(w.FS, path, us); err != nil {
 		return err
 	}
@@ -382,6 +384,8 @@ func (w SetupWizard) SaveSettings(model string, models []string, modelChosen boo
 		j.Models = append([]string(nil), models...)
 		j.ModelChosen = true
 	}
+	j.StatsEnabled = statsEnabled
+	j.StatsConsentAsked = statsConsentAsked
 	return WriteSetupJournal(w.FS, w.StateDir, j)
 }
 
