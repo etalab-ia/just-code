@@ -40,6 +40,11 @@ La sortie brute `go list -m` déclare le SDK Go v0.7.6 dans la révision testée
 La matrice P03 appelle le CLI : elle n'exécute pas ce SDK. Le `MSB_HOME`
 temporaire évite de modifier le runtime 0.7.9 déjà installé sur le Mac.
 
+**Portée dans le temps :** ces tests qualifient le runtime 0.7.6 livré lors de
+l'ouverture de l'issue #235. La branche `main` est ensuite passée à 0.7.8.
+Ces preuves ne qualifient pas cette nouvelle version ; son éventuelle
+requalification P03 fera l'objet d'un autre passage.
+
 ## Nettoyage et limites
 
 Les trois transcripts incluent la sortie brute finale de `msb list` : aucune

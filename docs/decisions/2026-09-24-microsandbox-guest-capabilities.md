@@ -223,6 +223,10 @@ le transport des identifiants P02, ni les parcours intégrés à just-code. Le
 profil navigateur P16 et les autres limites déjà documentées restent hors de
 cette matrice.
 
+**Version ultérieure :** `main` est passé à MSB 0.7.8 après ces tests. Cette
+qualification 0.7.6 est donc historique pour la version livrée lors de #235 ;
+elle ne qualifie pas 0.7.8.
+
 ## État d'implémentation navigateur P16 (2026-10-04, qualification en attente)
 
 Le changement P16 ajoute un profil navigateur distinct, sans modifier l'image

@@ -73,7 +73,8 @@ fonctionne avec l'initialisation lente documentée.
   finale de `msb list`, sont dans `tests/integration/guest-capabilities/evidence/`.
   Cette matrice CLI P03 reste distincte du transport des identifiants P02
   ci-dessus et des parcours intégrés à l'application. Elle ne requalifie pas
-  le profil navigateur P16.
+  le profil navigateur P16. Ces résultats 0.7.6 sont antérieurs à la montée de
+  `main` vers 0.7.8 et ne qualifient pas cette nouvelle version.
 
 ## Hôte
 
