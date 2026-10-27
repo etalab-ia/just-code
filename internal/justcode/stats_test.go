@@ -285,3 +285,22 @@ func TestRecordStatsAbandonRequiresAnAnsweredConsent(t *testing.T) {
 		t.Fatalf("an answered opt-in must queue the abandonment: %v", events)
 	}
 }
+
+func TestStatsMachineIDLoserReadsTheWinner(t *testing.T) {
+	statsTestHome(t)
+	stateDir := t.TempDir()
+	path := statsMachineIDPath(stateDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("winner-id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id, err := statsMachineID(DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "winner-id" {
+		t.Fatalf("a second process must reuse the winning identifier, got %q", id)
+	}
+}

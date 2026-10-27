@@ -248,14 +248,13 @@ func statsRandomID() string {
 }
 
 // statsMachineID returns the local random identifier, creating it on first
-// use with owner-only permissions.
+// use with owner-only permissions. Creation is exclusive: two processes
+// starting together must end up sharing ONE identifier, so the loser reads
+// back the winner's value instead of writing its own.
 func statsMachineID(fs FS, stateDir string) (string, error) {
 	path := statsMachineIDPath(stateDir)
-	if data, err := fs.ReadFile(path); err == nil {
-		id := strings.TrimSpace(string(data))
-		if id != "" {
-			return id, nil
-		}
+	if id := readStatsIDFile(fs, path); id != "" {
+		return id, nil
 	}
 	id := statsRandomID()
 	if id == "" {
@@ -264,10 +263,24 @@ func statsMachineID(fs FS, stateDir string) (string, error) {
 	if err := fs.MkdirAll(statsDir(stateDir), 0o700); err != nil {
 		return "", err
 	}
-	if err := atomicWrite(fs, path, []byte(id+"\n"), 0o600); err != nil {
+	if err := fs.CreateExclusive(path, []byte(id+"\n"), 0o600); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if winner := readStatsIDFile(fs, path); winner != "" {
+				return winner, nil
+			}
+		}
 		return "", err
 	}
 	return id, nil
+}
+
+// readStatsIDFile reads an identifier file, returning "" when absent.
+func readStatsIDFile(fs FS, path string) string {
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // statsProjectID returns a random per-project identifier. The project is
@@ -280,11 +293,8 @@ func statsProjectID(fs FS, stateDir, root string) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(canonical))
 	path := filepath.Join(statsDir(stateDir), "projects", hex.EncodeToString(sum[:])[:16])
-	if data, err := fs.ReadFile(path); err == nil {
-		id := strings.TrimSpace(string(data))
-		if id != "" {
-			return id, nil
-		}
+	if id := readStatsIDFile(fs, path); id != "" {
+		return id, nil
 	}
 	id := statsRandomID()
 	if id == "" {
@@ -293,7 +303,12 @@ func statsProjectID(fs FS, stateDir, root string) (string, error) {
 	if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
-	if err := atomicWrite(fs, path, []byte(id+"\n"), 0o600); err != nil {
+	if err := fs.CreateExclusive(path, []byte(id+"\n"), 0o600); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if winner := readStatsIDFile(fs, path); winner != "" {
+				return winner, nil
+			}
+		}
 		return "", err
 	}
 	return id, nil

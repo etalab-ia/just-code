@@ -653,6 +653,11 @@ setupStages:
 	// It is asked before the recap so the recap can state the answer, and its
 	// default is No.
 	statsEnabled, statsAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty())
+	if j.StatsConsentAsked {
+		// A run interrupted after answering but before applying keeps its
+		// decision in the journal: resume restores it instead of asking again.
+		statsEnabled, statsAsked = j.StatsEnabled, true
+	}
 	if !statsAsked || editing {
 		answer, answered, err := setupStatsConsent(in)
 		if err != nil {
@@ -662,6 +667,7 @@ setupStages:
 		if answered {
 			statsAsked = true
 			j.StatsConsentAsked = true
+			j.StatsEnabled = answer
 			if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
 				return 1, err
 			}
