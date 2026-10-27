@@ -14,6 +14,19 @@ func TestRegisteredBindingsAreValid(t *testing.T) {
 	}
 }
 
+func TestBindingForKindResolvesPlatformKinds(t *testing.T) {
+	for kind, wantEnv := range map[CredentialKind]string{
+		CredentialAlbert:           msbAPISecretEnv,
+		CredentialMistral:          MistralAPIKeyEnv,
+		CredentialOpenAICompatible: OpenAICompatibleAPIKeyEnv,
+	} {
+		b, ok := bindingForKind(kind)
+		if !ok || !b.Provider || b.GuestEnv != wantEnv {
+			t.Fatalf("binding for %s = %+v (ok=%v)", kind, b, ok)
+		}
+	}
+}
+
 func TestValidateSecretBindingsRejectsCrossedDestinations(t *testing.T) {
 	base := func() []msbSecretBinding {
 		return []msbSecretBinding{
@@ -416,7 +429,7 @@ func TestStartCreateRotationFailureRemovesSandbox(t *testing.T) {
 func TestStaleBindingIsRemovedFromTheProxy(t *testing.T) {
 	// Only albert is desired; github and context7 are approved nowhere.
 	options := msbNextStartOptions(nil, bindingsMetadata(testBindings("k")), nil)
-	for _, guestEnv := range []string{"GITHUB_TOKEN", "CONTEXT7_API_KEY"} {
+	for _, guestEnv := range []string{"GITHUB_TOKEN", "CONTEXT7_API_KEY", MistralAPIKeyEnv, OpenAICompatibleAPIKeyEnv} {
 		if !containsString(options.SecretsRemove, guestEnv) {
 			t.Fatalf("%s must be revoked in the same modification: %v", guestEnv, options.SecretsRemove)
 		}
@@ -430,17 +443,20 @@ func TestStaleBindingIsRemovedFromTheProxy(t *testing.T) {
 	// Every managed guest variable is still scrubbed from the guest
 	// environment, which is what removes a raw value an earlier version
 	// persisted there.
-	for _, guestEnv := range []string{msbAPISecretEnv, "GITHUB_TOKEN", "CONTEXT7_API_KEY"} {
+	for _, guestEnv := range []string{msbAPISecretEnv, "GITHUB_TOKEN", "CONTEXT7_API_KEY", MistralAPIKeyEnv, OpenAICompatibleAPIKeyEnv} {
 		if !containsString(options.EnvRemove, guestEnv) {
 			t.Fatalf("%s must stay in EnvRemove: %v", guestEnv, options.EnvRemove)
 		}
 	}
-	// With both optionals approved, nothing is stale.
-	all := bindingsMetadata([]resolvedBinding{
-		{msbSecretBinding: msbSecretBindings()[0], source: bindingSourceStore, store: "native"},
-		{msbSecretBinding: msbSecretBindings()[1], source: bindingSourceStore, store: "native"},
-		{msbSecretBinding: msbSecretBindings()[2], source: bindingSourceStore, store: "native"},
+	// With every platform and both optionals present, nothing is stale.
+	providers, err := ResolveProviders([]ProviderSettings{
+		{Kind: ProviderAlbert}, {Kind: ProviderMistral},
+		{Kind: ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1"},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := msbSecretBindingsFor(providers)
 	if got := msbNextStartOptions(nil, all, nil).SecretsRemove; len(got) != 0 {
 		t.Fatalf("nothing may be stale when every binding is desired: %v", got)
 	}

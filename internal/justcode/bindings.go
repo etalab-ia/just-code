@@ -47,6 +47,10 @@ type msbSecretBinding struct {
 	// Optional bindings are inert until the project approves them explicitly
 	// (host-local bindings.json); global storage alone never binds.
 	Optional bool
+	// Provider marks a binding that carries an inference-platform key. Its
+	// value resolves from the platform's own credential entry, and it is
+	// required whenever its platform is configured.
+	Provider bool
 	// Project is set for a Phase 2 project-secret binding: it names the
 	// imported entry the value comes from. Nil for the built-in bindings.
 	Project *ProjectBindingRef
@@ -76,28 +80,44 @@ const msbSecretBootstrapValue = "$MSB_BOOTSTRAP_UNSET"
 // Microsandbox guest. Albert is required; GitHub and Context7 are optional
 // and gated on explicit per-project approval.
 func msbSecretBindings() []msbSecretBinding {
-	return []msbSecretBinding{
-		{
-			Kind:       CredentialAlbert,
-			GuestEnv:   msbAPISecretEnv,
-			HostEnv:    "JUST_CODE_HOST_ALBERT_API_KEY",
-			AllowHosts: []string{msbAllowHost},
-		},
-		{
+	return msbSecretBindingsFor(nil)
+}
+
+// msbSecretBindingsFor is msbSecretBindings for an explicit platform set.
+// Each configured platform contributes one required binding whose only
+// allowed destination is that platform's host; GitHub and Context7 stay
+// optional and project-approved.
+func msbSecretBindingsFor(providers []InferenceProvider) []msbSecretBinding {
+	resolved := providers
+	if len(resolved) == 0 {
+		resolved, _ = ResolveProviders(nil)
+	}
+	out := make([]msbSecretBinding, 0, len(resolved)+2)
+	for _, p := range resolved {
+		out = append(out, msbSecretBinding{
+			Kind:       p.CredentialKind,
+			GuestEnv:   p.APIKeyEnv,
+			HostEnv:    "JUST_CODE_HOST_" + p.APIKeyEnv,
+			AllowHosts: []string{p.Host},
+			Provider:   true,
+		})
+	}
+	return append(out,
+		msbSecretBinding{
 			Kind:       CredentialGithub,
 			GuestEnv:   "GITHUB_TOKEN",
 			HostEnv:    "JUST_CODE_HOST_GITHUB_TOKEN",
 			AllowHosts: []string{"github.com", "api.github.com", "raw.githubusercontent.com"},
 			Optional:   true,
 		},
-		{
+		msbSecretBinding{
 			Kind:       CredentialContext7,
 			GuestEnv:   "CONTEXT7_API_KEY",
 			HostEnv:    "JUST_CODE_HOST_CONTEXT7_API_KEY",
 			AllowHosts: []string{"context7.com"},
 			Optional:   true,
 		},
-	}
+	)
 }
 
 // bindingForKind returns the registered binding for a kind, or false.
@@ -106,6 +126,15 @@ func bindingForKind(kind CredentialKind) (msbSecretBinding, bool) {
 		if b.Kind == kind {
 			return b, true
 		}
+	}
+	// Platforms are only registered in the binding set when they are
+	// configured, but revocation and guest-variable lookup must still resolve
+	// their names on a host whose settings no longer list them.
+	switch kind {
+	case CredentialMistral:
+		return msbSecretBinding{Kind: kind, GuestEnv: MistralAPIKeyEnv, HostEnv: "JUST_CODE_HOST_" + MistralAPIKeyEnv, Provider: true}, true
+	case CredentialOpenAICompatible:
+		return msbSecretBinding{Kind: kind, GuestEnv: OpenAICompatibleAPIKeyEnv, HostEnv: "JUST_CODE_HOST_" + OpenAICompatibleAPIKeyEnv, Provider: true}, true
 	}
 	return msbSecretBinding{}, false
 }
@@ -634,6 +663,61 @@ func resolveAlbertWith(read credentialReader, ctx context.Context, cfg Config, f
 	// A bare message would make this the one transient case classified as
 	// structural (#204).
 	return "", "", "", "", fmt.Errorf("%w: no Albert credential found: export ALBERT_API_KEY in the environment, or store one with 'just-code auth add albert'", ErrCredentialNotFound)
+}
+
+// resolveProviderWith resolves one inference platform's key. The credentialRef
+// and the legacy ALBERT_API_KEY input belong to Albert only: reusing them for
+// another platform would send an Albert key to a different vendor. Other
+// platforms resolve their own environment variable, then their own store
+// entry.
+func resolveProviderWith(read credentialReader, ctx context.Context, cfg Config, kind CredentialKind, envName, from string) (value string, source bindingSource, store, entry string, err error) {
+	if kind == CredentialAlbert {
+		return resolveAlbertWith(read, ctx, cfg, from)
+	}
+	if envName != "" {
+		if v := strings.TrimSpace(os.Getenv(envName)); v != "" {
+			return v, bindingSourceEnv, "", "", nil
+		}
+	}
+	v, s, rerr := read(ctx, kind, from)
+	if rerr == nil {
+		return v, bindingSourceStore, s, string(kind), nil
+	}
+	if !isNotFound(rerr) {
+		return "", "", "", "", rerr
+	}
+	return "", "", "", "", fmt.Errorf("%w: no %s credential found: import %s for this platform, or store one with 'just-code auth add %s'", ErrCredentialNotFound, kind, envName, kind)
+}
+
+// ResolveProviderKeysWith resolves the key of every configured platform, in
+// the guest-variable form the runtimes consume. It is used by the runtimes
+// without a secret proxy (Tart, agent-vm), where every provider key must be
+// present in the guest environment; Microsandbox resolves per binding instead.
+func ResolveProviderKeysWith(read credentialReader, ctx context.Context, cfg Config, from string) (map[string]string, error) {
+	providers := cfg.Providers
+	if len(providers) == 0 {
+		resolved, err := ResolveProviders(nil)
+		if err != nil {
+			return nil, err
+		}
+		providers = resolved
+	}
+	out := make(map[string]string, len(providers))
+	for _, p := range providers {
+		v, _, _, _, err := resolveProviderWith(read, ctx, cfg, p.CredentialKind, p.APIKeyEnv, from)
+		if err != nil {
+			return nil, err
+		}
+		out[p.APIKeyEnv] = v
+	}
+	return out, nil
+}
+
+// ResolveProviderKey resolves one platform's key through the production store
+// chain. It never returns the value in an error.
+func ResolveProviderKey(ctx context.Context, cfg Config, provider InferenceProvider) (string, error) {
+	v, _, _, _, err := resolveProviderWith(readStoredWith, ctx, cfg, provider.CredentialKind, provider.APIKeyEnv, "")
+	return v, err
 }
 
 // withHostSecrets publishes each resolved value under its binding's host

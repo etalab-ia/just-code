@@ -155,8 +155,8 @@ func (r Revoker) Revoke(ctx context.Context, entry string) (RevokeReport, error)
 		}
 	}
 
-	// Tart and agent-vm transport only the Albert credential, in plaintext.
-	// The guard keys on the guest binding, not the entry: an Albert binding
+	// Tart and agent-vm transport the inference credentials in plaintext.
+	// The guard keys on the guest binding, not the entry: an inference binding
 	// fed by `credentialRef: "github"` still sits in cleartext in a running
 	// VM, and removing the "github" entry would otherwise look harmless.
 	//
@@ -166,7 +166,7 @@ func (r Revoker) Revoke(ctx context.Context, entry string) (RevokeReport, error)
 	// only one: removing a global entry from project A must still see that
 	// project B's VM resolved Albert from it.
 	boundVMs := r.plaintextVMsFedBy(ctx, entry)
-	if len(boundVMs) > 0 || r.entryFeedsAlbert(entry, removals) {
+	if len(boundVMs) > 0 || r.entryFeedsInference(entry, removals) {
 		var running []string
 		for _, enumerate := range []func(context.Context) ([]string, error){r.TartRunning, r.AgentVMRunning} {
 			vms, err := enumerate(ctx)
@@ -288,13 +288,14 @@ type pendingRemoval struct {
 	live     bool
 }
 
-// entryFeedsAlbert reports whether removing the entry threatens the Albert
-// credential: either the entry names the albert binding itself, or a bound
+// entryFeedsInference reports whether removing the entry threatens an
+// inference-platform credential: either the entry names a provider binding
+// itself, or a bound
 // instance's record shows the entry resolving into it (the credentialRef
 // case). Without the second test, removing a non-"albert" entry that feeds the
 // Albert binding would bypass the plaintext-runtime guard.
-func (r Revoker) entryFeedsAlbert(entry string, removals []pendingRemoval) bool {
-	if b, ok := bindingForEntry(CredentialKind(entry)); ok && b.Kind == CredentialAlbert {
+func (r Revoker) entryFeedsInference(entry string, removals []pendingRemoval) bool {
+	if b, ok := bindingForEntry(CredentialKind(entry)); ok && b.Provider {
 		return true
 	}
 	// The project's own credentialRef naming this entry is direct evidence
@@ -304,7 +305,18 @@ func (r Revoker) entryFeedsAlbert(entry string, removals []pendingRemoval) bool 
 		return true
 	}
 	for _, rm := range removals {
-		if rm.guestEnv == msbAPISecretEnv {
+		if isProviderGuestEnv(rm.guestEnv) {
+			return true
+		}
+	}
+	return false
+}
+
+// isProviderGuestEnv reports whether a guest variable carries an inference
+// platform key.
+func isProviderGuestEnv(env string) bool {
+	for _, providerEnv := range AllProviderAPIKeyEnvs() {
+		if env == providerEnv {
 			return true
 		}
 	}
@@ -336,7 +348,7 @@ func (r Revoker) plaintextVMsFedBy(ctx context.Context, entry string) []string {
 				continue
 			}
 			for _, b := range bindings {
-				if b == CredentialAlbert {
+				if isProviderCredential(b) {
 					bound = append(bound, vm)
 					break
 				}
@@ -344,6 +356,11 @@ func (r Revoker) plaintextVMsFedBy(ctx context.Context, entry string) []string {
 		}
 	}
 	return bound
+}
+
+func isProviderCredential(kind CredentialKind) bool {
+	b, ok := bindingForKind(kind)
+	return ok && b.Provider
 }
 
 // guestEnvForEntry returns the guest variable a credential-store entry feeds:

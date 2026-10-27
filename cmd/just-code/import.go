@@ -111,7 +111,6 @@ func albertCodeImportCmd(args []string) (int, error) {
 	if len(plan.SourceFiles) == 0 {
 		return 1, fmt.Errorf("no supported Albert Code project files were detected")
 	}
-
 	credentialRef := ""
 	if opts.importAlbertKey {
 		credentialRef = "albert"
@@ -184,8 +183,55 @@ func albertCodeImportCmd(args []string) (int, error) {
 	} else if err := apply(); err != nil {
 		return 1, err
 	}
+	if len(plan.Platforms) > 0 {
+		if err := mergeImportedProviders(plan); err != nil {
+			return 1, err
+		}
+	}
 	warnUnapprovedImportInputs(plan.Root)
 	return 0, nil
+}
+
+// mergeImportedProviders records the OpenAI-compatible platform recovered
+// from the legacy OpenCode config in the user settings, so the imported model
+// is usable. The key itself is never imported: it must be stored with
+// 'just-code auth add openai-compatible'.
+func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return err
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return err
+	}
+	if len(us.Providers) == 0 {
+		us.Providers = justcode.DefaultProviderSettings()
+	}
+	for _, platform := range plan.Platforms {
+		found := false
+		for _, existing := range us.Providers {
+			if existing.Kind == platform.Kind {
+				found = true
+			}
+		}
+		if !found {
+			us.Providers = append(us.Providers, platform)
+		}
+	}
+	for _, model := range plan.ProviderModels {
+		if !containsString(us.Models, model) {
+			us.Models = append(us.Models, model)
+		}
+	}
+	if plan.Model != "" {
+		us.DefaultModel = plan.Model
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, us); err != nil {
+		return err
+	}
+	fmt.Printf("Plateforme importée dans les réglages : %s (clé à stocker avec just-code auth add openai-compatible)\n", plan.Platforms[0].Name)
+	return nil
 }
 
 // warnUnapprovedImportInputs lists the execution-relevant project inputs that

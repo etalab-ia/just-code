@@ -1,0 +1,215 @@
+package justcode
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestResolveProvidersDefaultsToAlbert(t *testing.T) {
+	providers, err := ResolveProviders(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 1 || providers[0].Kind != ProviderAlbert {
+		t.Fatalf("empty settings must mean Albert API, got %+v", providers)
+	}
+	if providers[0].Host != msbAllowHost || providers[0].CatalogueURL != albertCatalogueURL {
+		t.Fatalf("Albert endpoint drifted: %+v", providers[0])
+	}
+}
+
+func TestResolveProvidersBuildsEachPlatform(t *testing.T) {
+	providers, err := ResolveProviders([]ProviderSettings{
+		{Kind: ProviderAlbert},
+		{Kind: ProviderMistral},
+		{Kind: ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1/"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 3 {
+		t.Fatalf("providers = %+v", providers)
+	}
+	if providers[1].Host != "api.mistral.ai" || providers[1].APIKeyEnv != MistralAPIKeyEnv {
+		t.Fatalf("Mistral platform = %+v", providers[1])
+	}
+	if providers[2].BaseURL != "https://api.scaleway.ai/v1" || providers[2].Host != "api.scaleway.ai" || providers[2].APIKeyEnv != OpenAICompatibleAPIKeyEnv {
+		t.Fatalf("OpenAI-compatible platform = %+v", providers[2])
+	}
+	if providers[2].CatalogueURL != "https://api.scaleway.ai/v1/models" {
+		t.Fatalf("catalogue URL = %q", providers[2].CatalogueURL)
+	}
+}
+
+func TestResolveProviderRejectsUnsafeBaseURLs(t *testing.T) {
+	cases := []string{
+		"http://api.example.com/v1",
+		"https://user:pass@api.example.com/v1",
+		"https://api.example.com/v1?x=1",
+		"https://api.example.com:8443/v1",
+		"https://localhost/v1",
+		"https://127.0.0.1/v1",
+		"https://api.example.com/v1#frag",
+	}
+	for _, base := range cases {
+		if _, err := ResolveProvider(ProviderSettings{Kind: ProviderOpenAICompatible, Name: "X", BaseURL: base}); err == nil {
+			t.Fatalf("%q must be refused: the proxy cannot enforce that destination", base)
+		}
+	}
+}
+
+func TestResolveProviderKeepsFixedEndpoints(t *testing.T) {
+	if _, err := ResolveProvider(ProviderSettings{Kind: ProviderAlbert, BaseURL: "https://evil.example/v1"}); err == nil {
+		t.Fatal("a custom Albert base URL must be refused")
+	}
+	if _, err := ResolveProvider(ProviderSettings{Kind: ProviderMistral, BaseURL: "https://evil.example/v1"}); err == nil {
+		t.Fatal("a custom Mistral base URL must be refused")
+	}
+}
+
+func TestProviderModelIDsKeepsSlashContainingAlbertIDs(t *testing.T) {
+	refs := []string{"openai/gpt-oss-120b", "albert/qwen3-coder", "mistral/mistral-large-latest", "openai-compatible/llama-3.3-70b"}
+	got := ProviderModelIDs(refs, ProviderAlbert)
+	if !reflect.DeepEqual(got, []string{"openai/gpt-oss-120b", "qwen3-coder"}) {
+		t.Fatalf("Albert IDs = %v", got)
+	}
+	if got := ProviderModelIDs(refs, ProviderMistral); !reflect.DeepEqual(got, []string{"mistral-large-latest"}) {
+		t.Fatalf("Mistral IDs = %v", got)
+	}
+	if got := ProviderModelIDs(refs, ProviderOpenAICompatible); !reflect.DeepEqual(got, []string{"llama-3.3-70b"}) {
+		t.Fatalf("OpenAI-compatible IDs = %v", got)
+	}
+}
+
+func TestValidateProviderKeyDistinguishesOutcomes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" && r.Header.Get("Authorization") == "Bearer good" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"m"}]}`))
+			return
+		}
+		if r.Header.Get("Authorization") == "Bearer html" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html>captive portal</html>`))
+			return
+		}
+		if r.Header.Get("Authorization") == "Bearer bad" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	provider := testProviderAt(server.URL)
+	if probe := ValidateProviderKey(context.Background(), nil, provider, "good"); probe.Rejected || probe.Unreachable || probe.Incompatible {
+		t.Fatalf("valid key probe = %+v", probe)
+	}
+	if probe := ValidateProviderKey(context.Background(), nil, provider, "bad"); !probe.Rejected {
+		t.Fatalf("401 must be a rejection, got %+v", probe)
+	}
+	if probe := ValidateProviderKey(context.Background(), nil, provider, "html"); !probe.Incompatible {
+		t.Fatalf("a non-catalogue 200 must be incompatible, got %+v", probe)
+	}
+	if probe := ValidateProviderKey(context.Background(), nil, provider, "boom"); !probe.Unreachable || probe.Rejected {
+		t.Fatalf("500 must be unreachable, got %+v", probe)
+	}
+}
+
+func TestFetchProviderModelsReturnsRawSortedIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"b-model"},{"id":"a-model"},{"id":"b-model"}]}`))
+	}))
+	defer server.Close()
+	provider := testProviderAt(server.URL)
+	models, err := FetchProviderModels(context.Background(), nil, provider, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || models[0].ID != "a-model" || models[1].ID != "b-model" {
+		t.Fatalf("models = %+v", models)
+	}
+}
+
+// testProviderAt builds a platform pointing at an httptest server, which is
+// HTTP; ResolveProvider intentionally requires HTTPS for production URLs.
+func testProviderAt(base string) InferenceProvider {
+	return InferenceProvider{
+		Kind: ProviderOpenAICompatible, Name: "Test", BaseURL: base,
+		CatalogueURL: base + "/models", CredentialKind: CredentialOpenAICompatible,
+		APIKeyEnv: OpenAICompatibleAPIKeyEnv, Host: "api.example.com",
+	}
+}
+
+func TestComposeConfigContentCarriesEveryConfiguredProvider(t *testing.T) {
+	content, err := ComposeConfigContent(ManagedOverlay{
+		Model:         "mistral/mistral-large-latest",
+		AlbertEnabled: true,
+		Models:        []AlbertModelConfig{CuratedAlbertModels()[0].AlbertModelConfig()},
+		Providers: []ProviderOverlay{
+			{Kind: "mistral", Name: "Mistral AI", BaseURL: "https://api.mistral.ai/v1", APIKeyEnv: MistralAPIKeyEnv,
+				Models: []ProviderModelConfig{{ID: "mistral-large-latest", Name: "mistral-large-latest"}}},
+			{Kind: "openai-compatible", Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1", APIKeyEnv: OpenAICompatibleAPIKeyEnv,
+				Models: []ProviderModelConfig{{ID: "llama-3.3-70b", Name: "llama-3.3-70b"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatal(err)
+	}
+	providers, _ := config["provider"].(map[string]any)
+	for _, kind := range []string{"albert", "mistral", "openai-compatible"} {
+		if _, ok := providers[kind]; !ok {
+			t.Fatalf("provider %s missing from composed config: %s", kind, content)
+		}
+	}
+	mistral, _ := providers["mistral"].(map[string]any)
+	options, _ := mistral["options"].(map[string]any)
+	if options["baseURL"] != "https://api.mistral.ai/v1" || options["apiKey"] != "{env:MISTRAL_API_KEY}" {
+		t.Fatalf("Mistral provider options = %+v", options)
+	}
+	if !strings.Contains(content, `"model":"mistral/mistral-large-latest"`) {
+		t.Fatalf("composed config lost the default model: %s", content)
+	}
+}
+
+func TestComposeConfigContentDropsUnconnectedAlbert(t *testing.T) {
+	content, err := ComposeConfigContent(ManagedOverlay{
+		Model: "openai-compatible/m1",
+		Providers: []ProviderOverlay{
+			{Kind: "openai-compatible", Name: "X", BaseURL: "https://api.example.com/v1", APIKeyEnv: OpenAICompatibleAPIKeyEnv,
+				Models: []ProviderModelConfig{{ID: "m1", Name: "m1"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatal(err)
+	}
+	providers, _ := config["provider"].(map[string]any)
+	if _, ok := providers["albert"]; ok {
+		t.Fatalf("an unconnected Albert block must be removed: %s", content)
+	}
+}
+
+func TestSetupJournalSetPlatformsKeepsVerification(t *testing.T) {
+	verified := true
+	j := SetupJournal{Platforms: []SetupPlatform{{Kind: "albert", Name: "Albert API (État)", BaseURL: albertBaseURL, Verified: &verified}}}
+	providers, err := ResolveProviders(j.PlatformSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.SetPlatforms(providers)
+	entry, ok := j.Platform(ProviderAlbert)
+	if !ok || entry.Verified == nil || !*entry.Verified {
+		t.Fatalf("verification lost on an unchanged platform: %+v", j.Platforms)
+	}
+}

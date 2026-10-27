@@ -461,6 +461,9 @@ func staleBindingGuestEnvs(bindings []msbSecretBinding, previouslyApplied []stri
 		seen[env] = true
 		stale = append(stale, env)
 	}
+	for _, env := range AllProviderAPIKeyEnvs() {
+		add(env)
+	}
 	for _, b := range msbSecretBindings() {
 		add(b.GuestEnv)
 	}
@@ -475,9 +478,19 @@ func staleBindingGuestEnvs(bindings []msbSecretBinding, previouslyApplied []stri
 // order.
 func allBindingGuestEnvs() []string {
 	registered := msbSecretBindings()
-	out := make([]string, 0, len(registered))
+	out := make([]string, 0, len(registered)+len(AllProviderAPIKeyEnvs()))
+	seen := map[string]bool{}
+	for _, env := range AllProviderAPIKeyEnvs() {
+		if !seen[env] {
+			seen[env] = true
+			out = append(out, env)
+		}
+	}
 	for _, b := range registered {
-		out = append(out, b.GuestEnv)
+		if !seen[b.GuestEnv] {
+			seen[b.GuestEnv] = true
+			out = append(out, b.GuestEnv)
+		}
 	}
 	return out
 }

@@ -83,6 +83,10 @@ type Config struct {
 	// settings credentialRef; empty means the legacy chain (ALBERT_API_KEY
 	// environment, then the default stored albert credential).
 	CredentialRef string
+	// Providers are the resolved inference platforms this run may use, in
+	// display order. Empty means the historical single-platform default
+	// (Albert API), resolved by the runtime.
+	Providers []InferenceProvider
 	// GitHubRemote is a normalized, credential-free github.com origin used
 	// only when this project's host-local GitHub binding is approved (P13).
 	GitHubRemote GitHubRemote

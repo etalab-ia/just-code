@@ -213,7 +213,9 @@ func TestStopBackendRefusesWhenStillRunning(t *testing.T) {
 func TestBackendArgsExcludeSecrets(t *testing.T) {
 	deepseek := CuratedAlbertModels()[1].AlbertModelConfig()
 	args, err := BackendArgs("opencode-tahoe-base-latest",
-		"/tmp/just-code-guest", "4096", "opencode", "1280", "albert/deepseek-v4-flash", []AlbertModelConfig{deepseek}, "Luis", "luis@example.gouv.fr")
+		"/tmp/just-code-guest", "4096", "opencode", "1280",
+		ManagedOverlay{Model: "albert/deepseek-v4-flash", Models: []AlbertModelConfig{deepseek}},
+		"Luis", "luis@example.gouv.fr")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +225,7 @@ func TestBackendArgsExcludeSecrets(t *testing.T) {
 	}
 	want := []string{"exec", "-i", "opencode-tahoe-base-latest",
 		"/tmp/just-code-guest", GuestBootstrapCommand, "4096", "opencode", "1280", "albert/deepseek-v4-flash",
-		`[{"id":"deepseek-v4-flash","modelID":"deepseek-ai/DeepSeek-V4-Flash-0731","name":"DeepSeek V4 Flash","context":131072,"output":65536,"requestBody":{"tool_choice":"auto"}}]`,
+		`{"models":[{"id":"deepseek-v4-flash","modelID":"deepseek-ai/DeepSeek-V4-Flash-0731","name":"DeepSeek V4 Flash","context":131072,"output":65536,"requestBody":{"tool_choice":"auto"}}]}`,
 		"Luis", "luis@example.gouv.fr"}
 	if len(args) != len(want) {
 		t.Fatalf("BackendArgs = %v, want %v", args, want)
@@ -243,20 +245,20 @@ func TestGuestMCPArgumentPositions(t *testing.T) {
 	if got := bootstrap[GuestBootstrapMCPArgIndex]; got != "context7,data-gouv" {
 		t.Fatalf("bootstrap MCP argv[%d] = %q", GuestBootstrapMCPArgIndex, got)
 	}
-	secrets, err := guestSecretsArgs("opencode", "albert/model", nil, []string{"context7"})
+	secrets, err := guestSecretsArgs("opencode", ManagedOverlay{Model: "albert/model"}, []string{"context7"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := secrets[GuestSecretsMCPArgIndex]; got != "context7" {
 		t.Fatalf("guest-secrets MCP argv[%d] = %q", GuestSecretsMCPArgIndex, got)
 	}
-	if got := secrets[GuestSecretsModelsArgIndex]; got != "null" {
-		t.Fatalf("guest-secrets model argv[%d] = %q, want null for an empty list", GuestSecretsModelsArgIndex, got)
+	if got := secrets[GuestSecretsModelsArgIndex]; got != `{"models":null}` {
+		t.Fatalf("guest-secrets model argv[%d] = %q, want null models for an empty list", GuestSecretsModelsArgIndex, got)
 	}
 	if got := len(guestBootstrapArgs("4096", "opencode", "1280", "albert/model", `[]`, "Luis", "luis@example.test", nil)); got != GuestBootstrapMCPArgIndex {
 		t.Fatalf("empty bootstrap argv length = %d, want legacy shape %d", got, GuestBootstrapMCPArgIndex)
 	}
-	emptySecrets, err := guestSecretsArgs("opencode", "albert/model", nil, nil)
+	emptySecrets, err := guestSecretsArgs("opencode", ManagedOverlay{Model: "albert/model"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +300,7 @@ func TestLaunchBackendCopiesGuestBinaryAndStreamsSecrets(t *testing.T) {
 	}
 
 	fs := tt.Starter.(*fakeStarter)
-	if got := string(fs.lastStdin); got != "pw\nkey\n" {
+	if got := string(fs.lastStdin); got != "pw\n{\"ALBERT_API_KEY\":\"key\"}\n" {
 		t.Fatalf("stdin = %q, want password and key on stdin", got)
 	}
 	if !strings.HasPrefix(strings.Join(fs.lastArgs, " "), "exec -i opencode-tahoe-base-latest "+guestLocalBinary+" "+GuestBootstrapCommand) {
@@ -308,7 +310,7 @@ func TestLaunchBackendCopiesGuestBinaryAndStreamsSecrets(t *testing.T) {
 		strings.Contains(strings.Join(fs.lastArgs, " "), "key") {
 		t.Fatalf("secrets leaked into argv: %v", fs.lastArgs)
 	}
-	qwenJSON := `[{"id":"qwen3-coder","modelID":"Qwen/Qwen3-Coder-30B-A3B-Instruct","name":"Qwen3 Coder","context":262144}]`
+	qwenJSON := `{"models":[{"id":"qwen3-coder","modelID":"Qwen/Qwen3-Coder-30B-A3B-Instruct","name":"Qwen3 Coder","context":262144}]}`
 	if !strings.Contains(strings.Join(fs.lastArgs, " "), qwenJSON) {
 		t.Fatalf("bootstrap argv omitted the selected model config: %v", fs.lastArgs)
 	}
@@ -444,7 +446,7 @@ func TestTartRunAgentPushesSecretsOnStdinOnly(t *testing.T) {
 	}
 	// The model definitions travel as non-secret JSON argv alongside the
 	// default model; the credentials themselves remain on stdin.
-	gemmaJSON := `[{"id":"gemma-4","modelID":"google/gemma-4-31B-it","name":"Gemma 4","context":262144,"vision":true}]`
+	gemmaJSON := `{"models":[{"id":"gemma-4","modelID":"google/gemma-4-31B-it","name":"Gemma 4","context":262144,"vision":true}]}`
 	if !r.hasCall("exec -i opencode-tahoe-base-latest " + guestLocalBinary + " " + GuestSecretsCommand + " opencode albert/qwen3-coder " + gemmaJSON) {
 		t.Fatalf("secrets argv must include the selected models; calls: %v", r.calls)
 	}

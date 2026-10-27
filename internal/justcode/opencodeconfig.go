@@ -31,9 +31,40 @@ type ManagedOverlay struct {
 	SmallModel string
 	// Models replaces the managed Albert provider model map when non-empty.
 	Models []AlbertModelConfig
+	// Providers describes the managed non-Albert inference platforms. Albert
+	// stays in Models so settings and overlays written before #180 keep their
+	// meaning; when both are empty the embedded Albert configuration is used
+	// unchanged.
+	Providers []ProviderOverlay
+	// AlbertEnabled records that Albert API is one of the connected
+	// platforms. When another provider is present and this is false, the
+	// embedded Albert block is removed: advertising models whose key is not
+	// bound in the guest would produce broken choices.
+	AlbertEnabled bool
 	// MCPConnectors selects managed remote and guest-local entries. User-owned
 	// entries with other names remain untouched.
 	MCPConnectors []string
+}
+
+// ProviderModelConfig is one model exposed by a managed non-Albert provider.
+// Unlike an Albert choice it comes from the platform's raw catalogue, so it
+// carries no curated display description.
+type ProviderModelConfig struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Context int    `json:"context,omitempty"`
+	Output  int    `json:"output,omitempty"`
+}
+
+// ProviderOverlay is a fully described managed provider: the OpenCode
+// provider key, its endpoint and the environment variable holding the key.
+// The credential value itself never enters the overlay.
+type ProviderOverlay struct {
+	Kind      string                `json:"kind"`
+	Name      string                `json:"name"`
+	BaseURL   string                `json:"baseURL"`
+	APIKeyEnv string                `json:"apiKeyEnv"`
+	Models    []ProviderModelConfig `json:"models"`
 }
 
 // AlbertModelConfig is one curated model exposed by the managed Albert provider.
@@ -64,12 +95,27 @@ var managedOverlayFields = []opencodeManagedField{
 // model when none is chosen, and SmallModel following Model.
 func (o ManagedOverlay) EffectiveOverlay() ManagedOverlay {
 	if o.Model == "" {
-		o.Model = defaultOpencodeModel
+		o.Model = o.firstProviderModel()
 	}
 	if o.SmallModel == "" {
 		o.SmallModel = o.Model
 	}
 	return o
+}
+
+// firstProviderModel is the fallback model when nothing is selected: the
+// embedded Albert default while Albert is the managed provider, otherwise the
+// first model of the first configured platform.
+func (o ManagedOverlay) firstProviderModel() string {
+	if len(o.Models) > 0 || len(o.Providers) == 0 {
+		return defaultOpencodeModel
+	}
+	for _, p := range o.Providers {
+		for _, m := range p.Models {
+			return p.Kind + "/" + m.ID
+		}
+	}
+	return defaultOpencodeModel
 }
 
 // defaultOpencodeModel mirrors assets/opencode-config.json's "model" field.
@@ -95,6 +141,14 @@ func ComposeConfigContent(o ManagedOverlay) (string, error) {
 	var overlay map[string]any
 	if err := json.Unmarshal([]byte(overlayJSON), &overlay); err != nil {
 		return "", fmt.Errorf("parse rendered overlay: %w", err)
+	}
+	// The embedded base always carries an Albert provider. When this run has
+	// no Albert models, the platform is not connected: leaving the base entry
+	// would advertise models whose key is not bound in the guest.
+	if !o.AlbertEnabled && len(o.Providers) > 0 {
+		if provider, ok := base["provider"].(map[string]any); ok {
+			delete(provider, "albert")
+		}
 	}
 	if len(o.Models) > 0 {
 		provider, _ := base["provider"].(map[string]any)
@@ -173,6 +227,61 @@ func renderOverlayJSON(o ManagedOverlay) (string, error) {
 			models[model.ID] = definition
 		}
 		fields["provider"] = map[string]any{"albert": map[string]any{"models": models}}
+	}
+	if len(o.Providers) > 0 {
+		providers, _ := fields["provider"].(map[string]any)
+		if providers == nil {
+			providers = map[string]any{}
+		}
+		for _, provider := range o.Providers {
+			if provider.Kind == "" || len(provider.Models) == 0 {
+				continue
+			}
+			models := make(map[string]any, len(provider.Models))
+			for _, model := range provider.Models {
+				if model.ID == "" {
+					continue
+				}
+				name := model.Name
+				if name == "" {
+					name = model.ID
+				}
+				definition := map[string]any{
+					"name": name,
+					"capabilities": map[string]any{
+						"tools":  true,
+						"input":  []string{"text"},
+						"output": []string{"text"},
+					},
+				}
+				limit := map[string]any{}
+				if model.Context > 0 {
+					limit["context"] = model.Context
+				}
+				if model.Output > 0 {
+					limit["output"] = model.Output
+				}
+				if len(limit) > 0 {
+					definition["limit"] = limit
+				}
+				models[model.ID] = definition
+			}
+			if len(models) == 0 {
+				continue
+			}
+			providers[provider.Kind] = map[string]any{
+				"npm":  "@ai-sdk/openai-compatible",
+				"name": provider.Name,
+				"options": map[string]any{
+					"baseURL": provider.BaseURL,
+					"apiKey":  "{env:" + provider.APIKeyEnv + "}",
+				},
+				"models": models,
+			}
+		}
+		if len(providers) > 0 {
+			fields["provider"] = providers
+		}
 	}
 	if len(o.MCPConnectors) > 0 {
 		mcp, err := managedMCPOverlay(o.MCPConnectors)

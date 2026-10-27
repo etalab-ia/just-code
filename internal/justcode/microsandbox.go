@@ -439,10 +439,14 @@ func (m *MicrosandboxRuntime) resolveBindings(ctx context.Context) ([]resolvedBi
 	if read == nil {
 		read = readStoredWith
 	}
+	registered := msbSecretBindingsFor(m.cfg.Providers)
+	if err := validateSecretBindings(registered); err != nil {
+		return nil, err
+	}
 	var out []resolvedBinding
-	for _, b := range msbSecretBindings() {
-		if !b.Optional {
-			v, src, store, entry, err := resolveAlbertWith(read, ctx, m.cfg, m.CredentialStore)
+	for _, b := range registered {
+		if b.Provider {
+			v, src, store, entry, err := resolveProviderWith(read, ctx, m.cfg, b.Kind, b.GuestEnv, m.CredentialStore)
 			if err != nil {
 				return nil, err
 			}

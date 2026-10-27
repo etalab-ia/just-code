@@ -30,44 +30,117 @@ func modelsCmd(args []string) (int, error) {
 
 func modelsListCmd() (int, error) {
 	ctx := context.Background()
-	apiKey, err := resolveAlbertKeyForCatalogue()
+	settings, ok := currentUserSettings()
+	if !ok {
+		settings = justcode.UserSettings{SchemaVersion: 1}
+	}
+	providers, err := justcode.ResolveProviders(settings.Providers)
 	if err != nil {
 		return 1, err
 	}
-	cache := justcode.CatalogueCache{
-		FS:  justcode.DefaultFS,
-		Dir: justcode.DefaultStateDir(),
-		Fetch: func(ctx context.Context) (justcode.Catalogue, error) {
-			return justcode.FetchCatalogue(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
-		},
-	}
-	catalogue, fresh, err := cache.Load(ctx)
-	if err != nil {
-		return 1, fmt.Errorf("cannot load the model catalogue and no last-known-good cache exists: %w", err)
-	}
-	if !fresh {
-		fmt.Fprintln(os.Stderr, "Warning: the catalogue could not be fetched; showing the last-known-good list.")
-	}
 	selection := resolveModelSelection(".")
-	models := catalogue.TextGenerationModels()
-	if len(models) == 0 {
-		fmt.Println("No text-generation models in the catalogue.")
-		return 0, nil
-	}
-	fmt.Printf("Albert text-generation models (%s):\n", sourceLabel(fresh))
-	for _, m := range models {
-		marker := "  "
-		if selection == "albert/"+m.ID || matchesAlias(selection, m.Alias) {
-			marker = "->"
-		}
-		fmt.Printf("%s %-36s context: %d\n", marker, m.ID, m.MaxContextLength)
-	}
-	if selection != "" {
-		if _, ok := catalogue.Find(selection); !ok {
-			fmt.Fprintf(os.Stderr, "Warning: the selected model %q is not in this catalogue; it may have been removed. Pick a listed model (JUST_CODE_MODEL, project manifest or user settings).\n", selection)
+	for _, provider := range providers {
+		if err := modelsListProvider(ctx, provider, settings, selection); err != nil {
+			return 1, err
 		}
 	}
 	return 0, nil
+}
+
+// modelsListProvider lists one platform's usable models and marks the checked
+// ones. Albert keeps the last-known-good cache; the other platforms are read
+// live because their catalogues are not curated.
+func modelsListProvider(ctx context.Context, provider justcode.InferenceProvider, settings justcode.UserSettings, selection string) error {
+	var models []justcode.CatalogueModel
+	source := "live"
+	if provider.Kind == justcode.ProviderAlbert {
+		apiKey, err := resolveAlbertKeyForCatalogue()
+		if err != nil {
+			return err
+		}
+		cache := justcode.CatalogueCache{
+			FS:  justcode.DefaultFS,
+			Dir: justcode.DefaultStateDir(),
+			Fetch: func(ctx context.Context) (justcode.Catalogue, error) {
+				return justcode.FetchCatalogue(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
+			},
+		}
+		catalogue, fresh, loadErr := cache.Load(ctx)
+		if loadErr != nil {
+			return fmt.Errorf("cannot load the Albert model catalogue and no last-known-good cache exists: %w", loadErr)
+		}
+		models = catalogue.TextGenerationModels()
+		if !fresh {
+			source = "last-known-good"
+			fmt.Fprintln(os.Stderr, "Warning: the Albert catalogue could not be fetched; showing the last-known-good list.")
+		}
+		if selection != "" {
+			kind, _ := justcode.ProviderModelID(selection)
+			if kind == justcode.ProviderAlbert {
+				if _, ok := catalogue.Find(selection); !ok && len(models) > 0 {
+					fmt.Fprintf(os.Stderr, "Warning: the selected model %q is not in the Albert catalogue; it may have been removed.\n", selection)
+				}
+			}
+		}
+	} else {
+		apiKey, keyErr := resolveProviderKeyForCatalogue(provider)
+		if keyErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %s: %v\n", provider.Name, keyErr)
+			models = providerFallbackModels(settings.Models, provider)
+			source = "selection"
+		} else {
+			fetched, fetchErr := justcode.FetchProviderModels(ctx, nil, provider, apiKey)
+			if fetchErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: the %s catalogue could not be fetched; showing the current selection.\n", provider.Name)
+				models = providerFallbackModels(settings.Models, provider)
+				source = "selection"
+			} else {
+				models = fetched
+			}
+		}
+	}
+	fmt.Printf("%s models (%s):\n", provider.Name, source)
+	if len(models) == 0 {
+		fmt.Println("  (none)")
+		return nil
+	}
+	for _, model := range models {
+		marker := "  "
+		checked := false
+		if provider.Kind == justcode.ProviderAlbert {
+			checked = selection == "albert/"+model.ID || matchesAlias(selection, model.Alias)
+			for _, id := range justcode.ProviderModelIDs(settings.Models, provider.Kind) {
+				if id == model.ID {
+					checked = true
+				}
+			}
+		} else {
+			checked = containsString(justcode.ProviderModelIDs(settings.Models, provider.Kind), model.ID)
+		}
+		if checked {
+			marker = "->"
+		}
+		fmt.Printf("%s %-36s context: %d\n", marker, model.ID, model.MaxContextLength)
+	}
+	fmt.Println()
+	return nil
+}
+
+func providerFallbackModels(refs []string, provider justcode.InferenceProvider) []justcode.CatalogueModel {
+	var out []justcode.CatalogueModel
+	for _, id := range justcode.ProviderModelIDs(refs, provider.Kind) {
+		out = append(out, justcode.CatalogueModel{ID: id})
+	}
+	return out
+}
+
+// resolveProviderKeyForCatalogue obtains a key for a platform's catalogue
+// request without exposing it.
+func resolveProviderKeyForCatalogue(provider justcode.InferenceProvider) (string, error) {
+	if provider.Kind == justcode.ProviderAlbert {
+		return resolveAlbertKeyForCatalogue()
+	}
+	return justcode.ResolveProviderKey(context.Background(), justcode.Config{APIKey: os.Getenv("ALBERT_API_KEY")}, provider)
 }
 
 func matchesAlias(selection, alias string) bool {

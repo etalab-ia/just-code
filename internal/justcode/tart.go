@@ -297,13 +297,13 @@ func (t *Tart) guestRun(ctx context.Context, args ...string) error {
 // BackendArgs returns the argv for the detached bootstrap invocation. The
 // enabled model definitions and MCP selection are non-secret configuration;
 // credentials remain on stdin.
-func BackendArgs(vm, localBinary, port, username, mtu, model string, models []AlbertModelConfig, gitName, gitEmail string, mcps ...string) ([]string, error) {
-	modelsJSON, err := json.Marshal(models)
+func BackendArgs(vm, localBinary, port, username, mtu string, overlay ManagedOverlay, gitName, gitEmail string, mcps ...string) ([]string, error) {
+	overlayJSON, err := encodeGuestOverlay(overlay)
 	if err != nil {
-		return nil, fmt.Errorf("encode guest Albert model configuration: %w", err)
+		return nil, err
 	}
 	args := []string{"exec", "-i", vm, localBinary}
-	return append(args, guestBootstrapArgs(port, username, mtu, model, string(modelsJSON), gitName, gitEmail, mcps)...), nil
+	return append(args, guestBootstrapArgs(port, username, mtu, overlay.EffectiveOverlay().Model, overlayJSON, gitName, gitEmail, mcps)...), nil
 }
 
 func guestBootstrapArgs(port, username, mtu, model, modelsJSON, gitName, gitEmail string, mcps []string) []string {
@@ -314,16 +314,75 @@ func guestBootstrapArgs(port, username, mtu, model, modelsJSON, gitName, gitEmai
 	return args
 }
 
-func guestSecretsArgs(username, model string, models []AlbertModelConfig, mcps []string) ([]string, error) {
-	modelsJSON, err := json.Marshal(models)
+func guestSecretsArgs(username string, overlay ManagedOverlay, mcps []string) ([]string, error) {
+	overlayJSON, err := encodeGuestOverlay(overlay)
 	if err != nil {
-		return nil, fmt.Errorf("encode guest Albert model configuration: %w", err)
+		return nil, err
 	}
-	args := []string{GuestSecretsCommand, username, model, string(modelsJSON)}
+	args := []string{GuestSecretsCommand, username, overlay.EffectiveOverlay().Model, overlayJSON}
 	if len(mcps) > 0 {
 		args = append(args, strings.Join(mcps, ","))
 	}
 	return args, nil
+}
+
+// guestOverlayWire is the argv/JSON form of the managed overlay. It carries no
+// secret: provider entries name the guest environment variable, never a value.
+type guestOverlayWire struct {
+	Models        []AlbertModelConfig `json:"models"`
+	Providers     []ProviderOverlay   `json:"providers,omitempty"`
+	AlbertEnabled bool                `json:"albertEnabled,omitempty"`
+}
+
+// encodeGuestOverlay serialises the managed overlay for the guest helpers.
+func encodeGuestOverlay(overlay ManagedOverlay) (string, error) {
+	data, err := json.Marshal(guestOverlayWire{Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled})
+	if err != nil {
+		return "", fmt.Errorf("encode guest model configuration: %w", err)
+	}
+	return string(data), nil
+}
+
+// DecodeGuestOverlay parses the guest-visible overlay. It accepts the
+// historical bare-array form (a list of Albert models) so a guest binary
+// staged by an older host still understands the arguments it receives.
+func DecodeGuestOverlay(raw string) (ManagedOverlay, error) {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "null" {
+		return ManagedOverlay{}, nil
+	}
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "[") {
+		var models []AlbertModelConfig
+		if err := json.Unmarshal([]byte(trimmed), &models); err != nil {
+			return ManagedOverlay{}, err
+		}
+		if err := validateGuestModels(models); err != nil {
+			return ManagedOverlay{}, err
+		}
+		return ManagedOverlay{Models: models}, nil
+	}
+	var wire guestOverlayWire
+	if err := json.Unmarshal([]byte(trimmed), &wire); err != nil {
+		return ManagedOverlay{}, err
+	}
+	if err := validateGuestModels(wire.Models); err != nil {
+		return ManagedOverlay{}, err
+	}
+	for _, p := range wire.Providers {
+		if strings.TrimSpace(p.Kind) == "" || strings.TrimSpace(p.APIKeyEnv) == "" || strings.TrimSpace(p.BaseURL) == "" {
+			return ManagedOverlay{}, fmt.Errorf("provider kind, base URL and API key variable must be non-empty")
+		}
+	}
+	return ManagedOverlay{Models: wire.Models, Providers: wire.Providers, AlbertEnabled: wire.AlbertEnabled}, nil
+}
+
+func validateGuestModels(models []AlbertModelConfig) error {
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) == "" || strings.TrimSpace(model.Name) == "" {
+			return fmt.Errorf("model IDs and names must be non-empty")
+		}
+	}
+	return nil
 }
 
 // hostGitIdentity reads the git identity (P11, written by setup) from the
@@ -349,6 +408,17 @@ func SecretsReader(password, apiKey string) io.Reader {
 	return strings.NewReader(password + "\n" + apiKey + "\n")
 }
 
+// SecretsReaderWithKeys returns the multi-platform bootstrap stdin payload:
+// password on line 1, a JSON object of provider key assignments on line 2.
+// Only the values listed in keys travel; no other credential is inferred.
+func SecretsReaderWithKeys(password string, keys map[string]string) (io.Reader, error) {
+	data, err := json.Marshal(keys)
+	if err != nil {
+		return nil, fmt.Errorf("encode guest provider keys: %w", err)
+	}
+	return strings.NewReader(password + "\n" + string(data) + "\n"), nil
+}
+
 // launchBackend stages the binary, copies it to the guest's local disk, and
 // starts the OpenCode server inside the guest in the background.
 func (t *Tart) launchBackend(ctx context.Context) error {
@@ -371,15 +441,18 @@ func (t *Tart) launchBackend(ctx context.Context) error {
 		return err
 	}
 
-	// The credential is resolved at launch time (credentialRef, legacy
-	// environment, or the store) and travels on stdin only — never argv.
-	key, _, _, _, err := t.resolveAlbertFor(ctx)
+	// The credentials are resolved at launch time (credentialRef, legacy
+	// environment, or the store) and travel on stdin only — never argv.
+	keys, err := t.resolveProviderKeysFor(ctx)
 	if err != nil {
 		return err
 	}
-	stdin := SecretsReader(cfg.Password, key)
+	stdin, err := SecretsReaderWithKeys(cfg.Password, keys)
+	if err != nil {
+		return err
+	}
 	name, email := hostGitIdentity()
-	args, err := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay.EffectiveOverlay().Model, t.OpenCodeOverlay.Models, name, email, t.OpenCodeOverlay.MCPConnectors...)
+	args, err := BackendArgs(vm, guestLocalBinary, strconv.Itoa(DefaultPort), cfg.Username, cfg.TartMTU, t.OpenCodeOverlay, name, email, t.OpenCodeOverlay.MCPConnectors...)
 	if err != nil {
 		return err
 	}
@@ -623,6 +696,16 @@ func (t *Tart) resolveAlbertFor(ctx context.Context) (string, bindingSource, str
 		return resolveAlbertWith(t.CredentialRead, ctx, t.Config, "")
 	}
 	return resolveAlbert(ctx, t.Config, "")
+}
+
+// resolveProviderKeysFor resolves every configured platform's key through the
+// same injected reader the Albert path uses.
+func (t *Tart) resolveProviderKeysFor(ctx context.Context) (map[string]string, error) {
+	read := t.CredentialRead
+	if read == nil {
+		read = readStoredWith
+	}
+	return ResolveProviderKeysWith(read, ctx, t.Config, "")
 }
 
 func (t *Tart) Start(ctx context.Context) error {
@@ -883,17 +966,20 @@ func (t *Tart) RunAgent(ctx context.Context) error {
 	if err := t.guestRun(ctx, "/bin/chmod", "755", guestLocalBinary); err != nil {
 		return err
 	}
-	key, _, _, _, err := t.resolveAlbertFor(ctx)
+	keys, err := t.resolveProviderKeysFor(ctx)
 	if err != nil {
 		return err
 	}
-	model := t.OpenCodeOverlay.EffectiveOverlay().Model
-	guestArgs, err := guestSecretsArgs(cfg.Username, model, t.OpenCodeOverlay.Models, t.OpenCodeOverlay.MCPConnectors)
+	guestArgs, err := guestSecretsArgs(cfg.Username, t.OpenCodeOverlay, t.OpenCodeOverlay.MCPConnectors)
 	if err != nil {
 		return err
 	}
 	secretArgs := append([]string{"tart", "exec", "-i", vm, guestLocalBinary}, guestArgs...)
-	if err := runStdinOK(t.Runner, ctx, SecretsReader(cfg.Password, key), secretArgs[0], secretArgs[1:]...); err != nil {
+	stdin, err := SecretsReaderWithKeys(cfg.Password, keys)
+	if err != nil {
+		return err
+	}
+	if err := runStdinOK(t.Runner, ctx, stdin, secretArgs[0], secretArgs[1:]...); err != nil {
 		return err
 	}
 	name, email := hostGitIdentity()

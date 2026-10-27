@@ -119,6 +119,11 @@ type UserSettings struct {
 	// Models is the set of Albert models enabled in OpenCode's model picker.
 	// Empty preserves the built-in model set for settings written by older versions.
 	Models []string `json:"models,omitempty"`
+	// Providers lists the connected inference platforms, in display order.
+	// Empty means the historical single-platform configuration: Albert API.
+	// Credentials are never stored here; each platform's key lives in the
+	// host credential store under its kind.
+	Providers []ProviderSettings `json:"providers,omitempty"`
 
 	// GitName and GitEmail are the git identity for guest commits (P11).
 	// Non-secret; the guest bootstrap configures git with them.

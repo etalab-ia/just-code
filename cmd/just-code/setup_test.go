@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -17,15 +18,112 @@ import (
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
+// albertProvidersForSetup is the historical single-platform configuration.
+func albertProvidersForSetup() []justcode.InferenceProvider {
+	providers, _ := justcode.ResolveProviders(nil)
+	return providers
+}
+
+// fakeSetupStore records the credentials the platform stage stores.
+type fakeSetupStore struct {
+	puts map[justcode.CredentialKind]string
+}
+
+func (f *fakeSetupStore) Kind() string { return "fake" }
+func (f *fakeSetupStore) Verify(context.Context) error {
+	return nil
+}
+func (f *fakeSetupStore) Put(_ context.Context, kind justcode.CredentialKind, value string) error {
+	if f.puts == nil {
+		f.puts = map[justcode.CredentialKind]string{}
+	}
+	f.puts[kind] = value
+	return nil
+}
+
+func TestSetupPlatformStageStoresAMistralKeyWithoutAlbert(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{{Kind: "mistral"}},
+	}
+	if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeSetupStore{}
+	var probed []string
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, provider justcode.InferenceProvider, key string) justcode.CredentialProbe {
+			probed = append(probed, string(provider.Kind)+":"+key)
+			return justcode.CredentialProbe{}
+		},
+	}
+	providers, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("m-key\n")), true, &j, false, fs, stateDir)
+	if err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if len(providers) != 1 || providers[0].Kind != justcode.ProviderMistral {
+		t.Fatalf("providers = %+v", providers)
+	}
+	if store.puts[justcode.CredentialMistral] != "m-key" {
+		t.Fatalf("the Mistral key was not stored: %+v", store.puts)
+	}
+	if !reflect.DeepEqual(probed, []string{"mistral:m-key"}) {
+		t.Fatalf("probes = %v", probed)
+	}
+	after, err := justcode.ReadSetupJournal(fs, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !justcode.ContainsCredentialKind(after.CredentialKinds, "mistral") {
+		t.Fatalf("journal kinds = %v", after.CredentialKinds)
+	}
+	entry, ok := after.Platform(justcode.ProviderMistral)
+	if !ok || entry.Verified == nil || !*entry.Verified {
+		t.Fatalf("platform verification missing: %+v", after.Platforms)
+	}
+}
+
+func TestSetupPlatformStageReasksARejectedProviderKey(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{{Kind: "mistral"}},
+	}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, _ justcode.InferenceProvider, key string) justcode.CredentialProbe {
+			if key == "bad" {
+				return justcode.CredentialProbe{Rejected: true, Detail: "HTTP 401"}
+			}
+			return justcode.CredentialProbe{}
+		},
+	}
+	if _, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("bad\ngood\n")), true, &j, false, fs, stateDir); err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if _, stored := store.puts[justcode.CredentialMistral]; !stored || store.puts[justcode.CredentialMistral] != "good" {
+		t.Fatalf("a rejected key must not be stored and the retry must: %+v", store.puts)
+	}
+}
+
 func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T) {
-	choices := justcode.CuratedAlbertModels()
+	choices := albertSetupChoices()
 	picker := setupModelPicker{
 		choices: choices,
 		selected: map[string]bool{
-			choices[0].ID: true,
-			choices[1].ID: true,
+			choices[0].Ref(): true,
+			choices[1].Ref(): true,
 		},
-		available:    map[string]bool{},
+		unavailable:  map[string]bool{},
 		defaultModel: choices[0].Ref(),
 	}
 	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -38,7 +136,7 @@ func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T)
 	picker.cursor = 2
 	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	picker = updated.(setupModelPicker)
-	if !picker.selected[choices[2].ID] {
+	if !picker.selected[choices[2].Ref()] {
 		t.Fatal("Space should add the highlighted model")
 	}
 	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyRight})
@@ -48,29 +146,27 @@ func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T)
 	}
 	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	accepted = updated.(setupModelPicker)
-	if !accepted.done || accepted.defaultModel != choices[2].Ref() || !accepted.selected[choices[2].ID] {
+	if !accepted.done || accepted.defaultModel != choices[2].Ref() || !accepted.selected[choices[2].Ref()] {
 		t.Fatal("Enter should submit the model set and its default together")
 	}
 }
 
 func TestSetupModelPickerRefusesUnavailableModel(t *testing.T) {
-	choices := justcode.CuratedAlbertModels()
+	choices := albertSetupChoices()
 	picker := setupModelPicker{
 		choices: choices,
 		selected: map[string]bool{
-			choices[0].ID: true,
+			choices[0].Ref(): true,
 		},
-		available: map[string]bool{
-			choices[0].ID: true,
-			choices[1].ID: false,
+		unavailable: map[string]bool{
+			choices[1].Ref(): true,
 		},
-		catalogueChecked: true,
-		defaultModel:     choices[0].Ref(),
-		cursor:           1,
+		defaultModel: choices[0].Ref(),
+		cursor:       1,
 	}
 	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	picker = updated.(setupModelPicker)
-	if picker.selected[choices[1].ID] {
+	if picker.selected[choices[1].Ref()] {
 		t.Fatal("unavailable model must not be added to the selection")
 	}
 	if picker.errorMessage == "" {
@@ -92,7 +188,7 @@ func TestPromptSetupModelsPreservesLegacyCustomDefault(t *testing.T) {
 	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
 		for _, choice := range picker.choices {
 			if choice.Ref() == "albert/legacy-coder" {
-				sawLegacy = picker.selected[choice.ID] && picker.defaultModel == choice.Ref()
+				sawLegacy = picker.selected[choice.Ref()] && picker.defaultModel == choice.Ref()
 			}
 		}
 		picker.done = true
@@ -103,7 +199,7 @@ func TestPromptSetupModelsPreservesLegacyCustomDefault(t *testing.T) {
 	})
 
 	model := "albert/legacy-coder"
-	selected, defaultModel, ok, err := promptSetupModels(setupModelIDsWithLegacyDefault(model), model)
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), setupModelIDsWithLegacyDefault(model), model)
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -132,7 +228,7 @@ func TestPromptSetupModelsPreservesExternalProviderDefault(t *testing.T) {
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), "anthropic/claude")
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), "anthropic/claude")
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -165,7 +261,7 @@ func TestPromptSetupModelsKeepsDefaultsWhenCatalogueIsUnavailable(t *testing.T) 
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), defaultSetupModel())
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -191,7 +287,7 @@ func TestPromptSetupModelsDropsUnavailableDefaults(t *testing.T) {
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), defaultSetupModel())
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -208,7 +304,7 @@ func TestPromptSetupModelsKeepsSelectionWhenCatalogueCacheIsStale(t *testing.T) 
 	}
 	var retained bool
 	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
-		retained = !picker.catalogueChecked && picker.selected[choices[0].ID] && picker.selected[choices[1].ID]
+		retained = picker.selected[choices[0].Ref()] && picker.selected[choices[1].Ref()]
 		picker.done = true
 		return picker, nil
 	}
@@ -216,7 +312,7 @@ func TestPromptSetupModelsKeepsSelectionWhenCatalogueCacheIsStale(t *testing.T) 
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, _, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	selected, _, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), defaultSetupModel())
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v ok=%v err=%v", selected, ok, err)
 	}
@@ -451,7 +547,7 @@ func TestSetupIntroScreenContent(t *testing.T) {
 		"Cette configuration se fait une seule fois sur ce poste.",
 		"Durée : environ 3 minutes. Espace disque : environ 2 Go.",
 		"3 étapes :",
-		"1. Clé Albert API (obligatoire)",
+		"1. Plateformes d'inférence (au moins une)",
 		"2. Sélection des modèles à utiliser.",
 		"3. GitHub (facultatif)",
 		"Vos identifiants et votre identité git sont enregistrés au fil des questions,",

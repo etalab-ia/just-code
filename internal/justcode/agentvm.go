@@ -331,7 +331,7 @@ func (a *AgentVM) StopBackend(ctx context.Context) error {
 // pushed into the guest with limactl copy and sourced by the launch script.
 // Secrets never appear in argv or in the Lima instance config. The apiKey is
 // resolved by the caller (credentialRef, legacy environment, or store).
-func (a *AgentVM) writeSecretsEnv(dir, apiKey string) (string, error) {
+func (a *AgentVM) writeSecretsEnv(dir string, keys map[string]string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -348,8 +348,14 @@ func (a *AgentVM) writeSecretsEnv(dir, apiKey string) (string, error) {
 	// OpenCodeDisableUpdateAssignment rides in the file because this env file
 	// is the only environment the guest processes inherit; the managed config
 	// cannot carry the setting (see OpenCodeDisableUpdateEnv).
-	content := fmt.Sprintf("%s\nOPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
-		OpenCodeDisableUpdateAssignment, shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(apiKey), shellQuote(configContent))
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\nOPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
+		OpenCodeDisableUpdateAssignment, shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(configContent))
+	for _, assignment := range providerKeyAssignments(keys) {
+		name, value, _ := strings.Cut(assignment, "=")
+		fmt.Fprintf(&b, "%s=%s\n", name, shellQuote(value))
+	}
+	content := b.String()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", err
 	}
@@ -372,13 +378,13 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 		return err
 	}
 	stageDir := a.StageDir()
-	// The credential is resolved at launch time (credentialRef, legacy
+	// The credentials are resolved at launch time (credentialRef, legacy
 	// environment, or the store).
-	key, _, _, _, err := resolveAlbert(ctx, a.Config, "")
+	keys, err := ResolveProviderKeysWith(readStoredWith, ctx, a.Config, "")
 	if err != nil {
 		return err
 	}
-	secretsPath, err := a.writeSecretsEnv(stageDir, key)
+	secretsPath, err := a.writeSecretsEnv(stageDir, keys)
 	if err != nil {
 		return err
 	}
@@ -408,10 +414,10 @@ func (a *AgentVM) launchBackend(ctx context.Context) error {
 // #74); the warning stays so the choice is visible on every start.
 func (a *AgentVM) validateConfig(ctx context.Context) error {
 	if !a.Config.GuestCredentialsAcknowledged {
-		return fmt.Errorf("agent-vm hands the Albert credential to the guest in plaintext, where any process (the agent included) can read it; " +
+		return fmt.Errorf("agent-vm hands the inference credentials to the guest in plaintext, where any process (the agent included) can read them; " +
 			"pass --acknowledge-guest-credentials to accept this, or use --microsandbox, which keeps the credential behind the secret proxy")
 	}
-	if _, _, _, _, err := resolveAlbert(ctx, a.Config, ""); err != nil {
+	if _, err := ResolveProviderKeysWith(readStoredWith, ctx, a.Config, ""); err != nil {
 		return err
 	}
 	warnUnprotectedRuntime("agent-vm")
@@ -711,11 +717,11 @@ func (a *AgentVM) RunAgent(ctx context.Context) error {
 	if err := os.MkdirAll(a.StateDir, 0o755); err != nil {
 		return err
 	}
-	key, _, _, _, err := resolveAlbert(ctx, cfg, "")
+	keys, err := ResolveProviderKeysWith(readStoredWith, ctx, cfg, "")
 	if err != nil {
 		return err
 	}
-	secretsPath, err := a.writeSecretsEnv(a.StageDir(), key)
+	secretsPath, err := a.writeSecretsEnv(a.StageDir(), keys)
 	if err != nil {
 		return err
 	}
