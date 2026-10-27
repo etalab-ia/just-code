@@ -969,8 +969,22 @@ func (m *MicrosandboxRuntime) classifyGuestChanges(ctx context.Context, changes 
 		return nil, err
 	}
 	files := make([]WorkspaceApplyFile, 0, len(changes))
+	structural := make(map[string]TransferExclusion)
 	for _, c := range changes {
-		files = append(files, m.classifyOneGuestChange(c, recordedExcluded, entries, ignored))
+		if strings.HasPrefix(c.NewMode, "120") || strings.HasPrefix(c.OldMode, "120") {
+			structural[c.Rel] = TransferExclusionSymlink
+		} else if strings.HasPrefix(c.NewMode, "160") || strings.HasPrefix(c.OldMode, "160") {
+			structural[c.Rel] = TransferExclusionSubmodule
+		}
+	}
+	for _, c := range changes {
+		f := m.classifyOneGuestChange(c, recordedExcluded, entries, ignored)
+		if exclusion, ok := structural[c.Rel]; ok {
+			f.Verdict = WorkspaceApplyExcluded
+			f.Exclusion = exclusion
+			f.ExclusionReason = "the path has an excluded type change"
+		}
+		files = append(files, f)
 	}
 	return files, nil
 }

@@ -94,6 +94,42 @@ func (g *guestRepoFixture) diff() string {
 	return g.git(guestDiffArgs(g.baseline, false, nil)...)
 }
 
+func TestGuestSymlinkReplacementDoesNotDeleteHostFile(t *testing.T) {
+	g := newGuestRepoFixture(t, map[string]string{"file": "original\n"})
+	g.remove("file")
+	if err := os.Symlink("target", filepath.Join(g.dir, "file")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	changes, err := parseGitDiff(g.diff())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected separate deletion and addition, got %+v", changes)
+	}
+	m := newTestMicrosandbox(t, &fakeMSBClient{})
+	writeFile(t, m.cfg.WorkspaceDir, "file", "original\n")
+	recordLastTransferForTest(t, m, LastTransferRecord{SchemaVersion: lastTransferSchemaVersion, SnapshotCommit: g.baseline})
+	manifest, err := ResolveTransferSet(context.Background(), m.cfg.WorkspaceDir, TransferOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := m.classifyGuestChanges(context.Background(), changes, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Verdict != WorkspaceApplyExcluded || f.Exclusion != TransferExclusionSymlink {
+			t.Fatalf("type change must exclude every section: %+v", f)
+		}
+	}
+	ApplyGuestFiles(m.cfg.WorkspaceDir, files)
+	data, err := os.ReadFile(filepath.Join(m.cfg.WorkspaceDir, "file"))
+	if err != nil || string(data) != "original\n" {
+		t.Fatalf("host file changed: %q, %v", data, err)
+	}
+}
+
 // sizes runs the production stat command for rels, in order.
 func (g *guestRepoFixture) sizes(rels []string) string {
 	g.t.Helper()
@@ -1409,11 +1445,11 @@ func TestGuestDiffResistsGuestDiffConfig(t *testing.T) {
 func TestGuestCommandsKeepSlashSeparatedPaths(t *testing.T) {
 	rels := []string{"nested/dir/f.js", "plain.js"}
 	commands := map[string]string{
-		"diff":          guestCd() + "git add -A -N && " + guestGitFragment(guestDiffArgs("baseline", false, nil)),
-		"binary patch":  guestCd() + guestGitFragment(guestDiffArgs("baseline", true, rels)),
-		"ls-tree":       guestCd() + guestGitFragment(guestLsTreeArgs("baseline", rels)),
-		"stat":          guestStatCommand(rels),
-		"tar":           guestTarCommand(rels),
+		"diff":         guestCd() + "git add -A -N && " + guestGitFragment(guestDiffArgs("baseline", false, nil)),
+		"binary patch": guestCd() + guestGitFragment(guestDiffArgs("baseline", true, rels)),
+		"ls-tree":      guestCd() + guestGitFragment(guestLsTreeArgs("baseline", rels)),
+		"stat":         guestStatCommand(rels),
+		"tar":          guestTarCommand(rels),
 	}
 	for name, cmd := range commands {
 		if strings.Contains(cmd, `\`) {
@@ -1466,8 +1502,8 @@ func TestPlanGuestApplyRefusesOversizedHostPreimage(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := planFile(t, plan, "a.js")
-	if f.Verdict != WorkspaceApplyConflict || f.Conflict != WorkspaceConflictHostModified {
-		t.Fatalf("an oversized host preimage must conflict from the size alone: %+v", f)
+	if f.Verdict != WorkspaceApplyExcluded || f.Exclusion != TransferExclusionSizeCap {
+		t.Fatalf("an oversized host preimage must be refused by the transfer filter: %+v", f)
 	}
 }
 
@@ -1594,45 +1630,45 @@ func TestSaveUnappliedPatch(t *testing.T) {
 			t.Fatalf("patch content = %q", data)
 		}
 	})
-		t.Run("binary read failure is an error, not a useless patch", func(t *testing.T) {
-			client := &fakeMSBClient{exists: true}
-			m := newTestMicrosandbox(t, client)
-			client.execCaptureResults = []fakeMSBExecCaptureResult{{code: 1, stderr: "the guest diff exploded"}}
-			files := []WorkspaceApplyFile{
-				{Change: GuestChange{Rel: "b.bin", Status: GuestChangeModified, Binary: true, Diff: "diff --git a/b.bin b/b.bin\nBinary files differ\n"}, Verdict: WorkspaceApplyConflict, Conflict: WorkspaceConflictHostModified},
-			}
-			path, err := m.SaveUnappliedPatch(context.Background(), "baseline", files)
-			if err == nil {
-				t.Fatal("a failed binary read must be an error, not a saved text-only patch")
-			}
-			if path != "" {
-				t.Fatalf("no patch path may be claimed: %q", path)
-			}
-			if !strings.Contains(err.Error(), "no patch was written") {
-				t.Fatalf("the error must say no patch was written: %v", err)
-			}
-		})
-		t.Run("empty binary diff is an error", func(t *testing.T) {
-			client := &fakeMSBClient{exists: true}
-			m := newTestMicrosandbox(t, client)
-			client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "   "}}
-			files := []WorkspaceApplyFile{
-				{Change: GuestChange{Rel: "b.bin", Status: GuestChangeModified, Binary: true}, Verdict: WorkspaceApplyConflict, Conflict: WorkspaceConflictHostModified},
-			}
-			if _, err := m.SaveUnappliedPatch(context.Background(), "baseline", files); err == nil {
-				t.Fatal("an empty binary diff must be an error, not a claimed patch")
-			}
-		})
-		t.Run("binary without a baseline is an error", func(t *testing.T) {
-			client := &fakeMSBClient{exists: true}
-			m := newTestMicrosandbox(t, client)
-			files := []WorkspaceApplyFile{
-				{Change: GuestChange{Rel: "b.bin", Status: GuestChangeModified, Binary: true}, Verdict: WorkspaceApplyConflict, Conflict: WorkspaceConflictHostModified},
-			}
-			if _, err := m.SaveUnappliedPatch(context.Background(), "", files); err == nil {
-				t.Fatal("a binary conflict without a baseline must be an error")
-			}
-		})
+	t.Run("binary read failure is an error, not a useless patch", func(t *testing.T) {
+		client := &fakeMSBClient{exists: true}
+		m := newTestMicrosandbox(t, client)
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{code: 1, stderr: "the guest diff exploded"}}
+		files := []WorkspaceApplyFile{
+			{Change: GuestChange{Rel: "b.bin", Status: GuestChangeModified, Binary: true, Diff: "diff --git a/b.bin b/b.bin\nBinary files differ\n"}, Verdict: WorkspaceApplyConflict, Conflict: WorkspaceConflictHostModified},
+		}
+		path, err := m.SaveUnappliedPatch(context.Background(), "baseline", files)
+		if err == nil {
+			t.Fatal("a failed binary read must be an error, not a saved text-only patch")
+		}
+		if path != "" {
+			t.Fatalf("no patch path may be claimed: %q", path)
+		}
+		if !strings.Contains(err.Error(), "no patch was written") {
+			t.Fatalf("the error must say no patch was written: %v", err)
+		}
+	})
+	t.Run("empty binary diff is an error", func(t *testing.T) {
+		client := &fakeMSBClient{exists: true}
+		m := newTestMicrosandbox(t, client)
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "   "}}
+		files := []WorkspaceApplyFile{
+			{Change: GuestChange{Rel: "b.bin", Status: GuestChangeModified, Binary: true}, Verdict: WorkspaceApplyConflict, Conflict: WorkspaceConflictHostModified},
+		}
+		if _, err := m.SaveUnappliedPatch(context.Background(), "baseline", files); err == nil {
+			t.Fatal("an empty binary diff must be an error, not a claimed patch")
+		}
+	})
+	t.Run("binary without a baseline is an error", func(t *testing.T) {
+		client := &fakeMSBClient{exists: true}
+		m := newTestMicrosandbox(t, client)
+		files := []WorkspaceApplyFile{
+			{Change: GuestChange{Rel: "b.bin", Status: GuestChangeModified, Binary: true}, Verdict: WorkspaceApplyConflict, Conflict: WorkspaceConflictHostModified},
+		}
+		if _, err := m.SaveUnappliedPatch(context.Background(), "", files); err == nil {
+			t.Fatal("a binary conflict without a baseline must be an error")
+		}
+	})
 }
 
 // gitLogCount returns the number of commits reachable from HEAD.

@@ -67,9 +67,13 @@ func applyTestChange(rel string, status justcode.GuestChangeStatus, add, del int
 }
 
 // applyTestOK builds an applicable file whose content will be written.
-func applyTestOK(rel string, status justcode.GuestChangeStatus, content string) justcode.WorkspaceApplyFile {
+func applyTestOK(rel string, status justcode.GuestChangeStatus, content string, preimage ...string) justcode.WorkspaceApplyFile {
+	change := applyTestChange(rel, status, 2, 1)
+	if len(preimage) > 0 {
+		change.PreHash = testGitBlobHash([]byte(preimage[0]))
+	}
 	return justcode.WorkspaceApplyFile{
-		Change:  applyTestChange(rel, status, 2, 1),
+		Change:  change,
 		Verdict: justcode.WorkspaceApplyOK,
 		Content: []byte(content),
 		Mode:    0o644,
@@ -137,9 +141,9 @@ func TestWorkspaceApplyCmdAppliesAll(t *testing.T) {
 			Files: []justcode.WorkspaceApplyFile{
 				{Change: applyTestChange(".env", justcode.GuestChangeAdded, 2, 0), Verdict: justcode.WorkspaceApplyExcluded, Exclusion: justcode.TransferExclusionDotenv},
 				{Change: applyTestChange("conflict.js", justcode.GuestChangeModified, 2, 3), Verdict: justcode.WorkspaceApplyConflict, Conflict: justcode.WorkspaceConflictHostModified},
-				{Change: applyTestChange("gone.js", justcode.GuestChangeDeleted, 0, 1), Verdict: justcode.WorkspaceApplyOK},
+				{Change: justcode.GuestChange{Rel: "gone.js", Status: justcode.GuestChangeDeleted, DelCount: 1, PreHash: testGitBlobHash([]byte("bye\n"))}, Verdict: justcode.WorkspaceApplyOK},
 				applyTestOK("new.js", justcode.GuestChangeAdded, "brand new\n"),
-				applyTestOK("src/app.js", justcode.GuestChangeModified, "app v2\n"),
+				applyTestOK("src/app.js", justcode.GuestChangeModified, "app v2\n", "app\n"),
 			},
 		},
 	}
@@ -222,8 +226,8 @@ func TestWorkspaceApplyCmdDetailWalk(t *testing.T) {
 			SnapshotCommit: "abc123",
 			Files: []justcode.WorkspaceApplyFile{
 				{Change: applyTestChange("conflict.js", justcode.GuestChangeModified, 1, 1), Verdict: justcode.WorkspaceApplyConflict, Conflict: justcode.WorkspaceConflictHostModified},
-				applyTestOK("a.js", justcode.GuestChangeModified, "a2\n"),
-				applyTestOK("b.js", justcode.GuestChangeModified, "b2\n"),
+				applyTestOK("a.js", justcode.GuestChangeModified, "a2\n", "a\n"),
+				applyTestOK("b.js", justcode.GuestChangeModified, "b2\n", "b\n"),
 			},
 		},
 	}
@@ -264,8 +268,8 @@ func TestWorkspaceApplyCmdDetailApplyRestAndStop(t *testing.T) {
 				Root:           root,
 				SnapshotCommit: "abc123",
 				Files: []justcode.WorkspaceApplyFile{
-					applyTestOK("a.js", justcode.GuestChangeModified, "a2\n"),
-					applyTestOK("b.js", justcode.GuestChangeModified, "b2\n"),
+					applyTestOK("a.js", justcode.GuestChangeModified, "a2\n", "a\n"),
+					applyTestOK("b.js", justcode.GuestChangeModified, "b2\n", "b\n"),
 				},
 			},
 		}
@@ -292,8 +296,8 @@ func TestWorkspaceApplyCmdDetailApplyRestAndStop(t *testing.T) {
 				Root:           root,
 				SnapshotCommit: "abc123",
 				Files: []justcode.WorkspaceApplyFile{
-					applyTestOK("a.js", justcode.GuestChangeModified, "a2\n"),
-					applyTestOK("b.js", justcode.GuestChangeModified, "b2\n"),
+					applyTestOK("a.js", justcode.GuestChangeModified, "a2\n", "a\n"),
+					applyTestOK("b.js", justcode.GuestChangeModified, "b2\n", "b\n"),
 				},
 			},
 		}
