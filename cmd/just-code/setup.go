@@ -752,10 +752,15 @@ func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.R
 				continue
 			}
 		}
-		verified, err := providerKeyStage(ctx, w, in, provider, fallback, stateDir)
+		updatedProvider, verified, err := providerKeyStage(ctx, w, in, provider, fallback, stateDir)
 		if err != nil {
 			return nil, err
 		}
+		// The key stage can correct an OpenAI-compatible base URL after an
+		// incompatible response; persist the corrected endpoint, not the one
+		// the user started with.
+		provider = updatedProvider
+		providers[index] = updatedProvider
 		j.CredentialKinds = addCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
 		if provider.Kind == justcode.ProviderAlbert {
 			value := verified
@@ -988,32 +993,32 @@ func providerUnreachableMessage(provider justcode.InferenceProvider) string {
 // providerKeyStage runs the masked-key loop for one platform: validate,
 // explain, re-ask on a refusal, offer retry or continue on an unreachable
 // endpoint. It returns whether the stored key passed validation.
-func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, provider justcode.InferenceProvider, fallback bool, stateDir string) (bool, error) {
+func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, provider justcode.InferenceProvider, fallback bool, stateDir string) (justcode.InferenceProvider, bool, error) {
 	fmt.Println(providerKeyScreenHeader(provider, fallback))
 	if _, err := w.ResolveStore(ctx); err != nil {
-		return false, err
+		return provider, false, err
 	}
 	for {
 		var key string
 		if wizardHuhFn() {
 			value, err := huhSecret("Clé "+provider.Name, "L'entrée est masquée. Laissez vide pour annuler.")
 			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-				return false, err
+				return provider, false, err
 			}
 			key = value
 		} else {
 			value, ok := promptSecret(in, providerKeyPrompt(provider))
 			if !ok {
-				return false, fmt.Errorf("%s", cancelMsg(stateDir))
+				return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
 			}
 			key = value
 		}
 		if key == "" {
-			return false, fmt.Errorf("%s", cancelMsg(stateDir))
+			return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
 		}
 		probe, err := w.ValidateProviderCredential(ctx, provider, key)
 		if err != nil {
-			return false, err
+			return provider, false, err
 		}
 		if probe.Rejected {
 			fmt.Println(providerRejectedMessage(provider, probe.Detail))
@@ -1025,7 +1030,7 @@ func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			if provider.Kind == justcode.ProviderOpenAICompatible {
 				updated, uerr := promptProviderEndpoint(in, provider)
 				if uerr != nil {
-					return false, uerr
+					return provider, false, uerr
 				}
 				provider = updated
 				fmt.Println(providerKeyScreenHeader(provider, fallback))
@@ -1036,7 +1041,7 @@ func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			fmt.Printf("%s (%s)\n", providerUnreachableMessage(provider), probe.Detail)
 			retry, abort := credentialRetryChoice(in, providerUnreachableMessage(provider))
 			if abort {
-				return false, fmt.Errorf("%s", cancelMsg(stateDir))
+				return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
 			}
 			if retry {
 				fmt.Println()
@@ -1044,7 +1049,7 @@ func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			}
 		}
 		if err := w.PutCredential(ctx, provider.CredentialKind, key); err != nil {
-			return false, err
+			return provider, false, err
 		}
 		verified := !probe.Unreachable
 		if probe.Unreachable {
@@ -1052,7 +1057,7 @@ func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 		} else {
 			fmt.Println("✅ Clé valide.")
 		}
-		return verified, nil
+		return provider, verified, nil
 	}
 }
 
@@ -1659,7 +1664,13 @@ func promptSetupModels(providers []justcode.InferenceProvider, current []string,
 		return nil, "", false, fmt.Errorf("aucun modèle sélectionné n'est disponible dans les catalogues")
 	}
 	defaultModel := canonicalSetupModelRef(currentDefault)
-	externalDefault := defaultModel != "" && !setupModelRefKnown(defaultModel, choices)
+	// A default belonging to a managed platform that is no longer connected
+	// must be replaced: keeping it would save an unusable model. Only a
+	// genuinely unmanaged reference (e.g. a custom provider) is preserved.
+	managedDefault := strings.HasPrefix(defaultModel, "albert/") ||
+		strings.HasPrefix(defaultModel, "mistral/") ||
+		strings.HasPrefix(defaultModel, "openai-compatible/")
+	externalDefault := defaultModel != "" && !setupModelRefKnown(defaultModel, choices) && !managedDefault
 	if !selected[defaultModel] && !externalDefault {
 		defaultModel = firstSelectedChoiceRef(choices, selected)
 	}

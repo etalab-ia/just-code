@@ -680,22 +680,14 @@ func (t *Tart) startVM(ctx context.Context) error {
 // #74); the warning stays so the choice is visible on every start.
 func (t *Tart) validateConfig(ctx context.Context) error {
 	if !t.Config.GuestCredentialsAcknowledged {
-		return fmt.Errorf("tart hands the Albert credential to the guest in plaintext, where any process (the agent included) can read it; " +
+		return fmt.Errorf("tart hands the inference credentials to the guest in plaintext, where any process (the agent included) can read them; " +
 			"pass --acknowledge-guest-credentials to accept this, or use --microsandbox, which keeps the credential behind the secret proxy")
 	}
-	if _, _, _, _, err := t.resolveAlbertFor(ctx); err != nil {
+	if _, err := t.resolveProviderKeysFor(ctx); err != nil {
 		return err
 	}
 	warnUnprotectedRuntime("Tart")
 	return ValidateMTU(t.Config.TartMTU)
-}
-
-// resolveAlbertFor routes the Albert resolution through the test seam.
-func (t *Tart) resolveAlbertFor(ctx context.Context) (string, bindingSource, string, string, error) {
-	if t.CredentialRead != nil {
-		return resolveAlbertWith(t.CredentialRead, ctx, t.Config, "")
-	}
-	return resolveAlbert(ctx, t.Config, "")
 }
 
 // resolveProviderKeysFor resolves every configured platform's key through the

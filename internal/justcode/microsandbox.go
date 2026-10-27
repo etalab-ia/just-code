@@ -1085,8 +1085,8 @@ func (m *MicrosandboxRuntime) rejectLegacyRawKey(ctx context.Context) error {
 // not avoid this: Tart and agent-vm expose the key in backend mode too, so the
 // warning is about the runtime, not the isolation level.
 func warnUnprotectedRuntime(runtimeName string) {
-	fmt.Fprintf(os.Stderr, "Warning: %s has no secret injection, so the real ALBERT_API_KEY is readable inside the VM "+
-		"(isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate it. "+
+	fmt.Fprintf(os.Stderr, "Warning: %s has no secret injection, so the real inference credentials are readable inside the VM "+
+		"(isolation backend and full alike). Any process in the guest, including the agent itself, can read and exfiltrate them. "+
 		"Prefer --microsandbox for untrusted work, and treat the guest as holding a live credential.\n", runtimeName)
 }
 

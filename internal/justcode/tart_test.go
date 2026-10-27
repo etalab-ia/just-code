@@ -694,3 +694,42 @@ func TestTartStartRequiresGuestCredentialsAcknowledgement(t *testing.T) {
 		t.Fatalf("Start must require the acknowledgement: %v", err)
 	}
 }
+
+// TestTartAcceptsAMistralOnlyConfiguration pins Codex's finding on #287:
+// validateConfig used to require an Albert credential even when the host had
+// configured only another platform.
+func TestTartAcceptsAMistralOnlyConfiguration(t *testing.T) {
+	tt := newTestTart(t, &fakeRunner{})
+	tt.Config.APIKey = ""
+	providers, err := ResolveProviders([]ProviderSettings{{Kind: ProviderMistral}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt.Config.Providers = providers
+	tt.CredentialRead = func(_ context.Context, kind CredentialKind, _ string) (string, string, error) {
+		if kind == CredentialMistral {
+			return "mistral-key", "native", nil
+		}
+		return "", "", ErrCredentialNotFound
+	}
+	if err := tt.validateConfig(context.Background()); err != nil {
+		t.Fatalf("a Mistral-only configuration must validate: %v", err)
+	}
+}
+
+func TestTartReportsTheMissingPlatformKey(t *testing.T) {
+	tt := newTestTart(t, &fakeRunner{})
+	tt.Config.APIKey = ""
+	providers, err := ResolveProviders([]ProviderSettings{{Kind: ProviderMistral}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt.Config.Providers = providers
+	tt.CredentialRead = func(context.Context, CredentialKind, string) (string, string, error) {
+		return "", "", ErrCredentialNotFound
+	}
+	err = tt.validateConfig(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "mistral") {
+		t.Fatalf("the missing Mistral key must be named: %v", err)
+	}
+}

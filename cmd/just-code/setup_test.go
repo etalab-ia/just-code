@@ -115,6 +115,81 @@ func TestSetupPlatformStageReasksARejectedProviderKey(t *testing.T) {
 	}
 }
 
+func TestSetupPlatformStagePersistsACorrectedEndpoint(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{{
+			Kind: "openai-compatible", Name: "Old", BaseURL: "https://old.example.com/v1",
+		}},
+	}
+	if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, provider justcode.InferenceProvider, key string) justcode.CredentialProbe {
+			if provider.BaseURL == "https://old.example.com/v1" {
+				return justcode.CredentialProbe{Incompatible: true, Detail: "not a models listing"}
+			}
+			return justcode.CredentialProbe{}
+		},
+	}
+	input := "k1\nBetter\nhttps://new.example.com/v1\nk2\n"
+	providers, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader(input)), true, &j, false, fs, stateDir)
+	if err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if providers[0].BaseURL != "https://new.example.com/v1" || providers[0].Name != "Better" {
+		t.Fatalf("corrected provider not persisted: %+v", providers[0])
+	}
+	if store.puts[justcode.CredentialOpenAICompatible] != "k2" {
+		t.Fatalf("the corrected endpoint's key was not stored: %+v", store.puts)
+	}
+	after, err := justcode.ReadSetupJournal(fs, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := after.Platform(justcode.ProviderOpenAICompatible)
+	if !ok || entry.BaseURL != "https://new.example.com/v1" || entry.Name != "Better" {
+		t.Fatalf("journal kept the old endpoint: %+v", after.Platforms)
+	}
+}
+
+func TestPromptSetupModelsReplacesADisconnectedPlatformDefault(t *testing.T) {
+	previousCatalogue, previousRun := setupProviderCatalogueFn, setupModelPickerRun
+	setupProviderCatalogueFn = func(justcode.InferenceProvider) ([]justcode.CatalogueModel, error) {
+		return []justcode.CatalogueModel{{ID: "m1"}, {ID: "m2"}}, nil
+	}
+	var sawExternal bool
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		sawExternal = picker.externalDefault
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupProviderCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+	providers, err := justcode.ResolveProviders([]justcode.ProviderSettings{{Kind: justcode.ProviderMistral}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, defaultModel, ok, err := promptSetupModels(providers, []string{"albert/qwen3-coder"}, "albert/qwen3-coder")
+	if err != nil || !ok {
+		t.Fatalf("prompt: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if sawExternal {
+		t.Fatal("a disconnected managed platform's default must not be treated as external")
+	}
+	if defaultModel != "mistral/m1" || !containsString(selected, "mistral/m1") {
+		t.Fatalf("default must move to the connected platform: default=%q selected=%v", defaultModel, selected)
+	}
+}
+
 func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T) {
 	choices := albertSetupChoices()
 	picker := setupModelPicker{

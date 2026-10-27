@@ -1995,7 +1995,7 @@ func containsString(haystack []string, needle string) bool {
 func TestWarnUnprotectedRuntimeNamesTheRuntimeAndTheRisk(t *testing.T) {
 	for _, runtimeName := range []string{"Tart", "agent-vm"} {
 		out := captureStderr(t, func() { warnUnprotectedRuntime(runtimeName) })
-		for _, want := range []string{runtimeName, "no secret injection", "ALBERT_API_KEY", "isolation backend and full"} {
+		for _, want := range []string{runtimeName, "no secret injection", "inference credentials", "isolation backend and full"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("warning for %s missing %q: %s", runtimeName, want, out)
 			}

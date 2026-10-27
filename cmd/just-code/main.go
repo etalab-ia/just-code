@@ -252,9 +252,13 @@ func run(args []string) (int, error) {
 			fmt.Fprintf(os.Stderr, "Warning: the inference platforms cannot be resolved (%v); continuing without them\n", providerErr)
 		}
 	}
+	var albertModels []justcode.AlbertModelConfig
+	if providersContain(cfg.Providers, justcode.ProviderAlbert) {
+		albertModels = resolveEnabledAlbertModels(modelSelection)
+	}
 	overlay := justcode.ManagedOverlay{
 		Model:         modelSelection,
-		Models:        resolveEnabledAlbertModels(modelSelection),
+		Models:        albertModels,
 		Providers:     resolveProviderOverlays(cfg.Providers, modelSelection),
 		AlbertEnabled: providersContain(cfg.Providers, justcode.ProviderAlbert),
 		MCPConnectors: mcpSelection,
