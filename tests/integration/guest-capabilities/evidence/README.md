@@ -45,13 +45,17 @@ Elles ne qualifient pas le runtime actuel.
 
 ## Environnement et versions
 
-Chaque transcript conserve la commande complète, dont `MSB_BIN`, `MSB_HOME`,
-`MSB_PATH` et `MSB_LIBKRUNFW_PATH`, la version brute du binaire et `msb
-doctor`. Le runtime 0.7.8 installé pour la qualification courante a le
-SHA-256 `5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493`,
-identique à celui gravé dans just-code ; l'historique 0.7.6 porte
-`a4f1722f…`. Dans les deux cas `msb doctor` confirme libkrunfw et Apple
-Silicon.
+Les transcripts de qualification et de prévol conservent la commande
+complète, dont `MSB_BIN`, `MSB_HOME`, `MSB_PATH` et `MSB_LIBKRUNFW_PATH`, la
+version brute du binaire et `msb doctor`. C'est le cas des trois runs 0.7.8 et
+des trois runs 0.7.6. La trace `t1-precondition` est volontairement plus
+brève : elle conserve la sortie brute du harnais et la provenance, sans
+republier les blocs de version de la même session.
+
+Le runtime 0.7.8 installé pour la qualification courante a le SHA-256
+`5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493`, identique
+à celui gravé dans just-code ; l'historique 0.7.6 porte `a4f1722f…`. Dans les
+deux cas `msb doctor` confirme libkrunfw et Apple Silicon.
 
 La sortie brute `go list -m` déclare le SDK Go de la révision testée (v0.7.8
 pour la qualification courante). La matrice P03 appelle le CLI : elle
