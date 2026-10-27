@@ -266,6 +266,25 @@ func TestGuestExecArgvAndEnv(t *testing.T) {
 	}
 }
 
+// TestGuestDisablesOpenCodeUpdateCheck covers the Tart backend path. `opencode
+// serve` runs no updater today, so the assertion is about uniformity: the
+// variable belongs to the launcher environment so every process derived from
+// it inherits the opt-out. The full-mode TUI, which does run the updater, is
+// covered separately by TestGuestSecretsEnvCarriesProviderConfig. The managed
+// OPENCODE_CONFIG_CONTENT cannot carry the setting (see
+// OpenCodeDisableUpdateEnv).
+func TestGuestDisablesOpenCodeUpdateCheck(t *testing.T) {
+	skipUnixGuest(t)
+	cfg, execer := guestTest(t, &fakeRunner{}, "pw\nkey\n", "opencode")
+
+	if err := RunGuestBootstrap(context.Background(), cfg); err != nil {
+		t.Fatalf("RunGuestBootstrap: %v", err)
+	}
+	if !envHas(execer.env, "OPENCODE_DISABLE_AUTOUPDATE=1") {
+		t.Fatalf("update check not disabled; env: %v", execer.env)
+	}
+}
+
 func TestGuestInstallsOpencodeViaBrew(t *testing.T) {
 	skipUnixGuest(t)
 	// brew present, opencode absent; a successful brew install drops it on PATH.
@@ -376,5 +395,10 @@ func TestGuestSecretsEnvCarriesProviderConfig(t *testing.T) {
 	// not single-quoted, sourcing the file would mangle it.
 	if strings.Contains(content, `OPENCODE_CONFIG_CONTENT={`) {
 		t.Fatalf("provider config must be single-quoted, not raw JSON: %q", content)
+	}
+	// Issue #178: the full-mode TUI sources this file and nothing else, so the
+	// update-check opt-out must be here too.
+	if !strings.Contains(content, "OPENCODE_DISABLE_AUTOUPDATE=1") {
+		t.Fatalf("secrets env must disable the update check: %q", content)
 	}
 }
