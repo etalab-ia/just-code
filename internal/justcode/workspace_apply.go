@@ -806,6 +806,14 @@ func contentDigest(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// patchChangesMode reports whether a change's patch carries a permission
+// change: git renders it as an "old mode" line, which a content digest
+// cannot see. The no-op re-record path uses it to land the guest's mode
+// instead of silently dropping it (PR #280 review).
+func patchChangesMode(c GuestChange) bool {
+	return bytes.Contains(c.Patch, []byte("\nold mode "))
+}
+
 // hostContentDigest fingerprints the host file's current content: its sha256,
 // or "deleted" when it is absent.
 func hostContentDigest(root, rel string) (string, error) {
@@ -871,7 +879,9 @@ func writeRecoveredFile(store ApplyRecordStore, root string, c GuestChange, cont
 //     once, so applying it would report a false conflict.
 //   - A re-delivered change whose guest content also matches its recorded
 //     baseline is a no-op: re-recording it preserves any host edit merged
-//     in by the first apply instead of silently deleting it.
+//     in by the first apply instead of silently deleting it. A re-delivery
+//     that carries a permission change lands the guest's mode without
+//     touching the content.
 //   - A host file the user edited since is never overwritten directly: it
 //     goes through git apply, which either merges the new work or reports
 //     a visible conflict.
@@ -908,9 +918,11 @@ func ApplySelectedChanges(ctx context.Context, m *MicrosandboxRuntime, root stri
 		if c.Synthetic {
 			// The guest reverted a recovered file: there is no
 			// patch to apply, so only a host still at its baseline
-			// can take the direct path. Anything else is a
-			// conflict the user must see, never a silent skip.
-			if !atBaseline {
+			// — and one whose last recovery left it identical to
+			// the guest, with no host edit merged in — can take
+			// the direct path. Anything else is a conflict the
+			// user must see, never a silent skip (PR #280 review).
+			if !atBaseline || base.Host != base.Guest {
 				conflicted = append(conflicted, c)
 				continue
 			}
@@ -975,6 +987,19 @@ func ApplySelectedChanges(ctx context.Context, m *MicrosandboxRuntime, root stri
 			// recovery already brought over. Re-record without
 			// touching the host, so an edit the patch path merged
 			// into the host file survives (PR #280 review).
+			if patchChangesMode(c) {
+				// A content-identical re-delivery can still
+				// carry a permission change, which git
+				// renders as old/new mode lines and a
+				// content digest cannot see: land the
+				// guest's current mode, never its
+				// content, so merged host edits survive
+				// while the executable bit crosses
+				// (PR #280 review).
+				if err := os.Chmod(filepath.Join(root, filepath.FromSlash(c.Rel)), mode); err != nil {
+					return nil, nil, err
+				}
+			}
 			if err := store.Record(c.Rel, GuestChangeDigest(c), hostNow, base.Guest); err != nil {
 				return nil, nil, err
 			}

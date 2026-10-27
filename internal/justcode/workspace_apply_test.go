@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -254,7 +255,8 @@ func TestApplyRecordStoreRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits (Go reports 0666 there).
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("record mode = %v, want 0600", info.Mode().Perm())
 	}
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
@@ -906,6 +908,133 @@ func TestApplySelectedChangesPreservesHostEditsMergedByPatch(t *testing.T) {
 	}
 }
 
+// TestApplySelectedChangesSyntheticReversalPreservesMergedHostEdits is the
+// P1 guard of PR #280's round-3 review: when the first recovery merges a
+// host-only edit (patch path), the recorded baselines differ, and a later
+// guest reversal is synthetic — no patch exists to preserve the host edit.
+// The direct copy would silently drop it, so the reversal must be reported
+// as a conflict instead.
+func TestApplySelectedChangesSyntheticReversalPreservesMergedHostEdits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	writeFile(t, root, "src/app.js", "line1\nold\nline3\n")
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-q", "-m", "base")
+	// The user edits the host file outside the patch's hunk before any
+	// recovery happened.
+	writeFile(t, root, "src/app.js", "line1\nold\nline3\nhost-line\n")
+	ctx := context.Background()
+
+	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,3 +1,3 @@\n line1\n-old\n+new\n line3\n")}
+	client := sealedFakeMSB()
+	m, _ := applyTestRuntime(t, client)
+	// The guest's current content after its own edit: the patch applied
+	// to the guest's HEAD, without the host-only line.
+	guestAfterFirst := []byte("line1\nnew\nline3\n")
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: contentDigest(guestAfterFirst)}}
+	applied, _, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first})
+	if err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Fatalf("first apply = %+v, want the patch applied", applied)
+	}
+	wantMerged := "line1\nnew\nline3\nhost-line\n"
+
+	// The guest reverts the file to HEAD: the diff is empty, the
+	// synthesis offers the reversal.
+	head := []byte("line1\nold\nline3\n")
+	client.execCaptureResults = []fakeMSBExecCaptureResult{
+		{stdout: "yes"},
+		{stdout: ""},
+		{stdout: ""},
+		{stdout: contentDigest(head)},
+	}
+	changes, err := m.CollectGuestChanges(ctx)
+	if err != nil {
+		t.Fatalf("CollectGuestChanges: %v", err)
+	}
+	if len(changes) != 1 || !changes[0].Synthetic || changes[0].Rel != "src/app.js" {
+		t.Fatalf("changes = %+v, want the synthesized reversal", changes)
+	}
+
+	// The reversal must not overwrite the merged host edit: the
+	// baselines differ, so it is a conflict. The fake serves no
+	// ReadGuestFile result — reaching for the guest content would
+	// already be the bug.
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, changes)
+	if err != nil {
+		t.Fatalf("reversal apply: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("applied = %+v, want none: the reversal must not copy over the merged host edit", applied)
+	}
+	if len(conflicted) != 1 || conflicted[0].Rel != "src/app.js" {
+		t.Fatalf("conflicted = %+v, want exactly src/app.js reported as a conflict", conflicted)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != wantMerged {
+		t.Fatalf("src/app.js = %q, want the merged host edit preserved", got)
+	}
+}
+
+// TestApplySelectedChangesRedeliveryLandsModeChange is the P2 guard of PR
+// #280's round-3 review: a guest change that only toggles the executable
+// bit has identical content, so the no-op re-record path used to swallow
+// it — the host permissions never changed while the change was recorded as
+// recovered and hidden from later runs. The re-delivery must land the
+// guest's mode.
+func TestApplySelectedChangesRedeliveryLandsModeChange(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	writeFile(t, root, "src/app.js", "new\n")
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-q", "-m", "base")
+	ctx := context.Background()
+
+	client := sealedFakeMSB()
+	m, stateDir := applyTestRuntime(t, client)
+	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+	// The last recovery copied "new\n" verbatim to both sides.
+	recovered := []byte("new\n")
+	if err := store.Record("src/app.js", "patch-digest", contentDigest(recovered), contentDigest(recovered)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The guest only toggles the executable bit: the content digests
+	// match, the patch carries old/new mode lines.
+	modeOnly := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\nold mode 100644\nnew mode 100755\n")}
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{
+		stdout: "755 " + strconv.Itoa(len(recovered)) + "\n" + base64.StdEncoding.EncodeToString(recovered),
+	}}
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, []GuestChange{modeOnly})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(applied) != 1 || len(conflicted) != 0 {
+		t.Fatalf("apply = (%+v, %+v), want the mode change applied", applied, conflicted)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != string(recovered) {
+		t.Fatalf("src/app.js = %q, want the content untouched", got)
+	}
+	// Windows has no Unix permission bits (Go reports 0666 there), so
+	// the landed mode is only asserted where the bit exists.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(filepath.Join(root, "src", "app.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Fatalf("src/app.js mode = %v, want 0755", info.Mode().Perm())
+		}
+	}
+}
+
 // TestApplyGuestPatchesSubdirectoryOfCheckoutApplies is the F2 guard of
 // PR #280's review: when the host folder is a subdirectory of a git
 // checkout, git apply resolves the patch paths against the outer repo's
@@ -1300,7 +1429,8 @@ func TestPreserveUnappliedPatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits (Go reports 0666 there).
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("patch file mode = %v, want 0600", info.Mode().Perm())
 	}
 }

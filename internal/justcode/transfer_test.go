@@ -23,6 +23,11 @@ func gitInitForTransfer(t *testing.T, dir string) {
 	}
 	for _, args := range [][]string{
 		{"init", "-q"},
+		// Pin the line-ending policy: byte-level assertions on
+		// recovered content must not depend on the runner's global
+		// autocrlf (GitHub's Windows images default to true, which
+		// makes git apply smudge LF to CRLF).
+		{"config", "core.autocrlf", "false"},
 		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "T"},
 		{"add", "-A"},
