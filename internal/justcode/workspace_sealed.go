@@ -143,14 +143,22 @@ func (m *MicrosandboxRuntime) transferIntoGuest(ctx context.Context, opts SyncOp
 	if err != nil {
 		return err
 	}
-	opts.print(manifest.Summary())
+	// During a first launch (issue #172) the English review block is replaced
+	// by the French checklist, which reports this manifest's counts instead;
+	// printing both would say the same thing twice, in two languages. The
+	// review stays available through 'just-code workspace status'.
+	if m.Launch != nil && m.Launch.Terminal {
+		m.Launch.RecordTransfer(manifest)
+	} else {
+		opts.print(manifest.Summary())
+	}
 	// Fail closed on an unattributable finding: a flagged file that cannot be
 	// named cannot be excluded, and proceeding would mean guessing that it is
 	// harmless.
 	if len(manifest.UnmappedFindings) > 0 {
-		return fmt.Errorf("gitleaks reported %d finding(s) whose paths could not be matched to a file in %s, so the filter cannot tell which candidate to exclude: "+
-			"resolve the report by hand ('gitleaks detect --no-git --source %s'), then retry",
-			len(manifest.UnmappedFindings), manifest.Root, manifest.Root)
+		return fmt.Errorf("the secret detector reported %d finding(s) whose paths could not be matched to a file in %s, so the filter cannot tell which candidate to exclude: "+
+			"inspect 'just-code workspace status' and resolve the unmatched findings before retrying",
+			len(manifest.UnmappedFindings), manifest.Root)
 	}
 	included := manifest.Included()
 	if len(included) == 0 {

@@ -53,6 +53,41 @@ type TransferOptions struct {
 	MaxFileBytes int64
 }
 
+// TransferExclusion is the structured class of a refusal. Reason is
+// review-screen prose — it can be reworded, translated, or carry a detail
+// level one surface prefers over another — so a caller that needs to count
+// or branch (the first-launch checklist counts dotenv files apart from
+// sensitive ones, issue #172) must not match sentences. The category is the
+// stable contract underneath the wording.
+type TransferExclusion string
+
+const (
+	// TransferExclusionNone marks an entry that crossed into the guest,
+	// whether the default policy allowed it or an explicit per-file decision
+	// re-included it after a rule had refused it. It is the zero value.
+	TransferExclusionNone TransferExclusion = ""
+	// TransferExclusionSymlink: a link can resolve outside the resolved set.
+	TransferExclusionSymlink TransferExclusion = "symlink"
+	// TransferExclusionIrregular: a socket, device or FIFO — reading one can
+	// block forever, and none carries project content.
+	TransferExclusionIrregular TransferExclusion = "irregular"
+	// TransferExclusionGitMetadata: .git internals; the guest repository is
+	// created inside the guest.
+	TransferExclusionGitMetadata TransferExclusion = "git-metadata"
+	// TransferExclusionSubmodule: a gitlink; the submodule's own repository
+	// is not transferred.
+	TransferExclusionSubmodule TransferExclusion = "submodule"
+	// TransferExclusionDotenv: a dotenv-named file beyond the safe
+	// .example/.sample suffixes.
+	TransferExclusionDotenv TransferExclusion = "dotenv"
+	// TransferExclusionSecret: the secret detector flagged the file.
+	TransferExclusionSecret TransferExclusion = "secret"
+	// TransferExclusionGitIgnored: git-ignored local or derived state.
+	TransferExclusionGitIgnored TransferExclusion = "git-ignored"
+	// TransferExclusionSizeCap: above the per-file transfer cap.
+	TransferExclusionSizeCap TransferExclusion = "size-cap"
+)
+
 // TransferEntry is one candidate path in the manifest.
 type TransferEntry struct {
 	// Rel is the slash-separated path relative to the root.
@@ -71,6 +106,12 @@ type TransferEntry struct {
 	Overridable bool
 	// Reason explains the decision, for the review screen.
 	Reason string
+	// Exclusion is the structured class of the refusal (see
+	// TransferExclusion). It is TransferExclusionNone exactly when the file
+	// crossed into the guest — including a path an explicit per-file
+	// decision re-included after a rule refused it, which counts as crossed —
+	// so counting exclusions never has to agree with the Reason prose.
+	Exclusion TransferExclusion
 	// Mode is the file's permission bits, applied on extraction.
 	Mode fs.FileMode
 }
@@ -127,6 +168,24 @@ func (m TransferManifest) Excluded() []TransferEntry {
 	return out
 }
 
+// ExclusionCount counts the candidates one refusal class refused. The launch
+// checklist (issue #172) uses it to report how many dotenv files and how
+// many sensitive files stayed behind, from structured categories rather
+// than by matching the reason wording. TransferExclusionNone always counts
+// zero: it means the file crossed.
+func (m TransferManifest) ExclusionCount(c TransferExclusion) int {
+	if c == TransferExclusionNone {
+		return 0
+	}
+	n := 0
+	for _, e := range m.Entries {
+		if !e.Included && e.Exclusion == c {
+			n++
+		}
+	}
+	return n
+}
+
 // TotalBytes is the transfer size of the included set.
 func (m TransferManifest) TotalBytes() int64 {
 	var total int64
@@ -149,10 +208,10 @@ func (m TransferManifest) Summary() string {
 		b.WriteString("Source set: the directory tree (no Git repository at this root).\n")
 	}
 	if m.GitleaksMissing {
-		b.WriteString("Warning: gitleaks is not installed, so secret detection did not run; the dotenv name filter still applied.\n")
+		b.WriteString("Warning: the secret-detection tool is not installed, so secret detection did not run; the dotenv name filter still applied.\n")
 	}
 	if len(m.UnmappedFindings) > 0 {
-		b.WriteString("Warning: these gitleaks findings could not be attributed to a file; the transfer is refused while they are unresolved:\n")
+		b.WriteString("Warning: these secret-detection findings could not be attributed to a file; the transfer is refused while they are unresolved:\n")
 		for _, f := range m.UnmappedFindings {
 			fmt.Fprintf(&b, "  %s\n", f)
 		}
@@ -275,9 +334,9 @@ func ResolveTransferSet(ctx context.Context, root string, opts TransferOptions) 
 }
 
 // classifyTransferCandidate applies the default-deny policy to one path. The
-// order of the checks decides the reported reason: a dotenv file that is also
-// git-ignored is reported as a dotenv exclusion, because that is the
-// security-relevant fact.
+// order of the checks decides the reported reason and exclusion category: a
+// dotenv file that is also git-ignored is reported as a dotenv exclusion,
+// because that is the security-relevant fact.
 func classifyTransferCandidate(root, rel string, ignored, gitManaged bool, findings []gitleaksFinding, opts TransferOptions) (TransferEntry, error) {
 	entry := TransferEntry{Rel: rel}
 	abs := filepath.Join(root, filepath.FromSlash(rel))
@@ -290,6 +349,7 @@ func classifyTransferCandidate(root, rel string, ignored, gitManaged bool, findi
 		// submodule, whose content is a repository of its own. Name it
 		// rather than emitting an opaque skip.
 		if gitManaged {
+			entry.Exclusion = TransferExclusionSubmodule
 			entry.Reason = "submodule (gitlink); its own repository is not transferred"
 			return entry, nil
 		}
@@ -303,7 +363,10 @@ func classifyTransferCandidate(root, rel string, ignored, gitManaged bool, findi
 	// exclude records a refusal. overridable marks a judgement call the user
 	// may revisit; a structural refusal (symlink, Git metadata, size cap)
 	// cannot be overridden, because what it protects is not a preference.
-	exclude := func(reason string, overridable bool) (TransferEntry, error) {
+	// A refusal carries both the category (for counting) and the reason (for
+	// the review screen); a re-inclusion carries neither, because the file
+	// crossed.
+	exclude := func(category TransferExclusion, reason string, overridable bool) (TransferEntry, error) {
 		entry.Overridable = overridable
 		if optIn && overridable {
 			entry.Included = true
@@ -311,6 +374,7 @@ func classifyTransferCandidate(root, rel string, ignored, gitManaged bool, findi
 			entry.Reason = "re-included by an explicit per-file decision; filter rule was: " + reason
 			return entry, nil
 		}
+		entry.Exclusion = category
 		entry.Reason = reason
 		return entry, nil
 	}
@@ -318,21 +382,24 @@ func classifyTransferCandidate(root, rel string, ignored, gitManaged bool, findi
 	name := filepath.Base(rel)
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
-		return exclude("symlink; not transferred into the sealed guest", false)
+		return exclude(TransferExclusionSymlink, "symlink; not transferred into the sealed guest", false)
 	case !info.Mode().IsRegular():
 		// A FIFO, socket or device node: reading it can block forever, and
 		// none of them carries project content worth transferring.
-		return exclude("not a regular file (socket, device or FIFO); not transferred", false)
+		return exclude(TransferExclusionIrregular, "not a regular file (socket, device or FIFO); not transferred", false)
 	case name == ".git" || strings.HasPrefix(rel, ".git/"):
-		return exclude("Git metadata; the guest repository is created inside the guest", false)
+		return exclude(TransferExclusionGitMetadata, "Git metadata; the guest repository is created inside the guest", false)
 	case isDotenvName(name):
-		return exclude("dotenv file (default-deny)", true)
+		return exclude(TransferExclusionDotenv, "dotenv file (default-deny)", true)
 	case len(findings) > 0:
-		return exclude(fmt.Sprintf("gitleaks: %s", findings[0].RuleID), true)
+		// The rule identifier stays (it says what was found); the tool that
+		// reported it does not (the user decides about secrets, not about a
+		// scanner, issue #172).
+		return exclude(TransferExclusionSecret, fmt.Sprintf("secret detected: %s", findings[0].RuleID), true)
 	case ignored:
-		return exclude("git-ignored (local or derived state); re-include explicitly if the guest needs it", true)
+		return exclude(TransferExclusionGitIgnored, "git-ignored (local or derived state); re-include explicitly if the guest needs it", true)
 	case info.Size() > opts.MaxFileBytes:
-		return exclude(fmt.Sprintf("above the per-file transfer cap (%s)", FormatByteSize(opts.MaxFileBytes)), false)
+		return exclude(TransferExclusionSizeCap, fmt.Sprintf("above the per-file transfer cap (%s)", FormatByteSize(opts.MaxFileBytes)), false)
 	}
 	entry.Included = true
 	entry.Reason = "included"

@@ -30,6 +30,16 @@ Les environnements sont identifiés par projet (répertoire racine du worktree G
 
 Les runtimes ne doivent pas tourner simultanément si leurs ports de prévisualisation entrent en conflit. Le port serveur 4096 n'est transféré qu'en mode backend. Si un autre runtime est déjà actif, `just-code` (attachement), `just-code start` et `just-code restart` proposent de l'arrêter avant de continuer. Quand tu quittes le TUI OpenCode, l'attachement propose aussi d'arrêter le backend ; répondre non le laisse disponible pour une reconnexion. `just-code restart` arrête puis relance la même instance sans la recréer ; `just-code recreate` détruit et reconstruit l'environnement, perdant les sessions, les outils installés et les fichiers propres à l'invité. La recréation demande une confirmation interactive (refusée hors TTY, pour CI et scripts).
 
+## Premier lancement Microsandbox
+
+Dans un terminal interactif, le lancement affiche les étapes terminées : copie du projet, skills, MCP et disponibilité de l'agent. La copie indique les fichiers `.env` et les fichiers sensibles exclus. Les avertissements sont regroupés sur une seule ligne.
+
+Si le projet contient des plugins ou des commandes MCP non approuvés, un menu propose **Approuver et démarrer**, **Voir le détail** ou **Quitter**. L'approbation reste sur le poste et porte sur le contenu présenté. Un fichier modifié exige une nouvelle approbation. Sans terminal interactif, le lancement reste bloqué : relire les entrées avec `just-code trust status`, puis les approuver explicitement avec `just-code trust approve`.
+
+La durée complète d'un démarrage réussi, y compris la mise à jour de la configuration de l'instance, est enregistrée dans le répertoire d'état local (`launch-timings.json`). En mode backend, la mesure inclut l'attente de disponibilité de l'agent ; une attente qui échoue n'enregistre aucune durée. Le premier démarrage avec installation des outils et les démarrages suivants ont des mesures séparées. Sans mesure préalable, aucune durée chiffrée n'est annoncée. La première durée avec installation reste conservée, même après de nouveaux démarrages.
+
+OpenCode conserve la version installée dans l'invité : les mises à jour automatiques sont désactivées au lancement.
+
 ## Niveaux d'isolation
 
 `--isolation backend|full` (ou la variable d'environnement `ISOLATION`) choisit où vit l'agent :

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
@@ -196,6 +197,11 @@ func run(args []string) (int, error) {
 	// configuration contract (#29). Resolving them before any backend is
 	// constructed is what makes them effective rather than merely displayed.
 	manifestRuntime, manifestIsolation := projectRuntimeIsolation(projectRoot)
+	var launch *justcode.LaunchUX
+	if isLaunchAction(parsed.action) && runtimeUsesMicrosandbox(parsed.runtime, manifestRuntime) {
+		launch = justcode.NewLaunchUX(projectRoot, "OpenCode")
+		launch.TimingStore = justcode.DefaultLaunchTimingStore()
+	}
 	// Resolve the isolation level before any backend is constructed: the
 	// backends read cfg.Isolation at construction time, so applying the flag
 	// afterwards would leave them in the wrong mode.
@@ -211,7 +217,7 @@ func run(args []string) (int, error) {
 		fmt.Fprintf(os.Stderr, "Warning: %v; using the default guest sizing\n", resErr)
 	}
 	if isLaunchAction(parsed.action) && runtimeUsesMicrosandbox(parsed.runtime, manifestRuntime) {
-		cfg, resErr = enforceHostResourceLimits(cfg, projectRoot)
+		cfg, resErr = enforceHostResourceLimits(cfg, projectRoot, launch)
 		if resErr != nil {
 			return 1, resErr
 		}
@@ -246,7 +252,11 @@ func run(args []string) (int, error) {
 		}
 	}
 	if conflictMsg != "" {
-		fmt.Fprintf(os.Stderr, "Warning: managed OpenCode fields differ from the project configuration:\n%s\n", conflictMsg)
+		if launch != nil && launch.Terminal {
+			launch.AddWarning("des réglages OpenCode du projet sont remplacés par les réglages gérés ; détail : just-code config explain")
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: managed OpenCode fields differ from the project configuration:\n%s\n", conflictMsg)
+		}
 	}
 	// Trust gate (P10): project plugins and MCP commands execute code at
 	// OpenCode config load, so starting a runtime for this project requires
@@ -313,6 +323,15 @@ func run(args []string) (int, error) {
 		d = justcode.NewDispatcher(cfg)
 	}
 	d.SetOpenCodeOverlay(overlay)
+	if launch != nil {
+		d.SetLaunchUX(launch)
+		launch.RecordModel(modelSelection)
+		for _, model := range overlay.Models {
+			if modelSelection == "albert/"+model.ID {
+				launch.RecordModel(model.Name)
+			}
+		}
+	}
 
 	// These actions resolve their own target (or need none), so they must not be
 	// gated on a configured runtime. check consumes the isolation level, so it
@@ -829,6 +848,9 @@ func requireTrustedExecutionInputs(projectRoot string) error {
 	if len(unapproved) == 0 {
 		return nil
 	}
+	if launchTrustTTYFn() {
+		return approveLaunchInputs(projectRoot, unapproved)
+	}
 	var lines []string
 	for _, u := range unapproved {
 		lines = append(lines, fmt.Sprintf("  %s (%s)", u.Path, u.Reason))
@@ -956,7 +978,7 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	// Reconcile when the backend supports it (P07): an existing instance
 	// gets its configuration classified and an interrupted apply resumed,
 	// instead of a blind start.
-	if err := justcode.StartOrReconcile(ctx, b); err != nil {
+	if err := startWithLaunchReport(ctx, d, b); err != nil {
 		return 0, err
 	}
 	if cfg.Isolation == justcode.IsolationFull {
@@ -980,12 +1002,15 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	if _, err := exec.LookPath("opencode"); err != nil {
 		return 0, fmt.Errorf("the 'opencode' CLI is required to attach the TUI but was not found on PATH; install it with 'npm install -g opencode-ai'")
 	}
-	fmt.Fprintf(os.Stderr, "Waiting for the backend at %s to become healthy...\n", endpoint)
-	health := justcode.DefaultHealthConfig()
-	health.Deadline = cfg.StartTimeout
-	health.Progress = os.Stderr
-	if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, health, nil); err != nil {
-		return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
+	// Microsandbox's launch report has already waited before saving its timing.
+	if d.Launch == nil {
+		fmt.Fprintln(os.Stderr, "Préparation de l'agent…")
+		health := justcode.DefaultHealthConfig()
+		health.Deadline = cfg.StartTimeout
+		health.Progress = os.Stderr
+		if err := justcode.WaitHealthy(ctx, endpoint, cfg.Username, cfg.Password, health, nil); err != nil {
+			return 0, fmt.Errorf("%w\n  Run 'just-code logs --%s' to see why, or 'just-code restart --%s' to recreate it.", err, rt, rt)
+		}
 	}
 
 	hasSessions, sessionErr := justcode.OpenCodeRemoteHasSessions(ctx, endpoint, cfg.Username, cfg.Password)
@@ -996,9 +1021,14 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime)
 	}
 	resumeArgs, warn := justcode.OpenCodeResumeArgs(hasSessions, sessionErr, help, helpErr)
 	if warn {
-		justcode.WarnOpenCodeResumeUnavailable("sur l'hôte")
+		if d.Launch != nil && d.Launch.Terminal {
+			d.Launch.AddWarning("reprise automatique indisponible ; les sessions restent accessibles dans OpenCode")
+		} else {
+			justcode.WarnOpenCodeResumeUnavailable("sur l'hôte")
+		}
 	}
-	attachErr := justcode.RunInteractive("opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
+	printLaunchReport(d.Launch)
+	attachErr := justcode.RunInteractiveEnv([]string{"OPENCODE_DISABLE_AUTOUPDATE=1"}, "opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
 	code := exitCodeOf(attachErr)
 	askToStop(ctx, d, rt)
 	return code, attachErr
@@ -1032,7 +1062,7 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 
 	switch action {
 	case "start":
-		err = justcode.StartOrReconcile(ctx, b)
+		err = startWithLaunchReport(ctx, d, b)
 	case "restart":
 		// restart is non-destructive (P07): it stops and starts the existing
 		// instance, preserving disk and guest state.
@@ -1041,7 +1071,7 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 		// recreate is the explicit destructive rebuild. The destruction is
 		// named and confirmed; on a non-TTY (CI, scripts) it refuses rather
 		// than destroying silently.
-		if code, cerr := confirmDestructiveRecreate(rt); cerr != nil {
+		if code, cerr := confirmRecreateFn(rt); cerr != nil {
 			return code, cerr
 		}
 		err = b.Recreate(ctx)
@@ -1056,8 +1086,46 @@ func lifecycleCmd(d *justcode.Dispatcher, rt justcode.Runtime, action string) (i
 	default:
 		err = fmt.Errorf("unsupported action %q", action)
 	}
+	if err == nil && (action == "restart" || action == "recreate") {
+		err = d.WaitLaunchReady(ctx, b)
+	}
+	if err == nil && (action == "start" || action == "restart" || action == "recreate") {
+		printLaunchReport(d.Launch)
+	}
 	return 0, err
 }
+
+var launchNowFn = time.Now
+
+func startWithLaunchReport(ctx context.Context, d *justcode.Dispatcher, b justcode.Backend) error {
+	if d.Launch != nil && d.Launch.Terminal {
+		fmt.Fprintf(os.Stderr, "Démarrage de la machine isolée pour %s…\n", d.Launch.ProjectName)
+	}
+	begun := launchNowFn()
+	if err := justcode.StartOrReconcile(ctx, b); err != nil {
+		return err
+	}
+	if err := d.WaitLaunchReady(ctx, b); err != nil {
+		return err
+	}
+	d.Launch.Observe(launchNowFn().Sub(begun))
+	if m, ok := b.(*justcode.MicrosandboxRuntime); ok && d.Launch != nil {
+		d.RecordLaunchSkills()
+		d.Launch.RecordMCP(m.OpenCodeOverlay.MCPConnectors)
+	}
+	return nil
+}
+
+func printLaunchReport(launch *justcode.LaunchUX) {
+	if launch == nil || !launch.Terminal {
+		return
+	}
+	for _, line := range launch.Checklist() {
+		fmt.Fprintln(os.Stderr, line)
+	}
+}
+
+var confirmRecreateFn = confirmDestructiveRecreate
 
 // confirmDestructiveRecreate asks the user to name what recreate destroys.
 // On a non-TTY (CI, scripts) it refuses rather than destroying silently: the
@@ -1258,7 +1326,7 @@ func applyProjectSandboxResources(cfg justcode.Config, projectRoot string) (just
 // and manifest precedence have been applied, stays within detected host
 // capacity. Only implicit built-in defaults are reduced automatically;
 // explicit project or environment choices fail above the hard ceiling.
-func enforceHostResourceLimits(cfg justcode.Config, projectRoot string) (justcode.Config, error) {
+func enforceHostResourceLimits(cfg justcode.Config, projectRoot string, reports ...*justcode.LaunchUX) (justcode.Config, error) {
 	host, err := detectHostResourcesFn()
 	if err != nil {
 		return cfg, fmt.Errorf("cannot determine host CPU and memory capacity; cannot enforce the guest resource limit: %v", err)
@@ -1301,7 +1369,11 @@ func enforceHostResourceLimits(cfg justcode.Config, projectRoot string) (justcod
 		return cfg, err
 	}
 	for _, warning := range justcode.GuestResourceWarnings(host, cfg.CPUs, cfg.MemoryMB) {
-		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+		if len(reports) > 0 && reports[0] != nil && reports[0].Terminal {
+			reports[0].AddWarning("ressources de la machine hôte limitées ; détail : just-code doctor")
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+		}
 	}
 	return cfg, nil
 }

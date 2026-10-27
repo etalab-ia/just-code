@@ -13,6 +13,8 @@ import (
 // HealthConfig tunes the backend health wait. Defaults mirror the shell: a
 // 120-second wall-clock deadline and a 5-second per-request timeout.
 type HealthConfig struct {
+	// Quiet hides endpoint and probe detail during the concise launch flow.
+	Quiet bool
 	// Deadline is the overall wall-clock bound. Zero disables the bound.
 	Deadline time.Duration
 	// PollInterval is the pause between probes.
@@ -171,10 +173,13 @@ func WaitHealthy(ctx context.Context, endpoint, username, password string, cfg H
 			return nil
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
+			if cfg.Quiet {
+				return fmt.Errorf("l'agent n'est pas prêt après %s ; détail : just-code doctor", cfg.Deadline)
+			}
 			return fmt.Errorf("backend at %s did not become healthy within %s (last probe: %s)",
 				endpoint, cfg.Deadline, last.Summary())
 		}
-		if cfg.Progress != nil && time.Now().After(nextProgress) {
+		if !cfg.Quiet && cfg.Progress != nil && time.Now().After(nextProgress) {
 			fmt.Fprintf(cfg.Progress, "still waiting for the backend at %s (%s elapsed; last probe: %s)\n",
 				endpoint, time.Since(start).Round(time.Second), last.Summary())
 			nextProgress = time.Now().Add(cfg.ProgressInterval)

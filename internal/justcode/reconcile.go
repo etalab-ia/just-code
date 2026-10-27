@@ -454,7 +454,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 		if !isTransientCredentialFailure(resolveErr) {
 			return fmt.Errorf("cannot start %s: %w", m.InstanceName(), resolveErr)
 		}
-		fmt.Fprintf(os.Stderr, "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.\n", m.InstanceName(), resolveErr)
+		m.warn("identifiants indisponibles : références existantes conservées ; détail : just-code doctor", "Warning: cannot resolve the credentials of %s (%v); reusing the persisted secret references. Store the credential and restart to bind it.", m.InstanceName(), resolveErr)
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceDir, 0o755); err != nil {
 		return err
@@ -462,7 +462,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 	// The scan is host hygiene advice, not a gate: with the sealed workspace
 	// (P22) the checkout is not mounted, so a secret in it cannot reach the
 	// guest. The transfer filter is the enforceable boundary.
-	warnWorkspaceHygiene(ctx, m.cfg.WorkspaceDir)
+	m.noteWorkspaceHygiene(ctx)
 
 	path := instanceStatePath(stateDir, m.InstanceName())
 	applied, err := ReadInstanceState(DefaultFS, path)
@@ -505,7 +505,7 @@ func (m *MicrosandboxRuntime) Reconcile(ctx context.Context) error {
 		// The journal is authoritative for this revision: a fresh plan of
 		// [noop] must not override it, or a failed update is never retried.
 		pending = journalToOps(applied.Pending)
-		fmt.Printf("Resuming interrupted apply for %s at: %s\n", m.InstanceName(), joinOps(pending))
+		m.say("Resuming interrupted apply for %s at: %s", m.InstanceName(), joinOps(pending))
 	} else if plan.IsNoOp() {
 		// Skill selections are guest-local managed data (P14), not part of the
 		// VM configuration revision. Reconcile them before a successful no-op
@@ -763,6 +763,7 @@ func (m *MicrosandboxRuntime) applyReconcileOp(ctx context.Context, op Reconcile
 		// host-local record is the only place that remembers them.
 		return m.Client.ModifyNextStart(ctx, m.InstanceName(), m.nextStartEnv(), bindingsMetadata(bindings), m.appliedProjectBindings())
 	case OpRestartBackend:
+		m.announceExistingStart(ctx)
 		return m.launchBackend(ctx)
 	case OpRestartVM:
 		running, err := m.IsRunning(ctx)
