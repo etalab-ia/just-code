@@ -186,6 +186,69 @@ contient plus de balise `<h1>` ; le harnais cherche désormais le titre
 **Conclusion :** Aucune régression des capacités invité dans
 Microsandbox v0.7.3. Le runtime passe la matrice complète.
 
+## Requalification v0.7.6 (#235, 2026-10-27)
+
+Le harnais P03 est aligné sur le runtime CLI 0.7.6 et le SDK Go v0.7.6 livrés
+par just-code. La matrice CLI a été rejouée sur MacBook-Pro-Luis.local, sous
+macOS 27.0.1 (arm64), avec libkrun. Elle n'exécute pas le SDK Go : la sortie
+`go list -m` conserve sa version déclarée dans la révision `7f8b3de`. Le
+runtime temporaire a été vérifié par le SHA-256 gravé dans just-code. Le
+`~/.microsandbox` du poste n'a pas été modifié.
+
+**Résultats observés :**
+
+- Sans les cas réseau : 8 réussites, 0 échec. La version du CLI, les images,
+  le cycle de vie, la persistance et le PTY passent. Le script signale
+  explicitement que les cas réseau sont ignorés.
+- Avec `MSB_GUEST_INTEGRATION_NETWORK=1` : 18 réussites, 0 échec. T1-T10c
+  passent, notamment Node v22.14.0, OpenCode 1.18.32, Chromium, Playwright
+  MCP, le clone distant et le worktree lié invité.
+- Le clone distant a pris 1,253 seconde. Le clone depuis le chemin hôte monté
+  a pris 106 ms. Ce sont des mesures de session, pas des objectifs de
+  performance.
+
+T1 vérifie désormais les références Alpine et Debian et leur architecture
+arm64. Ces trois assertions remplacent l'ancienne réussite inconditionnelle
+relevée en revue. Leur taille reste hors assertion.
+
+Le prévol T10 refuse une archive sans `.git` avec un diagnostic explicite et
+la sortie 2, avant d'arrêter ou de retirer sa sandbox. Le run réseau complet
+utilise un clone principal temporaire. Un worktree lié reste possible lorsque
+son clone principal est accessible. Les trois transcripts de `7f8b3de` sont
+conservés dans `tests/integration/guest-capabilities/evidence/`, avec la
+commande complète, les versions et la sortie brute finale de `msb list`.
+
+Cette qualification concerne les capacités invité P03. Elle ne requalifie ni
+le transport des identifiants P02, ni les parcours intégrés à just-code. Le
+profil navigateur P16 et les autres limites déjà documentées restent hors de
+cette matrice.
+
+## Requalification v0.7.8 (#235, 2026-10-27)
+
+`main` a livré MSB 0.7.8 pendant cette requalification (PR #283). La matrice a
+donc été rejouée sur cette version, qui est celle que le harnais doit suivre.
+Les résultats 0.7.6 ci-dessus restent dans l'historique comme mesures de la
+version livrée à l'ouverture de l'issue.
+
+**Résultats observés sur macOS 27.0.1 arm64, libkrun :**
+
+- Sans les cas réseau : 8 réussites, 0 échec, avec un `MSB_HOME` vidé au
+  préalable. T1 télécharge les images absentes avant de les inspecter.
+- Avec `MSB_GUEST_INTEGRATION_NETWORK=1` : 18 réussites, 0 échec, T1-T10c.
+- Sans checkout Git : sortie 2 au prévol T10, avant l'arrêt de la sandbox.
+- `msb list` final vide après chacun des trois runs.
+
+Le runtime temporaire a été vérifié par le SHA-256 gravé dans just-code
+(`5dbe0d92…`) et `msb doctor` confirme libkrunfw et Apple Silicon. Les
+transcripts de `e1484a7` sont dans
+`tests/integration/guest-capabilities/evidence/`.
+
+Une correction du harnais a été nécessaire : sur un `MSB_HOME` neuf, l'ancien
+T1 échouait en `image not found`. `ensure_image` télécharge désormais l'image
+absente, ce que le transcript `darwin-arm64-msb-0.7.8-t1-precondition.txt`
+documente. Cette qualification 0.7.8 reste une matrice CLI P03 : elle ne
+requalifie ni P02, ni les parcours intégrés, ni le profil navigateur P16.
+
 ## État d'implémentation navigateur P16 (2026-10-04, qualification en attente)
 
 Le changement P16 ajoute un profil navigateur distinct, sans modifier l'image

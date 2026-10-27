@@ -64,6 +64,18 @@ fonctionne avec l'initialisation lente documentée.
   (candidat amont). Transcripts :
   `tests/integration/credentials/evidence/darwin-arm64-msb-0.7.6.txt` et
   `tests/integration/credentials/evidence/darwin-arm64-msb-0.7.8.txt`.
+- **Capacités invité P03 (#235, requalifiées le 2026-10-27)** : la matrice
+  passe 8/8 sans réseau et 18/18 avec `MSB_GUEST_INTEGRATION_NETWORK=1`
+  sur MSB 0.7.8, SDK v0.7.8 déclaré, macOS 27.0.1 arm64 et libkrun. Elle a été
+  exécutée sur MacBook-Pro-Luis.local, avec un runtime temporaire isolé et un
+  `MSB_HOME` vidé avant le run non réseau, ce qui vérifie que T1 télécharge
+  les images manquantes. T10 nécessite un checkout Git ; une archive sans
+  `.git` échoue au prévol avec la sortie 2 et un diagnostic explicite. Les
+  preuves, dont la sortie brute finale de `msb list`, sont dans
+  `tests/integration/guest-capabilities/evidence/`. Cette matrice CLI P03
+  reste distincte du transport des identifiants P02 ci-dessus et des parcours
+  intégrés à l'application. Elle ne requalifie pas le profil navigateur P16.
+  Les mesures 0.7.6 conservées dans le même dossier sont historiques.
 
 ## Hôte
 
