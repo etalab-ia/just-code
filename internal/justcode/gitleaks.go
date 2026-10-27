@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -219,6 +220,14 @@ func verifyArchiveSHA256(archivePath string, artifact gitleaksArtifact) error {
 	return nil
 }
 
+// archiveBaseName reduces an archive member name to its base, accepting both
+// separators: a crafted archive (or a zip written on Windows) can carry
+// backslashes, and path.Base alone would keep the whole name and miss the
+// executable — or, worse, treat an escaping path as a plain name.
+func archiveBaseName(name string) string {
+	return path.Base(strings.ReplaceAll(name, `\`, "/"))
+}
+
 // extractGitleaks writes only the executable out of the archive. Paths inside
 // the archive are reduced to their base name, so a crafted member name cannot
 // escape the install directory.
@@ -247,7 +256,7 @@ func extractGitleaks(archivePath, dir string, artifact gitleaksArtifact) error {
 		if err != nil {
 			return fmt.Errorf("read tar: %w", err)
 		}
-		if path.Base(header.Name) != artifact.binary {
+		if archiveBaseName(header.Name) != artifact.binary {
 			continue
 		}
 		if header.Typeflag != tar.TypeReg {
@@ -279,7 +288,7 @@ func extractGitleaksZip(archivePath, dir string, artifact gitleaksArtifact) erro
 
 	found := false
 	for _, entry := range reader.File {
-		if path.Base(entry.Name) != artifact.binary {
+		if archiveBaseName(entry.Name) != artifact.binary {
 			continue
 		}
 		if !entry.Mode().IsRegular() {
@@ -351,7 +360,12 @@ func managedGitleaksTrusted(stateDir string, artifact gitleaksArtifact) bool {
 		return false
 	}
 	info, err := os.Stat(gitleaksBinaryPath(stateDir, artifact))
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	// Windows has no executable bit: Go reports 0666 for every file, so
+	// requiring o+x would reject a perfectly usable copy there.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		return false
 	}
 	return true

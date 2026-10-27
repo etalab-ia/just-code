@@ -164,7 +164,8 @@ func TestEnsureGitleaksInstallsVerifiedArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	// Windows has no executable bit; Go reports 0666 for every file there.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("installed binary is not executable: %v", info.Mode())
 	}
 	body, err := os.ReadFile(path)
@@ -381,5 +382,19 @@ func TestEnsureGitleaksDownloadsPinnedRelease(t *testing.T) {
 	}
 	if probe.missing || len(probe.findings) == 0 {
 		t.Fatalf("the pinned scanner reported nothing for a secret-shaped file: %+v", probe)
+	}
+}
+
+// TestArchiveBaseNameAcceptsBothSeparators pins the member-name reduction for
+// archives written on either platform; using path.Base alone would miss a
+// backslash-separated member entirely.
+func TestArchiveBaseNameAcceptsBothSeparators(t *testing.T) {
+	for _, name := range []string{"gitleaks", "bin/gitleaks", "bin\\gitleaks", "./gitleaks"} {
+		if got := archiveBaseName(name); got != "gitleaks" {
+			t.Errorf("archiveBaseName(%q) = %q, want gitleaks", name, got)
+		}
+	}
+	if got := archiveBaseName("..\\..\\etc\\passwd"); got != "passwd" {
+		t.Errorf("archiveBaseName of an escaping path = %q, want the base name", got)
 	}
 }
