@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/joho/godotenv"
+	"golang.org/x/mod/modfile"
 )
 
 // sdkModulePath is the Microsandbox SDK module, shared by this build and the
@@ -77,24 +78,29 @@ func TestProjectSecretNativeEvidenceMatchesRuntimePins(t *testing.T) {
 // create-inert-sentinels with "no tested sandbox launch contract"), and that
 // failure only appears on the machine that runs the qualification.
 func TestProjectSecretNativeKitMatchesRuntimeSDK(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "tests", "integration", "project-secrets", "native", "go.mod"))
+	kitMod := filepath.Join("..", "..", "tests", "integration", "project-secrets", "native", "go.mod")
+	data, err := os.ReadFile(kitMod)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Parse rather than token-scan: a module path mentioned in a comment or a
+	// non-require directive must not satisfy the check, and a duplicate entry
+	// must fail instead of the last one winning.
+	file, err := modfile.Parse(kitMod, data, nil)
+	if err != nil {
+		t.Fatalf("parse the native kit go.mod: %v", err)
+	}
 	pinned := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		for i, field := range fields {
-			if field != sdkModulePath {
-				continue
-			}
-			// Both the single-line `require …` form and a bare block entry put
-			// the version directly after the module path.
-			if i+1 >= len(fields) {
-				t.Fatalf("cannot read the SDK pin from %q", line)
-			}
-			pinned = fields[i+1]
+	seen := 0
+	for _, require := range file.Require {
+		if require.Mod.Path != sdkModulePath {
+			continue
 		}
+		seen++
+		pinned = require.Mod.Version
+	}
+	if seen != 1 {
+		t.Fatalf("native kit go.mod must require %s exactly once, found %d", sdkModulePath, seen)
 	}
 	if pinned != "v"+msbRuntimeVersion {
 		t.Fatalf("native kit pins %s %q, but the embedded runtime is v%s; update both together", sdkModulePath, pinned, msbRuntimeVersion)

@@ -14,6 +14,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/superradcompany/microsandbox/sdk/go v0.7.11
+	golang.org/x/mod v0.42.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
