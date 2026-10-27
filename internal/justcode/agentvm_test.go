@@ -352,8 +352,9 @@ func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	if !strings.Contains(content, "albert.api.etalab.gouv.fr") {
 		t.Errorf("env file must carry the real provider config content: %q", content)
 	}
-	// Issue #178: the guest runs a pinned OpenCode; its update check is opt-out
-	// by environment variable only, and this file is the guest's environment.
+	// Issue #178: agent-vm runs the OpenCode its template provides. The inline
+	// managed config cannot disable the updater (it reads `autoupdate` only from
+	// global config), so the guest environment carries the opt-out.
 	if !strings.Contains(content, "OPENCODE_DISABLE_AUTOUPDATE=1") {
 		t.Errorf("env file must disable the OpenCode update check: %q", content)
 	}

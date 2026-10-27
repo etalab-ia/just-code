@@ -283,10 +283,10 @@ func FormatConflicts(conflicts []ConfigConflict) string {
 
 // OpenCodeDisableUpdateEnv turns off OpenCode's update check in a process.
 //
-// The guest belongs to just-code: its OpenCode is either the pinned version
-// (Microsandbox) or the vendor default just-code installed at first launch
-// (Tart, agent-vm). An update notice invites the user out of the set just-code
-// supports, and in the pinned case it cannot even be honoured. `opencode
+// The guest belongs to just-code: Microsandbox runs the OpenCode pinned by the
+// image, while Tart and agent-vm run the one their guest bootstrap or template
+// provides. An update notice invites the user out of the set just-code
+// supports, and on the pinned image it cannot even be honoured. `opencode
 // upgrade` stays available for a deliberate upgrade.
 //
 // Why the environment variable and not the `autoupdate` setting: in the pinned
@@ -297,9 +297,13 @@ func FormatConflicts(conflicts []ConfigConflict) string {
 // OPENCODE_CONFIG_CONTENT, which getGlobal() never reads, so "autoupdate":
 // false there is silently inert. Writing the guest's global config would work,
 // but managed settings do not live in a file the user also edits. upgrade()
-// tests OPENCODE_DISABLE_AUTOUPDATE before anything else, so every launch path
-// must carry it. A bare `just-code shell` is the one path it cannot reach: that
-// shell sources neither the managed config nor these variables.
+// first loads that global config, then returns early when
+// OPENCODE_DISABLE_AUTOUPDATE is truthy, before any network request: every
+// process that can run the updater must start with it — the full-mode TUI, the
+// server a host TUI attaches to, and the attach client. One-shot probes
+// (`opencode --help`, `opencode --version`) never call upgrade() and are
+// deliberately left alone. A bare `just-code shell` is the one path that cannot
+// carry it: that shell sources neither the managed config nor these variables.
 const OpenCodeDisableUpdateEnv = "OPENCODE_DISABLE_AUTOUPDATE"
 
 // OpenCodeDisableUpdateAssignment is the KEY=VALUE form for exec environments
