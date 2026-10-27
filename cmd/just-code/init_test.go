@@ -1172,6 +1172,151 @@ func TestClearingContext7WhenControlPlaneUnreachableProceedsWithWarning(t *testi
 	}
 }
 
+// TestInitReviewDiffThenApply pins #171's on-demand AGENTS.md inspection on
+// the line path. Viewing the diff returns to the same recap prompt; it neither
+// rebuilds the plan nor consumes the eventual Apply answer.
+func TestInitReviewDiffThenApply(t *testing.T) {
+	root := initTestProject(t)
+	stubInitSkillResolver(t)
+	originalProbe := justcode.ProbeRemoteMCPFunc
+	probes := 0
+	justcode.ProbeRemoteMCPFunc = func(context.Context, justcode.MCPConnector) error { probes++; return nil }
+	t.Cleanup(func() { justcode.ProbeRemoteMCPFunc = originalProbe })
+	opts := initOptions{
+		Root: root, Skills: []string{"official/example"}, MCPConnectors: []string{"data-gouv"},
+		Set: map[string]bool{"root": true, "skills": true, "skills-storage": true, "mcps": true, "github": true},
+	}
+	out := captureStdout(t, func() {
+		code, err := initRun(opts, bufio.NewReader(strings.NewReader("d\ny\n")), true)
+		if code != 0 || err != nil {
+			t.Fatalf("diff then Apply: code=%d err=%v", code, err)
+		}
+	})
+	if strings.Count(out, "Récapitulatif du projet :") != 1 || strings.Count(out, "Diff de la section just-code dans AGENTS.md") != 1 {
+		t.Fatalf("expected one recap and one requested diff:\n%s", out)
+	}
+	firstDiff := strings.Index(out, "Diff de la section just-code")
+	firstRecapEnd := strings.Index(out, "Appliquer ?")
+	if firstDiff < firstRecapEnd {
+		t.Fatal("the AGENTS.md diff must not appear before it is requested")
+	}
+	if probes != 1 || !strings.Contains(out, "✅ joignable") || !strings.Contains(out, "Projet configuré.\nLancez l'agent : just-code") {
+		t.Fatalf("diff must preserve the plan and Apply must succeed: probes=%d\n%s", probes, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Fatalf("AGENTS.md was not written on Apply: %v", err)
+	}
+}
+
+// TestInitAccessibleEOFDoesNotApply pins Ctrl+D at the recap: no input is
+// not consent, including after an invalid numeric or non-numeric answer.
+// The real production prompt must cancel before any file or approval is written.
+func TestInitAccessibleEOFDoesNotApply(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{name: "immediate", input: ""},
+		{name: "invalid-number", input: "99\n"},
+		{name: "non-numeric", input: "not-a-number\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TERM", "dumb")
+			root := initTestProject(t)
+			stubInitSkillResolver(t)
+			wizardHuhFn = func() bool { return true }
+			originalHuh, originalApprove := huhAccessibleModeFn, approveGitHubForProjectFn
+			huhAccessibleModeFn = func() bool { return true }
+			approveGitHubForProjectFn = func(string) error {
+				t.Fatal("EOF must not record a GitHub approval")
+				return nil
+			}
+			t.Cleanup(func() { huhAccessibleModeFn, approveGitHubForProjectFn = originalHuh, originalApprove })
+			readEnd, writeEnd, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writeEnd.WriteString(tc.input); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeEnd.Close(); err != nil {
+				t.Fatal(err)
+			}
+			originalStdin := os.Stdin
+			os.Stdin = readEnd
+			t.Cleanup(func() { os.Stdin = originalStdin; _ = readEnd.Close() })
+			opts := initOptions{
+				Root: root, Skills: []string{"official/example"}, MCPConnectors: []string{},
+				Set: map[string]bool{"root": true, "skills": true, "skills-storage": true, "mcps": true, "github": true},
+			}
+			var code int
+			out := captureStdout(t, func() {
+				code, err = initRun(opts, bufio.NewReader(readEnd), true)
+			})
+			if code != 1 || err == nil {
+				t.Fatalf("EOF must cancel instead of applying: code=%d err=%v\n%s", code, err, out)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != "main.go" {
+				t.Fatalf("EOF wrote project files: %v\n%s", entries, out)
+			}
+		})
+	}
+}
+
+func TestInitReviewQuitWritesNothing(t *testing.T) {
+	root := initTestProject(t)
+	stubInitSkillResolver(t)
+	opts := initOptions{
+		Root: root, Skills: []string{"official/example"}, MCPConnectors: []string{},
+		Set: map[string]bool{"root": true, "skills": true, "skills-storage": true, "mcps": true, "github": true},
+	}
+	out := captureStdout(t, func() {
+		code, err := initRun(opts, bufio.NewReader(strings.NewReader("q\n")), true)
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "rien n'a été enregistré") {
+			t.Fatalf("Quit: code=%d err=%v", code, err)
+		}
+	})
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "main.go" {
+		t.Fatalf("Quit wrote project files: %v\n%s", entries, out)
+	}
+}
+
+// TestInitReviewEditPreservesAnswers exercises the first-step edit choice with
+// a partial wizard: only the skills question reopens, while root, storage,
+// MCP, and GitHub answers remain supplied and unchanged.
+func TestInitReviewEditPreservesAnswers(t *testing.T) {
+	root := initTestProject(t)
+	originalCatalogue := projectSkillCatalogueFn
+	projectSkillCatalogueFn = func(context.Context) ([]justcode.ProjectSkill, error) {
+		return initSkillFixtureCatalogue(), nil
+	}
+	t.Cleanup(func() { projectSkillCatalogueFn = originalCatalogue })
+	stubInitSkillResolver(t)
+	opts := initOptions{
+		Root: root, MCPConnectors: []string{},
+		Set: map[string]bool{"root": true, "skills-storage": true, "mcps": true, "github": true},
+	}
+	// Changing the answer to a non-empty selection returns to the recap, where
+	// Apply writes it while the supplied storage, MCP and GitHub choices stay.
+	input := "none\ny\nmodifier\nsecurite-developpement\ny\n"
+	code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
+	if code != 0 || err != nil {
+		t.Fatalf("Edit then Apply: code=%d err=%v", code, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil || len(manifest.Skills) != 1 || manifest.Skills[0] != "official/securite-developpement" || len(manifest.MCPConnectors) != 0 || manifest.SkillsLocalOnly {
+		t.Fatalf("Edit did not retain the supplied choices: %+v, %v", manifest, err)
+	}
+}
+
 // TestInitInteractiveUsesDefaultsOnEmptyAnswers pins that pressing enter
 // through the questions is a valid path: every question has a default, and the
 // engine's defaults are what get written. Since #170 the expert settings
@@ -1190,7 +1335,7 @@ func TestInitInteractiveUsesDefaultsOnEmptyAnswers(t *testing.T) {
 	if strings.Contains(out, "Sharing mode") || strings.Contains(out, "Guest resources") || strings.Contains(out, "Credential") {
 		t.Fatalf("the expert settings must not be asked in the default path (#170): %q", out)
 	}
-	if !strings.Contains(out, "Apply? [Y/n/edit/advanced]: ") {
+	if !strings.Contains(out, "Appliquer ? [O/n/modifier/réglages avancés/détail] : ") {
 		t.Fatalf("the review must offer the advanced settings entry: %q", out)
 	}
 	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
@@ -1730,7 +1875,7 @@ func TestInitSkipsQuestionsAnsweredByFlags(t *testing.T) {
 			t.Fatalf("a question already answered by a flag must not be asked (%q): %q", asked, out)
 		}
 	}
-	if !strings.Contains(out, "Apply?") {
+	if !strings.Contains(out, "Appliquer ?") {
 		t.Fatalf("the confirmation must still be asked: %q", out)
 	}
 	pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))

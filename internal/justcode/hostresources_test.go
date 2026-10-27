@@ -10,7 +10,7 @@ var errTestHostMemory = errors.New("memory unavailable")
 
 func TestBrowserResourceGuidanceUsesHostCapacityWithoutInventingPeak(t *testing.T) {
 	got := BrowserResourceGuidance(HostResources{CPUs: 8, MemoryMB: 16384}, 2, 4096, nil)
-	for _, want := range []string{"2 vCPU", "4096 MiB RAM", "8192 MiB root disk", "8 logical CPUs", "16384 MiB memory ceiling", "2.6 GiB", "662 MiB", "RAM peak was not measured", "does not account for other host workloads"} {
+	for _, want := range []string{"2 vCPU", "4096 MiB RAM", "8192 MiB de disque", "8 processeurs logiques", "16384 MiB de mémoire au maximum", "2,6 Gio", "pic de mémoire du navigateur n'a pas été mesuré", "ne tient pas compte des autres applications"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("resource guidance %q lacks %q", got, want)
 		}
@@ -19,7 +19,7 @@ func TestBrowserResourceGuidanceUsesHostCapacityWithoutInventingPeak(t *testing.
 
 func TestBrowserResourceGuidanceKeepsCapacityAsContext(t *testing.T) {
 	got := BrowserResourceGuidance(HostResources{CPUs: 1, MemoryMB: 2048}, 1, 2048, nil)
-	for _, want := range []string{"1 vCPU", "1 logical CPUs", "2048 MiB memory ceiling", "upper bound", "other host workloads"} {
+	for _, want := range []string{"1 vCPU", "1 processeurs logiques", "2048 MiB de mémoire au maximum", "maximum", "autres applications"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("resource guidance %q lacks %q", got, want)
 		}
@@ -29,14 +29,14 @@ func TestBrowserResourceGuidanceKeepsCapacityAsContext(t *testing.T) {
 func TestGuestResourceWarningsAtHighAllocations(t *testing.T) {
 	warnings := GuestResourceWarnings(HostResources{CPUs: 8, MemoryMB: 16384}, 8, 13108)
 	joined := strings.Join(warnings, "; ")
-	if !strings.Contains(joined, "all 8 logical host CPUs") || !strings.Contains(joined, "80.0% of detected host memory") {
+	if !strings.Contains(joined, "les 8 processeurs logiques du poste") || !strings.Contains(joined, "80.0 % de la mémoire détectée") {
 		t.Fatalf("high allocation warnings missing: %q", joined)
 	}
 }
 
 func TestBrowserResourceGuidanceReportsUnknownMemoryDetection(t *testing.T) {
 	got := BrowserResourceGuidance(HostResources{CPUs: 4}, 2, 4096, errTestHostMemory)
-	if !strings.Contains(got, "Memory detection failed; treat host capacity as unknown") || !strings.Contains(got, "4 logical CPUs") {
+	if !strings.Contains(got, "Mémoire du poste non détectée : sa capacité est inconnue") || !strings.Contains(got, "4 processeurs logiques") {
 		t.Fatalf("partial host detection guidance = %q", got)
 	}
 }

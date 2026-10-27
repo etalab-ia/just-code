@@ -370,9 +370,24 @@ un champ managé et la config projet est affiché en diff avant lancement (la
 valeur gérée gagne) : si la config projet définit `model` différemment, les
 deux valeurs sont affichées (l'inverse serait un écrasement invisible).
 
-Dans `just-code init`, le récapitulatif donne accès aux **Réglages avancés** :
-type de machine isolée, isolation, processeurs, mémoire et modèle principal.
-Ces réglages ne sont pas demandés dans le parcours par défaut. Chaque
+Dans `just-code init`, le récapitulatif interactif présente en français les
+skills, les MCP, GitHub, la machine isolée et le modèle. Il indique pour chaque
+MCP distant si son initialisation MCP répond : un service injoignable affiche
+un avertissement mais n'empêche pas **Appliquer**. La liste des fichiers créés
+ou modifiés distingue ceux du projet de ceux conservés sur ce poste. La touche
+**d** affiche le diff de la seule section just-code d'`AGENTS.md` (en mode
+accessible, choisissez l'option numérotée « Afficher ou masquer le détail ») ;
+le texte utilisateur hors de cette section reste intact. Les empreintes sha256
+sont masquées, mais les révisions épinglées des skills restent visibles. Un
+remplacement affiche aussi les valeurs de la configuration existante avant
+**Appliquer**. **Modifier** rouvre les questions avec les réponses conservées,
+**Réglages avancés** les réglages techniques, et **Quitter** n'écrit rien.
+Le mode `init --yes` conserve la revue détaillée, notamment les révisions et
+empreintes sha256 des skills.
+
+Les réglages avancés couvrent le type de machine isolée, l'isolation, les
+processeurs, la mémoire et le modèle principal. Ces réglages ne sont pas
+demandés dans le parcours par défaut. Chaque
 modification validée est conservée lorsque vous revenez au récapitulatif avec
 Échap. Le modèle principal peut reprendre le défaut de `setup` ou être choisi
 pour ce projet ; `JUST_CODE_MODEL` conserve sa priorité au lancement.

@@ -23,6 +23,157 @@ func initTestRoot(t *testing.T) string {
 	return root
 }
 
+func TestInteractiveInitReviewMatchesAcceptanceText(t *testing.T) {
+	root := initTestRoot(t)
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	const privateRules = "Private user rules must stay out of the managed-zone diff.\n"
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(privateRules), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (InitWizard{
+		ResolveSkills: fixtureSkillResolver(t),
+		ProbeRemoteMCP: func(context.Context, MCPConnector) error {
+			return errors.New("simulated offline endpoint")
+		},
+	}).Plan(InitAnswers{
+		Root: root, Model: "albert/qwen3-coder", GitHubWorkflow: true,
+		GitHubRemote: GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"},
+		Skills:       []string{"official/securite-developpement", "official/rgaa"}, SkillsSet: true,
+		MCPConnectors: []string{"data-gouv", "chrome-devtools"}, MCPsSet: true,
+	})
+	if err != nil {
+		t.Fatalf("an offline MCP must not block the plan: %v", err)
+	}
+	review := FormatInteractiveInitReview(plan)
+	for _, want := range []string{
+		"Récapitulatif du projet : " + filepath.Base(root),
+		"securite-developpement, rgaa                (avec le projet)",
+		"data-gouv → https://mcp.data.gouv.fr/mcp   ⚠️ injoignable",
+		"pull requests en brouillon sur owner/repo",
+		"Microsandbox, isolation complète, 2 processeurs, 4 Go",
+		"chrome-devtools — navigateur dans la machine isolée, pour tester une application web : console, réseau, performances ; installation au premier lancement",
+		"L'initialisation ne démarre ni ne redémarre de machine isolée.",
+		"Agent        OpenCode, modèle Qwen3 Coder",
+		"+ .just-code/project.json",
+		"+ .just-code/lock.json",
+		"~ AGENTS.md",
+		"section just-code ajoutée (voir le détail : d)",
+		"environ 3 à 5 minutes",
+		"simulated offline endpoint",
+	} {
+		if !strings.Contains(review, want) {
+			t.Errorf("interactive recap lacks %q:\n%s", want, review)
+		}
+	}
+	for _, unwanted := range []string{"sha256", "managed-zone diff", privateRules, "None selected"} {
+		if strings.Contains(review, unwanted) {
+			t.Errorf("interactive recap must omit %q:\n%s", unwanted, review)
+		}
+	}
+	if len(plan.MCPChecks) != 1 || !plan.MCPChecks[0].Checked || plan.MCPChecks[0].Reachable {
+		t.Fatalf("remote MCP check = %+v, want one checked unreachable endpoint", plan.MCPChecks)
+	}
+	diff := FormatInitInstructionsDiff(plan)
+	if !strings.Contains(diff, "Diff de la section just-code dans AGENTS.md") || !strings.Contains(diff, "official/rgaa") || strings.Contains(diff, privateRules) {
+		t.Fatalf("on-demand diff must contain only the managed section:\n%s", diff)
+	}
+}
+
+func TestInteractiveInitReviewMarksAnExistingEmptyInstructionsFileAsModified(t *testing.T) {
+	root := initTestRoot(t)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.InstructionsExisted || !strings.Contains(FormatInteractiveInitReview(plan), "~ AGENTS.md") {
+		t.Fatalf("an existing empty AGENTS.md must be shown as modified, not created:\n%s", FormatInteractiveInitReview(plan))
+	}
+}
+
+func TestInteractiveInitReviewPreservesExistingConfigAndLocalSkillRevisions(t *testing.T) {
+	root := initTestRoot(t)
+	if err := WriteProjectManifest(DefaultFS, ProjectManifestPath(root), ProjectManifest{Model: "albert/original", CPUs: 8}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (InitWizard{}).Plan(InitAnswers{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := FormatInteractiveInitReview(plan)
+	if !strings.Contains(review, "albert/original") || !strings.Contains(review, "cpus") || !strings.Contains(review, "8") {
+		t.Fatalf("replacement recap hides the old configuration:\n%s", review)
+	}
+
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	plan, err = (InitWizard{StateDir: t.TempDir(), ResolveSkills: fixtureSkillResolver(t)}).Plan(InitAnswers{
+		Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true,
+		SkillsLocalOnly: true, SkillsLocalOnlySet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review = FormatInteractiveInitReview(plan)
+	revision := plan.SkillLocks["official/rgaa"].Revision
+	if !strings.Contains(review, "official/rgaa : révision "+revision) || strings.Contains(review, "sha256") {
+		t.Fatalf("local-only skill revision missing or digest leaked:\n%s", review)
+	}
+}
+
+func TestInteractiveInitReviewMCPReachabilityAndLocalState(t *testing.T) {
+	root := initTestRoot(t)
+	cache := t.TempDir()
+	oldCacheDir := userCacheDirFn
+	userCacheDirFn = func() (string, error) { return cache, nil }
+	t.Cleanup(func() { userCacheDirFn = oldCacheDir })
+	probes := 0
+	plan, err := (InitWizard{
+		StateDir: t.TempDir(), ResolveSkills: fixtureSkillResolver(t),
+		ProbeRemoteMCP: func(context.Context, MCPConnector) error { probes++; return nil },
+	}).Plan(InitAnswers{
+		Root: root, Skills: []string{"official/rgaa"}, SkillsSet: true,
+		SkillsLocalOnly: true, SkillsLocalOnlySet: true,
+		MCPConnectors: []string{"data-gouv"}, MCPsSet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := FormatInteractiveInitReview(plan)
+	if probes != 1 || !strings.Contains(review, "✅ joignable") {
+		t.Fatalf("successful MCP probe = %d calls; review:\n%s", probes, review)
+	}
+	for _, want := range []string{"rgaa                (sur ce poste)", "non (récupération par just-code workspace apply)", "Fichiers modifiés sur ce poste, hors du projet :", "skills conservés sur ce poste"} {
+		if !strings.Contains(review, want) {
+			t.Errorf("local-state recap lacks %q:\n%s", want, review)
+		}
+	}
+	if strings.Contains(review, "AGENTS.md") {
+		t.Fatalf("a fresh local-only plan must not claim AGENTS.md:\n%s", review)
+	}
+}
+
+func TestInitPlanDoesNotWriteProjectStateBeforeApply(t *testing.T) {
+	root := initTestRoot(t)
+	if _, err := (InitWizard{}).Plan(InitAnswers{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "main.go" {
+		t.Fatalf("Plan wrote project state before confirmation: %v", entries)
+	}
+}
+
 func TestInitPlanResolvesDefaults(t *testing.T) {
 	root := initTestRoot(t)
 	plan, err := InitWizard{}.Plan(InitAnswers{Root: root})
@@ -110,7 +261,7 @@ func TestInitPlanAddsResourceWarningsToReview(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 	review := FormatInitReview(plan)
-	for _, warning := range []string{"all 8 logical host CPUs", "80.0% of detected host memory"} {
+	for _, warning := range []string{"les 8 processeurs logiques du poste", "80.0 % de la mémoire détectée"} {
 		if !strings.Contains(review, warning) {
 			t.Errorf("review lacks warning %q: %s", warning, review)
 		}
@@ -321,7 +472,7 @@ func TestInitPlanCanonicalizesToTheWorktreeRoot(t *testing.T) {
 	// The user is told the manifest covers more than the directory they named.
 	var told bool
 	for _, warning := range plan.Warnings {
-		if strings.Contains(warning, "worktree root") {
+		if strings.Contains(warning, "racine du projet") {
 			told = true
 		}
 	}
@@ -369,7 +520,7 @@ func TestInitReviewWarnsAboutAnUnversionedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Warnings) == 0 || !strings.Contains(plan.Warnings[0], "not a Git repository") {
+	if len(plan.Warnings) == 0 || !strings.Contains(plan.Warnings[0], "pas un dépôt Git") {
 		t.Fatalf("warnings = %v", plan.Warnings)
 	}
 	// The sealed-runtime review must state what the guest receives, since that
@@ -418,7 +569,7 @@ func TestInitPlanDoesNotWarnOnADifferentSpellingOfTheSameDirectory(t *testing.T)
 		t.Fatalf("Plan: %v", err)
 	}
 	for _, warning := range plan.Warnings {
-		if strings.Contains(warning, "worktree root") {
+		if strings.Contains(warning, "racine du projet") {
 			t.Fatalf("a differently-spelled path to the same directory must not warn: %v", plan.Warnings)
 		}
 	}
@@ -663,6 +814,80 @@ func TestInitPlanRejectsRetainedSkillWithoutExistingPin(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), `retained skill "official/fantome" has no existing pin`) {
 		t.Fatalf("retaining a never-pinned skill must fail, got %v", err)
+	}
+}
+
+func TestInitApplyRejectsReviewedStateChangesBeforeWriting(t *testing.T) {
+	for _, kind := range []string{"lock-created", "lock-edited", "lock-deleted", "local-created", "local-edited"} {
+		t.Run(kind, func(t *testing.T) {
+			root := initTestRoot(t)
+			localOnly := strings.HasPrefix(kind, "local-")
+			manifestPath, lockPath := ProjectManifestPath(root), ProjectLockPath(root)
+			if err := WriteProjectManifest(DefaultFS, manifestPath, ProjectManifest{SkillsLocalOnly: localOnly}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasSuffix(kind, "-created") {
+				if err := WriteLockfile(DefaultFS, lockPath, Lockfile{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wizard := InitWizard{StateDir: t.TempDir()}
+			answers := InitAnswers{Root: root}
+			if localOnly {
+				answers.SkillsLocalOnly, answers.SkillsLocalOnlySet = true, true
+				if kind == "local-edited" {
+					path, err := LocalSkillSelectionsPath(wizard.StateDir, DiscoverInstanceForTest(t, root))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := WriteLocalSkillSelections(DefaultFS, path, LocalSkillSelections{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			plan, err := wizard.Plan(answers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var path string
+			switch {
+			case localOnly:
+				path = plan.LocalSkillsPath
+				// Simulate a local file created or edited after the review.
+				selection := LocalSkillSelections{}
+				if kind == "local-edited" {
+					selection.Skills = []string{"official/rgaa"}
+				}
+				err = WriteLocalSkillSelections(DefaultFS, path, selection)
+			case kind == "lock-created":
+				path = lockPath
+				err = WriteLockfile(DefaultFS, lockPath, Lockfile{})
+			case kind == "lock-edited":
+				path = lockPath
+				err = WriteLockfile(DefaultFS, lockPath, Lockfile{Entries: map[string]string{"skill": "new-pin"}})
+			case kind == "lock-deleted":
+				path = lockPath
+				err = os.Remove(lockPath)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, readErr := readReviewedFileSnapshot(DefaultFS, path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			applyErr := wizard.Apply(plan, true)
+			if applyErr == nil || !strings.Contains(applyErr.Error(), "changed after the review") {
+				t.Fatalf("changed %s was not refused: %v", kind, applyErr)
+			}
+			after, readErr := readReviewedFileSnapshot(DefaultFS, path)
+			if readErr != nil || after.existed != before.existed || !bytes.Equal(after.data, before.data) {
+				t.Fatalf("Apply changed the concurrent file %s: before=%+v after=%+v err=%v", path, before, after, readErr)
+			}
+			if got, err := ReadProjectManifest(DefaultFS, manifestPath); err != nil || len(got.MCPConnectors) != 0 {
+				t.Fatalf("refused Apply changed the manifest: %+v, %v", got, err)
+			}
+		})
 	}
 }
 
@@ -1403,7 +1628,7 @@ func TestInitWarnsForARelativeNestedRoot(t *testing.T) {
 	}
 	var told bool
 	for _, warning := range plan.Warnings {
-		if strings.Contains(warning, "worktree root") {
+		if strings.Contains(warning, "racine du projet") {
 			told = true
 		}
 	}
