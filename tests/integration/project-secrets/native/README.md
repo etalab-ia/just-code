@@ -3,11 +3,11 @@
 v3 adds an independently authorized third binding and removed-binding re-add/next-boot lifecycle gates. The parent reported all v1 native assertions PASS with `TMPDIR=/tmp`, and all v2 native assertions PASS with the built-in short root. No v3 native pass is claimed here. The established v1 fixture defect was the long default macOS temp path: runtime Unix socket derivation exceeded its <104-byte limit. The runner explicitly creates `/tmp/jcp0-*` with mode 0700 and a conservative MSB_HOME length preflight, ignoring host TMPDIR. Results metadata includes `kit=v3` alongside pinned source, SDK, runtime, and archive hash. v2 diagnostics and isolation remain intact; no earlier assertion has been removed or weakened.
 
 Pinned just-code source: `0af624b58b0d3eeb648bd0a398e74b741aaa5099` (PR159 merge).
-Go SDK: `github.com/superradcompany/microsandbox/sdk/go v0.7.6`; verified APIs against the module and native source at upstream tag v0.7.6, commit `09df3d4b9d832adaede1fb9a198cfc660bfab8cd`.
+Go SDK: `github.com/superradcompany/microsandbox/sdk/go v0.7.8`; verified APIs against the module and native source at upstream tag v0.7.8, commit `8352bb67d4ed51f5eb086dc80b16c3184a22b3a6`.
 Runtime source is that merge's `internal/justcode/msb_runtime_install.go`, darwin/arm64:
 
-- URL: https://github.com/superradcompany/microsandbox/releases/download/v0.7.6/microsandbox-darwin-aarch64.tar.gz
-- SHA256: `a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89`
+- URL: https://github.com/superradcompany/microsandbox/releases/download/v0.7.8/microsandbox-darwin-aarch64.tar.gz
+- SHA256: `5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493`
 
 Nothing here changes just-code, upgrades the user's msb 0.7.0, installs global tools, imports credentials, changes host DNS, or installs a CA into host trust. Do not run against a user MSB_HOME. No native pass is claimed from Cloud.
 
