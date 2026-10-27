@@ -224,10 +224,10 @@ func TestApplyRecordStoreRoundtrip(t *testing.T) {
 	if got, err := store.Load(); err != nil || len(got) != 0 {
 		t.Fatalf("Load on a missing record = (%v, %v), want empty and no error", got, err)
 	}
-	if err := store.Record("src/app.js", "digest-one"); err != nil {
+	if err := store.Record("src/app.js", "digest-one", "content-one"); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
-	if err := store.Record("README.md", "digest-two"); err != nil {
+	if err := store.Record("README.md", "digest-two", "content-two"); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	got, err := store.Load()
@@ -237,6 +237,14 @@ func TestApplyRecordStoreRoundtrip(t *testing.T) {
 	want := map[string]string{"src/app.js": "digest-one", "README.md": "digest-two"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load = %v, want %v", got, want)
+	}
+	recovered, err := store.LoadRecoveredContent()
+	if err != nil {
+		t.Fatalf("LoadRecoveredContent: %v", err)
+	}
+	wantRecovered := map[string]string{"src/app.js": "content-one", "README.md": "content-two"}
+	if !reflect.DeepEqual(recovered, wantRecovered) {
+		t.Fatalf("LoadRecoveredContent = %v, want %v", recovered, wantRecovered)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -250,6 +258,53 @@ func TestApplyRecordStoreRoundtrip(t *testing.T) {
 	}
 	if _, err := store.Load(); err == nil || !strings.Contains(err.Error(), "applied-changes record") {
 		t.Fatalf("Load on corrupt JSON = %v, want an applied-changes record error", err)
+	}
+}
+
+// TestApplyRecordStoreLoadsV1WithoutRecoveredContent pins the back-compat
+// half of the v2 record: a file written before the recovered-content field
+// existed still classifies its patches, and its files fall back to the
+// patch-only behavior until they are applied once more.
+func TestApplyRecordStoreLoadsV1WithoutRecoveredContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied-guest-changes.json")
+	v1 := `{"schemaVersion":1,"digests":{"src/app.js":"digest-one"}}`
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := ApplyRecordStore{Path: path}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := map[string]string{"src/app.js": "digest-one"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Load = %v, want %v", got, want)
+	}
+	recovered, err := store.LoadRecoveredContent()
+	if err != nil {
+		t.Fatalf("LoadRecoveredContent: %v", err)
+	}
+	if len(recovered) != 0 {
+		t.Fatalf("LoadRecoveredContent = %v, want empty for a v1 record", recovered)
+	}
+	// Recording on top of a v1 file upgrades it without losing the old
+	// patch classification.
+	if err := store.Record("README.md", "digest-two", "content-two"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	got, err = store.Load()
+	if err != nil {
+		t.Fatalf("Load after upgrade: %v", err)
+	}
+	want := map[string]string{"src/app.js": "digest-one", "README.md": "digest-two"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Load after upgrade = %v, want %v", got, want)
+	}
+	recovered, err = store.LoadRecoveredContent()
+	if err != nil {
+		t.Fatalf("LoadRecoveredContent after upgrade: %v", err)
+	}
+	if want := map[string]string{"README.md": "content-two"}; !reflect.DeepEqual(recovered, want) {
+		t.Fatalf("LoadRecoveredContent after upgrade = %v, want %v", recovered, want)
 	}
 }
 
@@ -574,6 +629,270 @@ func TestApplyGuestPatchesConflictDoesNotOverwriteHostWork(t *testing.T) {
 	}
 }
 
+// TestApplySelectedChangesReAppliesRecoveredFile pins the recovery of a
+// file the agent edited again after a first recovery (PR #280 review): the
+// guest's second patch is cumulative from its HEAD, so it cannot apply on a
+// host that already recovered once. The host still sitting at the recorded
+// recovered baseline, the file is brought to the guest's current content
+// directly, without a false conflict, and the next review classifies it as
+// already recovered.
+func TestApplySelectedChangesReAppliesRecoveredFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	writeFile(t, root, "src/app.js", "old\n")
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-q", "-m", "base")
+	ctx := context.Background()
+
+	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n")}
+	client := sealedFakeMSB()
+	m, _ := applyTestRuntime(t, client)
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first})
+	if err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if len(applied) != 1 || len(conflicted) != 0 {
+		t.Fatalf("first apply = (%+v, %+v), want the one file applied", applied, conflicted)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != "new\n" {
+		t.Fatalf("src/app.js = %q after the first apply, want the patch applied", got)
+	}
+
+	// The agent edits the file again in the guest: its patch is still
+	// cumulative from the guest's HEAD ("old"), which the host no longer
+	// matches. The whole-file read crosses as base64: 644, 6 bytes, "newer\n".
+	second := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+newer\n")}
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "644 6\nbmV3ZXIK"}}
+	applied, conflicted, err = ApplySelectedChanges(ctx, m, root, []GuestChange{second})
+	if err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	if len(applied) != 1 || len(conflicted) != 0 {
+		t.Fatalf("second apply = (%+v, %+v), want the recovered file re-applied without conflict", applied, conflicted)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != "newer\n" {
+		t.Fatalf("src/app.js = %q after the second apply, want the guest's current content", got)
+	}
+
+	// The next review must classify the re-delivered file as recovered,
+	// not offer it again.
+	client.execCaptureResults = []fakeMSBExecCaptureResult{
+		{stdout: "yes"},
+		{stdout: "1\t1\tsrc/app.js\x00"},
+		{stdout: string(second.Patch)},
+	}
+	unrecovered, err := UnrecoveredGuestChanges(ctx, m)
+	if err != nil {
+		t.Fatalf("UnrecoveredGuestChanges: %v", err)
+	}
+	if len(unrecovered) != 0 {
+		t.Fatalf("unrecovered = %+v, want the re-applied file classified as recovered", unrecovered)
+	}
+}
+
+// TestApplySelectedChangesConflictsWhenHostEditedAfterRecovery pins the
+// safety half of the direct path: once the user edits the recovered file on
+// the host, the host no longer sits at the recorded baseline, so the file
+// goes back through git apply — which refuses to overwrite the user's work
+// and reports the conflict instead.
+func TestApplySelectedChangesConflictsWhenHostEditedAfterRecovery(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	writeFile(t, root, "src/app.js", "old\n")
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-q", "-m", "base")
+	ctx := context.Background()
+
+	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n")}
+	client := sealedFakeMSB()
+	m, _ := applyTestRuntime(t, client)
+	if _, _, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first}); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	// The user edits the recovered file after the first apply.
+	writeFile(t, root, "src/app.js", "host-edited\n")
+
+	second := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+newer\n")}
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, []GuestChange{second})
+	if err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("applied = %+v, want none: the host moved on since the recovery", applied)
+	}
+	if len(conflicted) != 1 || conflicted[0].Rel != "src/app.js" {
+		t.Fatalf("conflicted = %+v, want exactly src/app.js", conflicted)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "src", "app.js")); string(got) != "host-edited\n" {
+		t.Fatalf("src/app.js = %q, want the host work preserved", got)
+	}
+}
+
+// TestApplySelectedChangesAppliesDeletionAfterRecovery covers the deletion
+// half of the direct path: a file the agent deletes after a first recovery
+// is removed on the host when the host still sits at the recorded baseline,
+// and the record notes the deletion so a later review classifies honestly.
+func TestApplySelectedChangesAppliesDeletionAfterRecovery(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	writeFile(t, root, "src/app.js", "old\n")
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-q", "-m", "base")
+	ctx := context.Background()
+
+	first := GuestChange{Rel: "src/app.js", Status: 'M', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n")}
+	client := sealedFakeMSB()
+	m, stateDir := applyTestRuntime(t, client)
+	if _, _, err := ApplySelectedChanges(ctx, m, root, []GuestChange{first}); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+
+	deleted := GuestChange{Rel: "src/app.js", Status: 'D', Patch: []byte("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n")}
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, []GuestChange{deleted})
+	if err != nil {
+		t.Fatalf("deletion apply: %v", err)
+	}
+	if len(applied) != 1 || len(conflicted) != 0 {
+		t.Fatalf("deletion apply = (%+v, %+v), want the deletion applied", applied, conflicted)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src", "app.js")); !os.IsNotExist(err) {
+		t.Fatalf("src/app.js must be gone from the host, stat err = %v", err)
+	}
+	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+	recovered, err := store.LoadRecoveredContent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recovered["src/app.js"]; got != "deleted" {
+		t.Fatalf("recovered content = %q, want the deleted sentinel", got)
+	}
+}
+
+// TestApplySelectedChangesRefusesUnsafeRecoveredPath pins the containment
+// guard of the direct path: a guest-reported path outside the project never
+// gets the direct write, even when a record claims a recovered baseline for
+// it.
+func TestApplySelectedChangesRefusesUnsafeRecoveredPath(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	gitInitForTransfer(t, root)
+	ctx := context.Background()
+	client := sealedFakeMSB()
+	m, stateDir := applyTestRuntime(t, client)
+	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
+	// The seeded baseline matches the host state (the file is absent, so
+	// "deleted"): without the path guard the direct write would fire and
+	// land outside the host root, which is exactly what must never happen.
+	if err := store.Record("../escape.txt", "patch-digest", "deleted"); err != nil {
+		t.Fatal(err)
+	}
+	client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "644 6\nbmV3ZXIK"}}
+
+	escape := GuestChange{Rel: "../escape.txt", Status: 'M', Patch: []byte("diff --git a/escape.txt b/escape.txt\n--- a/escape.txt\n+++ b/escape.txt\n@@ -1 +1 @@\n-old\n+new\n")}
+	applied, conflicted, err := ApplySelectedChanges(ctx, m, root, []GuestChange{escape})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("applied = %+v, want none", applied)
+	}
+	if len(conflicted) != 1 || conflicted[0].Rel != "../escape.txt" {
+		t.Fatalf("conflicted = %+v, want the escaping path reported, not applied", conflicted)
+	}
+	if _, err := os.Stat(filepath.Join(root, "..", "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be written outside the host root, stat err = %v", err)
+	}
+}
+
+func TestReadGuestFile(t *testing.T) {
+	ctx := context.Background()
+	t.Run("returns content and mode", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "644 6\nbmV3ZXIK"}}
+		m, _ := applyTestRuntime(t, client)
+		content, mode, err := m.ReadGuestFile(ctx, "src/app.js")
+		if err != nil {
+			t.Fatalf("ReadGuestFile: %v", err)
+		}
+		if string(content) != "newer\n" {
+			t.Fatalf("content = %q, want the base64-decoded bytes", content)
+		}
+		if mode.Perm() != 0o644 {
+			t.Fatalf("mode = %v, want 0644", mode.Perm())
+		}
+	})
+	t.Run("guest read failure is an error", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{code: 1, stderr: "no such file"}}
+		m, _ := applyTestRuntime(t, client)
+		_, _, err := m.ReadGuestFile(ctx, "gone.txt")
+		if err == nil || !strings.Contains(err.Error(), "could not read gone.txt") {
+			t.Fatalf("err = %v, want a guest read failure naming the file", err)
+		}
+	})
+	t.Run("missing header is an error", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "bmV3ZXIK"}}
+		m, _ := applyTestRuntime(t, client)
+		_, _, err := m.ReadGuestFile(ctx, "src/app.js")
+		if err == nil || !strings.Contains(err.Error(), "no file header") {
+			t.Fatalf("err = %v, want a missing-header error", err)
+		}
+	})
+	t.Run("unreadable permission is an error", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "nine 6\nbmV3ZXIK"}}
+		m, _ := applyTestRuntime(t, client)
+		_, _, err := m.ReadGuestFile(ctx, "src/app.js")
+		if err == nil || !strings.Contains(err.Error(), "unreadable permission") {
+			t.Fatalf("err = %v, want an unreadable-permission error", err)
+		}
+	})
+	t.Run("unreadable content is an error", func(t *testing.T) {
+		client := sealedFakeMSB()
+		client.execCaptureResults = []fakeMSBExecCaptureResult{{stdout: "644 6\n!!not-base64!!"}}
+		m, _ := applyTestRuntime(t, client)
+		_, _, err := m.ReadGuestFile(ctx, "src/app.js")
+		if err == nil || !strings.Contains(err.Error(), "unreadable content") {
+			t.Fatalf("err = %v, want an unreadable-content error", err)
+		}
+	})
+}
+
+func TestSafeGuestRel(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{"src/app.js", true},
+		{"README.md", true},
+		{"", false},
+		{"./src/app.js", false},
+		{"src/../app.js", false},
+		{"..", false},
+		{"../escape.txt", false},
+		{"/etc/passwd", false},
+		{".git/config", false},
+		{"src/.git", false},
+	}
+	for _, tc := range cases {
+		if got := safeGuestRel(tc.rel); got != tc.want {
+			t.Errorf("safeGuestRel(%q) = %v, want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
 func TestPreserveUnappliedPatches(t *testing.T) {
 	stateDir := t.TempDir()
 	if path, err := PreserveUnappliedPatches(stateDir, "inst", nil); err != nil || path != "" {
@@ -625,7 +944,7 @@ func TestUnrecoveredGuestChangesSkipsRecorded(t *testing.T) {
 	m, stateDir := applyTestRuntime(t, client)
 	recorded := GuestChange{Rel: "src/app.js", Patch: []byte(applyFirstSection)}
 	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
-	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded)); err != nil {
+	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded), ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -654,7 +973,7 @@ func TestPrepareApplyReviewMarksRecoveredAndRefused(t *testing.T) {
 	m, stateDir := applyTestRuntime(t, client)
 	recorded := GuestChange{Rel: "src/app.js", Patch: []byte(applyFirstSection)}
 	store := ApplyRecordStore{Path: ApplyRecordPath(stateDir, m.InstanceName())}
-	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded)); err != nil {
+	if err := store.Record(recorded.Rel, GuestChangeDigest(recorded), ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 

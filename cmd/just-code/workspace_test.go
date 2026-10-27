@@ -74,7 +74,7 @@ func TestParseArgsWorkspaceCapturesSubcommand(t *testing.T) {
 // TestWorkspaceCmdRejectsUnknownSubcommand keeps a typo from silently doing
 // nothing.
 func TestWorkspaceCmdRejectsUnknownSubcommand(t *testing.T) {
-	code, err := workspaceCmd([]string{"frobnicate"}, justcode.Config{}, "jc-x", t.TempDir())
+	code, err := workspaceCmd([]string{"frobnicate"}, justcode.Config{}, "jc-x")
 	if code != 2 || err == nil {
 		t.Fatalf("unknown subcommand must be a usage error: code=%d err=%v", code, err)
 	}
@@ -132,6 +132,25 @@ func TestWorkspaceStatusReportsFilteredSet(t *testing.T) {
 	}
 }
 
+// TestWorkspaceStatusUsesConfiguredWorkspaceDir pins the transfer source of
+// the workspace commands (PR #280 review): status reviews the configured
+// workspace dir — the same source provisioning copies from — never a
+// directory resolved independently of the configuration.
+func TestWorkspaceStatusUsesConfiguredWorkspaceDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "from-config.txt"), []byte("config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if code, err := workspaceCmd([]string{"status"}, justcode.Config{WorkspaceDir: dir}, "jc-x"); code != 0 || err != nil {
+			t.Fatalf("workspaceCmd status: code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(out, "from-config.txt") {
+		t.Fatalf("status must list the configured workspace dir's files, got:\n%s", out)
+	}
+}
+
 // TestWorkspaceAllowRefusesStructuralExclusion pins the CLI half of the
 // overridable rule: recording a decision for a symlink would create a rule
 // that never applies, which reads as "allowed" while nothing crosses.
@@ -164,7 +183,7 @@ func TestWorkspaceAllowRefusesStructuralExclusion(t *testing.T) {
 // unforced sync.
 func TestWorkspaceSyncRejectsUnknownOption(t *testing.T) {
 	for _, args := range [][]string{{"sync", "--forc"}, {"export", "--bogus"}, {"export", "--out"}} {
-		code, err := workspaceCmd(args, justcode.Config{}, "jc-x", t.TempDir())
+		code, err := workspaceCmd(args, justcode.Config{}, "jc-x")
 		if code != 2 || err == nil {
 			t.Fatalf("%v must be a usage error: code=%d err=%v", args, code, err)
 		}
@@ -176,7 +195,7 @@ func TestWorkspaceSyncRejectsUnknownOption(t *testing.T) {
 // decision was recorded" while nothing was.
 func TestWorkspaceAllowDenyTakeExactlyOnePath(t *testing.T) {
 	for _, args := range [][]string{{"allow"}, {"allow", "a", "b"}, {"deny"}, {"deny", "a", "b"}} {
-		code, err := workspaceCmd(args, justcode.Config{}, "jc-x", t.TempDir())
+		code, err := workspaceCmd(args, justcode.Config{}, "jc-x")
 		if code != 2 || err == nil {
 			t.Fatalf("%v must be a usage error: code=%d err=%v", args, code, err)
 		}

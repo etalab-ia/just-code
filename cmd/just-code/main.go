@@ -303,13 +303,14 @@ func run(args []string) (int, error) {
 
 	// workspace manages the sealed guest workspace (P22): the transfer
 	// manifest, the per-file re-inclusion decisions, the refresh, and the
-	// reviewed change export. It needs the project root and the instance
-	// name, so it runs after discovery like bindings.
+	// reviewed change export. It needs the instance name, so it runs after
+	// discovery like bindings; the transfer source is the configured
+	// workspace dir, which discovery has already set.
 	if parsed.action == "workspace" {
 		if projErr != nil {
 			return 2, fmt.Errorf("workspace requires a project directory: %v", projErr)
 		}
-		return workspaceCmd(parsed.workspaceArgs, cfg, instance, pc.Root)
+		return workspaceCmd(parsed.workspaceArgs, cfg, instance)
 	}
 
 	// The dispatcher and its backends are built from the resolved config,
@@ -986,7 +987,7 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime,
 		// health endpoint, no attach. The host is only a terminal passthrough.
 		agentErr := b.RunAgent(ctx)
 		code := exitCodeOf(agentErr)
-		exitScreen(ctx, d, cfg, rt, instance, projectRoot)
+		exitScreen(ctx, d, cfg, rt, instance)
 		return code, agentErr
 	}
 	endpoint, err := b.Endpoint(ctx)
@@ -1030,7 +1031,7 @@ func attachCmd(d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime,
 	printLaunchReport(d.Launch)
 	attachErr := justcode.RunInteractiveEnv([]string{"OPENCODE_DISABLE_AUTOUPDATE=1"}, "opencode", openCodeAttachArgs(endpoint, cfg.Username, cfg.Password, resumeArgs)...)
 	code := exitCodeOf(attachErr)
-	exitScreen(ctx, d, cfg, rt, instance, projectRoot)
+	exitScreen(ctx, d, cfg, rt, instance)
 	return code, attachErr
 }
 

@@ -21,7 +21,7 @@ var exitIsTTYFn = isTTY
 // work and how to recover it, the stop question with the cost of each
 // answer, and the resume command. The word "runtime" never appears: the user
 // manages a session and a machine, not an implementation detail.
-func exitScreen(ctx context.Context, d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime, instance, projectRoot string) {
+func exitScreen(ctx context.Context, d *justcode.Dispatcher, cfg justcode.Config, rt justcode.Runtime, instance string) {
 	b, err := d.Backend(rt)
 	if err != nil {
 		return
@@ -40,7 +40,7 @@ func exitScreen(ctx context.Context, d *justcode.Dispatcher, cfg justcode.Config
 	// Only the sealed microsandbox guest holds work worth recovering; the
 	// other runtimes get the stop question without the recovery block.
 	if msb, ok := b.(*justcode.MicrosandboxRuntime); ok {
-		exitRecoveryBlock(ctx, msb, instance, projectRoot)
+		exitRecoveryBlock(ctx, msb, instance, cfg.WorkspaceDir)
 	}
 	exitStopQuestion(ctx, b, cfg, rt, d)
 	fmt.Println("Pour reprendre cette session : just-code")
@@ -49,7 +49,7 @@ func exitScreen(ctx context.Context, d *justcode.Dispatcher, cfg justcode.Config
 // exitRecoveryBlock reports the agent's pushed branch and unrecovered work,
 // and offers to run the recovery command (issue #174). It prints nothing
 // when there is nothing to report.
-func exitRecoveryBlock(ctx context.Context, m *justcode.MicrosandboxRuntime, instance, projectRoot string) {
+func exitRecoveryBlock(ctx context.Context, m *justcode.MicrosandboxRuntime, instance, sourceDir string) {
 	branch, prURL, pushed, err := m.GuestPushedBranch(ctx)
 	if err == nil && pushed {
 		if prURL != "" {
@@ -80,7 +80,7 @@ func exitRecoveryBlock(ctx context.Context, m *justcode.MicrosandboxRuntime, ins
 	if err != nil || choice != "apply" {
 		return
 	}
-	if _, err := runWorkspaceApply(m, projectRoot, instance, false); err != nil {
+	if _, err := runWorkspaceApply(m, sourceDir, instance, false); err != nil {
 		fmt.Fprintf(os.Stderr, "La récupération a échoué : %v\n", err)
 	}
 }

@@ -261,7 +261,7 @@ func TestExitScreenStopAnswerStopsTheMachine(t *testing.T) {
 		justcode.RuntimeMicrosandbox: b,
 	})
 	out := captureStdout(t, func() {
-		exitScreen(context.Background(), d, justcode.Config{MemoryMB: 4096}, justcode.RuntimeMicrosandbox, "inst", "root")
+		exitScreen(context.Background(), d, justcode.Config{MemoryMB: 4096}, justcode.RuntimeMicrosandbox, "inst")
 	})
 	want := "\nSession terminée.\n" +
 		"\nArrêter la machine isolée ?\n" +
@@ -301,7 +301,7 @@ func TestExitScreenAnswers(t *testing.T) {
 				justcode.RuntimeMicrosandbox: b,
 			})
 			out := captureStdout(t, func() {
-				exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst", "root")
+				exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst")
 			})
 			if b.stopped != tc.stops {
 				t.Errorf("stopped = %v, want %v", b.stopped, tc.stops)
@@ -323,7 +323,7 @@ func TestExitScreenStopFailureIsReported(t *testing.T) {
 	var out, errOut string
 	out = captureStdout(t, func() {
 		errOut = captureStderr(t, func() {
-			exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst", "root")
+			exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst")
 		})
 	})
 	if !strings.Contains(errOut, "L'arrêt a échoué : la machine n'a pas répondu") {
@@ -347,7 +347,7 @@ func TestExitScreenNonTTYSkipsTheQuestions(t *testing.T) {
 		justcode.RuntimeMicrosandbox: b,
 	})
 	out := captureStdout(t, func() {
-		exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst", "root")
+		exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst")
 	})
 	want := "\nSession terminée.\n" +
 		"La machine isolée reste démarrée ; lancez 'just-code stop' pour l'arrêter.\n" +
@@ -367,7 +367,7 @@ func TestExitScreenNotRunningSkipsEverything(t *testing.T) {
 		justcode.RuntimeMicrosandbox: b,
 	})
 	out := captureStdout(t, func() {
-		exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst", "root")
+		exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeMicrosandbox, "inst")
 	})
 	want := "\nSession terminée.\nPour reprendre cette session : just-code\n"
 	if out != want {
@@ -378,7 +378,7 @@ func TestExitScreenNotRunningSkipsEverything(t *testing.T) {
 func TestExitScreenWithoutBackendIsSilent(t *testing.T) {
 	d := justcode.NewDispatcherWith(justcode.Config{}, nil)
 	out := captureStdout(t, func() {
-		exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeTart, "inst", "root")
+		exitScreen(context.Background(), d, justcode.Config{}, justcode.RuntimeTart, "inst")
 	})
 	if out != "" {
 		t.Errorf("exitScreen printed %q without a backend", out)
@@ -390,7 +390,7 @@ func TestWorkspaceApplyUsageListsTheCommand(t *testing.T) {
 	var code int
 	var err error
 	usage := captureStderr(t, func() {
-		code, err = workspaceCmd(nil, justcode.Config{}, "exit-test", t.TempDir())
+		code, err = workspaceCmd(nil, justcode.Config{}, "exit-test")
 	})
 	if code != 2 || err != nil {
 		t.Fatalf("code=%d err=%v, want 2 and no error", code, err)
@@ -404,7 +404,7 @@ func TestWorkspaceApplyRejectsUnknownOption(t *testing.T) {
 	setupTestEnv(t)
 	var code int
 	var err error
-	code, err = workspaceCmd([]string{"apply", "--al"}, justcode.Config{}, "exit-test", t.TempDir())
+	code, err = workspaceCmd([]string{"apply", "--al"}, justcode.Config{}, "exit-test")
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}

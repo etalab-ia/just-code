@@ -14,9 +14,11 @@ import (
 // folder. The list is shown before anything is written, every file is
 // appliable on its own, and a file the host also modified is never
 // overwritten — its patch is preserved for a manual application instead.
+// A file already recovered once is brought to the guest's current content
+// directly when the host still sits at the recovered baseline.
 //
 // The screen texts are the issue's, verbatim.
-func runWorkspaceApply(rt *justcode.MicrosandboxRuntime, projectRoot, instance string, applyAll bool) (int, error) {
+func runWorkspaceApply(rt *justcode.MicrosandboxRuntime, sourceDir, instance string, applyAll bool) (int, error) {
 	ctx := context.Background()
 	stateDir := justcode.DefaultStateDir()
 	optInStore := justcode.TransferOptInStore{Path: justcode.TransferOptInPath(stateDir, instance), FS: justcode.DefaultFS}
@@ -29,7 +31,7 @@ func runWorkspaceApply(rt *justcode.MicrosandboxRuntime, projectRoot, instance s
 		optIn[rel] = true
 	}
 
-	review, err := justcode.PrepareApplyReview(ctx, rt, projectRoot, optIn)
+	review, err := justcode.PrepareApplyReview(ctx, rt, sourceDir, optIn)
 	if err != nil {
 		return 1, err
 	}
@@ -71,15 +73,9 @@ func runWorkspaceApply(rt *justcode.MicrosandboxRuntime, projectRoot, instance s
 	}
 
 	justcode.SortGuestChanges(selected)
-	applied, conflicted, err := justcode.ApplyGuestPatches(ctx, projectRoot, selected)
+	applied, conflicted, err := justcode.ApplySelectedChanges(ctx, rt, sourceDir, selected)
 	if err != nil {
 		return 1, err
-	}
-	recordStore := justcode.ApplyRecordStore{Path: justcode.ApplyRecordPath(stateDir, instance), FS: justcode.DefaultFS}
-	for _, c := range applied {
-		if err := recordStore.Record(c.Rel, justcode.GuestChangeDigest(c)); err != nil {
-			return 1, err
-		}
 	}
 	preservePath := ""
 	if len(conflicted) > 0 {
