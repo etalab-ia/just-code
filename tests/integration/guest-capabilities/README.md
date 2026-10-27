@@ -3,6 +3,13 @@
 Rejoue la qualification Alpine vs Debian, navigateur, MCP, PTY et clone
 invité (décision `docs/decisions/2026-09-24-microsandbox-guest-capabilities.md`)
 contre un vrai runtime Microsandbox épinglé, sur macOS (libkrun, arm64).
+Exécute le script depuis un checkout Git du dépôt : le cas T10 monte le clone
+principal en lecture seule dans l'invité. Une archive sans `.git` ne remplit
+pas ce prérequis. Un worktree lié est accepté si son clone principal reste
+accessible.
+
+T1 télécharge une image absente de `$MSB_HOME`. Le harnais fonctionne donc sur
+un runtime neuf, sans exiger un cache d'images préexistant.
 
 ## Usage
 
@@ -22,7 +29,8 @@ avec le code 2 ; un échec d'assertion sort non-zéro avec le nom du cas.
 
 Versions épinglées dans `pin.json` : CLI msb, SDK Go, images invité,
 OpenCode et Node. Toute montée de version reproduit la matrice complète et
-met à jour le décision record.
+met à jour le décision record. Les transcripts macOS sont conservés dans
+`evidence/` avec la révision, l'environnement et les résultats de chaque run.
 
 ## Notes de cas
 

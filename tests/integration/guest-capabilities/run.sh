@@ -41,13 +41,35 @@ cleanup() {
 trap cleanup EXIT
 
 # --- T1: taille d'image et empreinte de base ---------------------------------
-ALPINE_SIZE="$("$MSB" image inspect alpine --format json 2>/dev/null | \
-  node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log(j.size||'')})" || true)"
-DEBIAN_SIZE="$("$MSB" image inspect debian:bookworm-slim --format json 2>/dev/null | \
-  node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log(j.size||'')})" || true)"
+image_field() { # image_field <image> <champ JSON>
+  "$MSB" image inspect "$1" --format json |
+    node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log(j.$2??'')})"
+}
+# Un MSB_HOME neuf ne contient aucune image : T1 est le premier cas qui en
+# dépend, donc il les télécharge au lieu d'exiger un cache préexistant.
+ensure_image() { # ensure_image <image>
+  if ! "$MSB" image inspect "$1" --format json >/dev/null 2>&1; then
+    echo "préparation: image $1 absente du cache, téléchargement" >&2
+    "$MSB" pull "$1" >/dev/null
+  fi
+}
+ensure_image alpine
+ensure_image debian:bookworm-slim
+ALPINE_REF="$(image_field alpine reference)" || {
+  echo "préparation: inspection de l'image alpine impossible" >&2
+  exit 2
+}
+ALPINE_ARCH="$(image_field alpine architecture)" || exit 2
+DEBIAN_REF="$(image_field debian:bookworm-slim reference)" || {
+  echo "préparation: inspection de l'image debian:bookworm-slim impossible" >&2
+  exit 2
+}
+DEBIAN_ARCH="$(image_field debian:bookworm-slim architecture)" || exit 2
+check "T1a image alpine inspectée" "alpine" "$ALPINE_REF"
+check "T1b image debian:bookworm-slim inspectée" "debian:bookworm-slim" "$DEBIAN_REF"
+check "T1c images invité arm64" "arm64 arm64" "$ALPINE_ARCH $DEBIAN_ARCH"
 # Les tailles d'image cache ne sont pas exposées par inspect; la matrice du
 # décision record (alpine 4.0 MiB, debian 26.8 MiB) est le contrat.
-ok "T1 images présentes (alpine et debian:bookworm-slim)" # sizes checked in decision record
 
 # --- T2: création à froid des deux invités ------------------------------------
 # Horloge en millisecondes compatible macOS (BSD date n'a pas %N).
@@ -154,10 +176,14 @@ CLONE_SIZE="$("$MSB" exec "$SB_PREFIX-debian" -- sh -c 'du -sm /tmp/jc-remote/.g
 ok "T9b empreinte .git clone profondeur 1 (${CLONE_SIZE} Mo)"
 
 # T10: clone depuis un vrai chemin hôte monté + worktree lié invité.
-# On monte le checkout PRINCIPAL (pas le worktree: son .git est un fichier
-# pointeur, non clonable) en lecture seule dans l'invité, puis on clone
-# depuis ce chemin — c'est le cas « host-path » que P22 doit refuser/remplacer.
+# Le clone principal (résolu depuis un checkout principal ou un worktree lié)
+# est monté en lecture seule dans l'invité. Le clone local laisse l'origine
+# sur ce chemin : c'est le cas « host-path » que P22 doit refuser/remplacer.
 HOST_REPO="$(git -C "$HERE/../../.." rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname)"
+if [ -z "$HOST_REPO" ] || [ ! -d "$HOST_REPO/.git" ]; then
+  echo "préparation T10: clone principal introuvable depuis $HERE; exécute le harnais depuis un checkout Git (pas une archive sans .git)" >&2
+  exit 2
+fi
 "$MSB" stop "$SB_PREFIX-debian" >/dev/null
 # recrée avec un montage hôte en lecture seule
 "$MSB" remove "$SB_PREFIX-debian" >/dev/null

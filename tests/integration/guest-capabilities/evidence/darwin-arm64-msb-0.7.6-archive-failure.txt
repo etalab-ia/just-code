@@ -1,0 +1,48 @@
+META issue=235 source=7f8b3dec70c7738989a4f97a62f2ad24d228194f date=2026-10-27 platform=darwin/arm64 host=MacBook-Pro-Luis.local os=macOS-27.0.1 backend=libkrun runtime=msb-0.7.6 sdk_declared=v0.7.6 outcome=expected-preparation-failure
+SOURCE harness byte-identical to 7f8b3de, copied into /tmp/issue-235-011a681, an extracted archive with no .git. T10 preflight rejects the missing host checkout before stopping/removing its sandbox.
+SETUP source=/tmp/issue-235-011a681 runtime_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89 user_MSB_HOME_untouched=yes
+INVOCATION cd /tmp/issue-235-011a681 && env MSB_HOME=/tmp/issue235-msb076/msb-home MSB_PATH=/tmp/issue235-msb076/runtime/bin/msb MSB_LIBKRUNFW_PATH=/tmp/issue235-msb076/runtime/lib/libkrunfw.5.dylib MSB_BIN=/tmp/issue235-msb076/runtime/bin/msb MSB_GUEST_INTEGRATION_NETWORK=1 tests/integration/guest-capabilities/run.sh
+RAW resolved_msb_version_begin
+msb 0.7.6
+VERSION_EXIT=0
+RAW resolved_msb_version_end
+RAW doctor_begin
+info Platform: macOS aarch64
+info Version: v0.7.6
+info MSB_HOME: /tmp/issue235-msb076/msb-home
+   ✓ msb          /tmp/issue235-msb076/runtime/bin/msb
+   ✓ libkrunfw    /tmp/issue235-msb076/runtime/lib/libkrunfw.5.dylib
+   ✓ Root clone   reflink supported
+   ✓ Architecture Apple silicon (arm64)
+done Host setup is ready.
+DOCTOR_EXIT=0
+RAW doctor_end
+RAW sdk_module_declaration_begin
+github.com/superradcompany/microsandbox/sdk/go v0.7.6
+GO_LIST_EXIT=0
+RAW sdk_module_declaration_end
+RAW harness_stdout_stderr_begin
+  ok  CLI msb épinglée
+  ok  T1a image alpine inspectée
+  ok  T1b image debian:bookworm-slim inspectée
+  ok  T1c images invité arm64
+  ok  T2 démarrage à froid (alpine=234ms debian=244ms)
+   ✓ Stopped      p03-guest-harness-debian
+   ✓ Started      p03-guest-harness-debian
+  ok  T3 état invité persiste après redémarrage
+  ok  T4a PTY propage la taille 40x120
+  ok  T5 exec est non-TTY par défaut
+  ok  T6a Node invité
+  ok  T6b OpenCode invité
+  ok  T7a navigation + DOM (title)
+  ok  T7b capture d'écran non vide
+  ok  T8 Playwright MCP navigate (chromium système)
+  ok  T9a clone origine distante valide (1225ms)
+  ok  T9b empreinte .git clone profondeur 1 (2 Mo)
+préparation T10: clone principal introuvable depuis /tmp/issue-235-011a681/tests/integration/guest-capabilities; exécute le harnais depuis un checkout Git (pas une archive sans .git)
+HARNESS_EXIT=2
+RAW harness_stdout_stderr_end
+RAW final_msb_list_begin
+No sandboxes found.
+MSB_LIST_EXIT=0
+RAW final_msb_list_end

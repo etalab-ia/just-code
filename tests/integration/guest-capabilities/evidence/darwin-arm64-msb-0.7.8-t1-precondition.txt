@@ -1,0 +1,20 @@
+META issue=235 source=e1484a7fd27ee5252c315403858d74c733c0da24 date=2026-10-27 platform=darwin/arm64 host=MacBook-Pro-Luis.local os=macOS-27.0.1 backend=libkrun runtime=msb-0.7.8 sdk_declared=v0.7.8 archive_sha256=0396a311e6aa35ad538db889ac3af656aaed6d325213f035825a14937f5f0e65
+OUTCOME expected preparation failure, historical: identical harness on a fresh MSB_HOME BEFORE the ensure_image fix. It proves the old T1 depended on a warm image cache, which motivated the fix retained in the final harness.
+INTEGRITY run.sh_sha256=7e593bea3f1237711207117623c7d764b5f729550cfe3fdf198835d73a2bd844 pin.json_sha256=7dc591c36b862366ab646afa58a8f137a87823ed7b80cfb98a9ff78a4000acee runtime_binary_sha256=5dbe0d921c6b6f807d2c59f87e0a3c3a648424871b6bee513b837a8c600a2493
+RAW harness_stdout_stderr_begin
+  ok  CLI msb épinglée
+error: image not found: alpine
+<anonymous_script>:1
+
+
+SyntaxError: Unexpected end of JSON input
+    at JSON.parse (<anonymous>)
+    at Socket.<anonymous> ([eval]:1:70)
+    at Socket.emit (node:events:526:24)
+    at endReadableNT (node:internal/streams/readable:2147:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+
+Node.js v26.12.1
+préparation: inspection de l'image alpine impossible
+HARNESS_EXIT=2
+RAW harness_stdout_stderr_end
