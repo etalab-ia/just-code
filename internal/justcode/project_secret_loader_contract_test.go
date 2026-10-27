@@ -11,6 +11,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// sdkModulePath is the Microsandbox SDK module, shared by this build and the
+// separate native qualification kit module so both pins stay visible.
+const sdkModulePath = "github.com/superradcompany/microsandbox/sdk/go"
+
 // Test the guest loader itself, not ParseProjectDotenv: the host importer
 // deliberately disables interpolation, but guest applications may not.
 func TestOpaqueProjectSecretMarkersSurviveGuestGodotenv(t *testing.T) {
@@ -64,5 +68,42 @@ func TestProjectSecretNativeEvidenceMatchesRuntimePins(t *testing.T) {
 			strings.Contains(text, "FAIL ") || strings.Count(text, "PASS ") != 29 {
 			t.Fatalf("native evidence %s does not match the recorded qualification", name)
 		}
+	}
+}
+
+// The native kit is a separate Go module, so the root build never compiles it
+// and nothing else noticed when its SDK pin lagged the runtime it drives. A
+// kit on an older SDK cannot launch a newer runtime (the probe then fails
+// create-inert-sentinels with "no tested sandbox launch contract"), and that
+// failure only appears on the machine that runs the qualification.
+func TestProjectSecretNativeKitMatchesRuntimeSDK(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "tests", "integration", "project-secrets", "native", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		for i, field := range fields {
+			if field != sdkModulePath {
+				continue
+			}
+			// Both the single-line `require …` form and a bare block entry put
+			// the version directly after the module path.
+			if i+1 >= len(fields) {
+				t.Fatalf("cannot read the SDK pin from %q", line)
+			}
+			pinned = fields[i+1]
+		}
+	}
+	if pinned != "v"+msbRuntimeVersion {
+		t.Fatalf("native kit pins %s %q, but the embedded runtime is v%s; update both together", sdkModulePath, pinned, msbRuntimeVersion)
+	}
+	sums, err := os.ReadFile(filepath.Join("..", "..", "tests", "integration", "project-secrets", "native", "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sums), sdkModulePath+" "+pinned+" ") {
+		t.Fatalf("native kit go.sum does not cover the %s %s pin", sdkModulePath, pinned)
 	}
 }
