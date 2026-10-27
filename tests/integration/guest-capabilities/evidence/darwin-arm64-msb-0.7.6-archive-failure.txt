@@ -1,11 +1,13 @@
-META issue=235 source=011a681b571bf13ebfe97d21e7911ff4fb0133ac date=2026-10-27 platform=darwin/arm64 runtime=msb-0.7.6 sdk=v0.7.6 outcome=setup-failure
-SOURCE source archive without .git; T10 requires a primary Git checkout for its host mount. No T10 result was emitted because the host repository was unavailable.
-COMMAND MSB_GUEST_INTEGRATION_NETWORK=1 tests/integration/guest-capabilities/run.sh
-RESULT T1-T9b passed; exit 1 before T10. This is a test setup failure, not a runtime failure. The successful run from a primary checkout is darwin-arm64-msb-0.7.6-network.txt.
-RAW stdout_stderr_begin
+META issue=235 source=7f8b3dec70c7738989a4f97a62f2ad24d228194f date=2026-10-27 platform=darwin/arm64 host=MacBook-Pro-Luis.local os=macOS-27.0.1 backend=libkrun runtime=msb-0.7.6 sdk_declared=v0.7.6 outcome=expected-preparation-failure
+SOURCE harness byte-identical to 7f8b3de, copied into /tmp/issue-235-011a681, an extracted archive with no .git. T10 preflight rejects the missing host checkout before stopping/removing its sandbox.
+SETUP source=/tmp/issue-235-011a681 runtime_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89 user_MSB_HOME_untouched=yes
+INVOCATION cd /tmp/issue-235-011a681 && env MSB_HOME=/tmp/issue235-msb076/msb-home MSB_PATH=/tmp/issue235-msb076/runtime/bin/msb MSB_LIBKRUNFW_PATH=/tmp/issue235-msb076/runtime/lib/libkrunfw.5.dylib MSB_BIN=/tmp/issue235-msb076/runtime/bin/msb MSB_GUEST_INTEGRATION_NETWORK=1 tests/integration/guest-capabilities/run.sh
+RAW harness_stdout_stderr_begin
   ok  CLI msb épinglée
-  ok  T1 images présentes (alpine et debian:bookworm-slim)
-  ok  T2 démarrage à froid (alpine=356ms debian=255ms)
+  ok  T1a image alpine inspectée
+  ok  T1b image debian:bookworm-slim inspectée
+  ok  T1c images invité arm64
+  ok  T2 démarrage à froid (alpine=234ms debian=244ms)
    ✓ Stopped      p03-guest-harness-debian
    ✓ Started      p03-guest-harness-debian
   ok  T3 état invité persiste après redémarrage
@@ -16,8 +18,12 @@ RAW stdout_stderr_begin
   ok  T7a navigation + DOM (title)
   ok  T7b capture d'écran non vide
   ok  T8 Playwright MCP navigate (chromium système)
-  ok  T9a clone origine distante valide (1389ms)
+  ok  T9a clone origine distante valide (1225ms)
   ok  T9b empreinte .git clone profondeur 1 (2 Mo)
-   ✓ Stopped      p03-guest-harness-debian
-   ✓ Removed      p03-guest-harness-debian
-HARNESS_EXIT=1
+préparation T10: clone principal introuvable depuis /tmp/issue-235-011a681/tests/integration/guest-capabilities; exécute le harnais depuis un checkout Git (pas une archive sans .git)
+HARNESS_EXIT=2
+RAW harness_stdout_stderr_end
+RAW final_msb_list_begin
+No sandboxes found.
+MSB_LIST_EXIT=0
+RAW final_msb_list_end

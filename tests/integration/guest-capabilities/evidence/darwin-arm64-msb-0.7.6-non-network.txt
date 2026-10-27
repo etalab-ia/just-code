@@ -1,36 +1,27 @@
-META issue=235 source=011a681b571bf13ebfe97d21e7911ff4fb0133ac date=2026-10-27 platform=darwin/arm64 host=MacBook-Pro-Luis.local os=macOS-27.0.1 backend=libkrun runtime=msb-0.7.6 sdk=v0.7.6 archive_sha256=ab63152d5130cc3ec7726f36ad9f7c1c38a651f61f1d59188f5d71785d2ad121
-SOURCE extracted archive of commit 011a681; no .git present. Non-network T1-T5 do not require a primary checkout. T10 requires one for the full matrix.
-SETUP source=/tmp/issue-235-011a681 msb_home=/tmp/issue235-msb076/msb-home runtime_sha256=a4f1722fee6460d4e2813e62b60dae4c092021d8120b7aaa9c2f4b5679d97d89
-MSB_VERSION msb 0.7.6
-DOCTOR Platform: macOS aarch64; Version: v0.7.6; msb: OK; libkrunfw: OK; Root clone: reflink supported; Architecture: Apple silicon (arm64); Host setup is ready.
-CLEANUP pre_run_sandboxes=none post_run_sandboxes=none user_MSB_HOME_untouched=yes
-COMMAND tests/integration/guest-capabilities/run.sh
-RAW network_mode=off stdout_stderr_begin
+msb 0.7.6
+VERSION_EXIT=0
+RAW resolved_msb_version_end
+RAW doctor_begin
+info Platform: macOS aarch64
+info Version: v0.7.6
+info MSB_HOME: /tmp/issue235-msb076/msb-home
+   ✓ msb          /tmp/issue235-msb076/runtime/bin/msb
+   ✓ libkrunfw    /tmp/issue235-msb076/runtime/lib/libkrunfw.5.dylib
+   ✓ Root clone   reflink supported
+   ✓ Architecture Apple silicon (arm64)
+done Host setup is ready.
+DOCTOR_EXIT=0
+RAW doctor_end
+RAW sdk_module_declaration_begin
+github.com/superradcompany/microsandbox/sdk/go v0.7.6
+GO_LIST_EXIT=0
+RAW sdk_module_declaration_end
+RAW harness_stdout_stderr_begin
   ok  CLI msb épinglée
-<anonymous_script>:1
-
-
-SyntaxError: Unexpected end of JSON input
-    at JSON.parse (<anonymous>)
-    at Socket.<anonymous> ([eval]:1:70)
-    at Socket.emit (node:events:526:24)
-    at endReadableNT (node:internal/streams/readable:2147:12)
-    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
-
-Node.js v26.12.1
-<anonymous_script>:1
-
-
-SyntaxError: Unexpected end of JSON input
-    at JSON.parse (<anonymous>)
-    at Socket.<anonymous> ([eval]:1:70)
-    at Socket.emit (node:events:526:24)
-    at endReadableNT (node:internal/streams/readable:2147:12)
-    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
-
-Node.js v26.12.1
-  ok  T1 images présentes (alpine et debian:bookworm-slim)
-  ok  T2 démarrage à froid (alpine=2962ms debian=3791ms)
+  ok  T1a image alpine inspectée
+  ok  T1b image debian:bookworm-slim inspectée
+  ok  T1c images invité arm64
+  ok  T2 démarrage à froid (alpine=309ms debian=249ms)
    ✓ Stopped      p03-guest-harness-debian
    ✓ Started      p03-guest-harness-debian
   ok  T3 état invité persiste après redémarrage
@@ -38,5 +29,10 @@ Node.js v26.12.1
   ok  T5 exec est non-TTY par défaut
 cas réseau ignorés (MSB_GUEST_INTEGRATION_NETWORK=1 pour les activer)
 
-réussites: 6, échecs: 0
+réussites: 8, échecs: 0
 HARNESS_EXIT=0
+RAW harness_stdout_stderr_end
+RAW final_msb_list_begin
+No sandboxes found.
+MSB_LIST_EXIT=0
+RAW final_msb_list_end
