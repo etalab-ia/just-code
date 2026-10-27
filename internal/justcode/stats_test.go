@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -47,12 +48,16 @@ func TestStatsMachineIDIsStableAndPrivate(t *testing.T) {
 	if len(first) != 32 {
 		t.Fatalf("machine id should be 16 random bytes as hex, got %q", first)
 	}
-	info, err := os.Stat(filepath.Join(stateDir, "stats", "machine-id"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("machine id permissions = %o", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		// Windows reports a synthesized 0666 regardless of the requested
+		// mode; assert the POSIX mode only where the filesystem carries it.
+		info, err := os.Stat(filepath.Join(stateDir, "stats", "machine-id"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("machine id permissions = %o", info.Mode().Perm())
+		}
 	}
 }
 

@@ -323,7 +323,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error)
 	defer func() {
 		// An explicit quit is the only abandonment worth recording: every
 		// other failure is an environment or validation error.
-		if code != 0 && err != nil && stage == "review" && strings.Contains(err.Error(), "quitté l'assistant") {
+		if code != 0 && err != nil && strings.Contains(err.Error(), "quitté l'assistant") && stage == "review" {
 			justcode.RecordStatsEvent(justcode.DefaultFS, justcode.DefaultStateDir(), justcode.StatsEventInput{
 				Kind: "abandon", Stage: stage, Version: version, ProjectRoot: answers.Root,
 			})
@@ -527,6 +527,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error)
 			case "edit":
 				fmt.Println("Réouverture des questions ; vos réponses sont conservées.")
 				askQuestions = true
+				stage = "questions"
 				continue
 			case "advanced":
 				askQuestions = false
@@ -564,6 +565,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error)
 			case "m", "modifier", "e", "edit", "back":
 				fmt.Println("Réouverture des questions ; une réponse vide conserve les valeurs actuelles.")
 				askQuestions = true
+				stage = "questions"
 			case "a", "advanced", "avancé", "réglages avancés":
 				askQuestions = false
 				answers.Advanced = true
