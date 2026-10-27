@@ -3,9 +3,10 @@
 Rejoue la qualification Alpine vs Debian, navigateur, MCP, PTY et clone
 invité (décision `docs/decisions/2026-09-24-microsandbox-guest-capabilities.md`)
 contre un vrai runtime Microsandbox épinglé, sur macOS (libkrun, arm64).
-Exécute le script depuis un **clone Git principal** du dépôt. Le cas T10
-monte ce clone en lecture seule dans l'invité : une archive sans `.git` ou un
-worktree lié ne remplit pas ce prérequis.
+Exécute le script depuis un checkout Git du dépôt : le cas T10 monte le clone
+principal en lecture seule dans l'invité. Une archive sans `.git` ne remplit
+pas ce prérequis. Un worktree lié est accepté si son clone principal reste
+accessible.
 
 ## Usage
 
