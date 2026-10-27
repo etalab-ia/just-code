@@ -60,7 +60,7 @@ func TestProjectSecretNativeEvidenceMatchesRuntimePins(t *testing.T) {
 			t.Fatal(err)
 		}
 		hash := sha256.Sum256(data)
-		if fmt.Sprintf("%x", hash) != "bd135fecc29b40da987cc3521c72a2a7986e4b8019a56fb084dd98ae82b1153a" {
+		if fmt.Sprintf("%x", hash) != "4245c72e2dbf47f6172d4f0559c284dc5336443157592385781cbc7523619691" {
 			t.Fatalf("native evidence %s changed", name)
 		}
 		text := string(data)
