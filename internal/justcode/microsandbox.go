@@ -990,12 +990,12 @@ func (m *MicrosandboxRuntime) nextStartEnv() map[string]string {
 	}
 	name, email := guestGitIdentity(m.guestGitConfig())
 	env := map[string]string{
-		"OPENCODE_DISABLE_AUTOUPDATE": "1",
-		"OPENCODE_SERVER_PASSWORD":    m.cfg.Password,
-		"OPENCODE_SERVER_USERNAME":    m.cfg.Username,
-		"OPENCODE_CONFIG_CONTENT":     content,
-		msbGitNameEnv:                 name,
-		msbGitEmailEnv:                email,
+		OpenCodeDisableUpdateEnv:   "1",
+		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
+		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
+		"OPENCODE_CONFIG_CONTENT":  content,
+		msbGitNameEnv:              name,
+		msbGitEmailEnv:             email,
 	}
 	for key, value := range browserGuestEnv(m.OpenCodeOverlay.MCPConnectors) {
 		env[key] = value
@@ -1016,10 +1016,10 @@ func (m *MicrosandboxRuntime) sandboxEnv() map[string]string {
 		content = opencodeConfigContent
 	}
 	env := map[string]string{
-		"OPENCODE_DISABLE_AUTOUPDATE": "1",
-		"OPENCODE_SERVER_PASSWORD":    m.cfg.Password,
-		"OPENCODE_SERVER_USERNAME":    m.cfg.Username,
-		"OPENCODE_CONFIG_CONTENT":     content,
+		OpenCodeDisableUpdateEnv:   "1",
+		"OPENCODE_SERVER_PASSWORD": m.cfg.Password,
+		"OPENCODE_SERVER_USERNAME": m.cfg.Username,
+		"OPENCODE_CONFIG_CONTENT":  content,
 	}
 	// The commit identity for guest work (P11 settings, documented defaults
 	// otherwise). It is configuration, not a secret.

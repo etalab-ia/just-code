@@ -172,3 +172,25 @@ func TestDeepMergeMaps(t *testing.T) {
 		t.Fatal("dst was mutated")
 	}
 }
+
+// TestManagedConfigDoesNotRelyOnAutoupdate guards the one mistake that would
+// silently restore the notice: moving the opt-out into the managed overlay.
+// At the pinned version the updater reads `autoupdate` from the guest global
+// config only, so an overlay field compiles, looks right in the composed
+// document, and does nothing. The load-bearing mechanism is the environment
+// variable, and its presence at each launch site is asserted by the runtime
+// tests (guest, agent-vm, Microsandbox).
+func TestManagedConfigDoesNotRelyOnAutoupdate(t *testing.T) {
+	content, err := ComposeConfigContent(ManagedOverlay{})
+	if err != nil {
+		t.Fatalf("ComposeConfigContent: %v", err)
+	}
+	// The positive half: the composed config is real and reachable, so the
+	// negative assertion below is not passing on an empty document.
+	if !strings.Contains(content, `"albert"`) {
+		t.Fatalf("composed config lost the provider block: %s", content)
+	}
+	if strings.Contains(content, "autoupdate") {
+		t.Fatalf("managed config must not carry an inert autoupdate field: %s", content)
+	}
+}

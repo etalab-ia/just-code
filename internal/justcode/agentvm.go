@@ -345,8 +345,11 @@ func (a *AgentVM) writeSecretsEnv(dir, apiKey string) (string, error) {
 	if cerr != nil {
 		configContent = opencodeConfigContent
 	}
-	content := fmt.Sprintf("OPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
-		shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(apiKey), shellQuote(configContent))
+	// OpenCodeDisableUpdateAssignment rides in the file because this env file
+	// is the only environment the guest processes inherit; the managed config
+	// cannot carry the setting (see OpenCodeDisableUpdateEnv).
+	content := fmt.Sprintf("%s\nOPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
+		OpenCodeDisableUpdateAssignment, shellQuote(a.Config.Password), shellQuote(a.Config.Username), shellQuote(apiKey), shellQuote(configContent))
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", err
 	}
