@@ -130,6 +130,11 @@ type TransferManifest struct {
 	// did. The scanner is provisioned by just-code itself (issue #177); a
 	// missing host installation is not a state the user is told about.
 	GitleaksMissing bool
+	// GitleaksDetail carries the technical cause when the scanner could not
+	// be prepared. It is deliberately NOT rendered in Summary(): the cause can
+	// name the release URL or an archive, and the user-facing text must stay
+	// tool-agnostic (issue #177). It exists for diagnostics.
+	GitleaksDetail string
 	// Warnings are non-fatal resolution notes (an unreadable path, a
 	// skipped directory).
 	Warnings []string
@@ -259,9 +264,7 @@ func ResolveTransferSet(ctx context.Context, root string, opts TransferOptions) 
 		return man, err
 	}
 	man.GitleaksMissing = probe.missing
-	if probe.detail != "" {
-		man.Warnings = append(man.Warnings, "secret detection unavailable: "+probe.detail)
-	}
+	man.GitleaksDetail = probe.detail
 	for _, f := range probe.findings {
 		rel := findingRelPath(abs, f.File)
 		if rel == "" {

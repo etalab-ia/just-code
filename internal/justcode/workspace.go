@@ -52,10 +52,10 @@ func (r ScanResult) Blocking() bool {
 	return len(r.DotenvFiles) > 0 || len(r.GitleaksFindings) > 0
 }
 
-// ScanWorkspace walks the workspace for dotenv files and, when gitleaks is
-// installed on the host, runs a redacted secret scan over it. Findings are
-// data, not errors; the returned error is reserved for failures to inspect the
-// workspace at all.
+// ScanWorkspace walks the workspace for dotenv files and runs a redacted
+// secret scan over it with the scanner just-code provisions itself (issue
+// #177). Findings are data, not errors; the returned error is reserved for
+// failures to inspect the workspace at all.
 func ScanWorkspace(ctx context.Context, dir string) (ScanResult, error) {
 	res := ScanResult{}
 
@@ -165,14 +165,14 @@ func runGitleaksFindings(ctx context.Context, binary, dir string) ([]gitleaksFin
 	)
 	out, err := cmd.Output()
 	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() != 1 {
-		return nil, fmt.Errorf("gitleaks exited %d on %s: %s", ee.ExitCode(), dir, ee.Stderr)
+		return nil, fmt.Errorf("secret scanner exited %d on %s: %s", ee.ExitCode(), dir, ee.Stderr)
 	}
 	if err != nil && !isExitError(err) {
-		return nil, fmt.Errorf("running gitleaks on %s: %w", dir, err)
+		return nil, fmt.Errorf("running the secret scanner on %s: %w", dir, err)
 	}
 	var findings []gitleaksFinding
 	if err := json.Unmarshal(out, &findings); err != nil {
-		return nil, fmt.Errorf("parsing gitleaks report for %s: %w", dir, err)
+		return nil, fmt.Errorf("parsing the secret scanner report for %s: %w", dir, err)
 	}
 	return findings, nil
 }
@@ -220,7 +220,7 @@ func CheckWorkspaceGate(ctx context.Context, dir string) error {
 		return err
 	}
 	if res.GitleaksMissing {
-		fmt.Fprintln(os.Stderr, workspaceScanUnavailableWarning(res.GitleaksDetail))
+		fmt.Fprintln(os.Stderr, workspaceScanUnavailableWarning())
 	}
 	if !res.Blocking() {
 		return nil
@@ -241,12 +241,10 @@ func CheckWorkspaceGate(ctx context.Context, dir string) error {
 // workspaceScanUnavailableWarning is the user-facing notice when the bundled
 // scanner could not be prepared. It names no tool and no install step: the
 // scanner is part of just-code, so there is nothing for the user to install
-// (issue #177). The technical detail is appended when there is one, because a
-// silent capability loss is worse than an ugly sentence.
-func workspaceScanUnavailableWarning(detail string) string {
-	const base = "Warning: the workspace secret scan could not run."
-	if detail == "" {
-		return base
-	}
-	return fmt.Sprintf("%s (%s)", base, detail)
+// (issue #177). The technical cause is NOT appended: it can carry the release
+// URL or an archive name, and this sentence is the one place the criterion
+// says must stay tool-agnostic. The cause is kept on ScanResult for
+// diagnostics.
+func workspaceScanUnavailableWarning() string {
+	return "Warning: the workspace secret scan could not run."
 }
