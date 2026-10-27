@@ -660,3 +660,24 @@ func TestValidateImportedPlatformsRejectsAnEndpointConflict(t *testing.T) {
 		t.Fatalf("re-importing the same endpoint must be idempotent: %v", err)
 	}
 }
+
+func TestValidateImportedPlatformsRejectsASharedDestination(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers:     []justcode.ProviderSettings{{Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := justcode.AlbertCodeImport{Platforms: []justcode.ProviderSettings{{
+		Kind: justcode.ProviderOpenAICompatible, Name: "Mistral again", BaseURL: "https://api.mistral.ai/v1",
+	}}}
+	err = validateImportedPlatforms(plan)
+	if err == nil || !strings.Contains(err.Error(), "share the host") {
+		t.Fatalf("a shared destination must be refused: %v", err)
+	}
+}

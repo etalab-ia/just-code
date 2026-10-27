@@ -190,6 +190,49 @@ func TestPromptSetupModelsReplacesADisconnectedPlatformDefault(t *testing.T) {
 	}
 }
 
+func TestSetupPlatformStageSeedsFromSavedSettings(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers: []justcode.ProviderSettings{
+			{Kind: justcode.ProviderAlbert},
+			{Kind: justcode.ProviderMistral},
+			{Kind: justcode.ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{SchemaVersion: 1, Stage: justcode.StageCredential}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(context.Context, justcode.InferenceProvider, string) justcode.CredentialProbe {
+			t.Fatal("stored platforms must not be re-probed")
+			return justcode.CredentialProbe{}
+		},
+	}
+	providers, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("")), true, &j, false, fs, stateDir)
+	if err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if len(providers) != 3 {
+		t.Fatalf("saved platforms were not seeded: %+v", providers)
+	}
+	if providers[2].BaseURL != "https://api.scaleway.ai/v1" || providers[2].Name != "Scaleway" {
+		t.Fatalf("custom endpoint was not preserved: %+v", providers[2])
+	}
+	if len(store.puts) != 0 {
+		t.Fatalf("no key should be re-stored: %+v", store.puts)
+	}
+}
+
 func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T) {
 	choices := albertSetupChoices()
 	picker := setupModelPicker{

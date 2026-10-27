@@ -690,6 +690,23 @@ setupStages:
 // the platforms whose key is already stored; "Modifier" re-asks everything.
 func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, fallback bool, j *justcode.SetupJournal, editing bool, fs justcode.FS, stateDir string) ([]justcode.InferenceProvider, error) {
 	platforms := j.Platforms
+	if len(platforms) == 0 && len(j.CredentialKinds) == 0 {
+		// A completed install has no journal. Seed the platform choices from
+		// the saved settings so re-running setup edits the existing
+		// configuration instead of silently replacing it with the default.
+		if us, ok := currentUserSettings(); ok && len(us.Providers) > 0 {
+			for _, settings := range us.Providers {
+				provider, err := justcode.ResolveProvider(settings)
+				if err != nil {
+					continue
+				}
+				platforms = append(platforms, justcode.SetupPlatform{
+					Kind: string(provider.Kind), Name: provider.Name, BaseURL: provider.BaseURL,
+				})
+				j.CredentialKinds = addCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
+			}
+		}
+	}
 	if len(platforms) == 0 {
 		// A journal written before #180 carries credential kinds but no
 		// platform list: infer the platforms it already connected instead of

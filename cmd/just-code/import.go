@@ -236,6 +236,9 @@ func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
 	if plan.Model != "" {
 		us.DefaultModel = plan.Model
 	}
+	if _, err := justcode.ResolveProviders(us.Providers); err != nil {
+		return fmt.Errorf("the merged platform configuration is invalid: %w", err)
+	}
 	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, us); err != nil {
 		return err
 	}
@@ -263,11 +266,23 @@ func validateImportedPlatforms(plan justcode.AlbertCodeImport) error {
 		if _, err := justcode.ResolveProvider(platform); err != nil {
 			return fmt.Errorf("the imported platform is invalid: %w", err)
 		}
+		matched := false
 		for _, current := range existing {
-			if current.Kind == platform.Kind && current.BaseURL != platform.BaseURL {
-				return fmt.Errorf("an OpenAI-compatible platform is already configured for %s; importing %s would attach its models to the wrong endpoint. Remove or align the existing platform first", current.BaseURL, platform.BaseURL)
+			if current.Kind == platform.Kind {
+				if current.BaseURL != platform.BaseURL {
+					return fmt.Errorf("an OpenAI-compatible platform is already configured for %s; importing %s would attach its models to the wrong endpoint. Remove or align the existing platform first", current.BaseURL, platform.BaseURL)
+				}
+				matched = true
 			}
 		}
+		if !matched {
+			existing = append(existing, platform)
+		}
+	}
+	// The complete set must satisfy the same invariants as a launch: in
+	// particular, two platforms may not share a destination host.
+	if _, err := justcode.ResolveProviders(existing); err != nil {
+		return fmt.Errorf("the imported platform conflicts with the current configuration: %w", err)
 	}
 	return nil
 }
