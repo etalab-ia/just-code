@@ -631,3 +631,32 @@ func stubCredentialGenerationBump(t *testing.T) {
 	bumpImportedCredentialGenerationFn = func(justcode.CredentialKind) {}
 	t.Cleanup(func() { bumpImportedCredentialGenerationFn = original })
 }
+
+func TestValidateImportedPlatformsRejectsAnEndpointConflict(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers: []justcode.ProviderSettings{{
+			Kind: justcode.ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conflicting := justcode.AlbertCodeImport{Platforms: []justcode.ProviderSettings{{
+		Kind: justcode.ProviderOpenAICompatible, Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
+	}}}
+	err = validateImportedPlatforms(conflicting)
+	if err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("a different endpoint must be refused: %v", err)
+	}
+	same := justcode.AlbertCodeImport{Platforms: []justcode.ProviderSettings{{
+		Kind: justcode.ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1",
+	}}}
+	if err := validateImportedPlatforms(same); err != nil {
+		t.Fatalf("re-importing the same endpoint must be idempotent: %v", err)
+	}
+}

@@ -101,6 +101,11 @@ func albertCodeImportCmd(args []string) (int, error) {
 	if opts.importAlbertKey {
 		fmt.Printf("This will store the ALBERT_API_KEY from %s/.env in the native credential store (%s); the value will not be displayed.\n", plan.Root, justcode.StoreAvailability())
 	}
+	if opts.apply && len(plan.Platforms) > 0 {
+		if err := validateImportedPlatforms(plan); err != nil {
+			return 1, err
+		}
+	}
 	fmt.Print(plan.Format())
 	if !opts.apply {
 		fmt.Println("Preview only. Pass --apply to write the just-code project manifest and lockfile.")
@@ -209,13 +214,17 @@ func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
 		us.Providers = justcode.DefaultProviderSettings()
 	}
 	for _, platform := range plan.Platforms {
-		found := false
+		configured := false
 		for _, existing := range us.Providers {
 			if existing.Kind == platform.Kind {
-				found = true
+				if existing.BaseURL != platform.BaseURL {
+					return fmt.Errorf("an OpenAI-compatible platform is already configured for %s; importing %s would attach its models to the wrong endpoint. Remove or align the existing platform first", existing.BaseURL, platform.BaseURL)
+				}
+				configured = true
+				break
 			}
 		}
-		if !found {
+		if !configured {
 			us.Providers = append(us.Providers, platform)
 		}
 	}
@@ -231,6 +240,35 @@ func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
 		return err
 	}
 	fmt.Printf("Plateforme importée dans les réglages : %s (clé à stocker avec just-code auth add openai-compatible)\n", plan.Platforms[0].Name)
+	return nil
+}
+
+// validateImportedPlatforms refuses an import that would conflict with the
+// host's existing OpenAI-compatible platform, or that would write an endpoint
+// the resolver rejects (and therefore make every later launch fail).
+func validateImportedPlatforms(plan justcode.AlbertCodeImport) error {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return err
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return err
+	}
+	existing := us.Providers
+	if len(existing) == 0 {
+		existing = justcode.DefaultProviderSettings()
+	}
+	for _, platform := range plan.Platforms {
+		if _, err := justcode.ResolveProvider(platform); err != nil {
+			return fmt.Errorf("the imported platform is invalid: %w", err)
+		}
+		for _, current := range existing {
+			if current.Kind == platform.Kind && current.BaseURL != platform.BaseURL {
+				return fmt.Errorf("an OpenAI-compatible platform is already configured for %s; importing %s would attach its models to the wrong endpoint. Remove or align the existing platform first", current.BaseURL, platform.BaseURL)
+			}
+		}
+	}
 	return nil
 }
 

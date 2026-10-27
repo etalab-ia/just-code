@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -131,6 +132,25 @@ func TestFetchProviderModelsReturnsRawSortedIDs(t *testing.T) {
 	}
 	if len(models) != 2 || models[0].ID != "a-model" || models[1].ID != "b-model" {
 		t.Fatalf("models = %+v", models)
+	}
+}
+
+func TestFetchCatalogueNeverFollowsRedirects(t *testing.T) {
+	var reached int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&reached, 1)
+		_, _ = w.Write([]byte(`{"data":[{"id":"leaked"}]}`))
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirect.Close()
+	if _, err := FetchCatalogue(context.Background(), nil, "secret", redirect.URL); err == nil {
+		t.Fatal("a redirect must not be followed: the bearer key would be replayed")
+	}
+	if atomic.LoadInt32(&reached) != 0 {
+		t.Fatal("the redirect target received the credential")
 	}
 }
 

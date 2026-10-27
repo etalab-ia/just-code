@@ -107,6 +107,31 @@ func TestDiscoverAlbertCodeImportRecoversOpenRouterPlatform(t *testing.T) {
 	}
 }
 
+func TestDiscoverAlbertCodeImportRejectsAnEndpointTheResolverRefuses(t *testing.T) {
+	root := t.TempDir()
+	gitInit(t, root)
+	config := `{
+  "provider": {"openrouter": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "OpenRouter",
+    "options": {"baseURL": "https://api.example.com:8443/v1", "apiKey": "{env:OPENROUTER_API_KEY}"},
+    "models": {"z-ai/glm-4.6": {}}
+  }},
+  "model": "openrouter/z-ai/glm-4.6"
+}`
+	writeImportFixtureFile(t, root, "opencode.json", config)
+	plan, err := DiscoverAlbertCodeImport(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Platforms) != 0 {
+		t.Fatalf("an endpoint the resolver rejects must not be imported: %+v", plan.Platforms)
+	}
+	if !strings.Contains(strings.Join(plan.ReviewItems, "\n"), "cannot be imported") {
+		t.Fatalf("the refusal must be explained: %v", plan.ReviewItems)
+	}
+}
+
 func TestDiscoverAlbertCodeImportReportsMultipleOpenCodeConfigs(t *testing.T) {
 	root := t.TempDir()
 	gitInit(t, root)

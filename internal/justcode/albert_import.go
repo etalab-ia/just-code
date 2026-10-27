@@ -261,9 +261,14 @@ func (p *AlbertCodeImport) importOpenCodeConfig(config map[string]any) {
 			if name == "openrouter" {
 				display = "OpenRouter"
 			}
-			p.Platforms = append(p.Platforms, ProviderSettings{
+			settings := ProviderSettings{
 				Kind: ProviderOpenAICompatible, Name: display, BaseURL: baseURL,
-			})
+			}
+			if _, err := ResolveProvider(settings); err != nil {
+				p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("provider.%q cannot be imported: %v", name, err))
+				continue
+			}
+			p.Platforms = append(p.Platforms, settings)
 			if models, ok := entry["models"].(map[string]any); ok {
 				for id := range models {
 					p.ProviderModels = append(p.ProviderModels, ProviderModelRef(ProviderOpenAICompatible, id))
