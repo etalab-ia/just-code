@@ -8,6 +8,9 @@ principal en lecture seule dans l'invité. Une archive sans `.git` ne remplit
 pas ce prérequis. Un worktree lié est accepté si son clone principal reste
 accessible.
 
+T1 télécharge une image absente de `$MSB_HOME`. Le harnais fonctionne donc sur
+un runtime neuf, sans exiger un cache d'images préexistant.
+
 ## Usage
 
 ```sh

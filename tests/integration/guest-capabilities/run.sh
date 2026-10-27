@@ -45,6 +45,16 @@ image_field() { # image_field <image> <champ JSON>
   "$MSB" image inspect "$1" --format json |
     node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log(j.$2??'')})"
 }
+# Un MSB_HOME neuf ne contient aucune image : T1 est le premier cas qui en
+# dépend, donc il les télécharge au lieu d'exiger un cache préexistant.
+ensure_image() { # ensure_image <image>
+  if ! "$MSB" image inspect "$1" --format json >/dev/null 2>&1; then
+    echo "préparation: image $1 absente du cache, téléchargement" >&2
+    "$MSB" pull "$1" >/dev/null
+  fi
+}
+ensure_image alpine
+ensure_image debian:bookworm-slim
 ALPINE_REF="$(image_field alpine reference)" || {
   echo "préparation: inspection de l'image alpine impossible" >&2
   exit 2
