@@ -177,6 +177,19 @@ func (m *MicrosandboxRuntime) transferIntoGuest(ctx context.Context, opts SyncOp
 	if err != nil {
 		return err
 	}
+	// The record on disk still describes the PREVIOUS transfer. From the
+	// first guest write below, its baseline and its exclusions go stale,
+	// and apply trusts records — so invalidate it first, and abort when
+	// that fails: transferring anyway would leave a record that no longer
+	// describes the guest. A missing record is already invalid. Past this
+	// point, any failure — payload write, extraction, commit — leaves no
+	// record at all, and apply refuses on the missing record.
+	record := newLastTransferStore(m.stateDirOrDefault(), m.InstanceName())
+	if err := record.Invalidate(); err != nil {
+		return fmt.Errorf("cannot invalidate the last-transfer record at %s (%v), so the transfer was aborted before anything was written to the guest; "+
+			"the record still matches the untouched guest — 'just-code workspace apply' and 'just-code workspace export' keep working — "+
+			"remove the record file (or fix the permissions of the state directory) and retry", record.Path, err)
+	}
 	opts.print(fmt.Sprintf("%s: writing %s to the guest...\n", headline, FormatByteSize(int64(len(payload)))))
 	if err := m.Client.WriteFile(ctx, m.InstanceName(), msbTransferArchivePath, payload); err != nil {
 		return fmt.Errorf("writing the transfer payload into the guest failed: %w", err)
@@ -191,6 +204,12 @@ func (m *MicrosandboxRuntime) transferIntoGuest(ctx context.Context, opts SyncOp
 	if err := m.ensureGuestRepository(ctx); err != nil {
 		return err
 	}
+	// The snapshot the guest just received is the baseline 'workspace
+	// apply' measures the agent's work against. The files have already
+	// crossed, so a record that cannot be saved does not fail the transfer:
+	// apply refuses on the missing record (the guest's work stays reachable
+	// through 'workspace export') until the next sync records one.
+	m.recordLastTransfer(ctx, manifest)
 	opts.print(fmt.Sprintf("Guest workspace ready: %d file(s) in %s.\n", len(included), msbGuestWorkspace))
 	return nil
 }
@@ -212,7 +231,7 @@ func (m *MicrosandboxRuntime) ensureGuestRepository(ctx context.Context) error {
 		"git rev-parse --git-dir >/dev/null 2>&1 || git init -q",
 		"git add -A",
 		"git -c user.name=" + shellQuote(m.gitIdentityName()) + " -c user.email=" + shellQuote(m.gitIdentityEmail()) +
-			" commit -q -m " + shellQuote("just-code: initial guest snapshot from the host working tree") + " --allow-empty",
+			" commit -q -m " + shellQuote(guestSnapshotCommitMessage) + " --allow-empty",
 	}
 	return m.guestShell(ctx, strings.Join(steps, " && "))
 }
@@ -301,7 +320,11 @@ func (m *MicrosandboxRuntime) ExportGuestChanges(ctx context.Context, outPath st
 	}
 	// `git add -A -N` marks untracked files intent-to-add so they appear in
 	// the diff; without it, new files would be invisible in the export.
-	cmd := "cd " + shellQuote(msbGuestWorkspace) + " && git add -A -N && git diff HEAD"
+	// --no-ext-diff and --no-textconv keep the patch git's own whatever the
+	// guest is configured to: the guest's git configuration is
+	// agent-controlled, and a forged patch is exactly what the manual
+	// application path must never hand the user.
+	cmd := guestCd() + "git add -A -N && " + guestGitFragment([]string{"diff", "--no-ext-diff", "--no-textconv", "HEAD"})
 	stdout, stderr, code, err := m.Client.ExecCapture(ctx, m.InstanceName(), cmd)
 	if err != nil {
 		return "", err

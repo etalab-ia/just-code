@@ -93,7 +93,7 @@ Quatre autres prompts (toolchain polyglotte, édition et revue de diff, continui
 | [Démarrage rapide](docs/quickstart.md) | Premier lancement et prompts d'exemple complets |
 | [Configuration](docs/config.md) | Assistant `setup`, variables d'environnement, fichiers gérés, redirections de ports par projet, skills, MCP, modèle OpenCode |
 | [Identifiants et secrets](docs/credentials.md) | Magasin d'identifiants, résolution de la clé Albert, protection par runtime, GitHub dans l'invité |
-| [Sécurité du workspace](docs/workspace-security.md) | Workspace scellé, filtre de transfert, export des changements |
+| [Sécurité du workspace](docs/workspace-security.md) | Workspace scellé, filtre de transfert, retour des changements (`workspace apply`, `workspace export`) |
 | [Utilisation](docs/usage.md) | Commandes, instances par projet, niveaux d'isolation, répertoire de travail |
 | [Runtime Microsandbox](docs/runtime-microsandbox.md) | Téléchargement vérifié, mode manuel (`MSB_PATH`), prérequis plateforme |
 | [Plateformes](docs/plateformes.md) | Plateformes prises en charge, magasins d'identifiants, et ce qui est réellement qualifié |

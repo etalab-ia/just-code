@@ -227,6 +227,13 @@ func TestWorkspaceOpsRefuseLegacyBindMount(t *testing.T) {
 			_, err := m.ExportGuestChanges(context.Background(), "")
 			return err
 		},
+		// apply reads the guest repository (git add -A -N) and writes into
+		// the host folder: against a bind mount the repository is the
+		// user's own checkout, and the write target is the mounted source.
+		"apply": func(m *MicrosandboxRuntime) error {
+			_, err := m.PlanGuestApply(context.Background())
+			return err
+		},
 	}
 	for name, op := range ops {
 		t.Run(name, func(t *testing.T) {

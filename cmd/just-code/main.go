@@ -1241,8 +1241,9 @@ Commands:
              remote MCPs and credential reference. Interactive by default;
              see 'just-code init --help' for the flag surface.
   workspace  Manage the sealed guest workspace: what crosses into the guest,
-             per-file re-inclusions, refresh and reviewed export (status,
-             sync, allow, deny, export). The host checkout is never mounted.
+             per-file re-inclusions, refresh, and getting the agent's work
+             back (status, sync, allow, deny, export, apply). The host
+             checkout is never mounted.
   setup      Configure the machine: preflight, credentials, identity, model,
              then install the managed runtime (setup doctor for the
              read-only diagnosis)

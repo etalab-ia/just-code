@@ -49,7 +49,11 @@ de démarrage d'une microVM sur l'hyperviseur natif.
 6. Modifier un fichier dans l'invité, lancer `just-code workspace export` pour
    produire un diff, revoir ce diff, puis appliquer uniquement les changements
    retenus. Confirmer qu'aucune écriture directe n'a touché le checkout avant
-   l'application explicite.
+   l'application explicite. Refaire le parcours avec `just-code workspace
+   apply` : vérifier que la liste s'affiche avant toute écriture, que le choix
+   fichier par fichier fonctionne, qu'un fichier modifié dans le checkout
+   entre-temps devient un conflit (jamais un écrasement), et qu'aucun commit
+   n'est créé.
 7. Tester `just-code stop`, le redémarrage non destructif et la reconnexion.
    Confirmer que l'état annoncé comme persistant l'est, sans recréation
    implicite.

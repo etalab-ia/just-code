@@ -28,10 +28,15 @@ Il n'y a **pas** d'option « tout inclure » : une réintégration est une déci
 Les modifications faites dans l'invité ne reviennent jamais en écriture directe dans ton checkout :
 
 ```
+just-code workspace apply
 just-code workspace export [--out <fichier>]
 ```
 
-produit un patch (fichiers suivis et nouveaux) écrit dans l'état hôte, à relire puis appliquer avec `git apply`. Avec le grant GitHub activé, l'invité peut aussi livrer ses changements par branche/PR après revue ; aucun push n'est automatique.
+`workspace apply` ramène le travail de l'agent en une commande : elle liste les fichiers (avec leurs ajouts et suppressions), puis propose d'appliquer tout, de choisir fichier par fichier, ou de ne rien faire. Chaque fichier applicable est revérifié juste avant son écriture — un fichier que tu aurais modifié entre-temps devient un conflit signalé, jamais un écrasement — et les fichiers que le filtre de transfert refuse (secrets, `.env`, ignorés par git, trop gros) ne reviennent jamais. Rien n'est commité : les fichiers écrits restent dans ta copie de travail, à relire puis commiter quand tu veux. Les fichiers non appliqués (conflits) sont conservés dans un patch pour une application manuelle.
+
+`workspace apply` s'appuie sur l'enregistrement du dernier transfert (le commit de référence et les exclusions du filtre) : sans lui — instance créée avant cette version, ou enregistrement en échec — la commande refuse en indiquant comment récupérer le travail (`workspace export`), plutôt que de ramener des fichiers sans pouvoir prouver ce que le filtre avait refusé. Cet enregistrement est invalidé avant la première écriture d'un nouveau transfert : un rafraîchissement interrompu ne laisse jamais un enregistrement qui ne décrirait plus l'invité.
+
+`workspace export` produit le même patch (fichiers suivis et nouveaux) écrit dans l'état hôte, à relire puis appliquer avec `git apply`. Avec le grant GitHub activé, l'invité peut aussi livrer ses changements par branche/PR après revue ; aucun push n'est automatique.
 
 **Non destructif :** `workspace sync` refuse de rafraîchir si l'invité contient du travail non commité ; il nomme les fichiers et n'écrase qu'avec `--force`.
 
