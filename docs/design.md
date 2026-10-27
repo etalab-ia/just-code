@@ -9,7 +9,7 @@
 - **Configuration OpenCode générée.** La configuration du provider Albert est passée inline via `OPENCODE_CONFIG_CONTENT` par le SDK ; le workspace n'est pas utilisé comme source de configuration hôte montée.
 - **Permissions permissives dans le sandbox.** Le runtime sélectionné est la frontière de confinement : `edit`, `bash` et `external_directory` sont autorisés à l'intérieur.
 - **Secrets Microsandbox.** La vraie valeur reste sur l'hôte : seule une valeur de substitution entre dans la microVM et le proxy réseau ne la remplace que pour `albert.api.etalab.gouv.fr`. Pour Tart et agent-vm, la clé est lisible dans l'invité et un avertissement/accord explicite s'applique.
-- **Filtre de transfert Microsandbox.** Les fichiers `.env`, les liens symboliques et les fichiers signalés par gitleaks sont exclus par défaut à chaque transfert et rafraîchissement ; une ré-inclusion se fait fichier par fichier. Tart et agent-vm montent le workspace hôte et conservent le scan bloquant au démarrage.
+- **Filtre de transfert Microsandbox.** Les fichiers `.env`, les liens symboliques et les fichiers signalés par le détecteur de secrets embarqué (gitleaks épinglé, fourni par just-code) sont exclus par défaut à chaque transfert et rafraîchissement ; une ré-inclusion se fait fichier par fichier. Tart et agent-vm montent le workspace hôte et conservent le scan bloquant au démarrage.
 
 ## Documents de décision
 

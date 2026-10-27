@@ -2,9 +2,10 @@ package justcode
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -168,28 +169,39 @@ func TestCheckWorkspaceGateClean(t *testing.T) {
 	}
 }
 
-// TestScanWorkspaceGitleaks exercises the real gitleaks integration when the
-// binary is on PATH; it is skipped otherwise (CI has gitleaks via pre-commit).
-func TestScanWorkspaceGitleaks(t *testing.T) {
-	if _, err := exec.LookPath("gitleaks"); err != nil {
-		t.Skip("gitleaks not installed")
+// TestScanWorkspaceUsesBundledScanner exercises the scan through the injected
+// bundled executable, with no scanner on PATH: after issue #177 the host has
+// nothing to provide, so a test that required a host binary would test a state
+// the product no longer has.
+func TestScanWorkspaceUsesBundledScanner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub is a POSIX shell script")
 	}
 	dir := t.TempDir()
-	// A token-shaped secret that gitleaks detects (generic-api-key).
-	// A secret shape gitleaks' generic-api-key rule detects (entropy-based).
 	if err := os.WriteFile(filepath.Join(dir, "config.txt"),
 		[]byte("password: \"hunter2correcthorsebatterystaple12345\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	stub := filepath.Join(t.TempDir(), "scanner")
+	report := fmt.Sprintf(`[{"RuleID":"generic-api-key","File":%q,"StartLine":1,"Match":"REDACTED"}]`,
+		filepath.Join(dir, "config.txt"))
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s' '"+report+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(stub))
+	orig := gitleaksExecutable
+	gitleaksExecutable = func(context.Context) (string, error) { return stub, nil }
+	t.Cleanup(func() { gitleaksExecutable = orig })
+
 	res, err := ScanWorkspace(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.GitleaksMissing {
-		t.Fatal("gitleaks is installed but reported missing")
+		t.Fatal("a resolvable bundled scanner must not be reported missing")
 	}
 	if len(res.GitleaksFindings) == 0 {
-		t.Fatal("gitleaks found no secret in a workspace containing one")
+		t.Fatal("the scanner reported no secret in a workspace containing one")
 	}
 	if !res.Blocking() {
 		t.Error("findings must block")
