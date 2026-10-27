@@ -1,0 +1,23 @@
+META issue=235 source=011a681b571bf13ebfe97d21e7911ff4fb0133ac date=2026-10-27 platform=darwin/arm64 runtime=msb-0.7.6 sdk=v0.7.6 outcome=setup-failure
+SOURCE source archive without .git; T10 requires a primary Git checkout for its host mount. No T10 result was emitted because the host repository was unavailable.
+COMMAND MSB_GUEST_INTEGRATION_NETWORK=1 tests/integration/guest-capabilities/run.sh
+RESULT T1-T9b passed; exit 1 before T10. This is a test setup failure, not a runtime failure. The successful run from a primary checkout is darwin-arm64-msb-0.7.6-network.txt.
+RAW stdout_stderr_begin
+  ok  CLI msb épinglée
+  ok  T1 images présentes (alpine et debian:bookworm-slim)
+  ok  T2 démarrage à froid (alpine=356ms debian=255ms)
+   ✓ Stopped      p03-guest-harness-debian
+   ✓ Started      p03-guest-harness-debian
+  ok  T3 état invité persiste après redémarrage
+  ok  T4a PTY propage la taille 40x120
+  ok  T5 exec est non-TTY par défaut
+  ok  T6a Node invité
+  ok  T6b OpenCode invité
+  ok  T7a navigation + DOM (title)
+  ok  T7b capture d'écran non vide
+  ok  T8 Playwright MCP navigate (chromium système)
+  ok  T9a clone origine distante valide (1389ms)
+  ok  T9b empreinte .git clone profondeur 1 (2 Mo)
+   ✓ Stopped      p03-guest-harness-debian
+   ✓ Removed      p03-guest-harness-debian
+HARNESS_EXIT=1

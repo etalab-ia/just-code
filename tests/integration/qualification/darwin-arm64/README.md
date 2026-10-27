@@ -64,6 +64,16 @@ fonctionne avec l'initialisation lente documentée.
   (candidat amont). Transcripts :
   `tests/integration/credentials/evidence/darwin-arm64-msb-0.7.6.txt` et
   `tests/integration/credentials/evidence/darwin-arm64-msb-0.7.8.txt`.
+- **Capacités invité P03 (#235, requalifiées le 2026-10-27)** : la matrice
+  passe 6/6 sans réseau et 16/16 avec `MSB_GUEST_INTEGRATION_NETWORK=1`
+  sur MSB 0.7.6, SDK v0.7.6, macOS 27.0.1 arm64 et libkrun. Elle a été
+  exécutée sur MacBook-Pro-Luis.local, avec un runtime temporaire isolé. T10
+  nécessite un clone Git principal ; une tentative depuis une archive sans
+  `.git` a échoué avant ce cas et n'est pas une qualification. Les preuves et
+  les limites du harnais sont dans
+  `tests/integration/guest-capabilities/evidence/`. Cette matrice P03 reste
+  distincte du transport des identifiants P02 ci-dessus et des parcours
+  intégrés à l'application. Elle ne requalifie pas le profil navigateur P16.
 
 ## Hôte
 

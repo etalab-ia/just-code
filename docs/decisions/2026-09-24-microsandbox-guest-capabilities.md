@@ -186,6 +186,43 @@ contient plus de balise `<h1>` ; le harnais cherche désormais le titre
 **Conclusion :** Aucune régression des capacités invité dans
 Microsandbox v0.7.3. Le runtime passe la matrice complète.
 
+## Requalification v0.7.6 (#235, 2026-10-27)
+
+Le harnais P03 est maintenant aligné sur le runtime CLI 0.7.6 et le SDK Go
+v0.7.6 livrés par just-code. La matrice a été rejouée sur
+MacBook-Pro-Luis.local, sous macOS 27.0.1 (arm64), avec libkrun. Le runtime
+a été installé dans un répertoire temporaire et vérifié par le SHA-256 gravé
+dans just-code. Le `~/.microsandbox` du poste n'a pas été modifié.
+
+**Résultats observés :**
+
+- Sans les cas réseau : 6 réussites, 0 échec. La version du CLI, les images,
+  le cycle de vie, la persistance et le PTY passent. Le script signale
+  explicitement que les cas réseau sont ignorés.
+- Avec `MSB_GUEST_INTEGRATION_NETWORK=1` : 16 réussites, 0 échec. T1-T10c
+  passent, notamment Node v22.14.0, OpenCode 1.18.32, Chromium, Playwright
+  MCP, le clone distant et le worktree lié invité.
+- Le clone distant a pris 1,4 seconde. Le clone depuis le chemin hôte monté a
+  pris 109 ms. Ce sont des mesures de session, pas des objectifs de
+  performance.
+
+Le run réseau complet a d'abord été tenté depuis une archive sans `.git`. Il
+a échoué avant T10, car ce cas exige un checkout Git principal pour le
+montage hôte. Le harnais documente désormais ce prérequis. Le même harnais a
+ensuite été exécuté depuis un clone principal temporaire : les 16 assertions
+passent. Les trois transcripts sont conservés dans
+`tests/integration/guest-capabilities/evidence/`.
+
+**Limite du harnais :** T1 confirme la présence des images, mais n'asserte
+pas leur taille. Le run non réseau a aussi produit des diagnostics JSON
+pendant l'inspection initiale des images. Ces constats sont détaillés dans le
+résumé des preuves ; ils ne sont pas transformés en réussites supplémentaires.
+
+Cette qualification concerne les capacités invité P03. Elle ne requalifie ni
+le transport des identifiants P02, ni les parcours intégrés à just-code. Le
+profil navigateur P16 et les autres limites déjà documentées restent hors de
+cette matrice.
+
 ## État d'implémentation navigateur P16 (2026-10-04, qualification en attente)
 
 Le changement P16 ajoute un profil navigateur distinct, sans modifier l'image

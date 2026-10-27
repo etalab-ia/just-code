@@ -3,6 +3,9 @@
 Rejoue la qualification Alpine vs Debian, navigateur, MCP, PTY et clone
 invité (décision `docs/decisions/2026-09-24-microsandbox-guest-capabilities.md`)
 contre un vrai runtime Microsandbox épinglé, sur macOS (libkrun, arm64).
+Exécute le script depuis un **clone Git principal** du dépôt. Le cas T10
+monte ce clone en lecture seule dans l'invité : une archive sans `.git` ou un
+worktree lié ne remplit pas ce prérequis.
 
 ## Usage
 
@@ -22,7 +25,8 @@ avec le code 2 ; un échec d'assertion sort non-zéro avec le nom du cas.
 
 Versions épinglées dans `pin.json` : CLI msb, SDK Go, images invité,
 OpenCode et Node. Toute montée de version reproduit la matrice complète et
-met à jour le décision record.
+met à jour le décision record. Les transcripts macOS sont conservés dans
+`evidence/` avec la révision, l'environnement et les résultats de chaque run.
 
 ## Notes de cas
 
