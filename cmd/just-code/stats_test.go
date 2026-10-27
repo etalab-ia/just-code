@@ -19,6 +19,9 @@ func statsTestPaths(t *testing.T) (stateDir, settingsPath string) {
 		t.Fatal(err)
 	}
 	t.Setenv("JUST_CODE_STATS_URL", "")
+	previousSpawn := justcode.StatsFlushSpawn
+	justcode.StatsFlushSpawn = func() {}
+	t.Cleanup(func() { justcode.StatsFlushSpawn = previousSpawn })
 	return stateDir, settingsPath
 }
 

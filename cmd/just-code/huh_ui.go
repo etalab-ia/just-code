@@ -849,6 +849,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			}
 		}
 		if err := huhRun(huh.NewForm(groups...)); err != nil {
+			recordInitAbandon(answers.Root, "skills")
 			return answers, err
 		}
 
@@ -903,6 +904,7 @@ func askInitQuestionsHuh(opts initOptions, answers justcode.InitAnswers) (justco
 			var err error
 			answers, err = askGitHubStepHuh(answers)
 			if err != nil {
+				recordInitAbandon(answers.Root, "github")
 				return answers, err
 			}
 		}

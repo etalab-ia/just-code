@@ -52,6 +52,10 @@ var StatsEndpointDefault = ""
 // so they never start a detached copy of the test binary.
 var StatsFlushSpawn = SpawnStatsFlush
 
+// statsQueueLockWait bounds how long a queue mutation waits for another
+// process; it is a variable so tests can exercise stale-lock recovery fast.
+var statsQueueLockWait = 2 * time.Second
+
 // StatsEndpoint resolves the configured endpoint, or "" when sending is
 // disabled.
 func StatsEndpoint() string {
@@ -362,7 +366,8 @@ func withStatsQueueLock(fs FS, stateDir string, fn func() error) error {
 		return err
 	}
 	path := filepath.Join(statsDir(stateDir), "queue.lock")
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(statsQueueLockWait)
+	recovered := false
 	for attempt := 0; ; attempt++ {
 		err := fs.CreateExclusive(path, []byte("lock"), 0o600)
 		if err == nil {
@@ -373,10 +378,13 @@ func withStatsQueueLock(fs FS, stateDir string, fn func() error) error {
 			return err
 		}
 		if time.Now().After(deadline) {
-			if attempt > 0 {
+			if recovered {
 				return err
 			}
+			// Queue mutations are milliseconds; a lock older than the wait
+			// belongs to a process that died while holding it.
 			_ = fs.Remove(path)
+			recovered = true
 			continue
 		}
 		time.Sleep(10 * time.Millisecond)

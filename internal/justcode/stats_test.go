@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // statsTestHome isolates the settings file and returns its path.
@@ -112,6 +113,26 @@ func TestStatsQueueIsBoundedAndOrdered(t *testing.T) {
 	events, _ = PendingStatsEvents(DefaultFS, stateDir)
 	if len(events) != 0 {
 		t.Fatalf("clear left events: %v", events)
+	}
+}
+
+func TestStatsQueueRecoversAStaleLock(t *testing.T) {
+	stateDir := t.TempDir()
+	lock := filepath.Join(stateDir, "stats", "queue.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, []byte("dead owner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousWait := statsQueueLockWait
+	statsQueueLockWait = 20 * time.Millisecond
+	t.Cleanup(func() { statsQueueLockWait = previousWait })
+	if err := EnqueueStatsEvent(DefaultFS, stateDir, StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: "e", Kind: "setup"}); err != nil {
+		t.Fatalf("a stale lock must be recovered: %v", err)
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Fatalf("the lock must be released: %v", err)
 	}
 }
 
