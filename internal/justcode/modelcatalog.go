@@ -132,9 +132,10 @@ type catalogueJSON struct {
 // FetchCatalogue retrieves and parses the models listing. It performs no
 // caching itself; the caller composes cache-then-network.
 func FetchCatalogue(ctx context.Context, client *http.Client, apiKey, url string) (Catalogue, error) {
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
+	// Same contract as the validation probe: a redirect is never followed,
+	// so the Authorization header cannot be replayed to another host (the
+	// host fetches this outside the secret proxy).
+	client = noRedirectClient(client)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return Catalogue{}, err

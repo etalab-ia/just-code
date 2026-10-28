@@ -75,6 +75,63 @@ func TestDiscoverAlbertCodeImportRecognizesSafeLegacyIntent(t *testing.T) {
 	}
 }
 
+func TestDiscoverAlbertCodeImportRecoversOpenRouterPlatform(t *testing.T) {
+	root := t.TempDir()
+	gitInit(t, root)
+	config := `{
+  "provider": {"openrouter": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "OpenRouter",
+    "options": {"baseURL": "https://openrouter.ai/api/v1", "apiKey": "{env:OPENROUTER_API_KEY}"},
+    "models": {"z-ai/glm-4.6": {"name": "GLM 4.6"}},
+  }},
+  "model": "openrouter/z-ai/glm-4.6",
+}`
+	writeImportFixtureFile(t, root, "opencode.json", config)
+	plan, err := DiscoverAlbertCodeImport(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Platforms) != 1 {
+		t.Fatalf("platforms = %+v", plan.Platforms)
+	}
+	platform := plan.Platforms[0]
+	if platform.Kind != ProviderOpenAICompatible || platform.Name != "OpenRouter" || platform.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("imported platform = %+v", platform)
+	}
+	if plan.Model != "openai-compatible/z-ai/glm-4.6" {
+		t.Fatalf("imported model = %q", plan.Model)
+	}
+	if !equalImportStrings(plan.ProviderModels, []string{"openai-compatible/z-ai/glm-4.6"}) {
+		t.Fatalf("imported models = %v", plan.ProviderModels)
+	}
+}
+
+func TestDiscoverAlbertCodeImportRejectsAnEndpointTheResolverRefuses(t *testing.T) {
+	root := t.TempDir()
+	gitInit(t, root)
+	config := `{
+  "provider": {"openrouter": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "OpenRouter",
+    "options": {"baseURL": "https://api.example.com:8443/v1", "apiKey": "{env:OPENROUTER_API_KEY}"},
+    "models": {"z-ai/glm-4.6": {}}
+  }},
+  "model": "openrouter/z-ai/glm-4.6"
+}`
+	writeImportFixtureFile(t, root, "opencode.json", config)
+	plan, err := DiscoverAlbertCodeImport(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Platforms) != 0 {
+		t.Fatalf("an endpoint the resolver rejects must not be imported: %+v", plan.Platforms)
+	}
+	if !strings.Contains(strings.Join(plan.ReviewItems, "\n"), "cannot be imported") {
+		t.Fatalf("the refusal must be explained: %v", plan.ReviewItems)
+	}
+}
+
 func TestDiscoverAlbertCodeImportReportsMultipleOpenCodeConfigs(t *testing.T) {
 	root := t.TempDir()
 	gitInit(t, root)
@@ -265,5 +322,27 @@ func writeImportFixtureFile(t *testing.T, root, rel, contents string) {
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDiscoverAlbertCodeImportPreservesModelAliases(t *testing.T) {
+	root := t.TempDir()
+	gitInit(t, root)
+	config := `{
+  "provider": {"openrouter": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "OpenRouter",
+    "options": {"baseURL": "https://openrouter.ai/api/v1", "apiKey": "{env:OPENROUTER_API_KEY}"},
+    "models": {"glm": {"name": "GLM", "modelID": "z-ai/glm-4.6"}}
+  }},
+  "model": "openrouter/glm"
+}`
+	writeImportFixtureFile(t, root, "opencode.json", config)
+	plan, err := DiscoverAlbertCodeImport(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ProviderModelIDs["openai-compatible/glm"] != "z-ai/glm-4.6" {
+		t.Fatalf("alias mapping lost: %+v", plan.ProviderModelIDs)
 	}
 }

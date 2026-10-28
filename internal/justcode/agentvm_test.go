@@ -329,7 +329,7 @@ func TestAgentVMDoctorKeepsUserTemplateFailClosed(t *testing.T) {
 func TestAgentVMWriteSecretsEnv(t *testing.T) {
 	a := newTestAgentVM(t, &fakeRunner{})
 	dir := t.TempDir()
-	path, err := a.writeSecretsEnv(dir, "key")
+	path, err := a.writeSecretsEnv(dir, map[string]string{"ALBERT_API_KEY": "key"})
 	if err != nil {
 		t.Fatalf("writeSecretsEnv: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestAgentVMWriteSecretsEnvShellSafe(t *testing.T) {
 	a := newTestAgentVM(t, &fakeRunner{})
 	a.Config.Password = "two words$(dangerous)"
 	dir := t.TempDir()
-	path, err := a.writeSecretsEnv(dir, "key")
+	path, err := a.writeSecretsEnv(dir, map[string]string{"ALBERT_API_KEY": "key"})
 	if err != nil {
 		t.Fatalf("writeSecretsEnv: %v", err)
 	}

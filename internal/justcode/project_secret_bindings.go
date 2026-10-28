@@ -189,6 +189,12 @@ func reservedGuestEnvs() map[string]bool {
 	for _, b := range msbSecretBindings() {
 		reserved[b.GuestEnv] = true
 	}
+	// Every managed provider variable is reserved, whether or not its
+	// platform is currently configured: an approved project secret must never
+	// shadow the required inference credential.
+	for _, env := range AllProviderAPIKeyEnvs() {
+		reserved[env] = true
+	}
 	return reserved
 }
 

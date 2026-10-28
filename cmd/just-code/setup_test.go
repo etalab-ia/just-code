@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -17,15 +18,269 @@ import (
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
+// albertProvidersForSetup is the historical single-platform configuration.
+func albertProvidersForSetup() []justcode.InferenceProvider {
+	providers, _ := justcode.ResolveProviders(nil)
+	return providers
+}
+
+// fakeSetupStore records the credentials the platform stage stores.
+type fakeSetupStore struct {
+	puts map[justcode.CredentialKind]string
+}
+
+func (f *fakeSetupStore) Kind() string { return "fake" }
+func (f *fakeSetupStore) Verify(context.Context) error {
+	return nil
+}
+func (f *fakeSetupStore) Put(_ context.Context, kind justcode.CredentialKind, value string) error {
+	if f.puts == nil {
+		f.puts = map[justcode.CredentialKind]string{}
+	}
+	f.puts[kind] = value
+	return nil
+}
+
+func TestSetupPlatformStageStoresAMistralKeyWithoutAlbert(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{{Kind: "mistral"}},
+	}
+	if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeSetupStore{}
+	var probed []string
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, provider justcode.InferenceProvider, key string) justcode.CredentialProbe {
+			probed = append(probed, string(provider.Kind)+":"+key)
+			return justcode.CredentialProbe{}
+		},
+	}
+	providers, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("m-key\n")), true, &j, false, fs, stateDir)
+	if err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if len(providers) != 1 || providers[0].Kind != justcode.ProviderMistral {
+		t.Fatalf("providers = %+v", providers)
+	}
+	if store.puts[justcode.CredentialMistral] != "m-key" {
+		t.Fatalf("the Mistral key was not stored: %+v", store.puts)
+	}
+	if !reflect.DeepEqual(probed, []string{"mistral:m-key"}) {
+		t.Fatalf("probes = %v", probed)
+	}
+	after, err := justcode.ReadSetupJournal(fs, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !justcode.ContainsCredentialKind(after.CredentialKinds, "mistral") {
+		t.Fatalf("journal kinds = %v", after.CredentialKinds)
+	}
+	entry, ok := after.Platform(justcode.ProviderMistral)
+	if !ok || entry.Verified == nil || !*entry.Verified {
+		t.Fatalf("platform verification missing: %+v", after.Platforms)
+	}
+}
+
+func TestSetupPlatformStageReasksARejectedProviderKey(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{{Kind: "mistral"}},
+	}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, _ justcode.InferenceProvider, key string) justcode.CredentialProbe {
+			if key == "bad" {
+				return justcode.CredentialProbe{Rejected: true, Detail: "HTTP 401"}
+			}
+			return justcode.CredentialProbe{}
+		},
+	}
+	if _, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("bad\ngood\n")), true, &j, false, fs, stateDir); err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if _, stored := store.puts[justcode.CredentialMistral]; !stored || store.puts[justcode.CredentialMistral] != "good" {
+		t.Fatalf("a rejected key must not be stored and the retry must: %+v", store.puts)
+	}
+}
+
+func TestSetupPlatformStagePersistsACorrectedEndpoint(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{{
+			Kind: "openai-compatible", Name: "Old", BaseURL: "https://old.example.com/v1",
+		}},
+	}
+	if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, provider justcode.InferenceProvider, key string) justcode.CredentialProbe {
+			if provider.BaseURL == "https://old.example.com/v1" {
+				return justcode.CredentialProbe{Incompatible: true, Detail: "not a models listing"}
+			}
+			return justcode.CredentialProbe{}
+		},
+	}
+	input := "k1\nBetter\nhttps://new.example.com/v1\nk2\n"
+	providers, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader(input)), true, &j, false, fs, stateDir)
+	if err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if providers[0].BaseURL != "https://new.example.com/v1" || providers[0].Name != "Better" {
+		t.Fatalf("corrected provider not persisted: %+v", providers[0])
+	}
+	if store.puts[justcode.CredentialOpenAICompatible] != "k2" {
+		t.Fatalf("the corrected endpoint's key was not stored: %+v", store.puts)
+	}
+	after, err := justcode.ReadSetupJournal(fs, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := after.Platform(justcode.ProviderOpenAICompatible)
+	if !ok || entry.BaseURL != "https://new.example.com/v1" || entry.Name != "Better" {
+		t.Fatalf("journal kept the old endpoint: %+v", after.Platforms)
+	}
+}
+
+func TestPromptSetupModelsReplacesADisconnectedPlatformDefault(t *testing.T) {
+	previousCatalogue, previousRun := setupProviderCatalogueFn, setupModelPickerRun
+	setupProviderCatalogueFn = func(justcode.InferenceProvider) ([]justcode.CatalogueModel, error) {
+		return []justcode.CatalogueModel{{ID: "m1"}, {ID: "m2"}}, nil
+	}
+	var sawExternal bool
+	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
+		sawExternal = picker.externalDefault
+		picker.done = true
+		return picker, nil
+	}
+	t.Cleanup(func() {
+		setupProviderCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
+	})
+	providers, err := justcode.ResolveProviders([]justcode.ProviderSettings{{Kind: justcode.ProviderMistral}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, defaultModel, ok, err := promptSetupModels(providers, []string{"albert/qwen3-coder"}, "albert/qwen3-coder")
+	if err != nil || !ok {
+		t.Fatalf("prompt: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
+	}
+	if sawExternal {
+		t.Fatal("a disconnected managed platform's default must not be treated as external")
+	}
+	if defaultModel != "mistral/m1" || !containsString(selected, "mistral/m1") {
+		t.Fatalf("default must move to the connected platform: default=%q selected=%v", defaultModel, selected)
+	}
+}
+
+func TestSetupPlatformStageSeedsFromSavedSettings(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	previousPresent := setupCredentialPresentFn
+	setupCredentialPresentFn = func(context.Context, justcode.CredentialKind) bool { return true }
+	t.Cleanup(func() { setupCredentialPresentFn = previousPresent })
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers: []justcode.ProviderSettings{
+			{Kind: justcode.ProviderAlbert},
+			{Kind: justcode.ProviderMistral},
+			{Kind: justcode.ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{SchemaVersion: 1, Stage: justcode.StageCredential}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(context.Context, justcode.InferenceProvider, string) justcode.CredentialProbe {
+			t.Fatal("stored platforms must not be re-probed")
+			return justcode.CredentialProbe{}
+		},
+	}
+	providers, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("")), true, &j, false, fs, stateDir)
+	if err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if len(providers) != 3 {
+		t.Fatalf("saved platforms were not seeded: %+v", providers)
+	}
+	if providers[2].BaseURL != "https://api.scaleway.ai/v1" || providers[2].Name != "Scaleway" {
+		t.Fatalf("custom endpoint was not preserved: %+v", providers[2])
+	}
+	if len(store.puts) != 0 {
+		t.Fatalf("no key should be re-stored: %+v", store.puts)
+	}
+}
+
+func TestSetupPlatformStageReasksAMissingCredential(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	previousPresent := setupCredentialPresentFn
+	setupCredentialPresentFn = func(_ context.Context, kind justcode.CredentialKind) bool {
+		return kind == justcode.CredentialAlbert
+	}
+	t.Cleanup(func() { setupCredentialPresentFn = previousPresent })
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers:     []justcode.ProviderSettings{{Kind: justcode.ProviderAlbert}, {Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{SchemaVersion: 1, Stage: justcode.StageCredential}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(context.Context, justcode.InferenceProvider, string) justcode.CredentialProbe {
+			return justcode.CredentialProbe{}
+		},
+	}
+	if _, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader("new-mistral-key\n")), true, &j, false, fs, stateDir); err != nil {
+		t.Fatalf("platform stage: %v", err)
+	}
+	if store.puts[justcode.CredentialMistral] != "new-mistral-key" {
+		t.Fatalf("a missing credential must be asked again: %+v", store.puts)
+	}
+}
+
 func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T) {
-	choices := justcode.CuratedAlbertModels()
+	choices := albertSetupChoices()
 	picker := setupModelPicker{
 		choices: choices,
 		selected: map[string]bool{
-			choices[0].ID: true,
-			choices[1].ID: true,
+			choices[0].Ref(): true,
+			choices[1].Ref(): true,
 		},
-		available:    map[string]bool{},
+		unavailable:  map[string]bool{},
 		defaultModel: choices[0].Ref(),
 	}
 	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -38,7 +293,7 @@ func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T)
 	picker.cursor = 2
 	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	picker = updated.(setupModelPicker)
-	if !picker.selected[choices[2].ID] {
+	if !picker.selected[choices[2].Ref()] {
 		t.Fatal("Space should add the highlighted model")
 	}
 	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyRight})
@@ -48,29 +303,27 @@ func TestSetupModelPickerAcceptsDefaultsAndChangesDefaultInOneForm(t *testing.T)
 	}
 	updated, _ = picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	accepted = updated.(setupModelPicker)
-	if !accepted.done || accepted.defaultModel != choices[2].Ref() || !accepted.selected[choices[2].ID] {
+	if !accepted.done || accepted.defaultModel != choices[2].Ref() || !accepted.selected[choices[2].Ref()] {
 		t.Fatal("Enter should submit the model set and its default together")
 	}
 }
 
 func TestSetupModelPickerRefusesUnavailableModel(t *testing.T) {
-	choices := justcode.CuratedAlbertModels()
+	choices := albertSetupChoices()
 	picker := setupModelPicker{
 		choices: choices,
 		selected: map[string]bool{
-			choices[0].ID: true,
+			choices[0].Ref(): true,
 		},
-		available: map[string]bool{
-			choices[0].ID: true,
-			choices[1].ID: false,
+		unavailable: map[string]bool{
+			choices[1].Ref(): true,
 		},
-		catalogueChecked: true,
-		defaultModel:     choices[0].Ref(),
-		cursor:           1,
+		defaultModel: choices[0].Ref(),
+		cursor:       1,
 	}
 	updated, _ := picker.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	picker = updated.(setupModelPicker)
-	if picker.selected[choices[1].ID] {
+	if picker.selected[choices[1].Ref()] {
 		t.Fatal("unavailable model must not be added to the selection")
 	}
 	if picker.errorMessage == "" {
@@ -92,7 +345,7 @@ func TestPromptSetupModelsPreservesLegacyCustomDefault(t *testing.T) {
 	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
 		for _, choice := range picker.choices {
 			if choice.Ref() == "albert/legacy-coder" {
-				sawLegacy = picker.selected[choice.ID] && picker.defaultModel == choice.Ref()
+				sawLegacy = picker.selected[choice.Ref()] && picker.defaultModel == choice.Ref()
 			}
 		}
 		picker.done = true
@@ -103,7 +356,7 @@ func TestPromptSetupModelsPreservesLegacyCustomDefault(t *testing.T) {
 	})
 
 	model := "albert/legacy-coder"
-	selected, defaultModel, ok, err := promptSetupModels(setupModelIDsWithLegacyDefault(model), model)
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), setupModelIDsWithLegacyDefault(model), model)
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -132,7 +385,7 @@ func TestPromptSetupModelsPreservesExternalProviderDefault(t *testing.T) {
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), "anthropic/claude")
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), "anthropic/claude")
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -165,7 +418,7 @@ func TestPromptSetupModelsKeepsDefaultsWhenCatalogueIsUnavailable(t *testing.T) 
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), defaultSetupModel())
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -191,7 +444,7 @@ func TestPromptSetupModelsDropsUnavailableDefaults(t *testing.T) {
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, defaultModel, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	selected, defaultModel, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), defaultSetupModel())
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v default=%q ok=%v err=%v", selected, defaultModel, ok, err)
 	}
@@ -208,7 +461,7 @@ func TestPromptSetupModelsKeepsSelectionWhenCatalogueCacheIsStale(t *testing.T) 
 	}
 	var retained bool
 	setupModelPickerRun = func(picker setupModelPicker) (setupModelPicker, error) {
-		retained = !picker.catalogueChecked && picker.selected[choices[0].ID] && picker.selected[choices[1].ID]
+		retained = picker.selected[choices[0].Ref()] && picker.selected[choices[1].Ref()]
 		picker.done = true
 		return picker, nil
 	}
@@ -216,7 +469,7 @@ func TestPromptSetupModelsKeepsSelectionWhenCatalogueCacheIsStale(t *testing.T) 
 		setupModelCatalogueFn, setupModelPickerRun = previousCatalogue, previousRun
 	})
 
-	selected, _, ok, err := promptSetupModels(defaultSetupModelIDs(), defaultSetupModel())
+	selected, _, ok, err := promptSetupModels(albertProvidersForSetup(), defaultSetupModelIDs(), defaultSetupModel())
 	if err != nil || !ok {
 		t.Fatalf("prompt result: selected=%v ok=%v err=%v", selected, ok, err)
 	}
@@ -451,7 +704,7 @@ func TestSetupIntroScreenContent(t *testing.T) {
 		"Cette configuration se fait une seule fois sur ce poste.",
 		"Durée : environ 3 minutes. Espace disque : environ 2 Go.",
 		"3 étapes :",
-		"1. Clé Albert API (obligatoire)",
+		"1. Plateformes d'inférence (au moins une)",
 		"2. Sélection des modèles à utiliser.",
 		"3. GitHub (facultatif)",
 		"Vos identifiants et votre identité git sont enregistrés au fil des questions,",
@@ -1719,5 +1972,37 @@ func TestSetupWizardGitHubUnreachableContinueStoresUnvalidated(t *testing.T) {
 	}
 	if stored, err := storedGitHubToken(t); err != nil || stored != "tok-offline" {
 		t.Errorf("the token must be stored on an explicit continue: stored %q, %v", stored, err)
+	}
+}
+
+func TestSetupPlatformStageRejectsACorrectedEndpointSharingAHost(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	previousPresent := setupCredentialPresentFn
+	setupCredentialPresentFn = func(context.Context, justcode.CredentialKind) bool { return false }
+	t.Cleanup(func() { setupCredentialPresentFn = previousPresent })
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{
+			{Kind: "mistral"},
+			{Kind: "openai-compatible", Name: "Other", BaseURL: "https://other.example.com/v1"},
+		},
+	}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, provider justcode.InferenceProvider, _ string) justcode.CredentialProbe {
+			if provider.Kind == justcode.ProviderOpenAICompatible && provider.BaseURL == "https://other.example.com/v1" {
+				return justcode.CredentialProbe{Incompatible: true, Detail: "not a models listing"}
+			}
+			return justcode.CredentialProbe{}
+		},
+	}
+	input := "mistral-key\nk1\nOther\nhttps://api.mistral.ai/v1\nk2\n"
+	_, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader(input)), true, &j, false, fs, stateDir)
+	if err == nil || !strings.Contains(err.Error(), "share the host") {
+		t.Fatalf("a corrected endpoint sharing a host must be refused: %v", err)
 	}
 }

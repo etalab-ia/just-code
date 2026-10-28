@@ -18,7 +18,7 @@ import (
 // requires explicit consent. The secret is never accepted through argv,
 // never printed, and never written to a project file.
 //
-//	auth add [albert] [--stdin] [--fallback]
+//	auth add [albert|mistral|openai-compatible|github|context7] [--stdin] [--fallback]
 //	auth status
 //	auth remove [albert] [--fallback]
 //	auth use-fallback [albert]
@@ -55,10 +55,14 @@ func parseAuthArgs(args []string) (justcode.CredentialKind, bool, bool, error) {
 			stdin = true
 		case "--fallback":
 			fallback = true
-		case "albert", "github", "context7":
-			kind = justcode.CredentialKind(a)
 		default:
-			return kind, stdin, fallback, fmt.Errorf("Unknown credential kind or flag: %s (expected albert, github, context7, --stdin or --fallback)", a)
+			if strings.HasPrefix(a, "-") {
+				return kind, stdin, fallback, fmt.Errorf("Unknown credential kind or flag: %s (expected albert, mistral, openai-compatible, github, context7, --stdin or --fallback)", a)
+			}
+			if !justcode.IsKnownCredentialKind(a) {
+				return kind, stdin, fallback, fmt.Errorf("Unknown credential kind: %s (expected albert, mistral, openai-compatible, github or context7)", a)
+			}
+			kind = justcode.CredentialKind(a)
 		}
 	}
 	return kind, stdin, fallback, nil

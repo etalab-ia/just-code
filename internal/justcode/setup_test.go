@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -347,5 +348,39 @@ func TestInstallRuntimeCompletesAndClearsJournal(t *testing.T) {
 	}
 	if _, err := os.Stat(SetupJournalPath(dir)); !os.IsNotExist(err) {
 		t.Fatal("a completed setup must remove the journal")
+	}
+}
+
+func TestSetupSaveSettingsPersistsProviders(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+
+	providers, err := ResolveProviders([]ProviderSettings{{Kind: ProviderAlbert}, {Kind: ProviderMistral}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := SetupWizard{FS: DefaultFS, StateDir: t.TempDir()}
+	models := []string{"Qwen/Qwen3-Coder-30B-A3B-Instruct", "mistral/mistral-large-latest"}
+	if err := w.SaveSettings("mistral/mistral-large-latest", models, true, providers, false, false); err != nil {
+		t.Fatal(err)
+	}
+	path, err := UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	us, err := ReadUserSettings(DefaultFS, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(us.Providers) != 2 || us.Providers[1].Kind != ProviderMistral {
+		t.Fatalf("providers = %+v", us.Providers)
+	}
+	if us.DefaultModel != "mistral/mistral-large-latest" || len(us.Models) != 2 {
+		t.Fatalf("model settings = %q %v", us.DefaultModel, us.Models)
+	}
+	if us.Providers[0].BaseURL != albertBaseURL {
+		t.Fatalf("resolved platform endpoints must be persisted: %+v", us.Providers[0])
 	}
 }

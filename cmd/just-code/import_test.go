@@ -631,3 +631,132 @@ func stubCredentialGenerationBump(t *testing.T) {
 	bumpImportedCredentialGenerationFn = func(justcode.CredentialKind) {}
 	t.Cleanup(func() { bumpImportedCredentialGenerationFn = original })
 }
+
+func TestValidateImportedPlatformsRejectsAnEndpointConflict(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers: []justcode.ProviderSettings{{
+			Kind: justcode.ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conflicting := justcode.AlbertCodeImport{Platforms: []justcode.ProviderSettings{{
+		Kind: justcode.ProviderOpenAICompatible, Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
+	}}}
+	err = validateImportedPlatforms(conflicting)
+	if err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("a different endpoint must be refused: %v", err)
+	}
+	same := justcode.AlbertCodeImport{Platforms: []justcode.ProviderSettings{{
+		Kind: justcode.ProviderOpenAICompatible, Name: "Scaleway", BaseURL: "https://api.scaleway.ai/v1",
+	}}}
+	if err := validateImportedPlatforms(same); err != nil {
+		t.Fatalf("re-importing the same endpoint must be idempotent: %v", err)
+	}
+}
+
+func TestValidateImportedPlatformsRejectsASharedDestination(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1,
+		Providers:     []justcode.ProviderSettings{{Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := justcode.AlbertCodeImport{Platforms: []justcode.ProviderSettings{{
+		Kind: justcode.ProviderOpenAICompatible, Name: "Mistral again", BaseURL: "https://api.mistral.ai/v1",
+	}}}
+	err = validateImportedPlatforms(plan)
+	if err == nil || !strings.Contains(err.Error(), "share the host") {
+		t.Fatalf("a shared destination must be refused: %v", err)
+	}
+}
+
+// TestMergeImportedProvidersKeepsAnOpenRouterOnlySetup pins the substitute
+// review's finding on #287: importing a legacy config with no Albert provider
+// must not implicitly connect Albert (and then require its credential).
+func TestMergeImportedProvidersKeepsAnOpenRouterOnlySetup(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := justcode.AlbertCodeImport{
+		Platforms: []justcode.ProviderSettings{{
+			Kind: justcode.ProviderOpenAICompatible, Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
+		}},
+		ProviderModels: []string{"openai-compatible/z-ai/glm-4.6"},
+		Model:          "openai-compatible/z-ai/glm-4.6",
+		AlbertPresent:  false,
+	}
+	if err := mergeImportedProviders(plan); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(us.Providers) != 1 || us.Providers[0].Kind != justcode.ProviderOpenAICompatible {
+		t.Fatalf("an OpenRouter-only import must not add Albert: %+v", us.Providers)
+	}
+}
+
+// TestImportModelValidationSkipsNonAlbertReferences pins the second finding:
+// an OpenAI-compatible default must never be checked against Albert's
+// catalogue.
+func TestImportModelValidationSkipsNonAlbertReferences(t *testing.T) {
+	previous := catalogueModelWarningFn
+	catalogueModelWarningFn = func(string, string) (string, error) {
+		t.Fatal("an OpenAI-compatible model must not be validated against Albert")
+		return "", nil
+	}
+	t.Cleanup(func() { catalogueModelWarningFn = previous })
+	if kind := justcode.ModelRefProvider("openai-compatible/z-ai/glm-4.6"); kind != justcode.ProviderOpenAICompatible {
+		t.Fatalf("reference classified as %s", kind)
+	}
+}
+
+func TestMergeImportedProvidersPreservesImplicitAlbert(t *testing.T) {
+	_, _ = setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Settings written before #180: no providers list, but an Albert model.
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		SchemaVersion: 1, DefaultModel: "albert/qwen3-coder", Models: []string{"qwen3-coder"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := justcode.AlbertCodeImport{
+		Platforms: []justcode.ProviderSettings{{
+			Kind: justcode.ProviderOpenAICompatible, Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
+		}},
+		ProviderModels: []string{"openai-compatible/z-ai/glm-4.6"},
+		Model:          "openai-compatible/z-ai/glm-4.6",
+	}
+	if err := mergeImportedProviders(plan); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, provider := range us.Providers {
+		kinds[string(provider.Kind)] = true
+	}
+	if !kinds["albert"] || !kinds["openai-compatible"] {
+		t.Fatalf("an existing implicit Albert connection must survive the import: %+v", us.Providers)
+	}
+}

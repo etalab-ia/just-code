@@ -101,6 +101,11 @@ func albertCodeImportCmd(args []string) (int, error) {
 	if opts.importAlbertKey {
 		fmt.Printf("This will store the ALBERT_API_KEY from %s/.env in the native credential store (%s); the value will not be displayed.\n", plan.Root, justcode.StoreAvailability())
 	}
+	if opts.apply && len(plan.Platforms) > 0 {
+		if err := validateImportedPlatforms(plan); err != nil {
+			return 1, err
+		}
+	}
 	fmt.Print(plan.Format())
 	if !opts.apply {
 		fmt.Println("Preview only. Pass --apply to write the just-code project manifest and lockfile.")
@@ -111,7 +116,6 @@ func albertCodeImportCmd(args []string) (int, error) {
 	if len(plan.SourceFiles) == 0 {
 		return 1, fmt.Errorf("no supported Albert Code project files were detected")
 	}
-
 	credentialRef := ""
 	if opts.importAlbertKey {
 		credentialRef = "albert"
@@ -165,7 +169,9 @@ func albertCodeImportCmd(args []string) (int, error) {
 		return 1, err
 	}
 
-	if !existingMatches && plan.Model != "" {
+	if !existingMatches && plan.Model != "" && justcode.ModelRefProvider(plan.Model) == justcode.ProviderAlbert {
+		// Only Albert references are validated against the Albert catalogue:
+		// an imported OpenAI-compatible model lives on its own platform.
 		warning, err := catalogueModelWarningFn(plan.Root, plan.Model)
 		if err != nil {
 			return 1, fmt.Errorf("validate imported model: %w", err)
@@ -184,8 +190,117 @@ func albertCodeImportCmd(args []string) (int, error) {
 	} else if err := apply(); err != nil {
 		return 1, err
 	}
+	if len(plan.Platforms) > 0 {
+		if err := mergeImportedProviders(plan); err != nil {
+			return 1, err
+		}
+	}
 	warnUnapprovedImportInputs(plan.Root)
 	return 0, nil
+}
+
+// mergeImportedProviders records the OpenAI-compatible platform recovered
+// from the legacy OpenCode config in the user settings, so the imported model
+// is usable. The key itself is never imported: it must be stored with
+// 'just-code auth add openai-compatible'.
+func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return err
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return err
+	}
+	if len(us.Providers) == 0 {
+		// Preserve the host's existing implicit Albert connection: settings
+		// written before #180 have no providers list, and an empty list means
+		// Albert is connected. On a truly fresh install, only retain Albert
+		// when the imported configuration actually declared it.
+		if plan.AlbertPresent || us.DefaultModel != "" || len(us.Models) > 0 || us.GitName != "" || us.GitEmail != "" || us.CredentialRef != "" {
+			us.Providers = justcode.DefaultProviderSettings()
+		}
+	}
+	for _, platform := range plan.Platforms {
+		configured := false
+		for _, existing := range us.Providers {
+			if existing.Kind == platform.Kind {
+				if existing.BaseURL != platform.BaseURL {
+					return fmt.Errorf("an OpenAI-compatible platform is already configured for %s; importing %s would attach its models to the wrong endpoint. Remove or align the existing platform first", existing.BaseURL, platform.BaseURL)
+				}
+				configured = true
+				break
+			}
+		}
+		if !configured {
+			us.Providers = append(us.Providers, platform)
+		}
+	}
+	for _, model := range plan.ProviderModels {
+		if !containsString(us.Models, model) {
+			us.Models = append(us.Models, model)
+		}
+	}
+	for ref, apiID := range plan.ProviderModelIDs {
+		if us.ProviderModelIDs == nil {
+			us.ProviderModelIDs = map[string]string{}
+		}
+		us.ProviderModelIDs[ref] = apiID
+	}
+	if plan.Model != "" {
+		us.DefaultModel = plan.Model
+	}
+	if _, err := justcode.ResolveProviders(us.Providers); err != nil {
+		return fmt.Errorf("the merged platform configuration is invalid: %w", err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, path, us); err != nil {
+		return err
+	}
+	fmt.Printf("Plateforme importée dans les réglages : %s (clé à stocker avec just-code auth add openai-compatible)\n", plan.Platforms[0].Name)
+	return nil
+}
+
+// validateImportedPlatforms refuses an import that would conflict with the
+// host's existing OpenAI-compatible platform, or that would write an endpoint
+// the resolver rejects (and therefore make every later launch fail).
+func validateImportedPlatforms(plan justcode.AlbertCodeImport) error {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return err
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return err
+	}
+	existing := us.Providers
+	if len(existing) == 0 {
+		if plan.AlbertPresent || us.DefaultModel != "" || len(us.Models) > 0 || us.GitName != "" || us.GitEmail != "" || us.CredentialRef != "" {
+			existing = justcode.DefaultProviderSettings()
+		}
+	}
+	for _, platform := range plan.Platforms {
+		if _, err := justcode.ResolveProvider(platform); err != nil {
+			return fmt.Errorf("the imported platform is invalid: %w", err)
+		}
+		matched := false
+		for _, current := range existing {
+			if current.Kind == platform.Kind {
+				if current.BaseURL != platform.BaseURL {
+					return fmt.Errorf("an OpenAI-compatible platform is already configured for %s; importing %s would attach its models to the wrong endpoint. Remove or align the existing platform first", current.BaseURL, platform.BaseURL)
+				}
+				matched = true
+			}
+		}
+		if !matched {
+			existing = append(existing, platform)
+		}
+	}
+	// The complete set must satisfy the same invariants as a launch: in
+	// particular, two platforms may not share a destination host.
+	if _, err := justcode.ResolveProviders(existing); err != nil {
+		return fmt.Errorf("the imported platform conflicts with the current configuration: %w", err)
+	}
+	return nil
 }
 
 // warnUnapprovedImportInputs lists the execution-relevant project inputs that

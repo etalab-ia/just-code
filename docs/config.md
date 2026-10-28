@@ -34,9 +34,12 @@ Les variables legacy non préfixées (`RUNTIME`, `ISOLATION`, `WORKSPACE_DIR`,
 `ALBERT_API_KEY`, …) conservent leur sens documenté pendant l'intervalle de
 dépréciation, mais n'entrent pas dans la nouvelle résolution.
 
-La résolution de la clé Albert au démarrage (`credentialRef`, variable
-d'environnement, magasin d'identifiants) est détaillée dans
-[Identifiants et secrets](credentials.md).
+La résolution des clés au démarrage (`credentialRef` pour Albert, variable
+d'environnement de la plateforme, magasin d'identifiants) est détaillée dans
+[Identifiants et secrets](credentials.md). Pour Mistral AI et une plateforme
+compatible OpenAI, la variable lue est respectivement `MISTRAL_API_KEY` et
+`OPENAI_COMPATIBLE_API_KEY` ; `credentialRef` ne s'applique qu'à Albert, pour
+qu'une référence souveraine ne puisse pas alimenter une autre plateforme.
 
 ## Fichiers gérés
 
@@ -74,23 +77,37 @@ l'invité ; confirmer la perte avant de l'exécuter.
 
 `just-code setup` prépare la machine en une passe guidée : diagnostic
 (plateforme, virtualisation, disque — lecture seule) → écran d'introduction
-(parcours annoncé, Entrée pour commencer) → clé Albert API (masquée, validée
-contre Albert API ; rejet et indisponibilité réseau distincts) → sélection des
-modèles disponibles et modèle par défaut → identifiant GitHub optionnel →
-identité git → consentement aux statistiques d'usage → revue → application
-(réglages globaux + runtime managé). Le consentement et les données concernées
-sont décrits dans [Statistiques d'usage](stats.md).
+(parcours annoncé, Entrée pour commencer) → plateformes d'inférence (Albert
+API, Mistral AI, plateforme compatible OpenAI ; Albert pré-cochée, au moins une
+exigée) → une clé par plateforme (masquée, validée contre la plateforme ; rejet,
+indisponibilité réseau et réponse non compatible distincts) → sélection des
+modèles groupés par plateforme et d'un seul modèle par défaut → identifiant
+GitHub optionnel → identité git → consentement aux statistiques d'usage → revue
+→ application (réglages globaux + runtime managé). Le consentement et les
+données concernées sont décrits dans [Statistiques d'usage](stats.md).
 
-L'ordre suit celui annoncé par l'écran d'introduction : clé, modèles, puis
-GitHub. L'écran de sélection présente les quatre modèles Albert API retenus,
-pré-sélectionne Qwen3 Coder et DeepSeek V4 Flash, puis demande lequel utiliser
-par défaut. La disponibilité vient du catalogue Albert API ; un modèle absent
-est marqué indisponible et ne peut pas être choisi. Si le catalogue est
-injoignable, le choix par défaut est conservé. Les modèles cochés sont
+L'ordre suit celui annoncé par l'écran d'introduction : plateformes et clés,
+modèles, puis GitHub. Pour Albert API, l'écran présente les quatre modèles
+retenus et pré-sélectionne Qwen3 Coder et DeepSeek V4 Flash ; pour Mistral AI et
+une plateforme compatible OpenAI, il lit le catalogue brut de la plateforme à
+l'exécution. La disponibilité Albert vient du catalogue Albert API ; un modèle
+absent est marqué indisponible et ne peut pas être choisi. Si un catalogue est
+injoignable, la sélection actuelle est conservée. Les modèles cochés sont
 enregistrés dans les réglages utilisateur et sont proposés par `/models` dans
-OpenCode. Si `JUST_CODE_MODEL` ou le manifeste du projet impose un autre modèle,
-ce modèle est aussi exposé pour que le lancement reste possible. Le choix par
-défaut peut ensuite être modifié avec `just-code setup`.
+OpenCode. Un seul modèle est par défaut, toutes plateformes confondues. Si
+`JUST_CODE_MODEL` ou le manifeste du projet impose un autre modèle, ce modèle
+est aussi exposé pour que le lancement reste possible. Le choix par défaut peut
+ensuite être modifié avec `just-code setup`.
+
+Les plateformes connectées sont enregistrées dans `settings.json`
+(`providers`) : leur type, leur nom et, pour une plateforme compatible OpenAI,
+son URL de base. Les clés restent dans le magasin d'identifiants, jamais dans ce
+fichier. Albert API et Mistral AI ont une URL fixe : une URL personnalisée est
+refusée pour que la clé ne puisse pas être envoyée à un autre hôte. Pour une
+plateforme compatible OpenAI, l'URL doit être en `https`, sans identifiants,
+requête, fragment ni port non standard ; son hôte devient la seule destination
+autorisée pour la clé. Les hôtes des plateformes configurées doivent être
+disjoints.
 
 ```bash
 just-code setup            # assistant interactif
@@ -371,7 +388,14 @@ la config projet et la config utilisateur survivent champ par champ en
 dessous. Précédence de la sélection : `JUST_CODE_MODEL` > `model` du
 manifeste projet > `defaultModel` des réglages utilisateur > valeur intégrée
 (`albert/qwen3-coder`). `settings.json` conserve le modèle par défaut
-(`defaultModel`) et la liste des modèles autorisés (`models`). Un conflit entre
+(`defaultModel`) et la liste des modèles autorisés (`models`). Une référence de
+modèle est `plateforme/modèle` pour Mistral AI et une plateforme compatible
+OpenAI ; une valeur sans préfixe géré reste un identifiant Albert (y compris
+lorsqu'il contient un `/`, comme `openai/gpt-oss-120b`). Chaque plateforme
+connectée reçoit son propre bloc provider dans `OPENCODE_CONFIG_CONTENT`, avec
+la variable d'environnement qui porte sa clé (`ALBERT_API_KEY`,
+`MISTRAL_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`) ; un bloc Albert embarqué est
+retiré quand Albert API n'est pas connectée. Un conflit entre
 un champ managé et la config projet est affiché en diff avant lancement (la
 valeur gérée gagne) : si la config projet définit `model` différemment, les
 deux valeurs sont affichées (l'inverse serait un écrasement invisible).

@@ -44,6 +44,19 @@ type AlbertCodeImport struct {
 	SkillCatalogueUnavailable bool
 	HasOpenCodeConfig         bool
 	HasManagedAgentsFile      bool
+	// Platforms and ProviderModels are the non-Albert platforms recovered
+	// from an existing OpenCode configuration (an alpha-tester OpenRouter
+	// setup). Models are full provider references.
+	Platforms      []ProviderSettings
+	ProviderModels []string
+	// ProviderModelIDs maps a provider reference to the API model ID it
+	// aliases, when the legacy config used one (e.g. "glm" ->
+	// "z-ai/glm-4.6"). Without it, an import would silently replace the real
+	// model ID with its alias.
+	ProviderModelIDs map[string]string
+	// AlbertPresent records that the legacy configuration declared an Albert
+	// provider. An import without it must not implicitly connect Albert.
+	AlbertPresent bool
 }
 
 // DiscoverAlbertCodeImport detects the documented legacy files and extracts
@@ -213,6 +226,7 @@ func (p *AlbertCodeImport) importOpenCodeConfig(config map[string]any) {
 	modelKnown := false
 	if providers, ok := config["provider"].(map[string]any); ok {
 		if albert, ok := providers["albert"].(map[string]any); ok {
+			p.AlbertPresent = true
 			options, optionsOK := albert["options"].(map[string]any)
 			if optionsOK && len(options) == 2 && options["baseURL"] == albertAPIEndpoint && options["apiKey"] == "{env:ALBERT_API_KEY}" && albert["npm"] == "@ai-sdk/openai-compatible" && albert["name"] != nil {
 				providerOK = true
@@ -232,14 +246,64 @@ func (p *AlbertCodeImport) importOpenCodeConfig(config map[string]any) {
 				p.ReviewItems = append(p.ReviewItems, "provider.albert contains custom settings; values withheld")
 			}
 		}
-		for name := range providers {
-			if name != "albert" {
-				p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("provider.%q is custom or unsupported; values withheld", name))
+		for name, value := range providers {
+			if name == "albert" {
+				continue
 			}
+			entry, ok := value.(map[string]any)
+			if !ok {
+				p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("provider.%q has an unsupported shape; values withheld", name))
+				continue
+			}
+			options, optionsOK := entry["options"].(map[string]any)
+			baseURL, _ := options["baseURL"].(string)
+			apiKey, _ := options["apiKey"].(string)
+			if !optionsOK || entry["npm"] != "@ai-sdk/openai-compatible" || !strings.HasPrefix(baseURL, "https://") || !strings.HasPrefix(apiKey, "{env:") {
+				p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("provider.%q is custom or unsupported; values withheld", name))
+				continue
+			}
+			if len(p.Platforms) > 0 {
+				p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("provider.%q is an additional OpenAI-compatible platform; only the first is imported", name))
+				continue
+			}
+			display := name
+			if name == "openrouter" {
+				display = "OpenRouter"
+			}
+			settings := ProviderSettings{
+				Kind: ProviderOpenAICompatible, Name: display, BaseURL: baseURL,
+			}
+			if _, err := ResolveProvider(settings); err != nil {
+				p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("provider.%q cannot be imported: %v", name, err))
+				continue
+			}
+			p.Platforms = append(p.Platforms, settings)
+			if models, ok := entry["models"].(map[string]any); ok {
+				for id, definition := range models {
+					ref := ProviderModelRef(ProviderOpenAICompatible, id)
+					p.ProviderModels = append(p.ProviderModels, ref)
+					if fields, ok := definition.(map[string]any); ok {
+						if apiID, _ := fields["modelID"].(string); apiID != "" && apiID != id {
+							if p.ProviderModelIDs == nil {
+								p.ProviderModelIDs = map[string]string{}
+							}
+							p.ProviderModelIDs[ref] = apiID
+						}
+					}
+				}
+				sort.Strings(p.ProviderModels)
+			}
+			if model, ok := config["model"].(string); ok && strings.HasPrefix(model, name+"/") {
+				p.Model = ProviderModelRef(ProviderOpenAICompatible, strings.TrimPrefix(model, name+"/"))
+				modelKnown = true
+			}
+			p.ReviewItems = append(p.ReviewItems, fmt.Sprintf("plateforme %s importée ; sa clé se stocke avec : just-code auth add openai-compatible", display))
 		}
 	}
 	if model, ok := config["model"].(string); ok && model != "" {
-		if providerOK && modelKnown && importedModelPattern.MatchString(model) {
+		if p.Model != "" {
+			// An OpenAI-compatible platform already claimed the default.
+		} else if providerOK && modelKnown && importedModelPattern.MatchString(model) {
 			p.Model = model
 		} else {
 			p.ReviewItems = append(p.ReviewItems, "model/provider selection is custom or unsupported; values withheld")
@@ -370,6 +434,13 @@ func (p AlbertCodeImport) Format() string {
 	fmt.Fprintf(&b, "Target: Microsandbox, isolation full (sealed guest clone)\n")
 	if p.Model != "" {
 		fmt.Fprintf(&b, "Model: %s\n", p.Model)
+	}
+	if len(p.Platforms) > 0 {
+		var names []string
+		for _, platform := range p.Platforms {
+			names = append(names, platform.Name)
+		}
+		fmt.Fprintf(&b, "Platforms: %s\n", strings.Join(names, ", "))
 	}
 	fmt.Fprintf(&b, "Skills: %s\n", displayIDs(p.Skills))
 	fmt.Fprintf(&b, "MCPs: %s\n", displayIDs(p.MCPConnectors))

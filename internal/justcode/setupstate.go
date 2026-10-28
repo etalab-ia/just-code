@@ -39,6 +39,10 @@ type SetupJournal struct {
 	Preflight SetupPreflight `json:"preflight,omitempty"`
 	// CredentialKinds lists the kinds stored so far (never values).
 	CredentialKinds []string `json:"credentialKinds,omitempty"`
+	// Platforms lists the inference platforms chosen by this run, in display
+	// order. It carries no secret: each platform's key lives in the store and
+	// is referenced by kind only.
+	Platforms []SetupPlatform `json:"platforms,omitempty"`
 	// AlbertVerified records whether the stored Albert key passed endpoint
 	// validation. Nil means an older journal did not record the outcome.
 	AlbertVerified *bool `json:"albertVerified,omitempty"`
@@ -72,6 +76,52 @@ type SetupJournal struct {
 	// answered during this run, so a resume does not ask again.
 	StatsEnabled      bool `json:"statsEnabled,omitempty"`
 	StatsConsentAsked bool `json:"statsConsentAsked,omitempty"`
+}
+
+// SetupPlatform is the journal form of one chosen inference platform.
+type SetupPlatform struct {
+	Kind    string `json:"kind"`
+	Name    string `json:"name,omitempty"`
+	BaseURL string `json:"baseURL,omitempty"`
+	// Verified records whether the stored key passed the endpoint check. Nil
+	// means an older journal did not record the outcome.
+	Verified *bool `json:"verified,omitempty"`
+}
+
+// PlatformSettings converts the journal platforms to the engine form.
+func (j SetupJournal) PlatformSettings() []ProviderSettings {
+	out := make([]ProviderSettings, 0, len(j.Platforms))
+	for _, p := range j.Platforms {
+		out = append(out, ProviderSettings{Kind: ProviderKind(p.Kind), Name: p.Name, BaseURL: p.BaseURL})
+	}
+	return out
+}
+
+// SetPlatforms stores the resolved platform set in the journal, keeping any
+// verification outcome already recorded for an unchanged platform.
+func (j *SetupJournal) SetPlatforms(providers []InferenceProvider) {
+	previous := map[string]SetupPlatform{}
+	for _, p := range j.Platforms {
+		previous[p.Kind] = p
+	}
+	j.Platforms = make([]SetupPlatform, 0, len(providers))
+	for _, p := range providers {
+		entry := SetupPlatform{Kind: string(p.Kind), Name: p.Name, BaseURL: p.BaseURL}
+		if old, ok := previous[string(p.Kind)]; ok && old.BaseURL == entry.BaseURL {
+			entry.Verified = old.Verified
+		}
+		j.Platforms = append(j.Platforms, entry)
+	}
+}
+
+// Platform returns the journal entry for one kind.
+func (j SetupJournal) Platform(kind ProviderKind) (SetupPlatform, bool) {
+	for _, p := range j.Platforms {
+		if p.Kind == string(kind) {
+			return p, true
+		}
+	}
+	return SetupPlatform{}, false
 }
 
 const setupJournalSchemaVersion = 1
