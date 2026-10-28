@@ -363,7 +363,7 @@ func TestSetupSaveSettingsPersistsProviders(t *testing.T) {
 	}
 	w := SetupWizard{FS: DefaultFS, StateDir: t.TempDir()}
 	models := []string{"Qwen/Qwen3-Coder-30B-A3B-Instruct", "mistral/mistral-large-latest"}
-	if err := w.SaveSettings("mistral/mistral-large-latest", models, true, providers); err != nil {
+	if err := w.SaveSettings("mistral/mistral-large-latest", models, true, providers, false, false); err != nil {
 		t.Fatal(err)
 	}
 	path, err := UserSettingsPath()

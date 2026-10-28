@@ -72,6 +72,10 @@ type SetupJournal struct {
 	// resume could confuse an interruption with an explicit choice and restore
 	// a previously saved model set.
 	ModelChosen bool `json:"modelChosen,omitempty"`
+	// StatsEnabled and StatsConsentAsked persist the statistics consent
+	// answered during this run, so a resume does not ask again.
+	StatsEnabled      bool `json:"statsEnabled,omitempty"`
+	StatsConsentAsked bool `json:"statsConsentAsked,omitempty"`
 }
 
 // SetupPlatform is the journal form of one chosen inference platform.

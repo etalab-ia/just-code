@@ -283,6 +283,7 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		// for. A resumed run skips it (the else branch below).
 		if setupIntroFn() {
 			if !printSetupIntro() {
+				recordSetupAbandon(stateDir, "intro")
 				return 1, nil
 			}
 		}
@@ -375,6 +376,7 @@ setupStages:
 		selected, defaultModel, ok, err := promptSetupModels(providers, models, model)
 		if errors.Is(err, huh.ErrUserAborted) {
 			fmt.Println("Setup cancelled.")
+			recordSetupAbandon(stateDir, "models")
 			return 1, nil
 		}
 		if err != nil {
@@ -550,6 +552,7 @@ setupStages:
 				// Identity is persisted here, not at final apply: an
 				// abort must cancel setup, not save partial values.
 				fmt.Println("\nSetup cancelled.")
+				recordSetupAbandon(stateDir, "identity")
 				return 1, nil
 			}
 			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
@@ -581,6 +584,38 @@ setupStages:
 	// Review.
 	fmt.Println()
 	fmt.Println("Récapitulatif")
+	// Consent is asked once, at the end, and covers the later `init` runs.
+	// It is asked before the recap so the recap can state the answer, and its
+	// default is No.
+	statsEnabled, statsAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty())
+	if j.StatsConsentAsked {
+		// A run interrupted after answering but before applying keeps its
+		// decision in the journal. Both `stats on` and `stats off` synchronize
+		// that journal, so its decision is always the freshest one: restore it.
+		statsEnabled, statsAsked = j.StatsEnabled, true
+	}
+	// Snapshot the durable decision at the review: only a CHANGE after this
+	// point is an external `stats on`/`stats off`, never an answer the user
+	// just gave inside this wizard.
+	reviewDurableEnabled, reviewDurableAsked := statsEnabled, statsAsked
+	if !statsAsked || editing {
+		answer, answered, err := setupStatsConsent(in)
+		if err != nil {
+			return 1, err
+		}
+		if answered {
+			// Only an actual answer changes the decision: a skipped question
+			// (piped input) must not undo an explicit `stats on`.
+			statsEnabled = answer
+			statsAsked = true
+			j.StatsConsentAsked = true
+			j.StatsEnabled = answer
+			if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+				return 1, err
+			}
+		}
+	}
+	j.StatsEnabled = statsEnabled
 	albertStore := "le trousseau"
 	if fallback {
 		albertStore = "un fichier protégé"
@@ -645,6 +680,11 @@ setupStages:
 	} else {
 		fmt.Println("  Modèles             Qwen3 Coder (par défaut)")
 	}
+	if statsEnabled {
+		fmt.Println("  Statistiques d'usage : partagées")
+	} else {
+		fmt.Println("  Statistiques d'usage : non partagées")
+	}
 	fmt.Println()
 	fmt.Println(setupRuntimeSummary(j.Preflight))
 	choice, err := setupReviewChoice(in)
@@ -656,6 +696,7 @@ setupStages:
 		editing = true
 		goto setupStages
 	case "quit":
+		recordSetupAbandon(stateDir, "review")
 		return 1, fmt.Errorf("configuration non appliquée; aucun paramètre ni runtime n'a été appliqué")
 	}
 	if j.GitHubReplacePending {
@@ -671,7 +712,19 @@ setupStages:
 	if err := w.SaveIdentity(j.GitName, j.GitEmail); err != nil {
 		return 1, err
 	}
-	if err := w.SaveSettings(model, models, modelAnswered, providers); err != nil {
+	// Re-resolve consent at apply time: the wizard may have been sitting at
+	// the recap while the user ran `stats on` or `stats off` in another
+	// terminal. Only a durable decision that CHANGED since the review counts
+	// as external; an unchanged durable value is the user's own answer in
+	// this wizard, not something to override it.
+	if latest, latestAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty()); latestAsked && (latest != reviewDurableEnabled || latestAsked != reviewDurableAsked) {
+		statsEnabled, statsAsked = latest, true
+		j.StatsEnabled = latest
+		j.StatsConsentAsked = true
+	} else if latest, jerr := justcode.ReadSetupJournal(fs, stateDir); jerr == nil && latest.StatsConsentAsked {
+		statsEnabled, statsAsked = latest.StatsEnabled, true
+	}
+	if err := w.SaveSettings(model, models, modelAnswered, providers, statsEnabled, statsAsked); err != nil {
 		return 1, err
 	}
 	fmt.Println()
@@ -680,6 +733,17 @@ setupStages:
 		// Journal preserved: the retry skips the credential prompts.
 		return 1, fmt.Errorf("runtime installation failed: %v (re-run 'just-code setup' to resume; the credential prompts will be skipped)", err)
 	}
+	justcode.RecordStatsEvent(fs, stateDir, justcode.StatsEventInput{
+		Kind:    "setup",
+		Version: version,
+		Setup: &justcode.SetupStats{
+			Platforms:    setupStatsProviders(providers),
+			Models:       append([]string(nil), j.Models...),
+			DefaultModel: j.DefaultModel,
+			GitHubToken:  justcode.ContainsCredentialKind(j.CredentialKinds, "github") || setupCredentialPresentFn(ctx, justcode.CredentialGithub),
+			GitConfig:    strings.TrimSpace(j.GitName) != "" && strings.TrimSpace(j.GitEmail) != "",
+		},
+	})
 	fmt.Println()
 	fmt.Println(setupCompletionMessage())
 	return 0, nil
@@ -1052,12 +1116,14 @@ func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 		} else {
 			value, ok := promptSecret(in, providerKeyPrompt(provider))
 			if !ok {
-				return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
+				recordSetupAbandon(stateDir, "credentials")
+				return provider, false, cancelledSetupError(stateDir)
 			}
 			key = value
 		}
 		if key == "" {
-			return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
+			recordSetupAbandon(stateDir, "credentials")
+			return provider, false, cancelledSetupError(stateDir)
 		}
 		probe, err := w.ValidateProviderCredential(ctx, provider, key)
 		if err != nil {
@@ -1084,7 +1150,8 @@ func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 			fmt.Printf("%s (%s)\n", providerUnreachableMessage(provider), probe.Detail)
 			retry, abort := credentialRetryChoice(in, providerUnreachableMessage(provider))
 			if abort {
-				return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
+				recordSetupAbandon(stateDir, "credentials")
+				return provider, false, cancelledSetupError(stateDir)
 			}
 			if retry {
 				fmt.Println()
@@ -1106,6 +1173,50 @@ func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Rea
 
 func setupCompletionMessage() string {
 	return "Configuration terminée.\n\nÉtape suivante, dans le dossier d'un projet :\n  cd mon-projet\n  just-code\n\nVérifier l'installation à tout moment : just-code setup doctor"
+}
+
+// statsConsentText is the single consent question, asked once at the end of
+// setup (#181). Its default is No.
+const statsConsentText = `À des fins d'analyse du produit, acceptez-vous de partager avec l'équipe just-code
+des informations non nominatives sur votre configuration (les choix faits dans
+cet assistant) ? Jamais votre code, vos fichiers ni vos échanges avec l'agent.
+Modifiable à tout moment : just-code stats off`
+
+// setupStatsConsent asks the question. Only an explicit yes enables sending;
+// an empty answer, EOF or anything else keeps the default No. The bool is the
+// answer, the second bool reports whether the user actually answered.
+func setupStatsConsent(in *bufio.Reader) (enabled bool, answered bool, err error) {
+	if !wizardHuhFn() {
+		// A piped run cannot answer a consent question meaningfully: its
+		// next line belongs to another prompt. Keep the default No and leave
+		// the question unasked; `just-code stats on` is the non-interactive
+		// opt-in.
+		return false, false, nil
+	}
+	value := false
+	if ferr := huhRun(huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title(statsConsentText).
+			Affirmative("Oui").
+			Negative("Non").
+			Value(&value),
+	))); ferr != nil {
+		if errors.Is(ferr, huh.ErrUserAborted) {
+			return false, false, fmt.Errorf("setup cancelled")
+		}
+		return false, false, ferr
+	}
+	return value, true, nil
+}
+
+// userSettingsPathOrEmpty is the settings path, or "" when it cannot be
+// resolved (the consent read then reports "not asked").
+func userSettingsPathOrEmpty() string {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 func runSetupIdentityForm(fields []huh.Field) error {
@@ -1797,8 +1908,36 @@ func validateModelAgainstCatalogue(model string) string {
 	return ""
 }
 
-func cancelMsg(stateDir string) string {
-	return fmt.Sprintf("setup cancelled; run 'just-code setup' to resume from where it stopped (journal: %s)", justcode.SetupJournalPath(stateDir))
+// errSetupCancelled marks a user cancellation, so abandonment statistics are
+// only recorded for an explicit quit, never for a fatal error.
+var errSetupCancelled = errors.New("setup cancelled")
+
+func cancelledSetupError(stateDir string) error {
+	return fmt.Errorf("%w; run 'just-code setup' to resume from where it stopped (journal: %s)", errSetupCancelled, justcode.SetupJournalPath(stateDir))
+}
+
+// recordSetupAbandon queues the last stage reached when the user leaves the
+// wizard. RecordStatsEvent resolves consent itself: a journal answer wins
+// when present, and the durable decision applies otherwise (a user who
+// already opted in does not lose their exits on a fresh run).
+func recordSetupAbandon(stateDir, stage string) {
+	justcode.RecordStatsEvent(justcode.DefaultFS, stateDir, justcode.StatsEventInput{
+		Kind:    "abandon",
+		Stage:   stage,
+		Version: version,
+	})
+}
+
+// setupStatsProviders lists the platforms actually connected at the end of
+// setup, by kind. The final selection is what counts: a platform removed
+// during "Modifier" must not be reported because its key was stored earlier.
+// A user-supplied platform name is never recorded.
+func setupStatsProviders(providers []justcode.InferenceProvider) []string {
+	platforms := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		platforms = append(platforms, string(provider.Kind))
+	}
+	return platforms
 }
 
 // Albert API links shown on the key screen: where to create a key, and the

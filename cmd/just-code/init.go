@@ -302,7 +302,7 @@ func parseInitArgs(args []string) (initOptions, error) {
 
 // initRun is the testable core: the reader and the TTY verdict are passed in,
 // so the non-TTY contract can be exercised without a terminal.
-func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
+func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error) {
 	answers := justcode.InitAnswers{
 		Root:               opts.Root,
 		Runtime:            justcode.Runtime(opts.Runtime),
@@ -319,6 +319,16 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		SkillsLocalOnly:    opts.SkillsLocalOnly,
 		SkillsLocalOnlySet: opts.Set["skills-storage"],
 	}
+	stage := "questions"
+	defer func() {
+		// An explicit quit is the only abandonment worth recording: every
+		// other failure is an environment or validation error.
+		if code != 0 && err != nil && strings.Contains(err.Error(), "quitté l'assistant") && stage == "review" {
+			justcode.RecordStatsEvent(justcode.DefaultFS, justcode.DefaultStateDir(), justcode.StatsEventInput{
+				Kind: "abandon", Stage: stage, Version: version, ProjectRoot: answers.Root,
+			})
+		}
+	}()
 	if answers.Root == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			answers.Root = cwd
@@ -387,7 +397,6 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		}
 	}
 	var plan justcode.InitPlan
-	var err error
 	// askQuestions gates the default-path questions. The review's "edit"
 	// choice reopens them; the "Réglages avancés" choice (#170) edits only
 	// the expert settings and returns straight to the review.
@@ -420,6 +429,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			if repairErr := invalidInheritedInitSetting(opts, answers); repairErr != nil {
 				fmt.Printf("\nUn réglage du projet doit être corrigé avant le récapitulatif : %v\n", repairErr)
 				askQuestions = false
+				answers.Advanced = true
 				if useHuhReview {
 					answers, err = askInitAdvancedHuh(opts, answers)
 				} else {
@@ -434,6 +444,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 				continue
 			}
 		}
+		stage = "review"
 		answers = withBrowserResourceGuidance(answers)
 		guestCPUs := answers.CPUs
 		if guestCPUs <= 0 {
@@ -516,9 +527,11 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			case "edit":
 				fmt.Println("Réouverture des questions ; vos réponses sont conservées.")
 				askQuestions = true
+				stage = "questions"
 				continue
 			case "advanced":
 				askQuestions = false
+				answers.Advanced = true
 				updated, advErr := askInitAdvancedHuh(opts, answers)
 				if advErr != nil {
 					return 1, advErr
@@ -552,8 +565,10 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 			case "m", "modifier", "e", "edit", "back":
 				fmt.Println("Réouverture des questions ; une réponse vide conserve les valeurs actuelles.")
 				askQuestions = true
+				stage = "questions"
 			case "a", "advanced", "avancé", "réglages avancés":
 				askQuestions = false
+				answers.Advanced = true
 				answers, err = askInitAdvancedLine(in, opts, answers)
 				if err != nil {
 					return 1, err
@@ -622,6 +637,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		}
 		fmt.Println("Accord GitHub enregistré pour ce projet sur ce poste ; il n'est pas écrit dans le projet.")
 	}
+	recordInitStats(plan.Answers)
 	// The trailer is advice for the standalone command. When the launch flow
 	// drives the setup, the launch is already continuing: telling the user to
 	// run it would describe a step the code does not need.
@@ -631,6 +647,60 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (int, error) {
 		fmt.Println("\nProjet configuré.\nLancez l'agent : just-code")
 	}
 	return 0, nil
+}
+
+func recordInitAbandon(root, stage string) {
+	justcode.RecordStatsEvent(justcode.DefaultFS, justcode.DefaultStateDir(), justcode.StatsEventInput{
+		Kind: "abandon", Stage: stage, Version: version, ProjectRoot: root,
+	})
+}
+
+// recordInitStats queues the non-nominative init summary. It is a no-op
+// without consent, and it never carries the project path or name.
+func recordInitStats(answers justcode.InitAnswers) {
+	selectedSkills := map[string]bool{}
+	for _, id := range answers.Skills {
+		selectedSkills[id] = true
+	}
+	skills := map[string]bool{}
+	for _, id := range answers.KnownSkills {
+		skills[id] = selectedSkills[id]
+	}
+	for id := range selectedSkills {
+		if _, known := skills[id]; !known {
+			skills[id] = true
+		}
+	}
+	selectedMCPs := map[string]bool{}
+	for _, id := range answers.MCPConnectors {
+		selectedMCPs[id] = true
+	}
+	mcps := map[string]bool{}
+	for _, connector := range justcode.MCPConnectors() {
+		mcps[connector.ID] = selectedMCPs[connector.ID]
+	}
+	for _, connector := range justcode.BrowserMCPs() {
+		mcps[connector.ID] = selectedMCPs[connector.ID]
+	}
+	storage := "versioned"
+	if answers.SkillsLocalOnly {
+		storage = "local-only"
+	}
+	justcode.RecordStatsEvent(justcode.DefaultFS, justcode.DefaultStateDir(), justcode.StatsEventInput{
+		Kind:        "init",
+		Version:     version,
+		ProjectRoot: answers.Root,
+		Init: &justcode.InitStats{
+			Skills:        skills,
+			MCPs:          mcps,
+			GitHubCase:    answers.GitHubCase,
+			Advanced:      answers.Advanced,
+			Harness:       "opencode",
+			Runtime:       string(answers.Runtime),
+			Isolation:     string(answers.Isolation),
+			SkillsStorage: storage,
+		},
+	})
 }
 
 func invalidInheritedInitSetting(opts initOptions, answers justcode.InitAnswers) error {
@@ -849,6 +919,10 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 		catalogue, catalogueErr := projectSkillCatalogueFn(context.Background())
 		if catalogueErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: the pinned project skills catalogue is unavailable: %v\n", catalogueErr)
+		} else {
+			for _, skill := range catalogue {
+				answers.KnownSkills = append(answers.KnownSkills, skill.ID)
+			}
 		}
 		if !answers.SkillsSet {
 			current, err := currentProjectSkillSelection(answers.Root)
@@ -1031,24 +1105,28 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 					return answers, err
 				}
 				if quit {
+					recordInitAbandon(answers.Root, "github")
 					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
 				}
 				answers.GitHubWorkflow = false
 				answers.GitHubRemote = justcode.GitHubRemote{}
 				break githubStep
 			case !probe.HasOrigin:
+				answers.GitHubCase = 2
 				fmt.Println(gitHubNoOriginScreen())
 				quit, err := gitHubContinueLoop(in)
 				if err != nil {
 					return answers, err
 				}
 				if quit {
+					recordInitAbandon(answers.Root, "github")
 					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
 				}
 				answers.GitHubWorkflow = false
 				answers.GitHubRemote = justcode.GitHubRemote{}
 				break githubStep
 			case probe.TokenError != nil:
+				answers.GitHubCase = 3
 				// A locked or unavailable store must not be reported as "no
 				// token yet": the remedy is to unlock it, not to add a token.
 				// GitHub stays optional, so this is a screen with a way out
@@ -1059,12 +1137,14 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 					return answers, err
 				}
 				if quit {
+					recordInitAbandon(answers.Root, "github")
 					return answers, fmt.Errorf("vous avez quitté l'assistant ; rien n'a été écrit")
 				}
 				answers.GitHubWorkflow = false
 				answers.GitHubRemote = justcode.GitHubRemote{}
 				break githubStep
 			case !probe.HasToken:
+				answers.GitHubCase = 3
 				fmt.Println(gitHubNoTokenScreen(probe))
 				addNow, err := gitHubTokenLoop(in)
 				if err != nil {
@@ -1083,6 +1163,7 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 				answers.GitHubRemote = justcode.GitHubRemote{}
 				break githubStep
 			case probe.Rights == justcode.GitHubRepoRightsOK:
+				answers.GitHubCase = 1
 				fmt.Println(gitHubApprovedScreen(probe))
 				yes, err := gitHubYesDefault(in)
 				if err != nil {
@@ -1092,6 +1173,7 @@ func askInitQuestions(in *bufio.Reader, opts initOptions, answers justcode.InitA
 				answers.GitHubWorkflow = yes
 				break githubStep
 			default:
+				answers.GitHubCase = 4
 				fmt.Println(gitHubInsufficientScreen(probe))
 				reverify, err := gitHubRightsLoop(in)
 				if err != nil {

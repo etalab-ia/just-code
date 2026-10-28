@@ -67,6 +67,15 @@ type InitAnswers struct {
 	// distinguishes an unchanged empty answer from explicit deselection.
 	MCPConnectors []string
 	MCPsSet       bool
+	// KnownSkills is the catalogue inventory seen during the run, used only
+	// to record 0/1 statistics for every skill (issue #181). It never reaches
+	// the manifest.
+	KnownSkills []string
+	// GitHubCase records which of the four #169 situations applied (1..4).
+	// Zero means "unknown" (non-interactive flags, unsupported runtime).
+	GitHubCase int
+	// Advanced records that the user opened the advanced settings.
+	Advanced bool
 }
 
 // InitWizard validates project setup answers and writes what they imply.

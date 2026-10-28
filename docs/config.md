@@ -49,6 +49,10 @@ qu'une référence souveraine ne puisse pas alimenter une autre plateforme.
 | `.just-code/project.json` | Manifeste projet (sans secrets, sans chemins absolus hôte) | 5 |
 | `.just-code/lock.json` | Verrou : révisions et digests des éléments épinglés | 3 |
 
+`settings.json` conserve aussi `statsEnabled` et `statsConsentAsked` : l'état
+du consentement aux statistiques d'usage, jamais une donnée d'usage elle-même.
+La file d'événements vit dans l'état local de l'hôte, pas dans les réglages.
+
 ## Ports publiés Microsandbox
 
 `just-code ports list` affiche les redirections TCP configurées. Les commandes
@@ -78,8 +82,9 @@ API, Mistral AI, plateforme compatible OpenAI ; Albert pré-cochée, au moins un
 exigée) → une clé par plateforme (masquée, validée contre la plateforme ; rejet,
 indisponibilité réseau et réponse non compatible distincts) → sélection des
 modèles groupés par plateforme et d'un seul modèle par défaut → identifiant
-GitHub optionnel → identité git → revue → application (réglages globaux +
-runtime managé).
+GitHub optionnel → identité git → consentement aux statistiques d'usage → revue
+→ application (réglages globaux + runtime managé). Le consentement et les
+données concernées sont décrits dans [Statistiques d'usage](stats.md).
 
 L'ordre suit celui annoncé par l'écran d'introduction : plateformes et clés,
 modèles, puis GitHub. Pour Albert API, l'écran présente les quatre modèles
