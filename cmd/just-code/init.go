@@ -1367,7 +1367,7 @@ func askInitAdvancedLine(in *bufio.Reader, opts initOptions, answers justcode.In
 			if !ok || strings.TrimSpace(answer) == "" {
 				break
 			}
-			warning, err := validateInitSmallModelInput(answers.Root, answer)
+			warning, err := validateInitModelInput(answers.Root, answer)
 			if err != nil {
 				fmt.Printf("  %s\n", err)
 				continue
@@ -1385,7 +1385,7 @@ func askInitAdvancedLine(in *bufio.Reader, opts initOptions, answers justcode.In
 			if !ok || strings.TrimSpace(answer) == "" {
 				break
 			}
-			warning, err := validateInitModelInput(answers.Root, answer)
+			warning, err := validateInitSmallModelInput(answers.Root, answer)
 			if err != nil {
 				fmt.Printf("  %s\n", err)
 				continue

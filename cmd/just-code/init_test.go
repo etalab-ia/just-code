@@ -1588,6 +1588,39 @@ func TestInitInvalidInheritedSettingsStillRejectNonInteractiveAndEOF(t *testing.
 // points on the line path: picking Tart or agent-vm displays the shared-folder
 // consequence, and a runtime that is not installed is flagged with the command
 // that installs it.
+func TestInitAdvancedLineSmallModelRetriesProviderError(t *testing.T) {
+	setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		Providers: []justcode.ProviderSettings{{Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Runtime, isolation, CPUs, memory, main model, rejected Ministral, then
+	// reset the small model to inherit from the main model.
+	input := "\n\n\n\nmistral-large-latest\nministral-3-8b-instruct-2512\ndefault\n"
+	answers := justcode.InitAnswers{Root: "project", Model: "mistral/mistral-large-latest"}
+	var updated justcode.InitAnswers
+	out := captureStdout(t, func() {
+		var err error
+		updated, err = askInitAdvancedLine(bufio.NewReader(strings.NewReader(input)), initOptions{
+			hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384,
+		}, answers)
+		if err != nil {
+			t.Fatalf("line-mode small-model retry failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "requires Albert API") {
+		t.Fatalf("provider error must be shown inside the prompt loop: %s", out)
+	}
+	if updated.SmallModel != "" || updated.Model != "mistral-large-latest" {
+		t.Fatalf("retry must preserve the main model and reset the small model: %+v", updated)
+	}
+}
+
 func TestInitAdvancedLineWarnsOnSharedFolderRuntime(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Tart is not a supported Windows runtime")
