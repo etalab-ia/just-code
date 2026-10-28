@@ -51,6 +51,7 @@ type ManagedOverlay struct {
 // carries no curated display description.
 type ProviderModelConfig struct {
 	ID      string `json:"id"`
+	ModelID string `json:"modelID,omitempty"`
 	Name    string `json:"name"`
 	Context int    `json:"context,omitempty"`
 	Output  int    `json:"output,omitempty"`
@@ -253,6 +254,9 @@ func renderOverlayJSON(o ManagedOverlay) (string, error) {
 						"input":  []string{"text"},
 						"output": []string{"text"},
 					},
+				}
+				if model.ModelID != "" {
+					definition["modelID"] = model.ModelID
 				}
 				limit := map[string]any{}
 				if model.Context > 0 {

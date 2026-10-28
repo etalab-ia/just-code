@@ -49,6 +49,11 @@ type AlbertCodeImport struct {
 	// setup). Models are full provider references.
 	Platforms      []ProviderSettings
 	ProviderModels []string
+	// ProviderModelIDs maps a provider reference to the API model ID it
+	// aliases, when the legacy config used one (e.g. "glm" ->
+	// "z-ai/glm-4.6"). Without it, an import would silently replace the real
+	// model ID with its alias.
+	ProviderModelIDs map[string]string
 	// AlbertPresent records that the legacy configuration declared an Albert
 	// provider. An import without it must not implicitly connect Albert.
 	AlbertPresent bool
@@ -274,8 +279,17 @@ func (p *AlbertCodeImport) importOpenCodeConfig(config map[string]any) {
 			}
 			p.Platforms = append(p.Platforms, settings)
 			if models, ok := entry["models"].(map[string]any); ok {
-				for id := range models {
-					p.ProviderModels = append(p.ProviderModels, ProviderModelRef(ProviderOpenAICompatible, id))
+				for id, definition := range models {
+					ref := ProviderModelRef(ProviderOpenAICompatible, id)
+					p.ProviderModels = append(p.ProviderModels, ref)
+					if fields, ok := definition.(map[string]any); ok {
+						if apiID, _ := fields["modelID"].(string); apiID != "" && apiID != id {
+							if p.ProviderModelIDs == nil {
+								p.ProviderModelIDs = map[string]string{}
+							}
+							p.ProviderModelIDs[ref] = apiID
+						}
+					}
 				}
 				sort.Strings(p.ProviderModels)
 			}

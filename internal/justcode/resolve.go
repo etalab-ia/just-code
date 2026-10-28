@@ -124,6 +124,10 @@ type UserSettings struct {
 	// Credentials are never stored here; each platform's key lives in the
 	// host credential store under its kind.
 	Providers []ProviderSettings `json:"providers,omitempty"`
+	// ProviderModelIDs maps a provider reference to the API model ID it
+	// aliases, when a platform exposes an alias (e.g. an imported OpenRouter
+	// "glm" pointing at "z-ai/glm-4.6"). Empty means the reference is the ID.
+	ProviderModelIDs map[string]string `json:"providerModelIDs,omitempty"`
 
 	// GitName and GitEmail are the git identity for guest commits (P11).
 	// Non-secret; the guest bootstrap configures git with them.

@@ -241,6 +241,12 @@ func mergeImportedProviders(plan justcode.AlbertCodeImport) error {
 			us.Models = append(us.Models, model)
 		}
 	}
+	for ref, apiID := range plan.ProviderModelIDs {
+		if us.ProviderModelIDs == nil {
+			us.ProviderModelIDs = map[string]string{}
+		}
+		us.ProviderModelIDs[ref] = apiID
+	}
 	if plan.Model != "" {
 		us.DefaultModel = plan.Model
 	}

@@ -808,7 +808,12 @@ func resolveProviderOverlays(providers []justcode.InferenceProvider, activeModel
 		}
 		models := make([]justcode.ProviderModelConfig, 0, len(ids))
 		for _, id := range ids {
-			models = append(models, justcode.ProviderModelConfig{ID: id, Name: id})
+			ref := string(provider.Kind) + "/" + id
+			config := justcode.ProviderModelConfig{ID: id, Name: id}
+			if apiID := us.ProviderModelIDs[ref]; apiID != "" {
+				config.ModelID = apiID
+			}
+			models = append(models, config)
 		}
 		out = append(out, justcode.ProviderOverlay{
 			Kind:      string(provider.Kind),

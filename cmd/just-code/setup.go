@@ -695,6 +695,15 @@ var setupCredentialPresentFn = func(ctx context.Context, kind justcode.Credentia
 	return err == nil
 }
 
+// providerSettingsOf converts resolved providers back to the settings form.
+func providerSettingsOf(providers []justcode.InferenceProvider) []justcode.ProviderSettings {
+	out := make([]justcode.ProviderSettings, 0, len(providers))
+	for _, p := range providers {
+		out = append(out, justcode.ProviderSettings{Kind: p.Kind, Name: p.Name, BaseURL: p.BaseURL})
+	}
+	return out
+}
+
 func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, fallback bool, j *justcode.SetupJournal, editing bool, fs justcode.FS, stateDir string) ([]justcode.InferenceProvider, error) {
 	platforms := j.Platforms
 	if len(platforms) == 0 && len(j.CredentialKinds) == 0 {
@@ -790,6 +799,11 @@ func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.R
 		// the user started with.
 		provider = updatedProvider
 		providers[index] = updatedProvider
+		// Revalidate the whole set: a corrected endpoint may collide with
+		// another platform's host, which would make every later launch fail.
+		if _, err := justcode.ResolveProviders(providerSettingsOf(providers)); err != nil {
+			return nil, err
+		}
 		j.CredentialKinds = addCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
 		if provider.Kind == justcode.ProviderAlbert {
 			value := verified

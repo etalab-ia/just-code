@@ -1974,3 +1974,35 @@ func TestSetupWizardGitHubUnreachableContinueStoresUnvalidated(t *testing.T) {
 		t.Errorf("the token must be stored on an explicit continue: stored %q, %v", stored, err)
 	}
 }
+
+func TestSetupPlatformStageRejectsACorrectedEndpointSharingAHost(t *testing.T) {
+	stateDir, _ := setupTestEnv(t)
+	forceNonTTY(t)
+	previousPresent := setupCredentialPresentFn
+	setupCredentialPresentFn = func(context.Context, justcode.CredentialKind) bool { return false }
+	t.Cleanup(func() { setupCredentialPresentFn = previousPresent })
+	fs := justcode.DefaultFS
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		Platforms: []justcode.SetupPlatform{
+			{Kind: "mistral"},
+			{Kind: "openai-compatible", Name: "Other", BaseURL: "https://other.example.com/v1"},
+		},
+	}
+	store := &fakeSetupStore{}
+	w := justcode.SetupWizard{
+		FS: fs, StateDir: stateDir,
+		Store: func(context.Context) (justcode.SetupStore, error) { return store, nil },
+		ValidateProvider: func(_ context.Context, provider justcode.InferenceProvider, _ string) justcode.CredentialProbe {
+			if provider.Kind == justcode.ProviderOpenAICompatible && provider.BaseURL == "https://other.example.com/v1" {
+				return justcode.CredentialProbe{Incompatible: true, Detail: "not a models listing"}
+			}
+			return justcode.CredentialProbe{}
+		},
+	}
+	input := "mistral-key\nk1\nOther\nhttps://api.mistral.ai/v1\nk2\n"
+	_, err := setupPlatformStage(context.Background(), w, bufio.NewReader(strings.NewReader(input)), true, &j, false, fs, stateDir)
+	if err == nil || !strings.Contains(err.Error(), "share the host") {
+		t.Fatalf("a corrected endpoint sharing a host must be refused: %v", err)
+	}
+}

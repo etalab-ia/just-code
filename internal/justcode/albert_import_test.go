@@ -324,3 +324,25 @@ func writeImportFixtureFile(t *testing.T, root, rel, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestDiscoverAlbertCodeImportPreservesModelAliases(t *testing.T) {
+	root := t.TempDir()
+	gitInit(t, root)
+	config := `{
+  "provider": {"openrouter": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "OpenRouter",
+    "options": {"baseURL": "https://openrouter.ai/api/v1", "apiKey": "{env:OPENROUTER_API_KEY}"},
+    "models": {"glm": {"name": "GLM", "modelID": "z-ai/glm-4.6"}}
+  }},
+  "model": "openrouter/glm"
+}`
+	writeImportFixtureFile(t, root, "opencode.json", config)
+	plan, err := DiscoverAlbertCodeImport(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ProviderModelIDs["openai-compatible/glm"] != "z-ai/glm-4.6" {
+		t.Fatalf("alias mapping lost: %+v", plan.ProviderModelIDs)
+	}
+}
