@@ -21,7 +21,7 @@ tâches.
 | macOS arm64 (`darwin/arm64`) | oui | oui | **oui** |
 | Linux x86-64 (`linux/amd64`) | oui | oui | **oui** |
 | Linux arm64 (`linux/arm64`) | oui | oui | **oui** |
-| Windows x86-64 (`windows/amd64`) | oui | oui | non |
+| Windows x86-64 (`windows/amd64`) | oui | oui | **spike réussi** |
 | Windows arm64 (`windows/arm64`) | oui | oui | non |
 | macOS Intel (`darwin/amd64`) | **non** | — | — |
 
@@ -36,6 +36,15 @@ Les cinq combinaisons prises en charge ont une empreinte SHA256 épinglée dans
 avant d'être extrait, et une version publiée différente n'est pas adoptée
 silencieusement.
 
+Le 2026-10-28, un spike sur un hôte dédié Scaleway Elastic Metal sous Windows
+Server 2025 amd64 a démarré une microVM Alpine réelle via WHP avec le runtime
+0.7.11 vérifié. Le parcours just-code a aussi créé le workspace invité scellé,
+exclu le fichier dotenv factice et conservé les fichiers après arrêt/redémarrage.
+Ce spike n'est **pas** une qualification complète de #77 : l'édition testée
+diffère des cibles Windows 10/11 du protocole actuel, et le lancement OpenCode
+est bloqué par #292. Voir `tests/integration/qualification/windows-amd64/`.
+Windows arm64 reste non testé (#291).
+
 ## Magasins d'identifiants natifs
 
 Le magasin est une question distincte du runtime : il vit sur l'hôte et ne
@@ -46,7 +55,15 @@ séparément.
 | --- | --- | --- | --- |
 | macOS | Trousseau (`security`) | oui | **oui** |
 | Linux | Secret Service (`secret-tool`) | oui | **oui** |
-| Windows | Credential Manager (PowerShell, P/Invoke `advapi32`) | oui | non |
+| Windows | Credential Manager (PowerShell, P/Invoke `advapi32`) | oui | non (résultats mixtes) |
+
+Le vrai magasin Windows a été exercé le 2026-10-28 dans une session PowerShell
+interactive sur Windows Server 2025. Une exécution a réussi `put` / `get` /
+`remove`, la rotation et l'absence, mais une autre a échoué à la lecture
+immédiate après écriture ; les sessions SSH ont ignoré le test après refus de
+la sonde. Le service est donc réellement atteint, mais pas qualifié : la cause
+de cette intermittence reste à établir dans #293. Les trois transcripts sont
+sous `tests/integration/credentials/evidence/`.
 
 Le Trousseau a été qualifié sur macOS arm64 le 2026-10-16 (hôte Scaleway
 Mac mini M4, trousseau dédiée déverrouillée — sur un hôte headless, le
@@ -101,6 +118,7 @@ et son état est rappelé à chaque affichage.
 | Qualification complète Linux amd64 (parcours commun, secrets, terminal, installateur) | `tests/integration/qualification/linux-amd64/` |
 | Qualification complète macOS arm64 (parcours commun, secrets, terminal, agent-vm, laboratoire d'identifiants) | `tests/integration/qualification/darwin-arm64/` |
 | Qualification complète Linux arm64 sur hôte KVM (parcours commun, secrets, terminal, installateur) | `tests/integration/qualification/linux-arm64/` |
+| Spike Windows amd64 sur Windows Server dédié (microVM, workspace, limites) | `tests/integration/qualification/windows-amd64/` |
 | Qualification native du transport proxy et des marqueurs (phase 0) | `tests/integration/project-secrets/native/evidence/` |
 | Qualification native de bout en bout des fichiers dotenv gérés (phase 3) | `tests/integration/project-secrets/native-phase3/evidence/` |
 | Magasin d'identifiants natif exercé (macOS, Linux, Windows) | `tests/integration/credentials/evidence/` |
@@ -113,8 +131,12 @@ n'en est pas une.
 
 ## Ce qui n'est pas promis
 
-- Démarrer une microVM sur Windows : possible en droit, non vérifié ici.
-- Exercer le magasin natif Windows : l'adaptateur est testé, le service ne
-  l'est pas.
+- Démarrer une microVM sur Windows amd64 : le spike Windows Server 2025 ci-dessus
+  est réussi, mais la qualification complète Windows 10/11 et Windows arm64
+  reste à obtenir.
+- Exercer le magasin natif Windows : le service a été atteint, mais sa fiabilité
+  reste à démontrer dans #293.
+- Lancer le parcours OpenCode complet : bloqué sur toutes les plateformes par
+  le défaut de configuration suivi dans #292 tant que cette issue reste ouverte.
 - macOS Intel, sous aucune forme.
 - Une plateforme non listée : le comportement est de refuser, pas de dégrader.

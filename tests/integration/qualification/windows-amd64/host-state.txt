@@ -1,0 +1,158 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261028110652
+Username: JC-WIN77-AMD64\Administrateur
+RunAs User: JC-WIN77-AMD64\Administrateur
+Configuration Name:
+Machine: JC-WIN77-AMD64 (Microsoft Windows NT 10.0.26100.0)
+Host Application: powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\Administrateur\\host-state.ps1
+Process ID: 5680
+PSVersion: 5.1.26100.2161
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.2161
+BuildVersion: 10.0.26100.2161
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\jc-win77\host-state.txt
+=== IDENTITY ===
+
+
+Microsoft Windows 10.0.26100
+X64
+
+
+OsName             : Microsoft Windows Server 2025 Standard
+OSDisplayVersion   : 24H2
+OsArchitecture     : 64-bit
+OsBuildNumber      : 26100
+WindowsVersion     : 2009
+WindowsProductName : Windows Server 2025 Standard
+
+
+
+
+
+Name                                    : AMD EPYC 7232P 8-Core Processor
+Architecture                            : 9
+NumberOfCores                           : 8
+NumberOfLogicalProcessors               : 16
+SecondLevelAddressTranslationExtensions : False
+VirtualizationFirmwareEnabled           : True
+VMMonitorModeExtensions                 : False
+
+
+
+=== VIRTUALIZATION ===
+
+
+FeatureName     : HypervisorPlatform
+State           : Enabled
+RestartRequired : Possible
+
+
+
+
+
+HypervisorPresent : True
+
+
+
+
+Name       Status StartType
+----       ------ ---------
+sshd      Running Automatic
+WinDefend Running Automatic
+
+
+=== WHP API ===
+WinHvPlatform.dll present
+=== TOOLCHAIN ===
+
+=== BOOTSTRAP LOG ===
+Start time: 20261028105952
+Username: JC-WIN77-AMD64\Administrateur
+RunAs User: JC-WIN77-AMD64\Administrateur
+Configuration Name:
+Machine: JC-WIN77-AMD64 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\Administrateur\bootstrap.ps1
+Process ID: 10436
+PSVersion: 5.1.26100.2161
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.2161
+BuildVersion: 10.0.26100.2161
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\jc-win77-bootstrap.log
+=== HOST ===
+
+
+OsName             : Microsoft Windows Server 2025 Standard
+OSDisplayVersion   : 24H2
+OsArchitecture     : 64-bit
+OsBuildNumber      : 26100
+WindowsVersion     : 2009
+WindowsProductName : Windows Server 2025 Standard
+
+
+
+
+
+Name                                    : AMD EPYC 7232P 8-Core Processor
+Architecture                            : 9
+NumberOfCores                           : 8
+NumberOfLogicalProcessors               : 16
+SecondLevelAddressTranslationExtensions : True
+VirtualizationFirmwareEnabled           : True
+VMMonitorModeExtensions                 : True
+
+
+
+=== OPENSSH ===
+
+Disposable SSH public key installed
+
+
+Name      : sshd
+Status    : Running
+StartType : Automatic
+
+
+
+=== WHP ===
+
+
+FeatureName     : HypervisorPlatform
+State           : Disabled
+RestartRequired : Possible
+
+
+
+WARNING: Restart is suppressed because NoRestart is specified.
+
+
+Path          :
+Online        : True
+RestartNeeded : True
+
+
+
+WHP enabled; reboot required before Microsandbox
+=== GO ===
+
+=== LLVM-MINGW ===
+
+=== BOOTSTRAP COMPLETE ===
+**********************
+Windows PowerShell transcript end
+End time: 20261028110128
+**********************
+**********************
+Windows PowerShell transcript end
+End time: 20261028110701
+**********************

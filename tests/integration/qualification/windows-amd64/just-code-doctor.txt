@@ -1,0 +1,30 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261028111147
+Username: JC-WIN77-AMD64\Administrateur
+RunAs User: JC-WIN77-AMD64\Administrateur
+Configuration Name:
+Machine: JC-WIN77-AMD64 (Microsoft Windows NT 10.0.26100.0)
+Host Application: powershell -NoProfile -Command $ErrorActionPreference="Continue"; Start-Transcript -Path C:\\jc-win77\\evidence\\just-code-doctor.txt -Force; $env:MSB_HOME="C:\\jc-win77\\empty-runtime"; Remove-Item Env:MSB_PATH,Env:MSB_LIBKRUNFW_PATH -ErrorAction SilentlyContinue; & C:\\jc-win77\\just-code.exe doctor --microsandbox; Write-Host "EMPTY_DOCTOR_EXIT=$LASTEXITCODE"; Write-Host "EMPTY_RUNTIME_CREATED=$(Test-Path $env:MSB_HOME)"; $env:MSB_HOME="C:\\jc-win77\\msb-direct-home"; $env:MSB_PATH="C:\\jc-win77\\msb-direct\\msb.exe"; $env:MSB_LIBKRUNFW_PATH="C:\\jc-win77\\msb-direct\\libkrunfw.dll"; & C:\\jc-win77\\just-code.exe doctor --microsandbox; Write-Host "MANAGED_DOCTOR_EXIT=$LASTEXITCODE"; & C:\\jc-win77\\just-code.exe setup doctor --json; Write-Host "SETUP_DOCTOR_EXIT=$LASTEXITCODE"; Stop-Transcript
+Process ID: 3296
+PSVersion: 5.1.26100.2161
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.2161
+BuildVersion: 10.0.26100.2161
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\\jc-win77\\evidence\\just-code-doctor.txt
+
+EMPTY_DOCTOR_EXIT=1
+EMPTY_RUNTIME_CREATED=False
+
+MANAGED_DOCTOR_EXIT=0
+
+SETUP_DOCTOR_EXIT=1
+**********************
+Windows PowerShell transcript end
+End time: 20261028111202
+**********************

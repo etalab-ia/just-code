@@ -1,0 +1,32 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261028112529
+Username: JC-WIN77-AMD64\Administrateur
+RunAs User: JC-WIN77-AMD64\Administrateur
+Configuration Name:
+Machine: JC-WIN77-AMD64 (Microsoft Windows NT 10.0.26100.0)
+Host Application: powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\Administrateur\\run-full.ps1
+Process ID: 3256
+PSVersion: 5.1.26100.2161
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.2161
+BuildVersion: 10.0.26100.2161
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\jc-win77\evidence\just-code-full.txt
+META revision=256e4233845aae324e924e7be6c73a3ef11c663b
+META source=synthetic-project-no-production-credentials
+Configuration is invalid at OPENCODE_CONFIG_CONTENT
+↳ Missing key provider.albert.models.qwen3-coder.limit.output
+FULL_START_EXIT=1
+
+FULL_CHECK_EXIT=0
+
+FULL_STOP_EXIT=0
+**********************
+Windows PowerShell transcript end
+End time: 20261028112622
+**********************

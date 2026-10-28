@@ -1,0 +1,28 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261028112737
+Username: JC-WIN77-AMD64\Administrateur
+RunAs User: JC-WIN77-AMD64\Administrateur
+Configuration Name:
+Machine: JC-WIN77-AMD64 (Microsoft Windows NT 10.0.26100.0)
+Host Application: powershell -NoProfile -Command Set-Location C:\\jc-win77\\demo; & C:\\jc-win77\\just-code.exe init --root C:\\jc-win77\\demo --model deepseek-ai/DeepSeek-V4-Flash-0731 --replace --yes; $env:ALBERT_API_KEY="synthetic-windows-spike-not-a-real-key"; Remove-Item Env:MSB_PATH,Env:MSB_LIBKRUNFW_PATH -ErrorAction SilentlyContinue; $env:MSB_HOME="C:\\jc-win77\\managed-runtime"; Start-Transcript -Path C:\\jc-win77\\evidence\\just-code-deepseek.txt -Force; & C:\\jc-win77\\just-code.exe --microsandbox --isolation full; Write-Host "DEEPSEEK_START_EXIT=$LASTEXITCODE"; & C:\\jc-win77\\just-code.exe stop; Write-Host "DEEPSEEK_STOP_EXIT=$LASTEXITCODE"; Stop-Transcript
+Process ID: 6612
+PSVersion: 5.1.26100.2161
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.2161
+BuildVersion: 10.0.26100.2161
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\\jc-win77\\evidence\\just-code-deepseek.txt
+Configuration is invalid at OPENCODE_CONFIG_CONTENT
+↳ Missing key provider.albert.models.qwen3-coder.limit.output
+DEEPSEEK_START_EXIT=1
+
+DEEPSEEK_STOP_EXIT=0
+**********************
+Windows PowerShell transcript end
+End time: 20261028112800
+**********************
