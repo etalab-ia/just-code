@@ -708,6 +708,17 @@ setupStages:
 	if err := w.SaveIdentity(j.GitName, j.GitEmail); err != nil {
 		return 1, err
 	}
+	// Re-resolve consent at apply time: the wizard may have been sitting at
+	// the recap while the user ran `stats on` or `stats off` in another
+	// terminal. Persisting the pre-review snapshot would silently undo that
+	// explicit decision.
+	if latest, latestAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty()); latestAsked {
+		statsEnabled, statsAsked = latest, true
+		j.StatsEnabled = latest
+		j.StatsConsentAsked = true
+	} else if latest, jerr := justcode.ReadSetupJournal(fs, stateDir); jerr == nil && latest.StatsConsentAsked {
+		statsEnabled, statsAsked = latest.StatsEnabled, true
+	}
 	if err := w.SaveSettings(model, models, modelAnswered, providers, statsEnabled, statsAsked); err != nil {
 		return 1, err
 	}
