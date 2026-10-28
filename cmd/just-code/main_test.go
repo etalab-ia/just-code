@@ -107,6 +107,63 @@ func TestResolveModelSelectionCanonicalizesLegacyAlbertReference(t *testing.T) {
 	}
 }
 
+func TestResolveSmallModelSelectionAndComposedOpenCodeConfig(t *testing.T) {
+	setupTestEnv(t)
+	root := t.TempDir()
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		Model: "albert/qwen3-coder", SmallModel: "ministral-3-8b-instruct-2512",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveSmallModelSelection(root); got != justcode.MinistralSmallModelRef {
+		t.Fatalf("small-model reference = %q", got)
+	}
+	models := resolveEnabledAlbertModels(resolveModelSelection(root), justcode.MinistralSmallModelRef)
+	var minimistral *justcode.AlbertModelConfig
+	for i := range models {
+		if models[i].ID == "ministral-3-8b" {
+			minimistral = &models[i]
+		}
+	}
+	if minimistral == nil || minimistral.ModelID != "ministral-3-8b-instruct-2512" {
+		t.Fatalf("Ministral must be available even without global selection: %+v", models)
+	}
+	content, err := justcode.ComposeConfigContent(justcode.ManagedOverlay{
+		Model: resolveModelSelection(root), SmallModel: resolveSmallModelSelection(root), Models: models,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["small_model"] != justcode.MinistralSmallModelRef {
+		t.Fatalf("small_model = %v", config["small_model"])
+	}
+	if !strings.Contains(content, `"ministral-3-8b"`) {
+		t.Fatalf("Ministral provider definition missing from launch config: %s", content)
+	}
+}
+
+func TestResolveSmallModelDefaultsToMainModel(t *testing.T) {
+	root := t.TempDir()
+	if got := resolveSmallModelSelection(root); got != "" {
+		t.Fatalf("no explicit small model expected, got %q", got)
+	}
+	content, err := justcode.ComposeConfigContent(justcode.ManagedOverlay{Model: "albert/gpt-oss-120b", SmallModel: resolveSmallModelSelection(root)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["small_model"] != config["model"] {
+		t.Fatalf("small model must inherit main-model changes: %v", config)
+	}
+}
+
 func TestParseGuestAlbertModels(t *testing.T) {
 	choice := justcode.CuratedAlbertModels()[1]
 	want := choice.AlbertModelConfig()

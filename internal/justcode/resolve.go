@@ -172,8 +172,11 @@ type ProjectManifest struct {
 	Runtime   string `json:"runtime,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
 	Model     string `json:"model,omitempty"`
-	CPUs      int    `json:"cpus,omitempty"`
-	MemoryMB  int    `json:"memoryMB,omitempty"`
+	// SmallModel is an explicit lightweight model for OpenCode titles. Empty
+	// follows the effective main model, including later changes to that model.
+	SmallModel string `json:"smallModel,omitempty"`
+	CPUs       int    `json:"cpus,omitempty"`
+	MemoryMB   int    `json:"memoryMB,omitempty"`
 	// Ports are explicit host-to-guest TCP forwards for Microsandbox. Nil
 	// preserves the historical default preview range for older manifests.
 	Ports           []PortMapping `json:"ports,omitempty"`

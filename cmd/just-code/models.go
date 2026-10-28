@@ -82,6 +82,14 @@ func modelsListProvider(ctx context.Context, provider justcode.InferenceProvider
 				}
 			}
 		}
+		if small := resolveSmallModelSelection("."); small != "" {
+			kind, _ := justcode.ProviderModelID(small)
+			if kind == justcode.ProviderAlbert {
+				if _, ok := catalogue.Find(small); !ok && len(models) > 0 {
+					fmt.Fprintf(os.Stderr, "Warning: the selected small model %q is not in the Albert catalogue; it may have been removed.\n", small)
+				}
+			}
+		}
 	} else {
 		apiKey, keyErr := resolveProviderKeyForCatalogue(provider)
 		if keyErr != nil {

@@ -207,7 +207,7 @@ func retainedSkillOptions(options []huh.Option[string], selected []string) []huh
 }
 
 func initSkillsStepPrefix(opts initOptions) string {
-	for _, field := range []string{"root", "runtime", "isolation", "model", "cpus", "memory-mb", "credential-ref", "github"} {
+	for _, field := range []string{"root", "runtime", "isolation", "model", "small-model", "cpus", "memory-mb", "credential-ref", "github"} {
 		if opts.Set[field] {
 			return ""
 		}
@@ -448,6 +448,29 @@ func initModelDisplayName(model string) string {
 	return id
 }
 
+func initSmallModelDisplayName(answers justcode.InitAnswers) string {
+	if answers.SmallModel != "" {
+		return initModelDisplayName(answers.SmallModel)
+	}
+	return "même modèle que le modèle principal (" + initModelDisplayName(answers.Model) + ")"
+}
+
+func newInitSmallModelSelect(root string, value *string) *huh.Select[string] {
+	options := []huh.Option[string]{
+		huh.NewOption("Même modèle que le modèle principal (défaut)", ""),
+		huh.NewOption("Ministral 3 8B — petit modèle généraliste", justcode.MinistralSmallModelRef),
+	}
+	if *value != "" && *value != justcode.MinistralSmallModelRef {
+		options = append(options, huh.NewOption(initModelDisplayName(*value)+" (déjà configuré)", *value))
+	}
+	return huh.NewSelect[string]().
+		Title("Petit modèle").
+		Description("Utilisé pour générer les titres de session. Le choix par défaut suit toujours le modèle principal.").
+		Options(options...).
+		Validate(func(s string) error { _, err := validateInitModelInput(root, s); return err }).
+		Value(value)
+}
+
 // runtimeInstallHintFn is the seam the advanced settings screen uses to flag
 // a chosen runtime that is not installed on this host. Tests stub it so the
 // check never depends on the machine running the test.
@@ -459,6 +482,7 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 	choice := "runtime"
 	notices := make(map[justcode.Runtime]string)
 	modelWarning := ""
+	smallModelWarning := ""
 	for {
 		rt := effectiveInitRuntime(answers)
 		notice, checked := notices[rt]
@@ -488,16 +512,20 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 		if !opts.Set["model"] {
 			options = append(options, huh.NewOption("Modèle principal : "+initModelDisplayName(answers.Model), "model"))
 		}
+		if !opts.Set["small-model"] {
+			options = append(options, huh.NewOption("Petit modèle : "+initSmallModelDisplayName(answers), "small-model"))
+		}
 		options = append(options, huh.NewOption("Revenir au récapitulatif", "back"))
 		if len(options) == 1 {
 			choice = "back"
 		}
 		description := "Ces valeurs conviennent à la plupart des projets. Modifiez-les seulement si besoin.\n\n" +
 			"Agent (harnais) : OpenCode (recommandé). Pi n'est pas encore pris en charge.\n" +
-			"Petit modèle : même modèle que le modèle principal ; sert aux titres et aux résumés de session.\n" +
+			"Petit modèle : sert aux titres de session.\n" +
 			"Défauts : Microsandbox, isolation complète, 2 processeurs, 4 Go.\n" +
 			"6 Go conseillés avec chrome-devtools.\n\n" + notice +
 			"\n" + modelWarning +
+			"\n" + smallModelWarning +
 			"\n\n↑ ↓ : choisir un réglage. Entrée : modifier. Échap : revenir au récapitulatif."
 		back, err := runInitAdvancedForm(huh.NewForm(huh.NewGroup(
 			huh.NewSelect[string]().Title("Réglages avancés").Description(description).
@@ -546,6 +574,9 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 			field = huh.NewInput().Title("Modèle principal").
 				Description("Identifiant du modèle Albert ('just-code models' liste les modèles). Vide ou 'défaut' reprend le modèle défini dans setup. Échap : annuler cette modification.").
 				Validate(func(s string) error { _, err := validateInitModelInput(answers.Root, s); return err }).Value(&input)
+		case "small-model":
+			input = answers.SmallModel
+			field = newInitSmallModelSelect(answers.Root, &input)
 		default:
 			return answers, fmt.Errorf("unknown advanced setting %q", choice)
 		}
@@ -584,6 +615,13 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 			}
 			answers.Model = normalizeInitModelInput(input)
 			modelWarning = warning
+		case "small-model":
+			warning, err := validateInitModelInput(answers.Root, input)
+			if err != nil {
+				return answers, err
+			}
+			answers.SmallModel = normalizeInitModelInput(input)
+			smallModelWarning = warning
 		}
 	}
 }

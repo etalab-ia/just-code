@@ -10,14 +10,25 @@ func catalogueFixture() Catalogue {
 		{ID: "gpt-oss-120b", Type: "text-generation", MaxContextLength: 131072, Aliases: []string{"openai/gpt-oss-120b"}},
 		{ID: "deepseek-v4-flash-0731", Type: "text-generation", MaxContextLength: 131072, Aliases: []string{"deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek-v4-flash"}},
 		{ID: "bge-m3", Type: "text-embeddings-inference", MaxContextLength: 8192},
+		{ID: "ministral-3-8b-instruct-2512", Type: "image-text-to-text", MaxContextLength: 262144, Aliases: []string{"mistralai/Ministral-3-8B-Instruct-2512", "openweight-small"}},
+		{ID: "lightonocr-2-1b", Type: "image-text-to-text", MaxContextLength: 16384, Aliases: []string{"openweight-ocr"}},
+		{ID: "mistral-medium-3-5", Type: "image-text-to-text", MaxContextLength: 262144},
 	})
 }
 
 func TestCatalogueFindAndFilter(t *testing.T) {
 	c := catalogueFixture()
 	models := c.TextGenerationModels()
-	if len(models) != 2 {
-		t.Fatalf("text-generation models = %v", models)
+	if len(models) != 3 {
+		t.Fatalf("chat models = %v", models)
+	}
+	if models[2].ID != "ministral-3-8b-instruct-2512" {
+		t.Fatalf("Ministral must be a selectable multimodal chat model: %v", models)
+	}
+	for _, model := range models {
+		if model.ID == "lightonocr-2-1b" || model.ID == "mistral-medium-3-5" {
+			t.Fatalf("non-curated multimodal model leaked into chat choices: %v", model)
+		}
 	}
 	// Provider-prefixed ids resolve.
 	if m, ok := c.Find("albert/deepseek-v4-flash-0731"); !ok || m.ID != "deepseek-v4-flash-0731" {
@@ -35,8 +46,11 @@ func TestCatalogueFindAndFilter(t *testing.T) {
 
 func TestCuratedAlbertModelDefaultsAndIDs(t *testing.T) {
 	models := CuratedAlbertModels()
-	if len(models) != 4 {
-		t.Fatalf("curated model count = %d, want 4", len(models))
+	if len(models) != 5 {
+		t.Fatalf("curated model count = %d, want 5", len(models))
+	}
+	if models[4].Ref() != MinistralSmallModelRef || models[4].ID != "ministral-3-8b-instruct-2512" || models[4].Default {
+		t.Fatalf("Ministral small-model choice = %+v", models[4])
 	}
 	var defaults []string
 	for _, model := range models {
@@ -64,13 +78,13 @@ func TestCatalogueCacheNetworkFirst(t *testing.T) {
 		},
 	}
 	cat, fresh, err := cache.Load(context.Background())
-	if err != nil || !fresh || len(cat.Models) != 3 {
+	if err != nil || !fresh || len(cat.Models) != 6 {
 		t.Fatalf("load = %+v, fresh=%v, err=%v", cat, fresh, err)
 	}
 	// The cache was persisted: a Load without a fetch reads it.
 	cache.Fetch = nil
 	cat, fresh, err = cache.Load(context.Background())
-	if err != nil || fresh || len(cat.TextGenerationModels()) != 2 {
+	if err != nil || fresh || len(cat.TextGenerationModels()) != 3 {
 		t.Fatalf("cache read = %+v, fresh=%v, err=%v", cat, fresh, err)
 	}
 }
@@ -89,7 +103,7 @@ func TestCatalogueCacheFallsBackWhenNetworkFails(t *testing.T) {
 		return Catalogue{}, context.DeadlineExceeded
 	}}
 	cat, fresh, err := cache.Load(context.Background())
-	if err != nil || fresh || len(cat.TextGenerationModels()) != 2 {
+	if err != nil || fresh || len(cat.TextGenerationModels()) != 3 {
 		t.Fatalf("network failure must fall back to the cache: %+v, fresh=%v, err=%v", cat, fresh, err)
 	}
 	// Without a cache, the fetch error surfaces.

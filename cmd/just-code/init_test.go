@@ -289,7 +289,7 @@ func stubMCPBindingStateDir(t *testing.T) string {
 func TestParseInitArgs(t *testing.T) {
 	opts, err := parseInitArgs([]string{
 		"--root", "/tmp/p", "--runtime", "tart", "--isolation", "backend",
-		"--model", "albert/x", "--cpus", "4", "--memory-mb", "2048",
+		"--model", "albert/x", "--small-model", "ministral-3-8b-instruct-2512", "--cpus", "4", "--memory-mb", "2048",
 		"--credential-ref", "work", "--github", "--skill", "official/rgaa",
 		"--skill", "experimental/rag-parse", "--local-only-skills", "--replace", "--yes",
 	})
@@ -297,7 +297,7 @@ func TestParseInitArgs(t *testing.T) {
 		t.Fatalf("parseInitArgs: %v", err)
 	}
 	if opts.Root != "/tmp/p" || opts.Runtime != "tart" || opts.Isolation != "backend" ||
-		opts.Model != "albert/x" || opts.CPUs != 4 || opts.MemoryMB != 2048 ||
+		opts.Model != "albert/x" || opts.SmallModel != "ministral-3-8b-instruct-2512" || opts.CPUs != 4 || opts.MemoryMB != 2048 ||
 		opts.CredentialRef != "work" || !opts.GitHub || !opts.Replace || !opts.Yes ||
 		len(opts.Skills) != 2 || !opts.SkillsLocalOnly {
 		t.Fatalf("options = %+v", opts)
@@ -933,7 +933,7 @@ func TestSeedInitAnswersFromMissingManifestResetsPreviousProjectValues(t *testin
 	root := initTestProject(t)
 	previous := justcode.InitAnswers{
 		Root: root, Runtime: justcode.RuntimeTart, Isolation: justcode.IsolationBackend,
-		Model: "previous/model", CPUs: 4, MemoryMB: 8192, CredentialRef: "previous",
+		Model: "previous/model", SmallModel: "previous/small", CPUs: 4, MemoryMB: 8192, CredentialRef: "previous",
 		GitHubWorkflow: true, GitHubRemote: justcode.GitHubRemote{Repo: "previous/repo"},
 		MCPConnectors: []string{"context7"}, MCPsSet: true,
 		Skills: []string{"official/rgaa"}, SkillsSet: true,
@@ -941,7 +941,7 @@ func TestSeedInitAnswersFromMissingManifestResetsPreviousProjectValues(t *testin
 		BrowserResourceGuidance: "previous host sizing",
 	}
 	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, previous)
-	if got.Runtime != "" || got.Isolation != "" || got.Model != "" || got.CPUs != 0 || got.MemoryMB != 0 || got.CredentialRef != "" ||
+	if got.Runtime != "" || got.Isolation != "" || got.Model != "" || got.SmallModel != "" || got.CPUs != 0 || got.MemoryMB != 0 || got.CredentialRef != "" ||
 		got.GitHubWorkflow || got.GitHubRemote.Repo != "" || len(got.MCPConnectors) != 0 || got.MCPsSet ||
 		len(got.Skills) != 0 || got.SkillsSet || got.SkillsLocalOnly || got.SkillsLocalOnlySet || got.BrowserResourceGuidance != "" {
 		t.Fatalf("answers from previous project leaked into unconfigured root: %+v", got)
@@ -956,9 +956,10 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{
 			Root: root, Isolation: "backend", CPUs: 4, MemoryMB: 2048,
-			Replace: true, Yes: true,
+			SmallModel: "ministral-3-8b-instruct-2512",
+			Replace:    true, Yes: true,
 			MCPConnectors: []string{"chrome-devtools", "data-gouv"},
-			Set:           map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true, "mcps": true},
+			Set:           map[string]bool{"root": true, "isolation": true, "small-model": true, "cpus": true, "memory-mb": true, "mcps": true},
 		}, bufio.NewReader(strings.NewReader("")), false)
 		if code != 0 || err != nil {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
@@ -971,7 +972,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the manifest must be written and readable: %v", err)
 	}
-	if pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.Isolation != string(justcode.IsolationBackend) {
+	if pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.Isolation != string(justcode.IsolationBackend) || pm.SmallModel != justcode.MinistralSmallModelRef {
 		t.Fatalf("manifest = %+v", pm)
 	}
 	if strings.Join(pm.MCPConnectors, ",") != "chrome-devtools,data-gouv" {
@@ -1377,8 +1378,9 @@ func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 		"", "projet", "chrome-devtools", "n", // skills, storage, MCPs, GitHub
 		"advanced",
 		"microsandbox", "backend", "3", "2048", // runtime, isolation, cpus, memory
-		"qwen3-coder", // main-model override
-		"",            // apply
+		"qwen3-coder",                  // main-model override
+		"ministral-3-8b-instruct-2512", // distinct small model
+		"",                             // apply
 	}, "\n") + "\n"
 	code, err := initRun(initOptions{Root: root, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	if code != 0 || err != nil {
@@ -1391,7 +1393,7 @@ func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
 		t.Fatalf("the advanced settings must reach the manifest: %+v", manifest)
 	}
-	if manifest.Model != "albert/qwen3-coder" || manifest.CredentialRef != "" {
+	if manifest.Model != "albert/qwen3-coder" || manifest.SmallModel != justcode.MinistralSmallModelRef || manifest.CredentialRef != "" {
 		t.Fatalf("main model must be configurable; credential reference remains CLI-only: %+v", manifest)
 	}
 }
@@ -1426,8 +1428,8 @@ func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
 				return "", nil
 			})
 			opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
-			// Repair runtime, isolation, CPUs, memory and model, then apply.
-			input := "microsandbox\n\n2\n4G\ndéfaut\ny\n"
+			// Repair runtime, isolation, CPUs, memory, main model and small model, then apply.
+			input := "microsandbox\n\n2\n4G\ndéfaut\n\ny\n"
 			code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
 			if err != nil || code != 0 {
 				t.Fatalf("inherited %s cannot be repaired: code=%d, %v", kind, code, err)
@@ -1481,8 +1483,8 @@ func TestInitAdvancedLineWarnsOnSharedFolderRuntime(t *testing.T) {
 	}
 	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
 	// root, GitHub, skills, MCPs, storage, review=advanced, runtime=tart,
-	// isolation, cpus, memory, review=apply.
-	input := strings.Join([]string{root, "", "", "", "", "n", "advanced", "tart", "", "", "", "", ""}, "\n") + "\n"
+	// isolation, cpus, memory, model, small model, review=apply.
+	input := strings.Join([]string{root, "", "", "", "", "n", "advanced", "tart", "", "", "", "", "", ""}, "\n") + "\n"
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -2065,9 +2067,9 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	stubProjectSkills(t)
 	root := initTestProject(t)
 	// confirm, GitHub, skills, no-skill confirmation, storage, MCPs, review=advanced, runtime,
-	// isolation(backend), cpus, memory, review=apply. The expert settings
-	// live behind the review's "advanced" entry since #170.
-	input := "\n\n\n\n\n\nadvanced\n\nbackend\n\n\n\n\n"
+	// isolation(backend), cpus, memory, main model, small model, review=apply.
+	// The expert settings live behind the review's "advanced" entry since #170.
+	input := "\n\n\n\n\n\nadvanced\n\nbackend\n\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.
@@ -2378,9 +2380,9 @@ func TestInitReopensGitHubAfterAdvancedEdit(t *testing.T) {
 		return justcode.GitHubProjectStatus{Remote: justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, HasOrigin: true, HasToken: true, Login: "owner", Rights: rights}
 	}
 	approveGitHubForProjectFn = func(string) error { t.Fatal("revoked credential must not be approved"); return nil }
-	// GitHub yes, advanced, runtime, isolation, CPU=3, memory, model,
+	// GitHub yes, advanced, runtime, isolation, CPU=3, memory, model, small model,
 	// reopened GitHub without approval, then apply.
-	input := "o\nadvanced\n\n\n3\n\n\nc\ny\n"
+	input := "o\nadvanced\n\n\n3\n\n\n\nc\ny\n"
 	opts := initOptions{Root: root, Set: map[string]bool{"root": true, "skills": true, "skills-storage": true, "mcps": true}}
 	code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
 	if err != nil || code != 0 {

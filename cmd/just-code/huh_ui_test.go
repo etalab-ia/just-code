@@ -281,7 +281,7 @@ func TestAskInitAdvancedHuhSubmitKeepsDefaults(t *testing.T) {
 	runInitAdvancedForm = func(form *huh.Form) (bool, error) {
 		picker := form.GetFocusedField().(*huh.Select[string])
 		picker.Focus()
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 6; i++ {
 			picker.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		}
 		picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -437,6 +437,74 @@ func TestInitAdvancedModelEditSurvivesEscape(t *testing.T) {
 	after, err := askInitAdvancedHuh(opts, justcode.InitAnswers{Root: "/tmp/example"})
 	if err != nil || after.Model != "albert/qwen3-coder" {
 		t.Fatalf("model edit lost: %+v, %v", after, err)
+	}
+}
+
+func TestInitSmallModelSelectorOffersMinistralAndInheritance(t *testing.T) {
+	value := ""
+	content := newInitSmallModelSelect("project", &value).View()
+	for _, want := range []string{"Ministral 3 8B", "Même modèle que le modèle principal", "titres de session"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("small-model selector missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestInitAdvancedSmallModelSelectionAndReset(t *testing.T) {
+	originalRun, originalInstall := runInitAdvancedForm, runtimeInstallHintFn
+	t.Cleanup(func() { runInitAdvancedForm, runtimeInstallHintFn = originalRun, originalInstall })
+	runtimeInstallHintFn = func(justcode.Runtime) (bool, string) { return true, "" }
+	stubCatalogueCheck(t, func(root, model string) (string, error) {
+		if root != "/tmp/example" || model != justcode.MinistralSmallModelRef {
+			t.Fatalf("unexpected small-model validation: %q, %q", root, model)
+		}
+		return "", nil
+	})
+	for _, tc := range []struct {
+		name   string
+		before string
+		after  string
+		down   int
+	}{
+		{name: "select Ministral", before: "", after: justcode.MinistralSmallModelRef, down: 1},
+		{name: "restore main-model inheritance", before: justcode.MinistralSmallModelRef, after: "", down: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			runInitAdvancedForm = func(form *huh.Form) (bool, error) {
+				calls++
+				field := form.GetFocusedField()
+				field.Focus()
+				switch calls {
+				case 1:
+					for i := 0; i < 5; i++ {
+						field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+					}
+					field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+				case 2:
+					if _, ok := field.(*huh.Select[string]); !ok {
+						t.Fatalf("expected small-model selector, got %T", field)
+					}
+					for i := 0; i < tc.down; i++ {
+						field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+					}
+					for i := 0; i > tc.down; i-- {
+						field.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+					}
+					field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+				case 3:
+					return true, nil
+				default:
+					t.Fatal("advanced screen failed to return after small-model edit")
+				}
+				return false, nil
+			}
+			before := justcode.InitAnswers{Root: "/tmp/example", Model: "albert/qwen3-coder", SmallModel: tc.before}
+			after, err := askInitAdvancedHuh(initOptions{hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384}, before)
+			if err != nil || after.SmallModel != tc.after || after.Model != before.Model {
+				t.Fatalf("small-model edit = %+v, want %q, err=%v", after, tc.after, err)
+			}
+		})
 	}
 }
 

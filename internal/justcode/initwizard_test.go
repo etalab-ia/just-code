@@ -314,6 +314,9 @@ func TestInitPlanValidatesTheModel(t *testing.T) {
 	if _, err := rejected.Plan(InitAnswers{Root: root, Model: "albert/gone"}); err == nil {
 		t.Fatal("a rejected model must stop the setup: the answer has to change")
 	}
+	if _, err := rejected.Plan(InitAnswers{Root: root, SmallModel: MinistralSmallModelRef}); err == nil || !strings.Contains(err.Error(), "validate small model") {
+		t.Fatalf("a rejected small model must be identified and rejected: %v", err)
+	}
 
 	// An unreachable catalogue is a warning, not a refusal: the model is still
 	// recorded and the user can correct it later.
@@ -340,10 +343,32 @@ func TestInitPlanValidatesTheModel(t *testing.T) {
 	}
 }
 
+func TestInitPlanAndReviewDistinctSmallModel(t *testing.T) {
+	root := initTestRoot(t)
+	var validated []string
+	plan, err := (InitWizard{ValidateModel: func(model string) (string, error) {
+		validated = append(validated, model)
+		return "", nil
+	}}).Plan(InitAnswers{Root: root, Model: "albert/qwen3-coder", SmallModel: MinistralSmallModelRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(validated) != 2 || validated[0] != "albert/qwen3-coder" || validated[1] != MinistralSmallModelRef {
+		t.Fatalf("main and small model must each be validated: %v", validated)
+	}
+	if !strings.Contains(FormatInitReview(plan), "small model  "+MinistralSmallModelRef) {
+		t.Fatal("non-interactive review must distinguish the small model")
+	}
+	review := FormatInteractiveInitReview(plan)
+	if !strings.Contains(review, "Petit modèle Ministral 3 8B") {
+		t.Fatalf("interactive review must name the distinct small model:\n%s", review)
+	}
+}
+
 func TestInitApplyWritesManifestAndLock(t *testing.T) {
 	root := initTestRoot(t)
 	plan, err := (InitWizard{}).Plan(InitAnswers{
-		Root: root, Model: "albert/deepseek-v4-flash",
+		Root: root, Model: "albert/deepseek-v4-flash", SmallModel: MinistralSmallModelRef,
 		CPUs: 4, MemoryMB: 8192, CredentialRef: "work",
 	})
 	if err != nil {
@@ -357,7 +382,7 @@ func TestInitApplyWritesManifestAndLock(t *testing.T) {
 		t.Fatalf("the manifest must be readable by the normal reader: %v", err)
 	}
 	if pm.Runtime != string(RuntimeMicrosandbox) || pm.Isolation != string(IsolationFull) ||
-		pm.Model != "albert/deepseek-v4-flash" || pm.CPUs != 4 || pm.MemoryMB != 8192 ||
+		pm.Model != "albert/deepseek-v4-flash" || pm.SmallModel != MinistralSmallModelRef || pm.CPUs != 4 || pm.MemoryMB != 8192 ||
 		pm.CredentialRef != "work" {
 		t.Fatalf("manifest = %+v", pm)
 	}

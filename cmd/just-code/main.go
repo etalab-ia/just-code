@@ -52,7 +52,7 @@ func run(args []string) (int, error) {
 			MTU:      argOr(args, 3, ""),
 			// The model selection (P10) is non-secret managed configuration
 			// and rides argv; secrets never do.
-			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled, MCPConnectors: mcps},
+			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), SmallModel: overlay.SmallModel, Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled, MCPConnectors: mcps},
 			// The git identity (P11) rides argv the same way: the guest
 			// cannot read the host settings file.
 			GitName:  argOr(args, 6, ""),
@@ -80,7 +80,7 @@ func run(args []string) (int, error) {
 		// The model selection (P10) is the one managed field the in-guest
 		// secrets file must reflect; argv carries no secrets, and the
 		// overlay is non-secret configuration.
-		guestOverlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled, MCPConnectors: mcps}
+		guestOverlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), SmallModel: overlay.SmallModel, Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled, MCPConnectors: mcps}
 		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: guestOverlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
@@ -249,6 +249,7 @@ func run(args []string) (int, error) {
 		fmt.Fprintf(os.Stderr, "Warning: the project's managed MCP selection cannot be read (%v); continuing without it\n", mcpErr)
 	}
 	modelSelection := resolveModelSelection(projectRoot)
+	smallModelSelection := resolveSmallModelSelection(projectRoot)
 	providerSettings, providerErr := resolveProviderSettings()
 	if providerErr != nil {
 		if isLaunchAction(parsed.action) {
@@ -266,12 +267,13 @@ func run(args []string) (int, error) {
 	}
 	var albertModels []justcode.AlbertModelConfig
 	if providersContain(cfg.Providers, justcode.ProviderAlbert) {
-		albertModels = resolveEnabledAlbertModels(modelSelection)
+		albertModels = resolveEnabledAlbertModels(modelSelection, smallModelSelection)
 	}
 	overlay := justcode.ManagedOverlay{
 		Model:         modelSelection,
+		SmallModel:    smallModelSelection,
 		Models:        albertModels,
-		Providers:     resolveProviderOverlays(cfg.Providers, modelSelection),
+		Providers:     resolveProviderOverlays(cfg.Providers, modelSelection, smallModelSelection),
 		AlbertEnabled: providersContain(cfg.Providers, justcode.ProviderAlbert),
 		MCPConnectors: mcpSelection,
 	}
@@ -785,6 +787,16 @@ func resolveModelSelection(projectRoot string) string {
 	return ""
 }
 
+// resolveSmallModelSelection reads the explicit project-only lightweight
+// model. Empty deliberately leaves the overlay free to follow the effective
+// main model (including JUST_CODE_MODEL) instead of pinning it here.
+func resolveSmallModelSelection(projectRoot string) string {
+	if pm, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(projectRoot)); err == nil && pm.SmallModel != "" {
+		return canonicalAlbertModelRef(pm.SmallModel)
+	}
+	return ""
+}
+
 // resolveProviderSettings reads the connected platforms from the user
 // settings. An empty list means the historical Albert-only configuration,
 // which the engine applies as its default.
@@ -803,7 +815,7 @@ func resolveProviderSettings() ([]justcode.ProviderSettings, error) {
 // resolveProviderOverlays turns the configured platforms into the non-Albert
 // provider blocks of the managed OpenCode config. Albert keeps its curated
 // model definitions in ManagedOverlay.Models.
-func resolveProviderOverlays(providers []justcode.InferenceProvider, activeModel string) []justcode.ProviderOverlay {
+func resolveProviderOverlays(providers []justcode.InferenceProvider, activeModels ...string) []justcode.ProviderOverlay {
 	path, err := justcode.UserSettingsPath()
 	if err != nil {
 		return nil
@@ -812,15 +824,17 @@ func resolveProviderOverlays(providers []justcode.InferenceProvider, activeModel
 	if readErr != nil {
 		return nil
 	}
-	activeKind, activeID := justcode.ProviderModelID(activeModel)
 	var out []justcode.ProviderOverlay
 	for _, provider := range providers {
 		if provider.Kind == justcode.ProviderAlbert {
 			continue
 		}
 		ids := justcode.ProviderModelIDs(us.Models, provider.Kind)
-		if activeModel != "" && activeKind == provider.Kind && activeID != "" && !containsString(ids, activeID) {
-			ids = append(ids, activeID)
+		for _, activeModel := range activeModels {
+			activeKind, activeID := justcode.ProviderModelID(activeModel)
+			if activeModel != "" && activeKind == provider.Kind && activeID != "" && !containsString(ids, activeID) {
+				ids = append(ids, activeID)
+			}
 		}
 		if len(ids) == 0 {
 			continue
@@ -863,8 +877,10 @@ func canonicalAlbertModelID(id string) string {
 	return id
 }
 
-func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig {
-	activeModel = canonicalAlbertModelRef(activeModel)
+func resolveEnabledAlbertModels(activeModels ...string) []justcode.AlbertModelConfig {
+	for i, activeModel := range activeModels {
+		activeModels[i] = canonicalAlbertModelRef(activeModel)
+	}
 	path, err := justcode.UserSettingsPath()
 	var ids []string
 	if err == nil {
@@ -875,7 +891,13 @@ func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig
 		}
 	}
 	if len(ids) == 0 {
-		if activeModel == "" || activeModel == "albert/qwen3-coder" {
+		embeddedOnly := true
+		for _, activeModel := range activeModels {
+			if activeModel != "" && activeModel != "albert/qwen3-coder" {
+				embeddedOnly = false
+			}
+		}
+		if embeddedOnly {
 			return nil
 		}
 		for _, choice := range justcode.CuratedAlbertModels() {
@@ -899,7 +921,10 @@ func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig
 			configured = append(configured, justcode.AlbertModelConfig{ID: id, Name: id})
 		}
 	}
-	if strings.HasPrefix(activeModel, "albert/") {
+	for _, activeModel := range activeModels {
+		if !strings.HasPrefix(activeModel, "albert/") {
+			continue
+		}
 		activeID := strings.TrimPrefix(activeModel, "albert/")
 		activeConfigured := false
 		for _, choice := range choices {

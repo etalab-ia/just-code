@@ -44,8 +44,14 @@ func CuratedAlbertModels() []AlbertModelChoice {
 		{ID: "deepseek-ai/DeepSeek-V4-Flash-0731", OpenCodeID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Description: "spécialisé code, raisonnement", Context: 131072, Output: 65536, Default: true, ToolChoiceAuto: true},
 		{ID: "openai/gpt-oss-120b", OpenCodeID: "gpt-oss-120b", Name: "gpt-oss 120b", Description: "généraliste, pour les tâches complexes", Context: 131072},
 		{ID: "google/gemma-4-31B-it", OpenCodeID: "gemma-4", Name: "Gemma 4", Description: "tâches modérées, sait lire des images", Context: 262144, Vision: true},
+		{ID: "ministral-3-8b-instruct-2512", OpenCodeID: "ministral-3-8b", Name: "Ministral 3 8B", Description: "petit modèle généraliste, adapté aux titres de session", Context: 262144, Vision: true},
 	}
 }
+
+// MinistralSmallModelRef is the curated lightweight model offered by project
+// init. An empty project small-model setting still means "follow the main
+// model"; selecting this reference is the explicit lightweight alternative.
+const MinistralSmallModelRef = "albert/ministral-3-8b"
 
 // AlbertModelConfig builds the OpenCode provider definition for a curated
 // choice, mapping its stable OpenCode ID to the API's model ID.
@@ -84,12 +90,20 @@ type Catalogue struct {
 	Models []CatalogueModel
 }
 
-// TextGenerationModels lists the usable (text-generation) models, sorted by
-// id. Embeddings, rerankers, OCR and image models are not selectable.
+// TextGenerationModels lists the usable chat models, sorted by id. Albert
+// exposes some multimodal chat models as image-text-to-text, but that type
+// also covers OCR-only models. Admit only curated multimodal chat entries:
+// embeddings, rerankers and OCR models are never selectable.
 func (c Catalogue) TextGenerationModels() []CatalogueModel {
+	curatedVision := make(map[string]bool)
+	for _, choice := range CuratedAlbertModels() {
+		if choice.Vision {
+			curatedVision[choice.ID] = true
+		}
+	}
 	var out []CatalogueModel
 	for _, m := range c.Models {
-		if m.Type == "text-generation" {
+		if m.Type == "text-generation" || (m.Type == "image-text-to-text" && curatedVision[m.ID]) {
 			out = append(out, m)
 		}
 	}
