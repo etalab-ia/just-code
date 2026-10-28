@@ -46,6 +46,30 @@ func TestStatsOffClearsTheQueueAndDisablesSending(t *testing.T) {
 	}
 }
 
+func TestStatsOffInvalidatesAPendingJournalConsent(t *testing.T) {
+	stateDir, settingsPath := statsTestPaths(t)
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		StatsEnabled: true, StatsConsentAsked: true,
+	}
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteStatsConsent(justcode.DefaultFS, settingsPath, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := statsCmd([]string{"off"}); code != 0 || err != nil {
+		t.Fatalf("stats off: code=%d err=%v", code, err)
+	}
+	after, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.StatsEnabled {
+		t.Fatal("a pending journal must not resurrect a withdrawn consent")
+	}
+}
+
 func TestStatsShowPrintsExactlyTheQueuedPayload(t *testing.T) {
 	stateDir, settingsPath := statsTestPaths(t)
 	if err := justcode.WriteStatsConsent(justcode.DefaultFS, settingsPath, true, true); err != nil {

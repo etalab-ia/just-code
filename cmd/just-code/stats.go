@@ -47,6 +47,12 @@ func statsCmd(args []string) (int, error) {
 		if err := justcode.ClearStatsQueue(fs, stateDir); err != nil {
 			return 1, err
 		}
+		// Invalidate a pending setup decision too: resuming an interrupted
+		// wizard must not resurrect a consent the user just withdrew.
+		if j, err := justcode.ReadSetupJournal(fs, stateDir); err == nil && j.StatsEnabled {
+			j.StatsEnabled = false
+			_ = justcode.WriteSetupJournal(fs, stateDir, j)
+		}
 		fmt.Println("Statistiques d'usage : non partagées. Aucun envoi ne sera effectué.")
 		return 0, nil
 	case "show":

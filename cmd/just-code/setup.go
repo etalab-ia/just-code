@@ -655,8 +655,13 @@ setupStages:
 	statsEnabled, statsAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty())
 	if j.StatsConsentAsked {
 		// A run interrupted after answering but before applying keeps its
-		// decision in the journal: resume restores it instead of asking again.
-		statsEnabled, statsAsked = j.StatsEnabled, true
+		// decision in the journal. A durable refusal written since (stats off)
+		// always wins over the pending journal decision.
+		if statsAsked && !statsEnabled {
+			j.StatsEnabled = false
+		} else {
+			statsEnabled, statsAsked = j.StatsEnabled, true
+		}
 	}
 	if !statsAsked || editing {
 		answer, answered, err := setupStatsConsent(in)
