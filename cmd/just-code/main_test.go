@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -143,6 +146,38 @@ func TestResolveSmallModelSelectionAndComposedOpenCodeConfig(t *testing.T) {
 	}
 	if !strings.Contains(content, `"ministral-3-8b"`) {
 		t.Fatalf("Ministral provider definition missing from launch config: %s", content)
+	}
+}
+
+func TestModelsListAcceptsCuratedSmallModelAPIReference(t *testing.T) {
+	setupTestEnv(t)
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("ALBERT_API_KEY", "test-albert-key")
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		SmallModel: "ministral-3-8b-instruct-2512",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"ministral-3-8b-instruct-2512","type":"image-text-to-text","max_context_length":262144,"aliases":["openweight-small"]}]}`))
+	}))
+	defer server.Close()
+	originalFetch := catalogueModelFetchFn
+	catalogueModelFetchFn = func(ctx context.Context, client *http.Client, apiKey, _ string) (justcode.Catalogue, error) {
+		return justcode.FetchCatalogue(ctx, client, apiKey, server.URL)
+	}
+	t.Cleanup(func() { catalogueModelFetchFn = originalFetch })
+	var err error
+	stderr := captureStderr(t, func() {
+		err = modelsListProvider(context.Background(), justcode.InferenceProvider{Kind: justcode.ProviderAlbert, Name: "Albert API"}, justcode.UserSettings{}, "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr, "small model") || strings.Contains(stderr, "may have been removed") {
+		t.Fatalf("valid small model reported as removed: %s", stderr)
 	}
 }
 

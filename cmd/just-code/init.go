@@ -1821,8 +1821,12 @@ var catalogueModelWarningFn = catalogueModelWarningForRoot
 // chat-type validation under test rather than stubbing the whole validator.
 var catalogueModelFetchFn = justcode.FetchCatalogue
 
+// catalogueModelAPIKeyFn seals the credential dependency when testing the
+// real validator without consulting a host keychain.
+var catalogueModelAPIKeyFn = resolveAlbertKeyForCatalogueAt
+
 func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
-	apiKey, err := resolveAlbertKeyForCatalogueAt(projectRoot)
+	apiKey, err := catalogueModelAPIKeyFn(projectRoot)
 	if err != nil {
 		return "le modèle a été enregistré sans vérification : aucun identifiant Albert ne permet de consulter le catalogue", nil
 	}

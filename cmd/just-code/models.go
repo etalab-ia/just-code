@@ -62,7 +62,7 @@ func modelsListProvider(ctx context.Context, provider justcode.InferenceProvider
 			FS:  justcode.DefaultFS,
 			Dir: justcode.DefaultStateDir(),
 			Fetch: func(ctx context.Context) (justcode.Catalogue, error) {
-				return justcode.FetchCatalogue(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
+				return catalogueModelFetchFn(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
 			},
 		}
 		catalogue, fresh, loadErr := cache.Load(ctx)
@@ -85,7 +85,7 @@ func modelsListProvider(ctx context.Context, provider justcode.InferenceProvider
 		if small := resolveSmallModelSelection("."); small != "" {
 			kind, _ := justcode.ProviderModelID(small)
 			if kind == justcode.ProviderAlbert {
-				if _, ok := catalogue.Find(small); !ok && len(models) > 0 {
+				if _, ok := catalogue.Find(canonicalAlbertModelID(small)); !ok && len(models) > 0 {
 					fmt.Fprintf(os.Stderr, "Warning: the selected small model %q is not in the Albert catalogue; it may have been removed.\n", small)
 				}
 			}

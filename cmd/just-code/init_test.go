@@ -1453,12 +1453,15 @@ func TestCatalogueValidationAcceptsMinistralAndRejectsOCR(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"ministral-3-8b-instruct-2512","type":"image-text-to-text","max_context_length":262144,"aliases":["openweight-small"]},{"id":"lightonocr-2-1b","type":"image-text-to-text","max_context_length":16384,"aliases":[]}]}`))
 	}))
 	defer server.Close()
-	t.Setenv("ALBERT_API_KEY", "test-albert-key")
-	originalFetch := catalogueModelFetchFn
+	setupTestEnv(t)
+	originalKey, originalFetch := catalogueModelAPIKeyFn, catalogueModelFetchFn
+	catalogueModelAPIKeyFn = func(string) (string, error) { return "test-albert-key", nil }
 	catalogueModelFetchFn = func(ctx context.Context, client *http.Client, apiKey, _ string) (justcode.Catalogue, error) {
 		return justcode.FetchCatalogue(ctx, client, apiKey, server.URL)
 	}
-	t.Cleanup(func() { catalogueModelFetchFn = originalFetch })
+	t.Cleanup(func() {
+		catalogueModelAPIKeyFn, catalogueModelFetchFn = originalKey, originalFetch
+	})
 	for _, tc := range []struct {
 		model string
 		valid bool
