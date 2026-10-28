@@ -237,6 +237,27 @@ func TestBackendArgsExcludeSecrets(t *testing.T) {
 	}
 }
 
+func TestGuestOverlayPreservesSmallModel(t *testing.T) {
+	encoded, err := encodeGuestOverlay(ManagedOverlay{SmallModel: MinistralSmallModelRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeGuestOverlay(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.SmallModel != MinistralSmallModelRef {
+		t.Fatalf("guest small model = %q, want %q", decoded.SmallModel, MinistralSmallModelRef)
+	}
+	content, err := ComposeConfigContent(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, `"small_model":"`+MinistralSmallModelRef+`"`) {
+		t.Fatalf("guest OpenCode config lost small_model: %s", content)
+	}
+}
+
 func TestGuestMCPArgumentPositions(t *testing.T) {
 	bootstrap := guestBootstrapArgs("4096", "opencode", "1280", "albert/model", `[]`, "Luis", "luis@example.test", []string{"context7", "data-gouv"})
 	if got := bootstrap[GuestBootstrapModelsArgIndex]; got != `[]` {

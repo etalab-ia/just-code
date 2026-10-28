@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -104,6 +107,95 @@ func TestResolveModelSelectionCanonicalizesLegacyAlbertReference(t *testing.T) {
 	t.Setenv("JUST_CODE_MODEL", "albert/"+choice.ID)
 	if got := resolveModelSelection(t.TempDir()); got != choice.Ref() {
 		t.Fatalf("legacy model reference = %q, want canonical %q", got, choice.Ref())
+	}
+}
+
+func TestResolveSmallModelSelectionAndComposedOpenCodeConfig(t *testing.T) {
+	setupTestEnv(t)
+	root := t.TempDir()
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		Model: "albert/qwen3-coder", SmallModel: "ministral-3-8b-instruct-2512",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveSmallModelSelection(root); got != justcode.MinistralSmallModelRef {
+		t.Fatalf("small-model reference = %q", got)
+	}
+	models := resolveEnabledAlbertModels(resolveModelSelection(root), justcode.MinistralSmallModelRef)
+	var minimistral *justcode.AlbertModelConfig
+	for i := range models {
+		if models[i].ID == "ministral-3-8b" {
+			minimistral = &models[i]
+		}
+	}
+	if minimistral == nil || minimistral.ModelID != "ministral-3-8b-instruct-2512" {
+		t.Fatalf("Ministral must be available even without global selection: %+v", models)
+	}
+	content, err := justcode.ComposeConfigContent(justcode.ManagedOverlay{
+		Model: resolveModelSelection(root), SmallModel: resolveSmallModelSelection(root), Models: models,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["small_model"] != justcode.MinistralSmallModelRef {
+		t.Fatalf("small_model = %v", config["small_model"])
+	}
+	if !strings.Contains(content, `"ministral-3-8b"`) {
+		t.Fatalf("Ministral provider definition missing from launch config: %s", content)
+	}
+}
+
+func TestModelsListAcceptsCuratedSmallModelAPIReference(t *testing.T) {
+	setupTestEnv(t)
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("ALBERT_API_KEY", "test-albert-key")
+	if err := justcode.WriteProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root), justcode.ProjectManifest{
+		SmallModel: "ministral-3-8b-instruct-2512",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"ministral-3-8b-instruct-2512","type":"image-text-to-text","max_context_length":262144,"aliases":["openweight-small"]}]}`))
+	}))
+	defer server.Close()
+	originalFetch := catalogueModelFetchFn
+	catalogueModelFetchFn = func(ctx context.Context, client *http.Client, apiKey, _ string) (justcode.Catalogue, error) {
+		return justcode.FetchCatalogue(ctx, client, apiKey, server.URL)
+	}
+	t.Cleanup(func() { catalogueModelFetchFn = originalFetch })
+	var err error
+	stderr := captureStderr(t, func() {
+		err = modelsListProvider(context.Background(), justcode.InferenceProvider{Kind: justcode.ProviderAlbert, Name: "Albert API"}, justcode.UserSettings{}, "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr, "small model") || strings.Contains(stderr, "may have been removed") {
+		t.Fatalf("valid small model reported as removed: %s", stderr)
+	}
+}
+
+func TestResolveSmallModelDefaultsToMainModel(t *testing.T) {
+	root := t.TempDir()
+	if got := resolveSmallModelSelection(root); got != "" {
+		t.Fatalf("no explicit small model expected, got %q", got)
+	}
+	content, err := justcode.ComposeConfigContent(justcode.ManagedOverlay{Model: "albert/gpt-oss-120b", SmallModel: resolveSmallModelSelection(root)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["small_model"] != config["model"] {
+		t.Fatalf("small model must inherit main-model changes: %v", config)
 	}
 }
 

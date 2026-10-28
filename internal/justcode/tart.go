@@ -332,11 +332,12 @@ type guestOverlayWire struct {
 	Models        []AlbertModelConfig `json:"models"`
 	Providers     []ProviderOverlay   `json:"providers,omitempty"`
 	AlbertEnabled bool                `json:"albertEnabled,omitempty"`
+	SmallModel    string              `json:"smallModel,omitempty"`
 }
 
 // encodeGuestOverlay serialises the managed overlay for the guest helpers.
 func encodeGuestOverlay(overlay ManagedOverlay) (string, error) {
-	data, err := json.Marshal(guestOverlayWire{Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled})
+	data, err := json.Marshal(guestOverlayWire{Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled, SmallModel: overlay.SmallModel})
 	if err != nil {
 		return "", fmt.Errorf("encode guest model configuration: %w", err)
 	}
@@ -373,7 +374,7 @@ func DecodeGuestOverlay(raw string) (ManagedOverlay, error) {
 			return ManagedOverlay{}, fmt.Errorf("provider kind, base URL and API key variable must be non-empty")
 		}
 	}
-	return ManagedOverlay{Models: wire.Models, Providers: wire.Providers, AlbertEnabled: wire.AlbertEnabled}, nil
+	return ManagedOverlay{Models: wire.Models, Providers: wire.Providers, AlbertEnabled: wire.AlbertEnabled, SmallModel: wire.SmallModel}, nil
 }
 
 func validateGuestModels(models []AlbertModelConfig) error {

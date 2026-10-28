@@ -195,8 +195,8 @@ P10 applique les décisions de ce document :
   refusent tant qu'une entrée est non approuvée — les commandes en lecture
   seule (`stop`, `check`, `logs`, `shell`) ne sont pas bloquées.
 - **Catalogue.** `just-code models` valide contre
-  `https://albert.api.etalab.gouv.fr/v1/models` (seuls les `text-generation`
-  sont listables) ; un échec réseau retombe sur le dernier-known-good
+  `https://albert.api.etalab.gouv.fr/v1/models` (les `text-generation` et les
+  modèles de chat multimodaux connus sont listables, sans les modèles OCR) ; un échec réseau retombe sur le dernier-known-good
   (`catalogue.json` en état hôte). Les limites viennent de l'entrée du
   catalogue uniquement — un identifiant absent n'a pas de limites
   fabriquées — et une sélection introuvable est signalée, jamais effacée.

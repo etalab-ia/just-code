@@ -207,7 +207,7 @@ func retainedSkillOptions(options []huh.Option[string], selected []string) []huh
 }
 
 func initSkillsStepPrefix(opts initOptions) string {
-	for _, field := range []string{"root", "runtime", "isolation", "model", "cpus", "memory-mb", "credential-ref", "github"} {
+	for _, field := range []string{"root", "runtime", "isolation", "model", "small-model", "cpus", "memory-mb", "credential-ref", "github"} {
 		if opts.Set[field] {
 			return ""
 		}
@@ -448,6 +448,60 @@ func initModelDisplayName(model string) string {
 	return id
 }
 
+func initSmallModelDisplayName(answers justcode.InitAnswers) string {
+	if answers.SmallModel != "" {
+		return initModelDisplayName(answers.SmallModel)
+	}
+	return "même modèle que le modèle principal (" + initModelDisplayName(answers.Model) + ")"
+}
+
+func newInitSmallModelSelect(root string, value *string) *huh.Select[string] {
+	options := []huh.Option[string]{
+		huh.NewOption("Même modèle que le modèle principal (défaut)", ""),
+		huh.NewOption("Ministral 3 8B — petit modèle généraliste", justcode.MinistralSmallModelRef),
+	}
+	if *value != "" && *value != justcode.MinistralSmallModelRef {
+		options = append(options, huh.NewOption(initModelDisplayName(*value)+" (déjà configuré)", *value))
+	}
+	return huh.NewSelect[string]().
+		Title("Petit modèle").
+		Description("Utilisé pour générer les titres de session. Le choix par défaut suit toujours le modèle principal. Ministral nécessite une connexion à Albert API.").
+		Options(options...).
+		Validate(func(s string) error { _, err := validateInitSmallModelInput(root, s); return err }).
+		Value(value)
+}
+
+var initAlbertConnectedFn = func() (bool, error) {
+	settings, err := resolveProviderSettings()
+	if err != nil {
+		return false, err
+	}
+	providers, err := justcode.ResolveProviders(settings)
+	if err != nil {
+		return false, err
+	}
+	return providersContain(providers, justcode.ProviderAlbert), nil
+}
+
+// validateInitSmallModelInput requires Albert for the curated Albert-only
+// model. Empty remains valid with every provider: it follows the main model.
+func validateInitSmallModelInput(root, value string) (string, error) {
+	model := normalizeInitModelInput(value)
+	if model == "" {
+		return "", nil
+	}
+	if model == justcode.MinistralSmallModelRef {
+		connected, err := initAlbertConnectedFn()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine whether Albert API is connected: %w", err)
+		}
+		if !connected {
+			return "", fmt.Errorf("Ministral 3 8B requires Albert API to be connected; run 'just-code setup' to connect it, or keep the main model")
+		}
+	}
+	return catalogueModelWarningFn(root, model)
+}
+
 // runtimeInstallHintFn is the seam the advanced settings screen uses to flag
 // a chosen runtime that is not installed on this host. Tests stub it so the
 // check never depends on the machine running the test.
@@ -459,6 +513,7 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 	choice := "runtime"
 	notices := make(map[justcode.Runtime]string)
 	modelWarning := ""
+	smallModelWarning := ""
 	for {
 		rt := effectiveInitRuntime(answers)
 		notice, checked := notices[rt]
@@ -488,16 +543,20 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 		if !opts.Set["model"] {
 			options = append(options, huh.NewOption("Modèle principal : "+initModelDisplayName(answers.Model), "model"))
 		}
+		if !opts.Set["small-model"] {
+			options = append(options, huh.NewOption("Petit modèle : "+initSmallModelDisplayName(answers), "small-model"))
+		}
 		options = append(options, huh.NewOption("Revenir au récapitulatif", "back"))
 		if len(options) == 1 {
 			choice = "back"
 		}
 		description := "Ces valeurs conviennent à la plupart des projets. Modifiez-les seulement si besoin.\n\n" +
 			"Agent (harnais) : OpenCode (recommandé). Pi n'est pas encore pris en charge.\n" +
-			"Petit modèle : même modèle que le modèle principal ; sert aux titres et aux résumés de session.\n" +
+			"Petit modèle : sert aux titres de session.\n" +
 			"Défauts : Microsandbox, isolation complète, 2 processeurs, 4 Go.\n" +
 			"6 Go conseillés avec chrome-devtools.\n\n" + notice +
 			"\n" + modelWarning +
+			"\n" + smallModelWarning +
 			"\n\n↑ ↓ : choisir un réglage. Entrée : modifier. Échap : revenir au récapitulatif."
 		back, err := runInitAdvancedForm(huh.NewForm(huh.NewGroup(
 			huh.NewSelect[string]().Title("Réglages avancés").Description(description).
@@ -546,6 +605,9 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 			field = huh.NewInput().Title("Modèle principal").
 				Description("Identifiant du modèle Albert ('just-code models' liste les modèles). Vide ou 'défaut' reprend le modèle défini dans setup. Échap : annuler cette modification.").
 				Validate(func(s string) error { _, err := validateInitModelInput(answers.Root, s); return err }).Value(&input)
+		case "small-model":
+			input = answers.SmallModel
+			field = newInitSmallModelSelect(answers.Root, &input)
 		default:
 			return answers, fmt.Errorf("unknown advanced setting %q", choice)
 		}
@@ -584,6 +646,13 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 			}
 			answers.Model = normalizeInitModelInput(input)
 			modelWarning = warning
+		case "small-model":
+			warning, err := validateInitSmallModelInput(answers.Root, input)
+			if err != nil {
+				return answers, err
+			}
+			answers.SmallModel = normalizeInitModelInput(input)
+			smallModelWarning = warning
 		}
 	}
 }

@@ -161,6 +161,7 @@ type initOptions struct {
 	Runtime         string
 	Isolation       string
 	Model           string
+	SmallModel      string
 	CPUs            int
 	MemoryMB        int
 	CredentialRef   string
@@ -267,6 +268,12 @@ func parseInitArgs(args []string) (initOptions, error) {
 				return opts, err
 			}
 			opts.Model, opts.Set["model"] = v, true
+		case a == "--small-model":
+			v, err := value()
+			if err != nil {
+				return opts, err
+			}
+			opts.SmallModel, opts.Set["small-model"] = v, true
 		case a == "--credential-ref":
 			v, err := value()
 			if err != nil {
@@ -308,6 +315,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error)
 		Runtime:            justcode.Runtime(opts.Runtime),
 		Isolation:          justcode.Isolation(opts.Isolation),
 		Model:              opts.Model,
+		SmallModel:         normalizeInitModelInput(opts.SmallModel),
 		CPUs:               opts.CPUs,
 		MemoryMB:           opts.MemoryMB,
 		CredentialRef:      opts.CredentialRef,
@@ -338,7 +346,7 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error)
 	// nothing, and in a script it is the most likely thing to be wrong.
 	if !tty && !opts.Set["root"] {
 		return 1, fmt.Errorf("no terminal available: name the project explicitly, e.g. 'just-code init --root <dir> --yes'.\n" +
-			"Every question can be answered by a flag: --runtime, --isolation, --model, --cpus, --memory-mb, --credential-ref, --github, --skill, --clear-skills, --mcp, --clear-mcps, --local-only-skills, --versioned-skills, --replace, --yes")
+			"Every question can be answered by a flag: --runtime, --isolation, --model, --small-model, --cpus, --memory-mb, --credential-ref, --github, --skill, --clear-skills, --mcp, --clear-mcps, --local-only-skills, --versioned-skills, --replace, --yes")
 	}
 	answers = seedInitAnswersFromManifest(opts, answers)
 
@@ -357,6 +365,13 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error)
 				root = pc.Root
 			}
 			return catalogueModelWarningFn(root, model)
+		},
+		ValidateSmallModel: func(model string) (string, error) {
+			root := answers.Root
+			if pc, err := justcode.DiscoverProject(root); err == nil {
+				root = pc.Root
+			}
+			return validateInitSmallModelInput(root, model)
 		},
 	}
 	// Flags are validated before any question: a typo on the command line must
@@ -716,8 +731,14 @@ func invalidInheritedInitSetting(opts initOptions, answers justcode.InitAnswers)
 		return fmt.Errorf("mémoire demandée : %s. Maximum sur ce poste : %s", justcode.FormatMemorySize(answers.MemoryMB), justcode.FormatMemorySize(opts.maxMemoryMB))
 	}
 	if !opts.Set["model"] && strings.TrimSpace(answers.Model) != "" {
-		_, err := validateInitModelInput(answers.Root, answers.Model)
-		return err
+		if _, err := validateInitModelInput(answers.Root, answers.Model); err != nil {
+			return err
+		}
+	}
+	if !opts.Set["small-model"] && strings.TrimSpace(answers.SmallModel) != "" {
+		if _, err := validateInitSmallModelInput(answers.Root, answers.SmallModel); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -756,6 +777,9 @@ func seedInitAnswersFromManifest(opts initOptions, answers justcode.InitAnswers)
 	}
 	if !opts.Set["model"] {
 		answers.Model = ""
+	}
+	if !opts.Set["small-model"] {
+		answers.SmallModel = ""
 	}
 	if !opts.Set["cpus"] {
 		answers.CPUs = 0
@@ -799,6 +823,9 @@ func seedInitAnswersFromManifest(opts initOptions, answers justcode.InitAnswers)
 	}
 	if !opts.Set["model"] {
 		answers.Model = manifest.Model
+	}
+	if !opts.Set["small-model"] {
+		answers.SmallModel = manifest.SmallModel
 	}
 	if !opts.Set["cpus"] {
 		answers.CPUs = manifest.CPUs
@@ -865,6 +892,11 @@ func currentProjectSkillSelection(root string) ([]string, error) {
 // engine validates everything again; this is only about failing early with the
 // message a command-line user expects.
 func validateInitOptions(opts initOptions) error {
+	if opts.Set["small-model"] {
+		if _, err := validateInitSmallModelInput(opts.Root, opts.SmallModel); err != nil {
+			return fmt.Errorf("--small-model: %w", err)
+		}
+	}
 	if opts.Set["skills"] {
 		if err := justcode.ValidateProjectSkillIDs(opts.Skills); err != nil {
 			return err
@@ -1201,7 +1233,7 @@ func askInitAdvancedLine(in *bufio.Reader, opts initOptions, answers justcode.In
 	fmt.Println("Réglages avancés")
 	fmt.Println("Ces valeurs conviennent à la plupart des projets. Modifiez-les seulement si besoin.")
 	fmt.Println("Agent (harnais) : OpenCode (recommandé) — Pi n'est pas encore pris en charge.")
-	fmt.Println("Petit modèle : même modèle que le modèle principal — sert aux titres et aux résumés de session.")
+	fmt.Println("Petit modèle : " + initSmallModelDisplayName(answers) + " — sert à générer les titres de session.")
 
 	if !opts.Set["runtime"] {
 		fmt.Println()
@@ -1341,6 +1373,24 @@ func askInitAdvancedLine(in *bufio.Reader, opts initOptions, answers justcode.In
 				continue
 			}
 			answers.Model = normalizeInitModelInput(answer)
+			if warning != "" {
+				fmt.Println("  " + warning)
+			}
+			break
+		}
+	}
+	if !opts.Set["small-model"] {
+		for {
+			answer, ok := promptLine(in, "  petit modèle ["+initSmallModelDisplayName(answers)+"] ('défaut' suit le modèle principal ; Entrée conserve le choix) : ")
+			if !ok || strings.TrimSpace(answer) == "" {
+				break
+			}
+			warning, err := validateInitSmallModelInput(answers.Root, answer)
+			if err != nil {
+				fmt.Printf("  %s\n", err)
+				continue
+			}
+			answers.SmallModel = normalizeInitModelInput(answer)
 			if warning != "" {
 				fmt.Println("  " + warning)
 			}
@@ -1778,8 +1828,17 @@ func resolvedOrDefault(value, fallback int) int {
 // that silently depends on them fails on the machine that has them.
 var catalogueModelWarningFn = catalogueModelWarningForRoot
 
+// catalogueModelFetchFn is the network seam for the real validator. Tests
+// replace it with an httptest Albert endpoint, leaving alias translation and
+// chat-type validation under test rather than stubbing the whole validator.
+var catalogueModelFetchFn = justcode.FetchCatalogue
+
+// catalogueModelAPIKeyFn seals the credential dependency when testing the
+// real validator without consulting a host keychain.
+var catalogueModelAPIKeyFn = resolveAlbertKeyForCatalogueAt
+
 func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
-	apiKey, err := resolveAlbertKeyForCatalogueAt(projectRoot)
+	apiKey, err := catalogueModelAPIKeyFn(projectRoot)
 	if err != nil {
 		return "le modèle a été enregistré sans vérification : aucun identifiant Albert ne permet de consulter le catalogue", nil
 	}
@@ -1787,17 +1846,28 @@ func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
 		FS:  justcode.DefaultFS,
 		Dir: justcode.DefaultStateDir(),
 		Fetch: func(ctx context.Context) (justcode.Catalogue, error) {
-			return justcode.FetchCatalogue(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
+			return catalogueModelFetchFn(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
 		},
 	}
 	catalogue, _, err := cache.Load(context.Background())
 	if err != nil {
 		return "le modèle a été enregistré sans vérification : le catalogue Albert est injoignable", nil
 	}
-	if _, ok := catalogue.Find(model); !ok {
+	found, ok := catalogue.Find(canonicalAlbertModelID(model))
+	if !ok {
 		// A listed miss is the user's answer being wrong, not a validation
 		// outage: stop so the answer can change.
 		return "", fmt.Errorf("the model %q is not in the Albert catalogue; run 'just-code models' for the valid ids", model)
+	}
+	chat := false
+	for _, candidate := range catalogue.TextGenerationModels() {
+		if candidate.ID == found.ID {
+			chat = true
+			break
+		}
+	}
+	if !chat {
+		return "", fmt.Errorf("the model %q is not a chat model in the Albert catalogue; run 'just-code models' for the valid ids", model)
 	}
 	return "", nil
 }
@@ -1818,6 +1888,9 @@ Options:
   --runtime <name>        microsandbox (default), tart or agent-vm
   --isolation <level>     full (default) or backend
   --model <id>            OpenCode model; empty keeps the built-in default
+  --small-model <id>      Lightweight model for OpenCode titles (for example
+                          ministral-3-8b-instruct-2512); empty or 'default'
+                          follows the main model
   --cpus <n>              guest CPUs (max detected host capacity)
   --memory-mb <size>      guest memory in MiB or GiB (e.g. 4096, 4G, 2.5G; max detected host RAM)
   --credential-ref <ref>  project credential reference (default: the global one)

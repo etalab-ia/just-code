@@ -416,21 +416,36 @@ Le mode `init --yes` conserve la revue détaillée, notamment les révisions et
 empreintes sha256 des skills.
 
 Les réglages avancés couvrent le type de machine isolée, l'isolation, les
-processeurs, la mémoire et le modèle principal. Ces réglages ne sont pas
+processeurs, la mémoire et les modèles. Ces réglages ne sont pas
 demandés dans le parcours par défaut. Chaque
 modification validée est conservée lorsque vous revenez au récapitulatif avec
 Échap. Le modèle principal peut reprendre le défaut de `setup` ou être choisi
 pour ce projet ; `JUST_CODE_MODEL` conserve sa priorité au lancement.
 
-Le petit modèle OpenCode, utilisé notamment pour les titres et les résumés,
-reste identique au modèle principal. Son choix indépendant est suivi dans
-[#275](https://github.com/etalab-ia/just-code/issues/275). OpenCode reste le seul
-harnais pris en charge ; le support de Pi est suivi dans
+Le petit modèle OpenCode sert à générer les titres de session. Sans choix
+explicite, il reste identique au modèle principal, y compris lorsque celui-ci
+change. Les réglages avancés permettent de choisir à la place **Ministral 3
+8B**, qui correspond à `ministral-3-8b-instruct-2512` sur Albert API et à
+`albert/ministral-3-8b` dans la configuration OpenCode. Le choix explicite de
+Ministral exige qu'Albert API soit connectée ; le suivi du modèle principal
+reste disponible avec les autres plateformes. Le récapitulatif
+distingue les deux modèles lorsqu'ils diffèrent.
+
+Le choix est enregistré dans `smallModel` du manifeste projet et transmis à
+`small_model` au lancement. Pour une configuration non interactive :
+
+```bash
+just-code init --root . --small-model ministral-3-8b-instruct-2512 --yes
+```
+
+Utilisez `--small-model default` pour revenir au modèle principal. OpenCode
+reste le seul harnais pris en charge ; le support de Pi est suivi dans
 [#176](https://github.com/etalab-ia/just-code/issues/176). La référence d'identifiant
 Albert n'est plus demandée dans l'assistant ; `--credential-ref` reste disponible.
 
-`just-code models` valide la sélection contre le catalogue Albert
-(`text-generation` uniquement) ; le catalogue en échec réseau retombe sur le
+`just-code models` valide la sélection contre le catalogue Albert. Les modèles
+`text-generation` et les modèles de chat multimodaux connus sont listés, sans
+les modèles spécialisés en OCR ; le catalogue en échec réseau retombe sur le
 dernier-known-good persisté dans l'état hôte. Une sélection absente du
 catalogue est signalée, jamais effacée.
 

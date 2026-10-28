@@ -35,6 +35,9 @@ type InitAnswers struct {
 	Isolation Isolation
 	// Model is the OpenCode model id. Empty keeps the built-in default.
 	Model string
+	// SmallModel is the lightweight model used for titles. Empty follows the
+	// effective main model instead of pinning a duplicate selection.
+	SmallModel string
 	// CPUs and MemoryMB size the guest. Zero means the built-in default.
 	CPUs     int
 	MemoryMB int
@@ -94,6 +97,9 @@ type InitWizard struct {
 	// skips validation; a rejection is an error (the answer must change), an
 	// unreachable catalogue is a warning (the model is still recorded).
 	ValidateModel func(model string) (warning string, err error)
+	// ValidateSmallModel additionally checks that an explicit small model has
+	// a connected provider. Nil uses ValidateModel.
+	ValidateSmallModel func(model string) (warning string, err error)
 	// Print receives the review screen. Nil means stdout.
 	Print func(string)
 	// ResolveSkills pins and caches selected catalogue entries. Nil selects
@@ -370,6 +376,22 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 			warning, err := w.ValidateModel(model)
 			if err != nil {
 				return plan, err
+			}
+			if warning != "" {
+				plan.Warnings = append(plan.Warnings, warning)
+			}
+		}
+	}
+	if model := strings.TrimSpace(answers.SmallModel); model != "" {
+		plan.Answers.SmallModel = model
+		validate := w.ValidateSmallModel
+		if validate == nil {
+			validate = w.ValidateModel
+		}
+		if validate != nil {
+			warning, err := validate(model)
+			if err != nil {
+				return plan, fmt.Errorf("validate small model: %w", err)
 			}
 			if warning != "" {
 				plan.Warnings = append(plan.Warnings, warning)
@@ -728,17 +750,11 @@ func FormatInteractiveInitReview(plan InitPlan) string {
 		runtimeName = "Microsandbox"
 	}
 	row("Machine", fmt.Sprintf("%s, isolation %s, %d %s, %s", runtimeName, isolation, plan.GuestCPUs, cpuLabel, formatInitReviewMemory(plan.GuestMemoryMB)))
-	model := "par défaut de setup"
-	if a.Model != "" {
-		model = strings.TrimPrefix(a.Model, "albert/")
-		for _, choice := range CuratedAlbertModels() {
-			if a.Model == choice.Ref() || a.Model == choice.ID {
-				model = choice.Name
-				break
-			}
-		}
-	}
+	model := initReviewModelName(a.Model)
 	row("Agent", "OpenCode, modèle "+model)
+	if a.SmallModel != "" {
+		row("Petit modèle", initReviewModelName(a.SmallModel))
+	}
 	credential := "clé Albert API globale (référence, jamais sa valeur)"
 	if a.CredentialRef != "" {
 		credential = fmt.Sprintf("référence %q (jamais sa valeur)", a.CredentialRef)
@@ -789,6 +805,19 @@ func FormatInteractiveInitReview(plan InitPlan) string {
 		b.WriteString("Les changements de MCP prennent effet au prochain lancement ; cela peut redémarrer la machine isolée sans effacer son contenu.\n")
 	}
 	return b.String()
+}
+
+func initReviewModelName(model string) string {
+	if model == "" {
+		return "par défaut de setup"
+	}
+	name := strings.TrimPrefix(model, "albert/")
+	for _, choice := range CuratedAlbertModels() {
+		if model == choice.Ref() || model == choice.ID {
+			return choice.Name
+		}
+	}
+	return name
 }
 
 func formatInitReviewMemory(memoryMB int) string {
@@ -861,6 +890,11 @@ func FormatInitReview(plan InitPlan) string {
 		fmt.Fprintf(&b, "  model        %s\n", a.Model)
 	} else {
 		b.WriteString("  model        the built-in default\n")
+	}
+	if a.SmallModel != "" {
+		fmt.Fprintf(&b, "  small model  %s\n", a.SmallModel)
+	} else {
+		b.WriteString("  small model  same as the main model\n")
 	}
 	fmt.Fprintf(&b, "  resources    %d CPUs, %s (fixed when the guest is created)\n", plan.GuestCPUs, FormatMemorySize(plan.GuestMemoryMB))
 	if a.BrowserResourceGuidance != "" {
@@ -1021,6 +1055,7 @@ func formatManifestSummary(pm ProjectManifest) string {
 	add("runtime", pm.Runtime)
 	add("isolation", pm.Isolation)
 	add("model", pm.Model)
+	add("smallModel", pm.SmallModel)
 	if pm.CPUs > 0 {
 		add("cpus", fmt.Sprintf("%d", pm.CPUs))
 	}
@@ -1156,6 +1191,7 @@ func (w InitWizard) applyLocked(plan InitPlan, replace bool) error {
 		Runtime:         string(plan.Answers.Runtime),
 		Isolation:       string(plan.Answers.Isolation),
 		Model:           plan.Answers.Model,
+		SmallModel:      plan.Answers.SmallModel,
 		CPUs:            plan.Answers.CPUs,
 		MemoryMB:        plan.Answers.MemoryMB,
 		CredentialRef:   plan.Answers.CredentialRef,

@@ -451,7 +451,7 @@ func importMatchesManifest(expected justcode.InitAnswers, existing justcode.Proj
 	if existing.Runtime != string(expected.Runtime) || existing.Isolation != string(expected.Isolation) {
 		return false
 	}
-	if existing.Model != expected.Model || existing.CPUs != expected.CPUs || existing.MemoryMB != expected.MemoryMB {
+	if existing.Model != expected.Model || existing.SmallModel != expected.SmallModel || existing.CPUs != expected.CPUs || existing.MemoryMB != expected.MemoryMB {
 		return false
 	}
 	if existing.SkillsLocalOnly || !sameStrings(existing.Skills, expected.Skills) {
@@ -479,7 +479,7 @@ func manifestHasUnknownFields(raw []byte) (bool, error) {
 	}
 	known := map[string]bool{
 		"schemaVersion": true, "project": true, "runtime": true, "isolation": true,
-		"model": true, "cpus": true, "memoryMB": true, "credentialRef": true,
+		"model": true, "smallModel": true, "cpus": true, "memoryMB": true, "credentialRef": true,
 		"storage": true, "skills": true, "skillsLocalOnly": true,
 		"mcpConnectors": true, "dependencySetId": true,
 	}

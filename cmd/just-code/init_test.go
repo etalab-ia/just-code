@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -289,7 +291,7 @@ func stubMCPBindingStateDir(t *testing.T) string {
 func TestParseInitArgs(t *testing.T) {
 	opts, err := parseInitArgs([]string{
 		"--root", "/tmp/p", "--runtime", "tart", "--isolation", "backend",
-		"--model", "albert/x", "--cpus", "4", "--memory-mb", "2048",
+		"--model", "albert/x", "--small-model", "ministral-3-8b-instruct-2512", "--cpus", "4", "--memory-mb", "2048",
 		"--credential-ref", "work", "--github", "--skill", "official/rgaa",
 		"--skill", "experimental/rag-parse", "--local-only-skills", "--replace", "--yes",
 	})
@@ -297,7 +299,7 @@ func TestParseInitArgs(t *testing.T) {
 		t.Fatalf("parseInitArgs: %v", err)
 	}
 	if opts.Root != "/tmp/p" || opts.Runtime != "tart" || opts.Isolation != "backend" ||
-		opts.Model != "albert/x" || opts.CPUs != 4 || opts.MemoryMB != 2048 ||
+		opts.Model != "albert/x" || opts.SmallModel != "ministral-3-8b-instruct-2512" || opts.CPUs != 4 || opts.MemoryMB != 2048 ||
 		opts.CredentialRef != "work" || !opts.GitHub || !opts.Replace || !opts.Yes ||
 		len(opts.Skills) != 2 || !opts.SkillsLocalOnly {
 		t.Fatalf("options = %+v", opts)
@@ -933,7 +935,7 @@ func TestSeedInitAnswersFromMissingManifestResetsPreviousProjectValues(t *testin
 	root := initTestProject(t)
 	previous := justcode.InitAnswers{
 		Root: root, Runtime: justcode.RuntimeTart, Isolation: justcode.IsolationBackend,
-		Model: "previous/model", CPUs: 4, MemoryMB: 8192, CredentialRef: "previous",
+		Model: "previous/model", SmallModel: "previous/small", CPUs: 4, MemoryMB: 8192, CredentialRef: "previous",
 		GitHubWorkflow: true, GitHubRemote: justcode.GitHubRemote{Repo: "previous/repo"},
 		MCPConnectors: []string{"context7"}, MCPsSet: true,
 		Skills: []string{"official/rgaa"}, SkillsSet: true,
@@ -941,7 +943,7 @@ func TestSeedInitAnswersFromMissingManifestResetsPreviousProjectValues(t *testin
 		BrowserResourceGuidance: "previous host sizing",
 	}
 	got := seedInitAnswersFromManifest(initOptions{Set: map[string]bool{}}, previous)
-	if got.Runtime != "" || got.Isolation != "" || got.Model != "" || got.CPUs != 0 || got.MemoryMB != 0 || got.CredentialRef != "" ||
+	if got.Runtime != "" || got.Isolation != "" || got.Model != "" || got.SmallModel != "" || got.CPUs != 0 || got.MemoryMB != 0 || got.CredentialRef != "" ||
 		got.GitHubWorkflow || got.GitHubRemote.Repo != "" || len(got.MCPConnectors) != 0 || got.MCPsSet ||
 		len(got.Skills) != 0 || got.SkillsSet || got.SkillsLocalOnly || got.SkillsLocalOnlySet || got.BrowserResourceGuidance != "" {
 		t.Fatalf("answers from previous project leaked into unconfigured root: %+v", got)
@@ -956,9 +958,10 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{
 			Root: root, Isolation: "backend", CPUs: 4, MemoryMB: 2048,
-			Replace: true, Yes: true,
+			SmallModel: "ministral-3-8b-instruct-2512",
+			Replace:    true, Yes: true,
 			MCPConnectors: []string{"chrome-devtools", "data-gouv"},
-			Set:           map[string]bool{"root": true, "isolation": true, "cpus": true, "memory-mb": true, "mcps": true},
+			Set:           map[string]bool{"root": true, "isolation": true, "small-model": true, "cpus": true, "memory-mb": true, "mcps": true},
 		}, bufio.NewReader(strings.NewReader("")), false)
 		if code != 0 || err != nil {
 			t.Fatalf("initRun: code=%d err=%v", code, err)
@@ -971,7 +974,7 @@ func TestInitNonTTYWithAllInputsWritesTheManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the manifest must be written and readable: %v", err)
 	}
-	if pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.Isolation != string(justcode.IsolationBackend) {
+	if pm.CPUs != 4 || pm.MemoryMB != 2048 || pm.Isolation != string(justcode.IsolationBackend) || pm.SmallModel != justcode.MinistralSmallModelRef {
 		t.Fatalf("manifest = %+v", pm)
 	}
 	if strings.Join(pm.MCPConnectors, ",") != "chrome-devtools,data-gouv" {
@@ -1377,8 +1380,9 @@ func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 		"", "projet", "chrome-devtools", "n", // skills, storage, MCPs, GitHub
 		"advanced",
 		"microsandbox", "backend", "3", "2048", // runtime, isolation, cpus, memory
-		"qwen3-coder", // main-model override
-		"",            // apply
+		"qwen3-coder",                  // main-model override
+		"ministral-3-8b-instruct-2512", // distinct small model
+		"",                             // apply
 	}, "\n") + "\n"
 	code, err := initRun(initOptions{Root: root, Set: map[string]bool{"root": true}}, bufio.NewReader(strings.NewReader(input)), true)
 	if code != 0 || err != nil {
@@ -1391,7 +1395,7 @@ func TestInitReviewAdvancedSettingsApply(t *testing.T) {
 	if manifest.Runtime != "microsandbox" || manifest.Isolation != "backend" || manifest.CPUs != 3 || manifest.MemoryMB != 2048 || strings.Join(manifest.MCPConnectors, ",") != "chrome-devtools" {
 		t.Fatalf("the advanced settings must reach the manifest: %+v", manifest)
 	}
-	if manifest.Model != "albert/qwen3-coder" || manifest.CredentialRef != "" {
+	if manifest.Model != "albert/qwen3-coder" || manifest.SmallModel != justcode.MinistralSmallModelRef || manifest.CredentialRef != "" {
 		t.Fatalf("main model must be configurable; credential reference remains CLI-only: %+v", manifest)
 	}
 }
@@ -1426,8 +1430,8 @@ func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
 				return "", nil
 			})
 			opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
-			// Repair runtime, isolation, CPUs, memory and model, then apply.
-			input := "microsandbox\n\n2\n4G\ndéfaut\ny\n"
+			// Repair runtime, isolation, CPUs, memory, main model and small model, then apply.
+			input := "microsandbox\n\n2\n4G\ndéfaut\n\ny\n"
 			code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
 			if err != nil || code != 0 {
 				t.Fatalf("inherited %s cannot be repaired: code=%d, %v", kind, code, err)
@@ -1437,6 +1441,124 @@ func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
 				t.Fatalf("repair not applied: %+v, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestCatalogueValidationAcceptsMinistralAndRejectsOCR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-albert-key" {
+			t.Errorf("catalogue request missing the configured credential")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"ministral-3-8b-instruct-2512","type":"image-text-to-text","max_context_length":262144,"aliases":["openweight-small"]},{"id":"lightonocr-2-1b","type":"image-text-to-text","max_context_length":16384,"aliases":[]}]}`))
+	}))
+	defer server.Close()
+	setupTestEnv(t)
+	originalKey, originalFetch := catalogueModelAPIKeyFn, catalogueModelFetchFn
+	catalogueModelAPIKeyFn = func(string) (string, error) { return "test-albert-key", nil }
+	catalogueModelFetchFn = func(ctx context.Context, client *http.Client, apiKey, _ string) (justcode.Catalogue, error) {
+		return justcode.FetchCatalogue(ctx, client, apiKey, server.URL)
+	}
+	t.Cleanup(func() {
+		catalogueModelAPIKeyFn, catalogueModelFetchFn = originalKey, originalFetch
+	})
+	for _, tc := range []struct {
+		model string
+		valid bool
+	}{
+		{model: "ministral-3-8b-instruct-2512", valid: true},
+		{model: justcode.MinistralSmallModelRef, valid: true},
+		{model: "lightonocr-2-1b", valid: false},
+	} {
+		_, err := catalogueModelWarningForRoot(t.TempDir(), tc.model)
+		if (err == nil) != tc.valid {
+			t.Errorf("model %q validation error = %v, want valid=%v", tc.model, err, tc.valid)
+		}
+	}
+}
+
+func TestInvalidInheritedSmallModelOpensRepairAfterValidMainModel(t *testing.T) {
+	stubCatalogueCheck(t, func(_, model string) (string, error) {
+		if model == "albert/removed-small" {
+			return "", errors.New("small model removed from catalogue")
+		}
+		return "", nil
+	})
+	answers := justcode.InitAnswers{
+		Root: "project", Model: "albert/qwen3-coder", SmallModel: "albert/removed-small",
+	}
+	got := invalidInheritedInitSetting(initOptions{Set: map[string]bool{}}, answers)
+	if got == nil || !strings.Contains(got.Error(), "removed from catalogue") {
+		t.Fatalf("valid main model must not short-circuit small-model repair: %v", got)
+	}
+	root := initTestProject(t)
+	writeManifest(t, root, justcode.ProjectManifest{
+		Runtime: "microsandbox", Isolation: "full", Model: "albert/qwen3-coder", SmallModel: "albert/removed-small",
+	})
+	opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
+	// Keep runtime and isolation, retain main model, reset small model, then apply.
+	input := "\n\n\n\n\ndéfaut\n\ny\n"
+	code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
+	if code != 0 || err != nil {
+		t.Fatalf("interactive small-model repair failed: code=%d err=%v", code, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil || manifest.SmallModel != "" || manifest.Model != "albert/qwen3-coder" {
+		t.Fatalf("repair must reset only the small model: %+v, %v", manifest, err)
+	}
+}
+
+func TestInitSmallModelMinistralRequiresAlbertConnection(t *testing.T) {
+	setupTestEnv(t)
+	root := initTestProject(t)
+	stubCatalogueCheck(t, func(string, string) (string, error) {
+		t.Fatal("catalogue validation must not run when Albert is not connected")
+		return "", nil
+	})
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		Providers: []justcode.ProviderSettings{{Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []func() error{
+		func() error { _, err := validateInitSmallModelInput(root, justcode.MinistralSmallModelRef); return err },
+		func() error {
+			return validateInitOptions(initOptions{Root: root, SmallModel: "ministral-3-8b-instruct-2512", Set: map[string]bool{"small-model": true}})
+		},
+	} {
+		if err := check(); err == nil || !strings.Contains(err.Error(), "requires Albert API") {
+			t.Fatalf("Mistral-only setup must reject Ministral: %v", err)
+		}
+	}
+	if _, err := validateInitSmallModelInput(root, ""); err != nil {
+		t.Fatalf("main-model inheritance must work without Albert: %v", err)
+	}
+	opts := initOptions{
+		Root: root, SmallModel: "ministral-3-8b-instruct-2512", Yes: true,
+		Set: map[string]bool{"root": true, "small-model": true},
+	}
+	code, err := initRun(opts, bufio.NewReader(strings.NewReader("")), false)
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "requires Albert API") {
+		t.Fatalf("noninteractive init must reject an unavailable provider: code=%d err=%v", code, err)
+	}
+	if _, statErr := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected small model must not write a manifest: %v", statErr)
+	}
+}
+
+func TestSmallModelProviderConnectionAtLaunch(t *testing.T) {
+	if err := validateSmallModelProviderConnection([]justcode.InferenceProvider{{Kind: justcode.ProviderMistral}}, justcode.MinistralSmallModelRef); err == nil || !strings.Contains(err.Error(), "requires Albert API") {
+		t.Fatalf("Mistral-only launch must reject Ministral: %v", err)
+	}
+	if err := validateSmallModelProviderConnection([]justcode.InferenceProvider{{Kind: justcode.ProviderAlbert}}, justcode.MinistralSmallModelRef); err != nil {
+		t.Fatalf("Albert setup must accept Ministral: %v", err)
+	}
+	if err := validateSmallModelProviderConnection(nil, ""); err != nil {
+		t.Fatalf("inherited small model must not require Albert: %v", err)
 	}
 }
 
@@ -1466,6 +1588,39 @@ func TestInitInvalidInheritedSettingsStillRejectNonInteractiveAndEOF(t *testing.
 // points on the line path: picking Tart or agent-vm displays the shared-folder
 // consequence, and a runtime that is not installed is flagged with the command
 // that installs it.
+func TestInitAdvancedLineSmallModelRetriesProviderError(t *testing.T) {
+	setupTestEnv(t)
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		Providers: []justcode.ProviderSettings{{Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Runtime, isolation, CPUs, memory, main model, rejected Ministral, then
+	// reset the small model to inherit from the main model.
+	input := "\n\n\n\nmistral-large-latest\nministral-3-8b-instruct-2512\ndefault\n"
+	answers := justcode.InitAnswers{Root: "project", Model: "mistral/mistral-large-latest"}
+	var updated justcode.InitAnswers
+	out := captureStdout(t, func() {
+		var err error
+		updated, err = askInitAdvancedLine(bufio.NewReader(strings.NewReader(input)), initOptions{
+			hostCPUs: 8, hostMemoryMB: 16384, maxCPUs: 8, maxMemoryMB: 16384,
+		}, answers)
+		if err != nil {
+			t.Fatalf("line-mode small-model retry failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "requires Albert API") {
+		t.Fatalf("provider error must be shown inside the prompt loop: %s", out)
+	}
+	if updated.SmallModel != "" || updated.Model != "mistral-large-latest" {
+		t.Fatalf("retry must preserve the main model and reset the small model: %+v", updated)
+	}
+}
+
 func TestInitAdvancedLineWarnsOnSharedFolderRuntime(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Tart is not a supported Windows runtime")
@@ -1481,8 +1636,8 @@ func TestInitAdvancedLineWarnsOnSharedFolderRuntime(t *testing.T) {
 	}
 	t.Cleanup(func() { runtimeInstallHintFn = originalInstallHint })
 	// root, GitHub, skills, MCPs, storage, review=advanced, runtime=tart,
-	// isolation, cpus, memory, review=apply.
-	input := strings.Join([]string{root, "", "", "", "", "n", "advanced", "tart", "", "", "", "", ""}, "\n") + "\n"
+	// isolation, cpus, memory, model, small model, review=apply.
+	input := strings.Join([]string{root, "", "", "", "", "n", "advanced", "tart", "", "", "", "", "", ""}, "\n") + "\n"
 	out := captureStdout(t, func() {
 		code, err := initRun(initOptions{Set: map[string]bool{}}, bufio.NewReader(strings.NewReader(input)), true)
 		if code != 0 || err != nil {
@@ -2065,9 +2220,9 @@ func TestOfferProjectInitAppliesWhatItWrote(t *testing.T) {
 	stubProjectSkills(t)
 	root := initTestProject(t)
 	// confirm, GitHub, skills, no-skill confirmation, storage, MCPs, review=advanced, runtime,
-	// isolation(backend), cpus, memory, review=apply. The expert settings
-	// live behind the review's "advanced" entry since #170.
-	input := "\n\n\n\n\n\nadvanced\n\nbackend\n\n\n\n\n"
+	// isolation(backend), cpus, memory, main model, small model, review=apply.
+	// The expert settings live behind the review's "advanced" entry since #170.
+	input := "\n\n\n\n\n\nadvanced\n\nbackend\n\n\n\n\n\n"
 	devNullLike := bufio.NewReader(strings.NewReader(input))
 
 	// Drive the offer with the same answers a user would give.
@@ -2378,9 +2533,9 @@ func TestInitReopensGitHubAfterAdvancedEdit(t *testing.T) {
 		return justcode.GitHubProjectStatus{Remote: justcode.GitHubRemote{URL: "https://github.com/owner/repo.git", Repo: "owner/repo"}, HasOrigin: true, HasToken: true, Login: "owner", Rights: rights}
 	}
 	approveGitHubForProjectFn = func(string) error { t.Fatal("revoked credential must not be approved"); return nil }
-	// GitHub yes, advanced, runtime, isolation, CPU=3, memory, model,
+	// GitHub yes, advanced, runtime, isolation, CPU=3, memory, model, small model,
 	// reopened GitHub without approval, then apply.
-	input := "o\nadvanced\n\n\n3\n\n\nc\ny\n"
+	input := "o\nadvanced\n\n\n3\n\n\n\nc\ny\n"
 	opts := initOptions{Root: root, Set: map[string]bool{"root": true, "skills": true, "skills-storage": true, "mcps": true}}
 	code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
 	if err != nil || code != 0 {
