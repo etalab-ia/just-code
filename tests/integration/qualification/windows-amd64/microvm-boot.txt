@@ -1,0 +1,36 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261028113134
+Username: JC-WIN77-AMD64\Administrateur
+RunAs User: JC-WIN77-AMD64\Administrateur
+Configuration Name:
+Machine: JC-WIN77-AMD64 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\Administrateur\\verify-microvm.ps1
+Process ID: 7612
+PSVersion: 5.1.26100.2161
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.2161
+BuildVersion: 10.0.26100.2161
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\jc-win77\evidence\microvm-boot.txt
+META revision=256e4233845aae324e924e7be6c73a3ef11c663b runtime=0.7.11 platform=windows/amd64
+=== DIRECT WHP MICROVM ===
+
+DIRECT_BOOT_EXIT=0
+=== SEALED GUEST CHECKS ===
+
+GUEST_CHECKS_EXIT=0
+=== PERSISTENT LIFECYCLE ===
+
+
+
+
+LIFECYCLE_EXIT=0
+**********************
+Windows PowerShell transcript end
+End time: 20261028113147
+**********************

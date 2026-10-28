@@ -46,8 +46,25 @@ are the counter-experiments: on a headless Linux host with a locked
 collection the round-trip test does not skip, it **fails**, because the
 availability probe is read-only and reports the store "reachable" while
 writes fail. Only a passing run on a genuinely usable store qualifies a
-row. The Windows Credential Manager store has never been exercised against
-a live service.
+row. Windows Credential Manager has now been exercised on Windows Server 2025,
+but is not qualified: see the mixed 2026-10-28 results below and #293.
+
+## Windows Credential Manager, 2026-10-28
+
+The source revision is `256e4233845aae324e924e7be6c73a3ef11c663b`, built
+natively with Go 1.26.10 on a dedicated Elastic Metal Windows Server 2025
+host. All three transcripts use only the repository's synthetic markers:
+
+- `windows-amd64-ssh-skip.txt`: the probe is refused in a non-interactive SSH
+  session, so both tests skip. The zero package exit is not qualification.
+- `windows-amd64-interactive-run-1.txt`: the first interactive run reaches the
+  real store but `Get` reports not-found after an accepted `Put`.
+- `windows-amd64-interactive-run-2.txt`: a separate interactive run passes
+  round-trip, rotation, and absent-removal checks.
+
+The passing run demonstrates that the real service can be exercised; it does
+not erase the failed run. The intermittent failure needs investigation before
+Windows is marked qualified in `docs/plateformes.md` (#293).
 
 An unretained run is indistinguishable from a run that never happened, which
 is the same failure the phase-3 native kit guards against by binding every
