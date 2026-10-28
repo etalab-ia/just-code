@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.14.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.13.0...just-code-v0.14.0) (2026-10-28)
+
+
+### Features
+
+* **init:** offer Ministral as OpenCode small model ([6756312](https://github.com/etalab-ia/just-code/commit/6756312fa1b602fc20187b46dd3ce63f3c9d21ba))
+* **init:** permettre Ministral comme petit modèle OpenCode ([256e423](https://github.com/etalab-ia/just-code/commit/256e4233845aae324e924e7be6c73a3ef11c663b))
+
+
+### Bug Fixes
+
+* **init:** require Albert for Ministral small model ([12e5677](https://github.com/etalab-ia/just-code/commit/12e56770a342f492a5fcb004e4083d90ce85c4b2))
+* **init:** validate curated small-model references ([0e36e8a](https://github.com/etalab-ia/just-code/commit/0e36e8ae7f965109f54c8a4d801846c2544ee006))
+* **init:** validate small model in line wizard ([ad5a205](https://github.com/etalab-ia/just-code/commit/ad5a205188193e41b6a11be09fc3f047207519ca))
+* **models:** validate small-model API references ([3c44a52](https://github.com/etalab-ia/just-code/commit/3c44a52b752fb33163f74e217b87b9c8668d9ffd))
+
 ## [0.13.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.12.0...just-code-v0.13.0) (2026-10-28)
 
 
