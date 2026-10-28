@@ -396,3 +396,31 @@ func TestFlushHonorsPendingAcceptanceAndWithdrawal(t *testing.T) {
 		t.Fatal("a withdrawal must not send")
 	}
 }
+
+func TestFlushRefusesAPendingRefusalOverDurableAcceptance(t *testing.T) {
+	settingsPath := statsTestHome(t)
+	if err := WriteStatsConsent(DefaultFS, settingsPath, true, true); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	j := SetupJournal{SchemaVersion: 1, Stage: StageCredential, StatsEnabled: false, StatsConsentAsked: true}
+	if err := WriteSetupJournal(DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueStatsEvent(DefaultFS, stateDir, StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: "e", Kind: "setup"}); err != nil {
+		t.Fatal(err)
+	}
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	t.Setenv("JUST_CODE_STATS_URL", server.URL)
+	if err := FlushStats(context.Background(), DefaultFS, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Fatalf("a pending refusal must block the flush, calls = %d", calls)
+	}
+}

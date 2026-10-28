@@ -433,17 +433,15 @@ func removeFlushedStatsEvents(fs FS, stateDir string, sent map[string]bool) erro
 	})
 }
 
-// statsConsentForFlush resolves whether a flush may send. A pending setup
-// acceptance counts exactly as it did at record time; a withdrawal (durable
-// refusal, or `stats off` having synchronized the journal to false) wins.
+// statsConsentForFlush resolves whether a flush may send. An answered
+// journal decision takes precedence, in BOTH directions: a pending refusal
+// overrides a durable acceptance, and a pending acceptance is allowed before
+// SaveSettings. Otherwise the durable decision applies.
 func statsConsentForFlush(fs FS, stateDir, settingsPath string) bool {
-	if StatsEnabled(fs, settingsPath) {
-		return true
+	if j, err := ReadSetupJournal(fs, stateDir); err == nil && j.StatsConsentAsked {
+		return j.StatsEnabled
 	}
-	if j, err := ReadSetupJournal(fs, stateDir); err == nil && j.StatsConsentAsked && j.StatsEnabled {
-		return true
-	}
-	return false
+	return StatsEnabled(fs, settingsPath)
 }
 
 // FlushStats posts every queued event and removes the ones accepted. It is
