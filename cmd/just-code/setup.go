@@ -594,6 +594,10 @@ setupStages:
 		// that journal, so its decision is always the freshest one: restore it.
 		statsEnabled, statsAsked = j.StatsEnabled, true
 	}
+	// Snapshot the durable decision at the review: only a CHANGE after this
+	// point is an external `stats on`/`stats off`, never an answer the user
+	// just gave inside this wizard.
+	reviewDurableEnabled, reviewDurableAsked := statsEnabled, statsAsked
 	if !statsAsked || editing {
 		answer, answered, err := setupStatsConsent(in)
 		if err != nil {
@@ -710,9 +714,10 @@ setupStages:
 	}
 	// Re-resolve consent at apply time: the wizard may have been sitting at
 	// the recap while the user ran `stats on` or `stats off` in another
-	// terminal. Persisting the pre-review snapshot would silently undo that
-	// explicit decision.
-	if latest, latestAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty()); latestAsked {
+	// terminal. Only a durable decision that CHANGED since the review counts
+	// as external; an unchanged durable value is the user's own answer in
+	// this wizard, not something to override it.
+	if latest, latestAsked := justcode.ReadStatsConsent(fs, userSettingsPathOrEmpty()); latestAsked && (latest != reviewDurableEnabled || latestAsked != reviewDurableAsked) {
 		statsEnabled, statsAsked = latest, true
 		j.StatsEnabled = latest
 		j.StatsConsentAsked = true
