@@ -318,6 +318,12 @@ func statsProjectID(fs FS, stateDir, root string) (string, error) {
 // must check StatsEnabled first.
 func EnqueueStatsEvent(fs FS, stateDir string, event StatsEvent) error {
 	return withStatsQueueLock(fs, stateDir, func() error {
+		// Recheck consent inside the critical section: a withdrawal that
+		// completed while this event was being built must not be undone by
+		// re-populating the queue it just cleared.
+		if settingsPath, err := UserSettingsPath(); err == nil && !StatsEnabled(fs, settingsPath) {
+			return nil
+		}
 		events, err := PendingStatsEvents(fs, stateDir)
 		if err != nil {
 			return err

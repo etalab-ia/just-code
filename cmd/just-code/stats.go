@@ -34,6 +34,13 @@ func statsCmd(args []string) (int, error) {
 		if err := justcode.WriteStatsConsent(fs, path, true, true); err != nil {
 			return 1, err
 		}
+		// Synchronize a pending setup decision too: resuming an interrupted
+		// wizard must not undo an opt-in just given.
+		if j, err := justcode.ReadSetupJournal(fs, stateDir); err == nil && !j.StatsEnabled {
+			j.StatsEnabled = true
+			j.StatsConsentAsked = true
+			_ = justcode.WriteSetupJournal(fs, stateDir, j)
+		}
 		fmt.Println("Statistiques d'usage : partagées.")
 		if justcode.StatsEndpoint() == "" {
 			fmt.Println("Aucun endpoint n'est configuré dans cette version : les événements restent locaux et ne sont pas envoyés.")
@@ -51,6 +58,7 @@ func statsCmd(args []string) (int, error) {
 		// wizard must not resurrect a consent the user just withdrew.
 		if j, err := justcode.ReadSetupJournal(fs, stateDir); err == nil && j.StatsEnabled {
 			j.StatsEnabled = false
+			j.StatsConsentAsked = true
 			_ = justcode.WriteSetupJournal(fs, stateDir, j)
 		}
 		fmt.Println("Statistiques d'usage : non partagées. Aucun envoi ne sera effectué.")

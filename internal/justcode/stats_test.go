@@ -99,6 +99,10 @@ func TestBuildStatsEventNeverCarriesTheProjectPath(t *testing.T) {
 }
 
 func TestStatsQueueIsBoundedAndOrdered(t *testing.T) {
+	settingsPath := statsTestHome(t)
+	if err := WriteStatsConsent(DefaultFS, settingsPath, true, true); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := t.TempDir()
 	for i := 0; i < statsQueueLimit+5; i++ {
 		event := StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: string(rune('a' + i)), Kind: "setup"}
@@ -126,6 +130,10 @@ func TestStatsQueueIsBoundedAndOrdered(t *testing.T) {
 }
 
 func TestStatsQueueRecoversAStaleLock(t *testing.T) {
+	settingsPath := statsTestHome(t)
+	if err := WriteStatsConsent(DefaultFS, settingsPath, true, true); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := t.TempDir()
 	lock := filepath.Join(stateDir, "stats", "queue.lock")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
@@ -302,5 +310,19 @@ func TestStatsMachineIDLoserReadsTheWinner(t *testing.T) {
 	}
 	if id != "winner-id" {
 		t.Fatalf("a second process must reuse the winning identifier, got %q", id)
+	}
+}
+
+func TestEnqueueRechecksConsentInsideTheLock(t *testing.T) {
+	settingsPath := statsTestHome(t)
+	stateDir := t.TempDir()
+	if err := WriteStatsConsent(DefaultFS, settingsPath, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueStatsEvent(DefaultFS, stateDir, StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: "e", Kind: "setup"}); err != nil {
+		t.Fatal(err)
+	}
+	if events, _ := PendingStatsEvents(DefaultFS, stateDir); len(events) != 0 {
+		t.Fatalf("a withdrawal must not be repopulated by a stale enqueue: %v", events)
 	}
 }
