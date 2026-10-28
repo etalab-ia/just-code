@@ -1,0 +1,16 @@
+# Assertions observées dans le flux SSH du contrôle final
+# (le transcript PowerShell conserve les codes de sortie)
+DIRECT_BOOT_EXIT=0
+MICROVM_OK
+x86_64
+NAME="Alpine Linux"
+ID=alpine
+VERSION_ID=3.24.3
+GUEST_OK
+/workspace
+DOTENV_FILTER_EXIT=0
+CANARY_EXIT=0
+1.18.34
+GUEST_CHECKS_EXIT=0
+PERSISTED_CANARY_EXIT=0
+LIFECYCLE_EXIT=0

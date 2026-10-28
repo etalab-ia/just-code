@@ -1,0 +1,37 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261028110954
+Username: JC-WIN77-AMD64\Administrateur
+RunAs User: JC-WIN77-AMD64\Administrateur
+Configuration Name:
+Machine: JC-WIN77-AMD64 (Microsoft Windows NT 10.0.26100.0)
+Host Application: powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\Administrateur\\install-msb-direct.ps1
+Process ID: 1488
+PSVersion: 5.1.26100.2161
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.2161
+BuildVersion: 10.0.26100.2161
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\jc-win77\evidence\msb-direct.txt
+META runtime=0.7.11 platform=windows/amd64
+CHECKSUM_OK 33d61fc5c3556f6cac7f85825529b9a8b357cc792cfc0f634996511ffb45d031
+
+
+FullName                               Length
+--------                               ------
+C:\jc-win77\msb-direct\libkrunfw.dll 21666304
+C:\jc-win77\msb-direct\msb.exe       47545344
+
+
+
+=== MSB DOCTOR ===
+
+MSB_DOCTOR_EXIT=0
+**********************
+Windows PowerShell transcript end
+End time: 20261028110959
+**********************
