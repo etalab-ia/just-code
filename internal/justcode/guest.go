@@ -3,11 +3,13 @@ package justcode
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -133,7 +135,7 @@ func RunGuestBootstrap(ctx context.Context, cfg GuestConfig) error {
 		}
 	}
 
-	password, apiKey, err := readSecrets(cfg.Stdin)
+	password, keys, err := readSecrets(cfg.Stdin)
 	if err != nil {
 		return err
 	}
@@ -176,13 +178,14 @@ func RunGuestBootstrap(ctx context.Context, cfg GuestConfig) error {
 	if cerr != nil {
 		configContent = opencodeConfigContent
 	}
-	childEnv := withEnv(env,
+	envAssignments := []string{
 		OpenCodeDisableUpdateAssignment,
-		"OPENCODE_SERVER_PASSWORD="+password,
-		"OPENCODE_SERVER_USERNAME="+cfg.Username,
-		"ALBERT_API_KEY="+apiKey,
-		"OPENCODE_CONFIG_CONTENT="+configContent,
-	)
+		"OPENCODE_SERVER_PASSWORD=" + password,
+		"OPENCODE_SERVER_USERNAME=" + cfg.Username,
+		"OPENCODE_CONFIG_CONTENT=" + configContent,
+	}
+	envAssignments = append(envAssignments, providerKeyAssignments(keys)...)
+	childEnv := withEnv(env, envAssignments...)
 	return cfg.Execer.Exec(opencodePath, []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", cfg.Port}, childEnv)
 }
 
@@ -289,24 +292,48 @@ func parseDefaultInterface(output string) string {
 	return ""
 }
 
-// readSecrets reads the password (line 1) and ALBERT_API_KEY (line 2) from the
-// host's stdin stream. A missing password line falls back to the default; an
-// explicitly empty line means "no auth".
-func readSecrets(stdin io.Reader) (string, string, error) {
+// readSecrets reads the password (line 1) and the provider keys (line 2) from
+// the host's stdin stream. A missing password line falls back to the default;
+// an explicitly empty line means "no auth". The second line is either a JSON
+// object of variable assignments (the multi-platform form) or a bare Albert
+// API key (the historical form, still accepted).
+func readSecrets(stdin io.Reader) (string, map[string]string, error) {
 	r := bufio.NewReader(stdin)
 	password := DefaultPassword
 	if line, err := r.ReadString('\n'); err == nil {
 		password = trimLine(line)
 	} else if err != io.EOF {
-		return "", "", err
+		return "", nil, err
 	}
-	apiKey := ""
+	keys := map[string]string{}
 	if line, err := r.ReadString('\n'); err == nil {
-		apiKey = trimLine(line)
+		raw := trimLine(line)
+		if strings.HasPrefix(strings.TrimSpace(raw), "{") {
+			if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+				return "", nil, fmt.Errorf("parse guest provider keys: %w", err)
+			}
+		} else if raw != "" {
+			keys[msbAPISecretEnv] = raw
+		}
 	} else if err != io.EOF {
-		return "", "", err
+		return "", nil, err
 	}
-	return password, apiKey, nil
+	return password, keys, nil
+}
+
+// providerKeyAssignments renders the resolved provider keys as env
+// assignments, sorted for a stable environment.
+func providerKeyAssignments(keys map[string]string) []string {
+	names := make([]string, 0, len(keys))
+	for name := range keys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, name+"="+keys[name])
+	}
+	return out
 }
 
 func trimLine(line string) string {
@@ -435,11 +462,11 @@ const guestSecretsEnvPath = "/tmp/just-code-agent.env"
 func RunGuestSecrets(cfg GuestConfig) error {
 	applyGuestDefaults(&cfg)
 
-	password, apiKey, err := readSecrets(cfg.Stdin)
+	password, keys, err := readSecrets(cfg.Stdin)
 	if err != nil {
 		return err
 	}
-	content := guestSecretsEnv(password, cfg.Username, apiKey, cfg.OpenCodeOverlay)
+	content := guestSecretsEnv(password, cfg.Username, keys, cfg.OpenCodeOverlay)
 	if err := os.WriteFile(guestSecretsEnvPath, []byte(content), 0o600); err != nil {
 		return err
 	}
@@ -449,7 +476,7 @@ func RunGuestSecrets(cfg GuestConfig) error {
 // guestSecretsEnv builds the sourced env file body. Every value is
 // single-quoted because the file is sourced by a shell; the shell syntax in
 // the embedded provider config makes this non-optional.
-func guestSecretsEnv(password, username, apiKey string, overlay ManagedOverlay) string {
+func guestSecretsEnv(password, username string, keys map[string]string, overlay ManagedOverlay) string {
 	// The provider config travels the same way as in backend mode (env), so
 	// the full-mode TUI sees the same Albert provider/model definition.
 	configContent, err := ComposeConfigContent(overlay)
@@ -460,6 +487,12 @@ func guestSecretsEnv(password, username, apiKey string, overlay ManagedOverlay) 
 	// it is the only process-level lever OpenCode honours (see
 	// OpenCodeDisableUpdateEnv), and this file is the only environment that
 	// TUI receives.
-	return fmt.Sprintf("%s\nOPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nALBERT_API_KEY=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
-		OpenCodeDisableUpdateAssignment, shellQuote(password), shellQuote(username), shellQuote(apiKey), shellQuote(configContent))
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\nOPENCODE_SERVER_PASSWORD=%s\nOPENCODE_SERVER_USERNAME=%s\nOPENCODE_CONFIG_CONTENT=%s\n",
+		OpenCodeDisableUpdateAssignment, shellQuote(password), shellQuote(username), shellQuote(configContent))
+	for _, assignment := range providerKeyAssignments(keys) {
+		name, value, _ := strings.Cut(assignment, "=")
+		fmt.Fprintf(&b, "%s=%s\n", name, shellQuote(value))
+	}
+	return b.String()
 }

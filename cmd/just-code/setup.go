@@ -177,7 +177,7 @@ Cette configuration se fait une seule fois sur ce poste.
 Durée : environ 3 minutes. Espace disque : environ 2 Go.
 
 3 étapes :
-  1. Clé Albert API (obligatoire) : l'agent utilise les modèles de l'État.
+  1. Plateformes d'inférence (au moins une) : Albert API, Mistral AI ou une plateforme compatible OpenAI.
   2. Sélection des modèles à utiliser.
   3. GitHub (facultatif) : pour pousser les modifications sur GitHub en pull request.
 
@@ -294,24 +294,41 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 		fmt.Println("Resuming setup where it stopped (credentials already stored are kept).")
 	}
 
+	validateAlbertKey := func(ctx context.Context, key string) error {
+		if validate != nil {
+			return validate(ctx, key)
+		}
+		probe := justcode.ValidateAlbertKey(ctx, nil, key)
+		switch {
+		case probe.Rejected:
+			return justcode.RejectedCredentialError{Detail: probe.Detail}
+		case probe.Unreachable:
+			return fmt.Errorf("could not reach the Albert endpoint: %s", probe.Detail)
+		}
+		return nil
+	}
 	w := justcode.SetupWizard{
 		FS:       fs,
 		StateDir: stateDir,
 		Store: func(ctx context.Context) (justcode.SetupStore, error) {
 			return authStore(fallback)
 		},
-		ValidateAlbert: func(ctx context.Context, key string) error {
-			if validate != nil {
-				return validate(ctx, key)
+		ValidateAlbert: validateAlbertKey,
+		ValidateProvider: func(ctx context.Context, provider justcode.InferenceProvider, key string) justcode.CredentialProbe {
+			if provider.Kind == justcode.ProviderAlbert {
+				if validate != nil {
+					if err := validate(ctx, key); err != nil {
+						var rejected justcode.RejectedCredentialError
+						if errors.As(err, &rejected) {
+							return justcode.CredentialProbe{Rejected: true, Detail: rejected.Detail}
+						}
+						return justcode.CredentialProbe{Unreachable: true, Detail: err.Error()}
+					}
+					return justcode.CredentialProbe{}
+				}
+				return justcode.ValidateAlbertKey(ctx, nil, key)
 			}
-			probe := justcode.ValidateAlbertKey(ctx, nil, key)
-			switch {
-			case probe.Rejected:
-				return justcode.RejectedCredentialError{Detail: probe.Detail}
-			case probe.Unreachable:
-				return fmt.Errorf("could not reach the Albert endpoint: %s", probe.Detail)
-			}
-			return nil
+			return justcode.ValidateProviderKey(ctx, nil, provider, key)
 		},
 		ValidateGitHub: githubTokenProbeFn,
 		EnsureRuntime:  ensure,
@@ -319,94 +336,10 @@ func setupWizardRun(fallback bool, in *bufio.Reader, validate func(context.Conte
 
 	editing := false
 setupStages:
-	// Stage: Albert credential (skipped when already stored this run).
-	keepAlbert := false
-	if editing && justcode.ContainsCredentialKind(j.CredentialKinds, "albert") {
-		fmt.Println("Clé Albert API déjà enregistrée.")
-		choice, err := setupExistingCredentialChoice(in, "Garder la clé enregistrée", "Remplacer la clé")
-		if err != nil {
-			return 1, err
-		}
-		keepAlbert = choice == "keep"
-	}
-	if !keepAlbert && (editing || !justcode.ContainsCredentialKind(j.CredentialKinds, "albert")) {
-		fmt.Println(albertKeyScreenHeader(fallback))
-		// Resolve and verify the store BEFORE prompting: a locked or
-		// unavailable store must fail before the user types anything (the
-		// auth add contract). A consented-but-absent file store is the
-		// normal first-run state and passes.
-		if _, err := w.ResolveStore(ctx); err != nil {
-			return 1, err
-		}
-		// A refused key re-asks instead of ending the run: losing the whole
-		// wizard to one mistyped key is the failure this loop removes.
-		for {
-			var key string
-			if wizardHuhFn() {
-				value, err := huhSecret("Clé Albert API", "L'entrée est masquée. Laissez vide pour annuler.")
-				if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-					return 1, err
-				}
-				key = value
-			} else {
-				value, ok := promptSecret(in, albertKeyPrompt)
-				if !ok {
-					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
-				}
-				key = value
-			}
-			if key == "" {
-				return 1, fmt.Errorf("%s", cancelMsg(stateDir))
-			}
-			// Validate BEFORE writing: an unreachable endpoint must not leave
-			// a key in the store that the user never accepted, or a later
-			// `setup` would skip this screen and use it.
-			probe, err := w.ValidateCredential(ctx, justcode.CredentialAlbert, key)
-			if err != nil {
-				return 1, err
-			}
-			if probe.Rejected {
-				fmt.Println(albertRejectedMessage(probe.Detail))
-				fmt.Println()
-				continue
-			}
-			if probe.Unreachable {
-				fmt.Printf("%s (%s)\n", albertUnreachableMessage, probe.Detail)
-				retry, abort := albertRetryChoice(in)
-				if abort {
-					// Aborted or unanswerable: cancel rather than store a key
-					// the user never agreed to continue with.
-					return 1, fmt.Errorf("%s", cancelMsg(stateDir))
-				}
-				if retry {
-					fmt.Println()
-					continue
-				}
-			}
-			if err := w.PutCredential(ctx, justcode.CredentialAlbert, key); err != nil {
-				return 1, err
-			}
-			verified := !probe.Unreachable
-			j.AlbertVerified = &verified
-			if probe.Unreachable {
-				// "Continuer sans vérifier": stored, but unvalidated.
-				fmt.Println("Clé enregistrée sans vérification.")
-			} else {
-				fmt.Println("✅ Clé valide.")
-			}
-			break
-		}
-		j.CredentialKinds = addCredentialKind(j.CredentialKinds, "albert")
-		if j.StoreKind == "" {
-			if store, err := w.ResolveStore(ctx); err == nil {
-				j.StoreKind = store.Kind()
-			}
-		}
-		if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
-			return 1, err
-		}
-	} else {
-		fmt.Println("Clé Albert API déjà enregistrée.")
+	// Stage: inference platforms and their keys.
+	providers, err := setupPlatformStage(ctx, w, in, fallback, &j, editing, fs, stateDir)
+	if err != nil {
+		return 1, err
 	}
 
 	// Stage: model selection (catalogue-validated when reachable). It runs
@@ -428,16 +361,18 @@ setupStages:
 		models = setupModelIDsWithLegacyDefault(model)
 	}
 	if model == "" {
-		model = defaultSetupModel()
+		if providersContain(providers, justcode.ProviderAlbert) {
+			model = defaultSetupModel()
+		}
 	} else {
 		model = canonicalSetupModelRef(model)
 	}
-	if !setupModelEnabled(model, models) && strings.HasPrefix(model, "albert/") {
+	if len(models) > 0 && !setupModelEnabled(model, models) && providersContain(providers, justcode.ProviderAlbert) {
 		model = setupModelRef(models[0])
 	}
 	fmt.Println()
 	if wizardHuhFn() {
-		selected, defaultModel, ok, err := promptSetupModels(models, model)
+		selected, defaultModel, ok, err := promptSetupModels(providers, models, model)
 		if errors.Is(err, huh.ErrUserAborted) {
 			fmt.Println("Setup cancelled.")
 			return 1, nil
@@ -449,7 +384,7 @@ setupStages:
 			models, model, modelAnswered = selected, defaultModel, true
 		}
 	} else {
-		fmt.Println("Models (comma-separated Albert model IDs; Enter keeps the current selection):")
+		fmt.Println("Models (comma-separated references such as albert/Qwen3-Coder-30B-A3B-Instruct or mistral/mistral-large-latest; Enter keeps the current selection):")
 		chosen, answered := promptLine(in, "Models: ")
 		if answered {
 			if strings.TrimSpace(chosen) != "" {
@@ -457,7 +392,7 @@ setupStages:
 				if len(models) == 0 {
 					return 1, fmt.Errorf("select at least one model")
 				}
-				model = setupModelRef(models[0])
+				model = setupModelRefForSelected(models[0])
 			}
 			modelAnswered = true
 		}
@@ -471,6 +406,9 @@ setupStages:
 			validateModel = catalogue
 		}
 		for _, id := range models {
+			if kind, _ := justcode.ProviderModelID(id); kind != justcode.ProviderAlbert {
+				continue
+			}
 			ref := "albert/" + id
 			if warn := validateModel(ref); warn != "" {
 				fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
@@ -653,7 +591,24 @@ setupStages:
 	} else if j.AlbertVerified != nil {
 		keyStatus = "vérifiée"
 	}
-	fmt.Printf("  Clé Albert API      enregistrée dans %s (%s)\n", albertStore, keyStatus)
+	var platformNames []string
+	for _, provider := range providers {
+		platformNames = append(platformNames, provider.Name)
+	}
+	fmt.Printf("  Plateformes         %s\n", strings.Join(platformNames, ", "))
+	if providersContain(providers, justcode.ProviderAlbert) {
+		fmt.Printf("  Clé Albert API      enregistrée dans %s (%s)\n", albertStore, keyStatus)
+	}
+	for _, provider := range providers {
+		if provider.Kind == justcode.ProviderAlbert {
+			continue
+		}
+		status := "vérifiée"
+		if entry, ok := j.Platform(provider.Kind); ok && entry.Verified != nil && !*entry.Verified {
+			status = "non vérifiée"
+		}
+		fmt.Printf("  Clé %-16s enregistrée dans %s (%s)\n", provider.Name, albertStore, status)
+	}
 	if j.Preflight.DiskFreeBytes > 0 {
 		fmt.Printf("  Espace disque       %s disponibles\n", humanBytes(j.Preflight.DiskFreeBytes))
 	}
@@ -716,7 +671,7 @@ setupStages:
 	if err := w.SaveIdentity(j.GitName, j.GitEmail); err != nil {
 		return 1, err
 	}
-	if err := w.SaveSettings(model, models, modelAnswered); err != nil {
+	if err := w.SaveSettings(model, models, modelAnswered, providers); err != nil {
 		return 1, err
 	}
 	fmt.Println()
@@ -728,6 +683,425 @@ setupStages:
 	fmt.Println()
 	fmt.Println(setupCompletionMessage())
 	return 0, nil
+}
+
+// setupPlatformStage asks which inference platforms to connect and stores one
+// key per platform. A resumed run reuses the journal's platform set and skips
+// the platforms whose key is already stored; "Modifier" re-asks everything.
+// setupCredentialPresentFn reports whether a platform's credential actually
+// exists in the store. It is a seam so tests do not read the host keychain.
+var setupCredentialPresentFn = func(ctx context.Context, kind justcode.CredentialKind) bool {
+	_, err := justcode.ReadStoredCredential(ctx, kind)
+	return err == nil
+}
+
+// providerSettingsOf converts resolved providers back to the settings form.
+func providerSettingsOf(providers []justcode.InferenceProvider) []justcode.ProviderSettings {
+	out := make([]justcode.ProviderSettings, 0, len(providers))
+	for _, p := range providers {
+		out = append(out, justcode.ProviderSettings{Kind: p.Kind, Name: p.Name, BaseURL: p.BaseURL})
+	}
+	return out
+}
+
+func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, fallback bool, j *justcode.SetupJournal, editing bool, fs justcode.FS, stateDir string) ([]justcode.InferenceProvider, error) {
+	platforms := j.Platforms
+	if len(platforms) == 0 && len(j.CredentialKinds) == 0 {
+		// A completed install has no journal. Seed the platform choices from
+		// the saved settings so re-running setup edits the existing
+		// configuration instead of silently replacing it with the default.
+		if us, ok := currentUserSettings(); ok && len(us.Providers) > 0 {
+			for _, settings := range us.Providers {
+				provider, err := justcode.ResolveProvider(settings)
+				if err != nil {
+					continue
+				}
+				platforms = append(platforms, justcode.SetupPlatform{
+					Kind: string(provider.Kind), Name: provider.Name, BaseURL: provider.BaseURL,
+				})
+				// Only mark a credential as already stored when it actually
+				// exists: a removed key (or an import that never stored one)
+				// must be asked again, not skipped as "already recorded".
+				if setupCredentialPresentFn(ctx, provider.CredentialKind) {
+					j.CredentialKinds = addCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
+				}
+			}
+		}
+	}
+	if len(platforms) == 0 {
+		// A journal written before #180 carries credential kinds but no
+		// platform list: infer the platforms it already connected instead of
+		// asking again on resume.
+		for _, kind := range []justcode.ProviderKind{justcode.ProviderAlbert, justcode.ProviderMistral, justcode.ProviderOpenAICompatible} {
+			if justcode.ContainsCredentialKind(j.CredentialKinds, string(kind)) {
+				platforms = append(platforms, justcode.SetupPlatform{Kind: string(kind)})
+			}
+		}
+	}
+	if len(platforms) == 0 || editing {
+		chosen, err := chooseSetupPlatforms(platforms)
+		if err != nil {
+			return nil, err
+		}
+		platforms = chosen
+	}
+	// The OpenAI-compatible platform cannot be defaulted: collect its name and
+	// base URL before the resolver can validate the set.
+	for i := range platforms {
+		if platforms[i].Kind != string(justcode.ProviderOpenAICompatible) {
+			continue
+		}
+		if strings.TrimSpace(platforms[i].Name) != "" && strings.TrimSpace(platforms[i].BaseURL) != "" {
+			continue
+		}
+		resolved, err := promptProviderEndpoint(in, justcode.InferenceProvider{
+			Kind: justcode.ProviderOpenAICompatible, Name: platforms[i].Name, BaseURL: platforms[i].BaseURL,
+		})
+		if err != nil {
+			return nil, err
+		}
+		platforms[i].Name = resolved.Name
+		platforms[i].BaseURL = resolved.BaseURL
+	}
+	j.Platforms = platforms
+	providers, err := justcode.ResolveProviders(j.PlatformSettings())
+	if err != nil {
+		return nil, err
+	}
+	j.SetPlatforms(providers)
+	if err := justcode.WriteSetupJournal(fs, stateDir, *j); err != nil {
+		return nil, err
+	}
+
+	for index := range providers {
+		provider := providers[index]
+		stored := justcode.ContainsCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
+		if stored && !editing {
+			fmt.Printf("Clé %s déjà enregistrée.\n", provider.Name)
+			continue
+		}
+		if stored && editing {
+			fmt.Printf("Clé %s déjà enregistrée.\n", provider.Name)
+			choice, err := setupExistingCredentialChoice(in, "Garder la clé enregistrée", "Remplacer la clé")
+			if err != nil {
+				return nil, err
+			}
+			if choice == "keep" {
+				continue
+			}
+		}
+		updatedProvider, verified, err := providerKeyStage(ctx, w, in, provider, fallback, stateDir)
+		if err != nil {
+			return nil, err
+		}
+		// The key stage can correct an OpenAI-compatible base URL after an
+		// incompatible response; persist the corrected endpoint, not the one
+		// the user started with.
+		provider = updatedProvider
+		providers[index] = updatedProvider
+		// Revalidate the whole set: a corrected endpoint may collide with
+		// another platform's host, which would make every later launch fail.
+		if _, err := justcode.ResolveProviders(providerSettingsOf(providers)); err != nil {
+			return nil, err
+		}
+		j.CredentialKinds = addCredentialKind(j.CredentialKinds, string(provider.CredentialKind))
+		if provider.Kind == justcode.ProviderAlbert {
+			value := verified
+			j.AlbertVerified = &value
+		}
+		if entry, ok := j.Platform(provider.Kind); ok {
+			value := verified
+			entry.Verified = &value
+			entry.Name = provider.Name
+			entry.BaseURL = provider.BaseURL
+			for i := range j.Platforms {
+				if j.Platforms[i].Kind == entry.Kind {
+					j.Platforms[i] = entry
+				}
+			}
+		}
+		if j.StoreKind == "" {
+			if store, err := w.ResolveStore(ctx); err == nil {
+				j.StoreKind = store.Kind()
+			}
+		}
+		if err := justcode.WriteSetupJournal(fs, stateDir, *j); err != nil {
+			return nil, err
+		}
+	}
+	return providers, nil
+}
+
+// chooseSetupPlatforms renders the platform selection. Albert API is listed
+// first and pre-checked but can be unchecked; at least one platform is
+// required.
+func chooseSetupPlatforms(current []justcode.SetupPlatform) ([]justcode.SetupPlatform, error) {
+	order := []justcode.ProviderKind{justcode.ProviderAlbert, justcode.ProviderMistral, justcode.ProviderOpenAICompatible}
+	labels := map[justcode.ProviderKind]string{
+		justcode.ProviderAlbert:           "Albert API                 l'IA souveraine de l'État (recommandé)",
+		justcode.ProviderMistral:          "Mistral AI                 modèles de Mistral AI, hors infrastructure de l'État",
+		justcode.ProviderOpenAICompatible: "Compatible OpenAI          toute plateforme compatible OpenAI (Scaleway, OpenRouter…)",
+	}
+	defaultKinds := []string{string(justcode.ProviderAlbert)}
+	if len(current) > 0 {
+		defaultKinds = defaultKinds[:0]
+		for _, p := range current {
+			defaultKinds = append(defaultKinds, p.Kind)
+		}
+	}
+	selected := defaultKinds
+	if !wizardHuhFn() {
+		// Without a terminal the Space/Enter multi-select cannot be rendered.
+		// Keep the historical answer: the journal's platforms when resuming,
+		// Albert API otherwise. Interactive runs offer the full choice.
+		fmt.Println("[1/3] Plateformes d'inférence")
+		fmt.Println()
+		fmt.Println("Choisissez où l'agent envoie ses demandes. Vous pouvez en connecter plusieurs.")
+		fmt.Println()
+		if len(current) == 0 {
+			selected = []string{string(justcode.ProviderAlbert)}
+		}
+	} else {
+		var options []huh.Option[string]
+		for _, kind := range order {
+			options = append(options, huh.NewOption(labels[kind], string(kind)))
+		}
+		err := huhRun(huh.NewForm(huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("[1/3] Plateformes d'inférence").
+				Description("Choisissez où l'agent envoie ses demandes. Vous pouvez en connecter plusieurs.\n\nEspace : cocher ou décocher. Entrée : valider.").
+				Validate(func(values []string) error {
+					if len(values) == 0 {
+						return fmt.Errorf("connectez au moins une plateforme d'inférence")
+					}
+					return nil
+				}).
+				Options(options...).
+				Value(&selected),
+		)))
+		if errors.Is(err, huh.ErrUserAborted) {
+			return nil, fmt.Errorf("setup cancelled")
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("connectez au moins une plateforme d'inférence")
+	}
+	var out []justcode.SetupPlatform
+	seen := map[string]bool{}
+	for _, kind := range order {
+		for _, chosen := range selected {
+			if chosen != string(kind) || seen[chosen] {
+				continue
+			}
+			seen[chosen] = true
+			entry := justcode.SetupPlatform{Kind: string(kind)}
+			for _, old := range current {
+				if old.Kind == string(kind) {
+					entry.Name = old.Name
+					entry.BaseURL = old.BaseURL
+					entry.Verified = old.Verified
+				}
+			}
+			out = append(out, entry)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("plateforme inconnue ; choisissez albert, mistral ou openai-compatible")
+	}
+	return out, nil
+}
+
+// promptProviderEndpoint collects the name and base URL of the
+// OpenAI-compatible platform, which cannot be defaulted.
+func promptProviderEndpoint(in *bufio.Reader, provider justcode.InferenceProvider) (justcode.InferenceProvider, error) {
+	name := provider.Name
+	baseURL := provider.BaseURL
+	for {
+		if wizardHuhFn() {
+			if err := huhRun(huh.NewForm(huh.NewGroup(
+				huh.NewInput().Title("Nom de la plateforme (ex. Scaleway)").Value(&name),
+				huh.NewInput().Title("URL de base (ex. https://api.scaleway.ai/v1)").Value(&baseURL),
+			))); err != nil {
+				if errors.Is(err, huh.ErrUserAborted) {
+					return provider, fmt.Errorf("setup cancelled")
+				}
+				return provider, err
+			}
+		} else {
+			answer, ok := promptLine(in, "Nom de la plateforme (ex. Scaleway) : ")
+			if !ok {
+				return provider, fmt.Errorf("setup cancelled")
+			}
+			if strings.TrimSpace(answer) != "" {
+				name = strings.TrimSpace(answer)
+			}
+			answer, ok = promptLine(in, "URL de base (ex. https://api.scaleway.ai/v1) : ")
+			if !ok {
+				return provider, fmt.Errorf("setup cancelled")
+			}
+			if strings.TrimSpace(answer) != "" {
+				baseURL = strings.TrimSpace(answer)
+			}
+		}
+		resolved, err := justcode.ResolveProvider(justcode.ProviderSettings{
+			Kind: justcode.ProviderOpenAICompatible, Name: name, BaseURL: baseURL,
+		})
+		if err == nil {
+			return resolved, nil
+		}
+		fmt.Printf("%v\n", err)
+		if !stdinIsTTYFn() {
+			return provider, err
+		}
+	}
+}
+
+// providerStoreLine mirrors the Albert screen's store wording.
+func providerStoreLine(fallback bool) string {
+	if fallback {
+		return "La clé est enregistrée dans un fichier de ce poste, lisible par votre seul compte, jamais dans vos projets."
+	}
+	return "La clé est enregistrée dans le trousseau de ce poste, jamais dans vos projets."
+}
+
+// offStateWarning is the required notice for every platform other than
+// Albert API.
+func offStateWarning(name string) string {
+	return fmt.Sprintf("Vos demandes et les extraits de code envoyés à l'agent partent vers %s,\nhors de l'infrastructure de l'État.", name)
+}
+
+// providerKeyScreenHeader is the [1/3] screen for one platform. Albert keeps
+// its unchanged copy; the other platforms carry the off-State warning.
+func providerKeyScreenHeader(provider justcode.InferenceProvider, fallback bool) string {
+	switch provider.Kind {
+	case justcode.ProviderMistral:
+		return fmt.Sprintf(`[1/3] Clé Mistral AI
+
+L'agent peut utiliser les modèles de Mistral AI.
+%s
+Vous n'avez pas encore de clé ?
+  Créez-la ici : https://console.mistral.ai
+
+%s
+`, providerStoreLine(fallback), offStateWarning(provider.Name))
+	case justcode.ProviderOpenAICompatible:
+		return fmt.Sprintf(`[1/3] Clé %s
+
+Plateforme : %s
+URL de base : %s
+%s
+Mistral AI et les plateformes compatibles OpenAI lisent leur catalogue de modèles à l'exécution.
+
+%s
+`, provider.Name, provider.Name, provider.BaseURL, providerStoreLine(fallback), offStateWarning(provider.Name))
+	default:
+		return albertKeyScreenHeader(fallback)
+	}
+}
+
+// providerKeyPrompt labels the masked input.
+func providerKeyPrompt(provider justcode.InferenceProvider) string {
+	if provider.Kind == justcode.ProviderAlbert {
+		return albertKeyPrompt
+	}
+	return "Collez votre clé (elle ne s'affiche pas) : "
+}
+
+// providerRejectedMessage explains a refused key for the platform.
+func providerRejectedMessage(provider justcode.InferenceProvider, detail string) string {
+	switch provider.Kind {
+	case justcode.ProviderMistral:
+		return fmt.Sprintf("Mistral AI a refusé cette clé (%s). Vérifiez qu'elle est complète, sans espace, ou créez-en une nouvelle : https://console.mistral.ai", detail)
+	case justcode.ProviderOpenAICompatible:
+		return fmt.Sprintf("%s a refusé cette clé (%s). Vérifiez qu'elle est complète et active.", provider.Name, detail)
+	default:
+		return albertRejectedMessage(detail)
+	}
+}
+
+// providerUnreachableMessage distinguishes a network or proxy failure from a
+// refusal.
+func providerUnreachableMessage(provider justcode.InferenceProvider) string {
+	switch provider.Kind {
+	case justcode.ProviderAlbert:
+		return albertUnreachableMessage
+	default:
+		return fmt.Sprintf("%s ne répond pas. Vérifiez votre connexion, le proxy de votre administration ou l'URL de base.", provider.Name)
+	}
+}
+
+// providerKeyStage runs the masked-key loop for one platform: validate,
+// explain, re-ask on a refusal, offer retry or continue on an unreachable
+// endpoint. It returns whether the stored key passed validation.
+func providerKeyStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, provider justcode.InferenceProvider, fallback bool, stateDir string) (justcode.InferenceProvider, bool, error) {
+	fmt.Println(providerKeyScreenHeader(provider, fallback))
+	if _, err := w.ResolveStore(ctx); err != nil {
+		return provider, false, err
+	}
+	for {
+		var key string
+		if wizardHuhFn() {
+			value, err := huhSecret("Clé "+provider.Name, "L'entrée est masquée. Laissez vide pour annuler.")
+			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+				return provider, false, err
+			}
+			key = value
+		} else {
+			value, ok := promptSecret(in, providerKeyPrompt(provider))
+			if !ok {
+				return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
+			}
+			key = value
+		}
+		if key == "" {
+			return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
+		}
+		probe, err := w.ValidateProviderCredential(ctx, provider, key)
+		if err != nil {
+			return provider, false, err
+		}
+		if probe.Rejected {
+			fmt.Println(providerRejectedMessage(provider, probe.Detail))
+			fmt.Println()
+			continue
+		}
+		if probe.Incompatible {
+			fmt.Printf("La réponse de %s n'est pas un catalogue de modèles compatible OpenAI. Vérifiez l'URL de base (elle doit pointer vers la racine de l'API, par exemple https://api.scaleway.ai/v1). (%s)\n\n", provider.Name, probe.Detail)
+			if provider.Kind == justcode.ProviderOpenAICompatible {
+				updated, uerr := promptProviderEndpoint(in, provider)
+				if uerr != nil {
+					return provider, false, uerr
+				}
+				provider = updated
+				fmt.Println(providerKeyScreenHeader(provider, fallback))
+			}
+			continue
+		}
+		if probe.Unreachable {
+			fmt.Printf("%s (%s)\n", providerUnreachableMessage(provider), probe.Detail)
+			retry, abort := credentialRetryChoice(in, providerUnreachableMessage(provider))
+			if abort {
+				return provider, false, fmt.Errorf("%s", cancelMsg(stateDir))
+			}
+			if retry {
+				fmt.Println()
+				continue
+			}
+		}
+		if err := w.PutCredential(ctx, provider.CredentialKind, key); err != nil {
+			return provider, false, err
+		}
+		verified := !probe.Unreachable
+		if probe.Unreachable {
+			fmt.Println("Clé enregistrée sans vérification.")
+		} else {
+			fmt.Println("✅ Clé valide.")
+		}
+		return provider, verified, nil
+	}
 }
 
 func setupCompletionMessage() string {
@@ -841,10 +1215,13 @@ func hostGitIdentity() (string, string) {
 
 var hostGitIdentityFn = hostGitIdentity
 
-func setupModelLabel(id string) string {
-	id = strings.TrimPrefix(id, "albert/")
+func setupModelLabel(ref string) string {
+	kind, id := justcode.ProviderModelID(ref)
+	if kind != justcode.ProviderAlbert {
+		return id
+	}
 	for _, model := range justcode.CuratedAlbertModels() {
-		if id == model.ID || id == model.OpenCodeID || id == model.Ref() {
+		if id == model.ID || id == model.OpenCodeID || ref == model.Ref() || ref == "albert/"+model.ID {
 			return model.Name
 		}
 	}
@@ -894,13 +1271,16 @@ func defaultSetupModel() string {
 
 func setupModelEnabled(model string, ids []string) bool {
 	model = canonicalSetupModelRef(model)
+	kind, id := justcode.ProviderModelID(model)
+	if kind != justcode.ProviderAlbert {
+		return containsString(ids, model) || containsString(ids, id)
+	}
 	for _, choice := range justcode.CuratedAlbertModels() {
 		if choice.Ref() == model && containsString(ids, choice.ID) {
 			return true
 		}
 	}
-	id := strings.TrimPrefix(model, "albert/")
-	return containsString(ids, id)
+	return containsString(ids, id) || containsString(ids, "albert/"+id)
 }
 
 func canonicalSetupModelRef(model string) string {
@@ -909,7 +1289,7 @@ func canonicalSetupModelRef(model string) string {
 			return choice.Ref()
 		}
 	}
-	if model == "" || strings.HasPrefix(model, "albert/") || strings.Contains(model, "/") {
+	if model == "" || strings.Contains(model, "/") {
 		return model
 	}
 	return "albert/" + model
@@ -933,24 +1313,51 @@ func setupModelRef(id string) string {
 	return "albert/" + id
 }
 
+// setupModelRefForSelected returns the reference to store as default for a
+// selected settings entry: a provider reference stays as-is, a bare value is
+// an Albert model ID.
+func setupModelRefForSelected(id string) string {
+	if kind, _ := justcode.SplitModelRef(id); isSetupProviderKind(kind) {
+		return canonicalSetupModelRef(id)
+	}
+	return setupModelRef(id)
+}
+
+func isSetupProviderKind(kind justcode.ProviderKind) bool {
+	switch kind {
+	case justcode.ProviderAlbert, justcode.ProviderMistral, justcode.ProviderOpenAICompatible:
+		return true
+	}
+	return false
+}
+
 func parseSetupModelIDs(input string) []string {
 	var ids []string
 	seen := map[string]bool{}
 	for _, raw := range strings.Split(input, ",") {
 		id := strings.TrimSpace(raw)
-		for _, choice := range justcode.CuratedAlbertModels() {
-			if id == choice.Ref() {
-				id = choice.ID
-				break
+		if kind, rest := justcode.SplitModelRef(id); isSetupProviderKind(kind) {
+			if kind == justcode.ProviderAlbert {
+				id = canonicalSetupModelID("albert/" + rest)
+			} else {
+				id = string(kind) + "/" + rest
 			}
 		}
-		id = strings.TrimPrefix(id, "albert/")
 		if id != "" && !seen[id] {
 			ids = append(ids, id)
 			seen[id] = true
 		}
 	}
 	return ids
+}
+
+func providersContain(providers []justcode.InferenceProvider, kind justcode.ProviderKind) bool {
+	for _, provider := range providers {
+		if provider.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 var setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
@@ -968,17 +1375,55 @@ var setupModelCatalogueFn = func() (justcode.Catalogue, bool, error) {
 	return cache.Load(context.Background())
 }
 
+// setupModelChoice is one selectable model, from any configured platform.
+type setupModelChoice struct {
+	Provider    justcode.ProviderKind
+	ID          string
+	RefID       string
+	Name        string
+	Description string
+	Default     bool
+	Group       string
+}
+
+// Ref is the OpenCode model reference and the picker's identity.
+func (c setupModelChoice) Ref() string {
+	return string(c.Provider) + "/" + c.RefID
+}
+
+// albertSetupChoices converts the curated Albert set.
+func albertSetupChoices() []setupModelChoice {
+	curated := justcode.CuratedAlbertModels()
+	out := make([]setupModelChoice, 0, len(curated))
+	for _, choice := range curated {
+		out = append(out, setupModelChoice{
+			Provider: justcode.ProviderAlbert, ID: choice.ID, RefID: choice.OpenCodeID,
+			Name: choice.Name, Description: choice.Description, Default: choice.Default,
+		})
+	}
+	return out
+}
+
+// setupModelCatalogueFor loads the catalogue of one non-Albert platform.
+// Tests inject their own loader.
+var setupProviderCatalogueFn = func(provider justcode.InferenceProvider) ([]justcode.CatalogueModel, error) {
+	apiKey, err := resolveProviderKeyForCatalogue(provider)
+	if err != nil {
+		return nil, err
+	}
+	return justcode.FetchProviderModels(context.Background(), nil, provider, apiKey)
+}
+
 type setupModelPicker struct {
-	choices          []justcode.AlbertModelChoice
-	selected         map[string]bool
-	available        map[string]bool
-	catalogueChecked bool
-	cursor           int
-	defaultModel     string
-	externalDefault  bool
-	errorMessage     string
-	cancelled        bool
-	done             bool
+	choices         []setupModelChoice
+	selected        map[string]bool
+	unavailable     map[string]bool
+	cursor          int
+	defaultModel    string
+	externalDefault bool
+	errorMessage    string
+	cancelled       bool
+	done            bool
 }
 
 func (m setupModelPicker) Init() tea.Cmd { return nil }
@@ -1005,30 +1450,30 @@ func (m setupModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = (m.cursor + 1) % len(m.choices)
 		m.errorMessage = ""
 	case tea.KeySpace:
-		if !m.isAvailable(choice.ID) {
-			m.errorMessage = "Ce modèle est indisponible dans le catalogue Albert API."
+		if !m.isAvailable(choice.Ref()) {
+			m.errorMessage = "Ce modèle est indisponible dans le catalogue de sa plateforme."
 			break
 		}
-		if m.selected[choice.ID] {
+		if m.selected[choice.Ref()] {
 			if m.selectedCount() == 1 {
 				m.errorMessage = "Sélectionnez au moins un modèle."
 				break
 			}
-			delete(m.selected, choice.ID)
+			delete(m.selected, choice.Ref())
 			if m.defaultModel == choice.Ref() {
 				m.defaultModel = m.firstSelectedRef()
 			}
 		} else {
-			m.selected[choice.ID] = true
+			m.selected[choice.Ref()] = true
 		}
 		m.errorMessage = ""
 	case tea.KeyLeft, tea.KeyRight:
-		if !m.selected[choice.ID] {
+		if !m.selected[choice.Ref()] {
 			m.errorMessage = "Cochez d'abord le modèle choisi par défaut."
 			break
 		}
-		if !m.isAvailable(choice.ID) {
-			m.errorMessage = "Ce modèle est indisponible dans le catalogue Albert API."
+		if !m.isAvailable(choice.Ref()) {
+			m.errorMessage = "Ce modèle est indisponible dans le catalogue de sa plateforme."
 			break
 		}
 		m.defaultModel = choice.Ref()
@@ -1051,25 +1496,33 @@ func (m setupModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m setupModelPicker) View() tea.View {
 	var b strings.Builder
 	b.WriteString("[2/3] Sélection des modèles à utiliser\n\n")
-	b.WriteString("Choisissez les modèles Albert API que l'agent pourra utiliser.\n")
+	b.WriteString("Choisissez les modèles que l'agent pourra utiliser.\n")
 	b.WriteString("Vous pourrez passer de l'un à l'autre pendant une session avec /models.\n\n")
 	if m.externalDefault {
-		b.WriteString("Modèle actuel hors Albert API : " + m.defaultModel + " (conservé avec Entrée).\n\n")
+		b.WriteString("Modèle actuel hors catalogue : " + m.defaultModel + " (conservé avec Entrée).\n\n")
 	}
+	lastGroup := ""
 	for index, choice := range m.choices {
+		if choice.Group != "" && choice.Group != lastGroup {
+			if lastGroup != "" {
+				b.WriteString("\n")
+			}
+			b.WriteString(choice.Group + "\n")
+			lastGroup = choice.Group
+		}
 		cursor := "  "
 		if index == m.cursor {
 			cursor = "> "
 		}
 		mark := "[ ]"
-		if m.selected[choice.ID] {
+		if m.selected[choice.Ref()] {
 			mark = "[x]"
 		}
-		line := fmt.Sprintf("%s%s %-19s %s", cursor, mark, choice.Name, choice.Description)
+		line := fmt.Sprintf("%s%s %-32s %s", cursor, mark, choice.Name, choice.Description)
 		if m.defaultModel == choice.Ref() {
 			line += " (par défaut)"
 		}
-		if !m.isAvailable(choice.ID) {
+		if !m.isAvailable(choice.Ref()) {
 			line += " (indisponible)"
 			line = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(line)
 		}
@@ -1084,14 +1537,14 @@ func (m setupModelPicker) View() tea.View {
 	return tea.NewView(b.String())
 }
 
-func (m setupModelPicker) isAvailable(id string) bool {
-	return !m.catalogueChecked || m.available[id]
+func (m setupModelPicker) isAvailable(ref string) bool {
+	return !m.unavailable[ref]
 }
 
 func (m setupModelPicker) selectedCount() int {
 	count := 0
-	for id, selected := range m.selected {
-		if selected && m.isAvailable(id) {
+	for ref, selected := range m.selected {
+		if selected && m.isAvailable(ref) {
 			count++
 		}
 	}
@@ -1100,7 +1553,7 @@ func (m setupModelPicker) selectedCount() int {
 
 func (m setupModelPicker) firstSelectedRef() string {
 	for _, choice := range m.choices {
-		if m.selected[choice.ID] && m.isAvailable(choice.ID) {
+		if m.selected[choice.Ref()] && m.isAvailable(choice.Ref()) {
 			return choice.Ref()
 		}
 	}
@@ -1110,7 +1563,7 @@ func (m setupModelPicker) firstSelectedRef() string {
 func (m setupModelPicker) defaultModelSelected() bool {
 	for _, choice := range m.choices {
 		if choice.Ref() == m.defaultModel {
-			return m.selected[choice.ID] && m.isAvailable(choice.ID)
+			return m.selected[choice.Ref()] && m.isAvailable(choice.Ref())
 		}
 	}
 	return false
@@ -1131,75 +1584,145 @@ var setupModelPickerRun = func(initial setupModelPicker) (setupModelPicker, erro
 	return final, nil
 }
 
-func promptSetupModels(current []string, currentDefault string) ([]string, string, bool, error) {
-	choices := justcode.CuratedAlbertModels()
-	for index, id := range current {
-		current[index] = canonicalSetupModelID(id)
-	}
-	for _, id := range current {
-		if !isCuratedAlbertModelID(choices, id) {
-			choices = append(choices, justcode.AlbertModelChoice{
-				ID:          id,
-				OpenCodeID:  id,
-				Reference:   "albert/" + id,
-				Name:        "Modèle actuel",
-				Description: id + " (conservé depuis les réglages existants)",
-			})
+func promptSetupModels(providers []justcode.InferenceProvider, current []string, currentDefault string) ([]string, string, bool, error) {
+	var choices []setupModelChoice
+	unavailable := map[string]bool{}
+	albertConfigured := false
+	for _, provider := range providers {
+		if provider.Kind == justcode.ProviderAlbert {
+			albertConfigured = true
 		}
 	}
-	catalogue, fresh, catalogueErr := setupModelCatalogueFn()
-	catalogueUsable := catalogueErr == nil && fresh
-	available := map[string]bool{}
-	if catalogueErr == nil {
-		for _, choice := range choices {
-			if choice.Reference != "" {
-				available[choice.ID] = true
-			} else {
-				_, available[choice.ID] = catalogue.Find(choice.ID)
+	if albertConfigured {
+		catalogue, fresh, catalogueErr := setupModelCatalogueFn()
+		catalogueUsable := catalogueErr == nil && fresh
+		curated := albertSetupChoices()
+		for _, choice := range curated {
+			choice.Group = "Albert API"
+			if catalogueUsable {
+				if _, ok := catalogue.Find(choice.ID); !ok {
+					unavailable[choice.Ref()] = true
+				}
+			}
+			choices = append(choices, choice)
+		}
+		for _, raw := range current {
+			kind, id := justcode.ProviderModelID(raw)
+			if kind != justcode.ProviderAlbert || id == "" {
+				continue
+			}
+			known := false
+			for _, choice := range curated {
+				if choice.ID == id || choice.RefID == id {
+					known = true
+				}
+			}
+			if !known {
+				choices = append(choices, setupModelChoice{
+					Provider: justcode.ProviderAlbert, ID: id, RefID: id, Name: "Modèle actuel",
+					Description: id + " (conservé depuis les réglages existants)", Group: "Albert API",
+				})
 			}
 		}
-		if !fresh {
-			fmt.Println("Catalogue indisponible : sélection par défaut conservée.")
+		if !catalogueUsable {
+			fmt.Println("Catalogue Albert API indisponible : sélection par défaut conservée.")
 		}
-	} else {
-		fmt.Println("Catalogue indisponible : sélection par défaut conservée.")
+	}
+	for _, provider := range providers {
+		if provider.Kind == justcode.ProviderAlbert {
+			continue
+		}
+		models, err := setupProviderCatalogueFn(provider)
+		if err != nil {
+			fmt.Printf("Catalogue %s indisponible : sélection actuelle conservée.\n", provider.Name)
+			for _, id := range justcode.ProviderModelIDs(current, provider.Kind) {
+				choices = append(choices, setupModelChoice{
+					Provider: provider.Kind, ID: id, RefID: id, Name: id,
+					Description: "conservé depuis les réglages existants", Group: provider.Name,
+				})
+			}
+			continue
+		}
+		known := map[string]bool{}
+		for _, model := range models {
+			known[model.ID] = true
+			choices = append(choices, setupModelChoice{
+				Provider: provider.Kind, ID: model.ID, RefID: model.ID,
+				Name: model.ID, Group: provider.Name,
+			})
+		}
+		for _, id := range justcode.ProviderModelIDs(current, provider.Kind) {
+			if !known[id] {
+				choices = append(choices, setupModelChoice{
+					Provider: provider.Kind, ID: id, RefID: id, Name: "Modèle actuel",
+					Description: id + " (conservé depuis les réglages existants)", Group: provider.Name,
+				})
+				unavailable[string(provider.Kind)+"/"+id] = true
+			}
+		}
+	}
+	if len(choices) == 0 {
+		return nil, "", false, fmt.Errorf("aucun modèle n'est disponible sur les plateformes configurées")
+	}
+
+	selected := map[string]bool{}
+	for _, choice := range choices {
+		matches := false
+		if choice.Provider == justcode.ProviderAlbert {
+			for _, id := range current {
+				kind, raw := justcode.ProviderModelID(id)
+				if kind != justcode.ProviderAlbert {
+					continue
+				}
+				if raw == choice.ID || justcode.ProviderModelRef(kind, raw) == choice.Ref() {
+					matches = true
+				}
+			}
+		} else {
+			matches = containsString(current, choice.Ref())
+		}
+		if matches && !unavailable[choice.Ref()] {
+			selected[choice.Ref()] = true
+		}
 	}
 	if len(current) == 0 {
-		current = defaultSetupModelIDs()
-	}
-	var selectedIDs []string
-	for _, choice := range choices {
-		if containsString(current, choice.ID) && (!catalogueUsable || available[choice.ID]) {
-			selectedIDs = append(selectedIDs, choice.ID)
+		// Fresh selection: the curated Albert defaults when Albert is
+		// connected, otherwise the first available model of the first
+		// platform.
+		for _, choice := range choices {
+			if choice.Provider == justcode.ProviderAlbert && choice.Default && !unavailable[choice.Ref()] {
+				selected[choice.Ref()] = true
+			}
 		}
 	}
-	if len(selectedIDs) == 0 {
+	if len(selected) == 0 {
 		for _, choice := range choices {
-			if !catalogueUsable || available[choice.ID] {
-				selectedIDs = append(selectedIDs, choice.ID)
+			if !unavailable[choice.Ref()] {
+				selected[choice.Ref()] = true
 				break
 			}
 		}
 	}
-	if len(selectedIDs) == 0 {
-		return nil, "", false, fmt.Errorf("aucun modèle sélectionné n'est disponible dans le catalogue Albert API")
-	}
-	selected := make(map[string]bool, len(selectedIDs))
-	for _, id := range selectedIDs {
-		selected[id] = true
+	if len(selected) == 0 {
+		return nil, "", false, fmt.Errorf("aucun modèle sélectionné n'est disponible dans les catalogues")
 	}
 	defaultModel := canonicalSetupModelRef(currentDefault)
-	externalDefault := defaultModel != "" && !strings.HasPrefix(defaultModel, "albert/")
-	if !setupModelEnabled(defaultModel, selectedIDs) && !externalDefault {
-		defaultModel = setupModelRef(selectedIDs[0])
+	// A default belonging to a managed platform that is no longer connected
+	// must be replaced: keeping it would save an unusable model. Only a
+	// genuinely unmanaged reference (e.g. a custom provider) is preserved.
+	managedDefault := strings.HasPrefix(defaultModel, "albert/") ||
+		strings.HasPrefix(defaultModel, "mistral/") ||
+		strings.HasPrefix(defaultModel, "openai-compatible/")
+	externalDefault := defaultModel != "" && !setupModelRefKnown(defaultModel, choices) && !managedDefault
+	if !selected[defaultModel] && !externalDefault {
+		defaultModel = firstSelectedChoiceRef(choices, selected)
 	}
 	initial := setupModelPicker{
-		choices:          choices,
-		selected:         selected,
-		available:        available,
-		catalogueChecked: catalogueUsable,
-		defaultModel:     defaultModel,
-		externalDefault:  externalDefault,
+		choices:         choices,
+		selected:        selected,
+		unavailable:     unavailable,
+		defaultModel:    defaultModel,
+		externalDefault: externalDefault,
 	}
 	picked, err := setupModelPickerRun(initial)
 	if err != nil {
@@ -1210,20 +1733,33 @@ func promptSetupModels(current []string, currentDefault string) ([]string, strin
 	}
 	var modelIDs []string
 	for _, choice := range choices {
-		if picked.selected[choice.ID] && picked.isAvailable(choice.ID) {
-			modelIDs = append(modelIDs, choice.ID)
+		if picked.selected[choice.Ref()] && picked.isAvailable(choice.Ref()) {
+			if choice.Provider == justcode.ProviderAlbert {
+				modelIDs = append(modelIDs, choice.ID)
+			} else {
+				modelIDs = append(modelIDs, choice.Ref())
+			}
 		}
 	}
 	return modelIDs, picked.defaultModel, true, nil
 }
 
-func isCuratedAlbertModelID(choices []justcode.AlbertModelChoice, id string) bool {
+func setupModelRefKnown(ref string, choices []setupModelChoice) bool {
 	for _, choice := range choices {
-		if choice.ID == id {
+		if choice.Ref() == ref {
 			return true
 		}
 	}
 	return false
+}
+
+func firstSelectedChoiceRef(choices []setupModelChoice, selected map[string]bool) string {
+	for _, choice := range choices {
+		if selected[choice.Ref()] {
+			return choice.Ref()
+		}
+	}
+	return ""
 }
 
 func containsString(values []string, want string) bool {

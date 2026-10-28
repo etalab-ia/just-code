@@ -11,6 +11,11 @@ Le niveau d'isolation ne détermine pas à lui seul ce qu'un agent peut lire : c
 | Tart | Non | La clé est lisible dans l'invité, en `backend` comme en `full` |
 | agent-vm | Non | Idem |
 
+Les clés Mistral AI et de la plateforme compatible OpenAI suivent la même règle
+par runtime : substituées par le proxy vers leur seul hôte sur Microsandbox,
+lisibles dans l'invité sur Tart et agent-vm (l'acquittement
+`--acknowledge-guest-credentials` couvre l'ensemble des clés d'inférence).
+
 Sur Microsandbox, le secret est déclaré via l'API de secrets du runtime et la substitution réseau se fait à la frontière : passer en `full` place le TUI dans la microVM sans exposer la clé pour autant. Un sandbox créé par une version antérieure, qui persistait la clé en clair dans l'environnement invité, est refusé au démarrage avec la commande de recréation à lancer ; l'ancienne valeur ne peut pas être remplacée sur place. Si l'environnement invité ne peut pas être relu, le démarrage est refusé de la même façon : sans cette lecture, rien ne distingue un sandbox sain d'un sandbox qui expose encore la clé.
 
 Sur Tart et agent-vm, les secrets ne passent jamais par la ligne de commande : en mode `full` ils sont transmis sur l'entrée standard (Tart) ou par un fichier `0600` copié dans l'invité (agent-vm), et le TUI les lit depuis ce fichier. Le fichier porte aussi la configuration du provider Albert, sans quoi le TUI n'aurait pas de modèle à utiliser. Ces deux runtimes n'ont pas de proxy audité : la clé y est en clair dans l'invité, quel que soit le niveau d'isolation. Le démarrage l'exige donc explicitement : sans `--acknowledge-guest-credentials`, `start` est refusé ; avec, l'avertissement reste affiché à chaque démarrage. Réservez-les aux travaux qui n'ont pas besoin de la clé, ou traitez l'invité comme portant un identifiant vivant.
@@ -21,10 +26,10 @@ Sur Tart et agent-vm, les secrets ne passent jamais par la ligne de commande : e
 `just-code auth` stocke les identifiants globaux dans le magasin natif de l'OS — Keychain macOS, Gestionnaire d'identifiants Windows, Secret Service Linux — jamais dans un fichier projet ni un profil shell. Les commandes :
 
 ```bash
-just-code auth add [albert|github|context7]   # saisie masquée interactive (ou --stdin pour un pipe)
+just-code auth add [albert|mistral|openai-compatible|github|context7]   # saisie masquée interactive (ou --stdin pour un pipe)
 just-code auth status                         # état du magasin, jamais les valeurs
-just-code auth remove [albert|github|context7] # révocation puis suppression
-just-code auth use-fallback [albert|github|context7] # enregistre qu'une valeur déjà stockée vit dans le fichier
+just-code auth remove [albert|mistral|openai-compatible|github|context7] # révocation puis suppression
+just-code auth use-fallback [albert|mistral|openai-compatible|github|context7] # enregistre qu'une valeur déjà stockée vit dans le fichier
 ```
 
 Le secret ne passe jamais par la ligne de commande (argv) : la saisie interactive est masquée, `--stdin` lit une ligne sur l'entrée standard. Sur les hôtes sans magasin natif (Linux headless sans Secret Service), le repli `--fallback` écrit un fichier JSON `0600` dans le répertoire de configuration — **jamais créé implicitement** : sans consentement explicite (`auth add --fallback`), toute écriture échoue.
@@ -59,7 +64,7 @@ l'état local de l'hôte — jamais dans le dépôt.
 
 ## Liaisons d'identifiants (`bindings`)
 
-Sur Microsandbox, les identifiants sont injectés par le proxy de secrets : la valeur brute n'est jamais persistée (ni dans la base du runtime, ni dans l'environnement invité) — la liaison est une référence à une variable d'environnement hôte, re-résolue à chaque application et à chaque démarrage. La liaison `albert` est obligatoire ; `github` et `context7` sont **optionnelles et approuvées projet par projet** :
+Sur Microsandbox, les identifiants sont injectés par le proxy de secrets : la valeur brute n'est jamais persistée (ni dans la base du runtime, ni dans l'environnement invité) — la liaison est une référence à une variable d'environnement hôte, re-résolue à chaque application et à chaque démarrage. Chaque plateforme connectée a une liaison obligatoire, limitée à son propre hôte : `ALBERT_API_KEY` vers `albert.api.etalab.gouv.fr`, `MISTRAL_API_KEY` vers `api.mistral.ai`, `OPENAI_COMPATIBLE_API_KEY` vers l'hôte de l'URL de base saisie. Ces hôtes sont disjoints : une clé ne peut jamais être substituée vers la destination d'une autre plateforme. `github` et `context7` restent **optionnelles et approuvées projet par projet** :
 
 ```bash
 just-code bindings list              # liaisons connues, approbations, état du magasin

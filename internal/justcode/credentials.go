@@ -29,6 +29,11 @@ type CredentialKind string
 const (
 	// CredentialAlbert is the Albert API key.
 	CredentialAlbert CredentialKind = "albert"
+	// CredentialMistral is the Mistral AI key.
+	CredentialMistral CredentialKind = "mistral"
+	// CredentialOpenAICompatible is the key of the user-named
+	// OpenAI-compatible platform (one platform of that kind per host).
+	CredentialOpenAICompatible CredentialKind = "openai-compatible"
 	// CredentialGithub is a GitHub token, bound into the guest only after
 	// explicit per-project approval (P09).
 	CredentialGithub CredentialKind = "github"
@@ -40,7 +45,17 @@ const (
 // The store itself accepts arbitrary service names so a credentialRef can
 // name a non-standard entry (e.g. a second Albert key).
 func KnownCredentialKinds() []CredentialKind {
-	return []CredentialKind{CredentialAlbert, CredentialGithub, CredentialContext7}
+	return []CredentialKind{CredentialAlbert, CredentialMistral, CredentialOpenAICompatible, CredentialGithub, CredentialContext7}
+}
+
+// IsKnownCredentialKind reports whether the CLI manages this kind.
+func IsKnownCredentialKind(kind string) bool {
+	for _, known := range KnownCredentialKinds() {
+		if string(known) == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // credentialService maps a kind to the native store service name. The

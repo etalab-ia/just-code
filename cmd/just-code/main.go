@@ -38,7 +38,7 @@ func run(args []string) (int, error) {
 	// The in-VM bootstrap is a hidden subcommand of this same binary. It runs
 	// inside the Tart guest and must not touch host config or load .env.
 	if len(args) > 0 && args[0] == justcode.GuestBootstrapCommand {
-		models, err := parseGuestAlbertModels(argOr(args, justcode.GuestBootstrapModelsArgIndex, ""))
+		overlay, err := justcode.DecodeGuestOverlay(argOr(args, justcode.GuestBootstrapModelsArgIndex, ""))
 		if err != nil {
 			return 2, fmt.Errorf("invalid guest bootstrap model configuration: %w", err)
 		}
@@ -52,7 +52,7 @@ func run(args []string) (int, error) {
 			MTU:      argOr(args, 3, ""),
 			// The model selection (P10) is non-secret managed configuration
 			// and rides argv; secrets never do.
-			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), Models: models, MCPConnectors: mcps},
+			OpenCodeOverlay: justcode.ManagedOverlay{Model: argOr(args, 4, ""), Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled, MCPConnectors: mcps},
 			// The git identity (P11) rides argv the same way: the guest
 			// cannot read the host settings file.
 			GitName:  argOr(args, 6, ""),
@@ -69,7 +69,7 @@ func run(args []string) (int, error) {
 		return exitCodeOf(nil), justcode.RunGuestPrepare(context.Background(), cfg)
 	}
 	if len(args) > 0 && args[0] == justcode.GuestSecretsCommand {
-		models, err := parseGuestAlbertModels(argOr(args, justcode.GuestSecretsModelsArgIndex, ""))
+		overlay, err := justcode.DecodeGuestOverlay(argOr(args, justcode.GuestSecretsModelsArgIndex, ""))
 		if err != nil {
 			return 2, fmt.Errorf("invalid guest model configuration: %w", err)
 		}
@@ -80,8 +80,8 @@ func run(args []string) (int, error) {
 		// The model selection (P10) is the one managed field the in-guest
 		// secrets file must reflect; argv carries no secrets, and the
 		// overlay is non-secret configuration.
-		overlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), Models: models, MCPConnectors: mcps}
-		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: overlay}
+		guestOverlay := justcode.ManagedOverlay{Model: argOr(args, 2, ""), Models: overlay.Models, Providers: overlay.Providers, AlbertEnabled: overlay.AlbertEnabled, MCPConnectors: mcps}
+		cfg := justcode.GuestConfig{Username: argOr(args, 1, ""), OpenCodeOverlay: guestOverlay}
 		return exitCodeOf(nil), justcode.RunGuestSecrets(cfg)
 	}
 
@@ -237,7 +237,32 @@ func run(args []string) (int, error) {
 		fmt.Fprintf(os.Stderr, "Warning: the project's managed MCP selection cannot be read (%v); continuing without it\n", mcpErr)
 	}
 	modelSelection := resolveModelSelection(projectRoot)
-	overlay := justcode.ManagedOverlay{Model: modelSelection, Models: resolveEnabledAlbertModels(modelSelection), MCPConnectors: mcpSelection}
+	providerSettings, providerErr := resolveProviderSettings()
+	if providerErr != nil {
+		if isLaunchAction(parsed.action) {
+			return 1, fmt.Errorf("cannot resolve the inference platforms: %w", providerErr)
+		}
+		fmt.Fprintf(os.Stderr, "Warning: the inference platforms cannot be resolved (%v); continuing without them\n", providerErr)
+	} else {
+		cfg.Providers, providerErr = justcode.ResolveProviders(providerSettings)
+		if providerErr != nil {
+			if isLaunchAction(parsed.action) {
+				return 1, fmt.Errorf("cannot resolve the inference platforms: %w", providerErr)
+			}
+			fmt.Fprintf(os.Stderr, "Warning: the inference platforms cannot be resolved (%v); continuing without them\n", providerErr)
+		}
+	}
+	var albertModels []justcode.AlbertModelConfig
+	if providersContain(cfg.Providers, justcode.ProviderAlbert) {
+		albertModels = resolveEnabledAlbertModels(modelSelection)
+	}
+	overlay := justcode.ManagedOverlay{
+		Model:         modelSelection,
+		Models:        albertModels,
+		Providers:     resolveProviderOverlays(cfg.Providers, modelSelection),
+		AlbertEnabled: providersContain(cfg.Providers, justcode.ProviderAlbert),
+		MCPConnectors: mcpSelection,
+	}
 	conflictMsg, err := opencodeConfigReview(projectRoot, overlay)
 	startPath := isLaunchAction(parsed.action)
 	if err != nil {
@@ -741,6 +766,66 @@ func resolveModelSelection(projectRoot string) string {
 	return ""
 }
 
+// resolveProviderSettings reads the connected platforms from the user
+// settings. An empty list means the historical Albert-only configuration,
+// which the engine applies as its default.
+func resolveProviderSettings() ([]justcode.ProviderSettings, error) {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return nil, err
+	}
+	us, err := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if err != nil {
+		return nil, err
+	}
+	return us.Providers, nil
+}
+
+// resolveProviderOverlays turns the configured platforms into the non-Albert
+// provider blocks of the managed OpenCode config. Albert keeps its curated
+// model definitions in ManagedOverlay.Models.
+func resolveProviderOverlays(providers []justcode.InferenceProvider, activeModel string) []justcode.ProviderOverlay {
+	path, err := justcode.UserSettingsPath()
+	if err != nil {
+		return nil
+	}
+	us, readErr := justcode.ReadUserSettings(justcode.DefaultFS, path)
+	if readErr != nil {
+		return nil
+	}
+	activeKind, activeID := justcode.ProviderModelID(activeModel)
+	var out []justcode.ProviderOverlay
+	for _, provider := range providers {
+		if provider.Kind == justcode.ProviderAlbert {
+			continue
+		}
+		ids := justcode.ProviderModelIDs(us.Models, provider.Kind)
+		if activeModel != "" && activeKind == provider.Kind && activeID != "" && !containsString(ids, activeID) {
+			ids = append(ids, activeID)
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		models := make([]justcode.ProviderModelConfig, 0, len(ids))
+		for _, id := range ids {
+			ref := string(provider.Kind) + "/" + id
+			config := justcode.ProviderModelConfig{ID: id, Name: id}
+			if apiID := us.ProviderModelIDs[ref]; apiID != "" {
+				config.ModelID = apiID
+			}
+			models = append(models, config)
+		}
+		out = append(out, justcode.ProviderOverlay{
+			Kind:      string(provider.Kind),
+			Name:      provider.Name,
+			BaseURL:   provider.BaseURL,
+			APIKeyEnv: provider.APIKeyEnv,
+			Models:    models,
+		})
+	}
+	return out
+}
+
 func canonicalAlbertModelRef(model string) string {
 	for _, choice := range justcode.CuratedAlbertModels() {
 		if model == "albert/"+choice.ID || model == choice.ID || model == choice.OpenCodeID || model == choice.Ref() {
@@ -765,8 +850,8 @@ func resolveEnabledAlbertModels(activeModel string) []justcode.AlbertModelConfig
 	var ids []string
 	if err == nil {
 		if settings, readErr := justcode.ReadUserSettings(justcode.DefaultFS, path); readErr == nil {
-			for _, id := range settings.Models {
-				ids = append(ids, canonicalAlbertModelID(id))
+			for _, ref := range justcode.ProviderModelIDs(settings.Models, justcode.ProviderAlbert) {
+				ids = append(ids, canonicalAlbertModelID(ref))
 			}
 		}
 	}

@@ -35,6 +35,9 @@ type SetupWizard struct {
 	// ValidateAlbert probes the Albert endpoint with the candidate key.
 	// Nil skips validation (tests decide the outcome explicitly).
 	ValidateAlbert func(ctx context.Context, key string) error
+	// ValidateProvider probes an inference platform's models endpoint with
+	// the candidate key. Nil uses the built-in probe for the platform kind.
+	ValidateProvider func(ctx context.Context, provider InferenceProvider, key string) CredentialProbe
 	// ValidateGitHub probes the GitHub API with the candidate token. Nil
 	// skips validation (tests decide the outcome explicitly).
 	ValidateGitHub func(ctx context.Context, token string) CredentialProbe
@@ -67,7 +70,11 @@ func (w SetupWizard) ResolveStore(ctx context.Context) (SetupStore, error) {
 type CredentialProbe struct {
 	Rejected    bool
 	Unreachable bool
-	Detail      string
+	// Incompatible marks a reachable endpoint whose answer is not a models
+	// listing (an HTML page, a captive portal, a different API). It applies
+	// to OpenAI-compatible platforms, where the user supplies the URL.
+	Incompatible bool
+	Detail       string
 	// Login is the account the credential authenticates as, when the
 	// endpoint reports it (GitHub GET /user). Empty when unknown.
 	Login string
@@ -231,6 +238,31 @@ func (w SetupWizard) ValidateCredential(ctx context.Context, kind CredentialKind
 	return w.probeCredential(ctx, kind, value), nil
 }
 
+// ValidateProviderCredential is ValidateCredential for one resolved platform.
+// It resolves the store first (an unavailable store must fail before the user
+// types anything) and then probes the platform's own models endpoint.
+func (w SetupWizard) ValidateProviderCredential(ctx context.Context, provider InferenceProvider, value string) (CredentialProbe, error) {
+	store, err := w.store(ctx)
+	if err != nil {
+		return CredentialProbe{}, err
+	}
+	if err := store.Verify(ctx); err != nil {
+		if !errors.Is(err, ErrFileStoreAbsent) && !errors.Is(err, ErrFileStoreNotConsented) {
+			return CredentialProbe{}, err
+		}
+	}
+	return w.probeProvider(ctx, provider, value), nil
+}
+
+// probeProvider is the validation half of a platform credential store: it
+// never writes.
+func (w SetupWizard) probeProvider(ctx context.Context, provider InferenceProvider, value string) CredentialProbe {
+	if w.ValidateProvider != nil {
+		return w.ValidateProvider(ctx, provider, value)
+	}
+	return ValidateProviderKey(ctx, nil, provider, value)
+}
+
 // probeCredential is the validation half of StoreCredential: it never writes.
 func (w SetupWizard) probeCredential(ctx context.Context, kind CredentialKind, value string) CredentialProbe {
 	switch kind {
@@ -357,7 +389,7 @@ func (w SetupWizard) SaveIdentity(name, email string) error {
 // modelChosen is false when the model prompt was never answered (EOF, Ctrl-D):
 // the stored model is then left exactly as it was, so an unanswered run cannot
 // silently reset a configuration the user never asked to change.
-func (w SetupWizard) SaveSettings(model string, models []string, modelChosen bool) error {
+func (w SetupWizard) SaveSettings(model string, models []string, modelChosen bool, providers []InferenceProvider) error {
 	path, err := UserSettingsPath()
 	if err != nil {
 		return err
@@ -369,6 +401,12 @@ func (w SetupWizard) SaveSettings(model string, models []string, modelChosen boo
 	if modelChosen {
 		us.DefaultModel = model
 		us.Models = append([]string(nil), models...)
+	}
+	if len(providers) > 0 {
+		us.Providers = make([]ProviderSettings, 0, len(providers))
+		for _, p := range providers {
+			us.Providers = append(us.Providers, ProviderSettings{Kind: p.Kind, Name: p.Name, BaseURL: p.BaseURL})
+		}
 	}
 	if err := WriteUserSettings(w.FS, path, us); err != nil {
 		return err

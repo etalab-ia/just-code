@@ -381,7 +381,7 @@ func envHas(env []string, want string) bool {
 // the TUI sources this file and nothing else supplies the provider, so the
 // OpenCode config content must be in it, shell-quoted like every other value.
 func TestGuestSecretsEnvCarriesProviderConfig(t *testing.T) {
-	content := guestSecretsEnv("pw", "opencode", "key", ManagedOverlay{})
+	content := guestSecretsEnv("pw", "opencode", map[string]string{"ALBERT_API_KEY": "key"}, ManagedOverlay{})
 	if !strings.Contains(content, "OPENCODE_CONFIG_CONTENT='") {
 		t.Fatalf("secrets env must carry the provider config: %q", content)
 	}

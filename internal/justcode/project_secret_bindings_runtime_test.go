@@ -153,7 +153,7 @@ func TestStaleProjectBindingsAreNamedForRemoval(t *testing.T) {
 	// only registered built-ins absent from the desired set.
 	onlyAlbert := []msbSecretBinding{desired[0]}
 	got := staleBindingGuestEnvs(onlyAlbert, nil)
-	if strings.Join(got, ",") != "CONTEXT7_API_KEY,GITHUB_TOKEN" {
+	if strings.Join(got, ",") != "CONTEXT7_API_KEY,GITHUB_TOKEN,MISTRAL_API_KEY,OPENAI_COMPATIBLE_API_KEY" {
 		t.Fatalf("built-in inventory changed: %v", got)
 	}
 }
