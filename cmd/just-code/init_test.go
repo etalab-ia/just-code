@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1439,6 +1441,67 @@ func TestInitRepairsInvalidInheritedAdvancedSettings(t *testing.T) {
 				t.Fatalf("repair not applied: %+v, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestCatalogueValidationAcceptsMinistralAndRejectsOCR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-albert-key" {
+			t.Errorf("catalogue request missing the configured credential")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"ministral-3-8b-instruct-2512","type":"image-text-to-text","max_context_length":262144,"aliases":["openweight-small"]},{"id":"lightonocr-2-1b","type":"image-text-to-text","max_context_length":16384,"aliases":[]}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("ALBERT_API_KEY", "test-albert-key")
+	originalFetch := catalogueModelFetchFn
+	catalogueModelFetchFn = func(ctx context.Context, client *http.Client, apiKey, _ string) (justcode.Catalogue, error) {
+		return justcode.FetchCatalogue(ctx, client, apiKey, server.URL)
+	}
+	t.Cleanup(func() { catalogueModelFetchFn = originalFetch })
+	for _, tc := range []struct {
+		model string
+		valid bool
+	}{
+		{model: "ministral-3-8b-instruct-2512", valid: true},
+		{model: justcode.MinistralSmallModelRef, valid: true},
+		{model: "lightonocr-2-1b", valid: false},
+	} {
+		_, err := catalogueModelWarningForRoot(t.TempDir(), tc.model)
+		if (err == nil) != tc.valid {
+			t.Errorf("model %q validation error = %v, want valid=%v", tc.model, err, tc.valid)
+		}
+	}
+}
+
+func TestInvalidInheritedSmallModelOpensRepairAfterValidMainModel(t *testing.T) {
+	stubCatalogueCheck(t, func(_, model string) (string, error) {
+		if model == "albert/removed-small" {
+			return "", errors.New("small model removed from catalogue")
+		}
+		return "", nil
+	})
+	answers := justcode.InitAnswers{
+		Root: "project", Model: "albert/qwen3-coder", SmallModel: "albert/removed-small",
+	}
+	got := invalidInheritedInitSetting(initOptions{Set: map[string]bool{}}, answers)
+	if got == nil || !strings.Contains(got.Error(), "removed from catalogue") {
+		t.Fatalf("valid main model must not short-circuit small-model repair: %v", got)
+	}
+	root := initTestProject(t)
+	writeManifest(t, root, justcode.ProjectManifest{
+		Runtime: "microsandbox", Isolation: "full", Model: "albert/qwen3-coder", SmallModel: "albert/removed-small",
+	})
+	opts := initOptions{Root: root, Replace: true, Set: map[string]bool{"root": true, "github": true, "skills": true, "skills-storage": true, "mcps": true}}
+	// Keep runtime and isolation, retain main model, reset small model, then apply.
+	input := "\n\n\n\n\ndéfaut\n\ny\n"
+	code, err := initRun(opts, bufio.NewReader(strings.NewReader(input)), true)
+	if code != 0 || err != nil {
+		t.Fatalf("interactive small-model repair failed: code=%d err=%v", code, err)
+	}
+	manifest, err := justcode.ReadProjectManifest(justcode.DefaultFS, justcode.ProjectManifestPath(root))
+	if err != nil || manifest.SmallModel != "" || manifest.Model != "albert/qwen3-coder" {
+		t.Fatalf("repair must reset only the small model: %+v, %v", manifest, err)
 	}
 }
 

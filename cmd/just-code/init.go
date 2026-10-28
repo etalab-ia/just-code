@@ -724,12 +724,14 @@ func invalidInheritedInitSetting(opts initOptions, answers justcode.InitAnswers)
 		return fmt.Errorf("mémoire demandée : %s. Maximum sur ce poste : %s", justcode.FormatMemorySize(answers.MemoryMB), justcode.FormatMemorySize(opts.maxMemoryMB))
 	}
 	if !opts.Set["model"] && strings.TrimSpace(answers.Model) != "" {
-		_, err := validateInitModelInput(answers.Root, answers.Model)
-		return err
+		if _, err := validateInitModelInput(answers.Root, answers.Model); err != nil {
+			return err
+		}
 	}
 	if !opts.Set["small-model"] && strings.TrimSpace(answers.SmallModel) != "" {
-		_, err := validateInitModelInput(answers.Root, answers.SmallModel)
-		return err
+		if _, err := validateInitModelInput(answers.Root, answers.SmallModel); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1814,6 +1816,11 @@ func resolvedOrDefault(value, fallback int) int {
 // that silently depends on them fails on the machine that has them.
 var catalogueModelWarningFn = catalogueModelWarningForRoot
 
+// catalogueModelFetchFn is the network seam for the real validator. Tests
+// replace it with an httptest Albert endpoint, leaving alias translation and
+// chat-type validation under test rather than stubbing the whole validator.
+var catalogueModelFetchFn = justcode.FetchCatalogue
+
 func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
 	apiKey, err := resolveAlbertKeyForCatalogueAt(projectRoot)
 	if err != nil {
@@ -1823,14 +1830,14 @@ func catalogueModelWarningForRoot(projectRoot, model string) (string, error) {
 		FS:  justcode.DefaultFS,
 		Dir: justcode.DefaultStateDir(),
 		Fetch: func(ctx context.Context) (justcode.Catalogue, error) {
-			return justcode.FetchCatalogue(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
+			return catalogueModelFetchFn(ctx, nil, apiKey, justcode.AlbertCatalogueURL())
 		},
 	}
 	catalogue, _, err := cache.Load(context.Background())
 	if err != nil {
 		return "le modèle a été enregistré sans vérification : le catalogue Albert est injoignable", nil
 	}
-	found, ok := catalogue.Find(model)
+	found, ok := catalogue.Find(canonicalAlbertModelID(model))
 	if !ok {
 		// A listed miss is the user's answer being wrong, not a validation
 		// outage: stop so the answer can change.
