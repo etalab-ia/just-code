@@ -173,3 +173,27 @@ func TestSetupStatsProvidersReflectsTheFinalSelection(t *testing.T) {
 		t.Fatalf("a removed platform must not be reported: %v", got)
 	}
 }
+
+func TestStatsOnSynchronizesThePendingJournal(t *testing.T) {
+	stateDir, settingsPath := statsTestPaths(t)
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		StatsEnabled: false, StatsConsentAsked: true,
+	}
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteStatsConsent(justcode.DefaultFS, settingsPath, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := statsCmd([]string{"on"}); code != 0 || err != nil {
+		t.Fatalf("stats on: code=%d err=%v", code, err)
+	}
+	after, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.StatsEnabled {
+		t.Fatal("stats on must synchronize a pending journal refusal")
+	}
+}
