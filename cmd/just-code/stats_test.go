@@ -197,3 +197,37 @@ func TestStatsOnSynchronizesThePendingJournal(t *testing.T) {
 		t.Fatal("stats on must synchronize a pending journal refusal")
 	}
 }
+
+func TestStatsShowUsesThePendingJournalDecision(t *testing.T) {
+	stateDir, settingsPath := statsTestPaths(t)
+	j := justcode.SetupJournal{
+		SchemaVersion: 1, Stage: justcode.StageCredential,
+		StatsEnabled: true, StatsConsentAsked: true,
+	}
+	if err := justcode.WriteSetupJournal(justcode.DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteStatsConsent(justcode.DefaultFS, settingsPath, false, false); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if code, err := statsShowCmd(justcode.DefaultFS, stateDir, settingsPath); code != 0 || err != nil {
+			t.Fatalf("stats show: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Consentement        accepté") {
+		t.Fatalf("a pending acceptance must be displayed: %s", out)
+	}
+}
+
+func TestSetupConsentSkippedKeepsExistingAcceptance(t *testing.T) {
+	statsTestPaths(t)
+	forceNonTTY(t)
+	enabled, answered, err := setupStatsConsent(bufio.NewReader(strings.NewReader("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled || answered {
+		t.Fatal("a skipped question answers nothing")
+	}
+}

@@ -72,6 +72,11 @@ func statsCmd(args []string) (int, error) {
 
 func statsShowCmd(fs justcode.FS, stateDir, settingsPath string) (int, error) {
 	enabled, asked := justcode.ReadStatsConsent(fs, settingsPath)
+	// An answered setup journal decision is newer than the durable setting:
+	// display the effective consent, not the stale one.
+	if j, err := justcode.ReadSetupJournal(fs, stateDir); err == nil && j.StatsConsentAsked {
+		enabled, asked = j.StatsEnabled, true
+	}
 	fmt.Println("Statistiques d'usage just-code")
 	fmt.Println()
 	switch {

@@ -599,8 +599,10 @@ setupStages:
 		if err != nil {
 			return 1, err
 		}
-		statsEnabled = answer
 		if answered {
+			// Only an actual answer changes the decision: a skipped question
+			// (piped input) must not undo an explicit `stats on`.
+			statsEnabled = answer
 			statsAsked = true
 			j.StatsConsentAsked = true
 			j.StatsEnabled = answer
