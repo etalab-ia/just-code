@@ -424,3 +424,44 @@ func TestFlushRefusesAPendingRefusalOverDurableAcceptance(t *testing.T) {
 		t.Fatalf("a pending refusal must block the flush, calls = %d", calls)
 	}
 }
+
+func TestInitEventUsesPendingConsent(t *testing.T) {
+	statsTestHome(t)
+	stateDir := t.TempDir()
+	// Pending acceptance, no durable consent: a subsequent init event is
+	// kept, not dropped.
+	j := SetupJournal{SchemaVersion: 1, Stage: StageCredential, StatsEnabled: true, StatsConsentAsked: true}
+	if err := WriteSetupJournal(DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	previousSpawn := StatsFlushSpawn
+	StatsFlushSpawn = func() {}
+	t.Cleanup(func() { StatsFlushSpawn = previousSpawn })
+	RecordStatsEvent(DefaultFS, stateDir, StatsEventInput{Kind: "init", ProjectRoot: t.TempDir()})
+	if events, _ := PendingStatsEvents(DefaultFS, stateDir); len(events) != 1 {
+		t.Fatalf("a pending acceptance must keep an init event: %v", events)
+	}
+	// Pending refusal with a durable acceptance: nothing is queued.
+	if err := WriteStatsConsent(DefaultFS, mustSettingsPath(t), true, true); err != nil {
+		t.Fatal(err)
+	}
+	j.StatsEnabled = false
+	if err := WriteSetupJournal(DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := PendingStatsEvents(DefaultFS, stateDir)
+	RecordStatsEvent(DefaultFS, stateDir, StatsEventInput{Kind: "init", ProjectRoot: t.TempDir()})
+	after, _ := PendingStatsEvents(DefaultFS, stateDir)
+	if len(after) != len(before) {
+		t.Fatalf("a pending refusal must not queue an init event: %v", after)
+	}
+}
+
+func mustSettingsPath(t *testing.T) string {
+	t.Helper()
+	path, err := UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

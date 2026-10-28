@@ -724,7 +724,7 @@ setupStages:
 			Platforms:    setupStatsProviders(providers),
 			Models:       append([]string(nil), j.Models...),
 			DefaultModel: j.DefaultModel,
-			GitHubToken:  justcode.ContainsCredentialKind(j.CredentialKinds, "github"),
+			GitHubToken:  justcode.ContainsCredentialKind(j.CredentialKinds, "github") || setupCredentialPresentFn(ctx, justcode.CredentialGithub),
 			GitConfig:    strings.TrimSpace(j.GitName) != "" && strings.TrimSpace(j.GitEmail) != "",
 		},
 	})
