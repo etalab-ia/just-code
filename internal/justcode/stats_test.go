@@ -353,3 +353,46 @@ func TestAbandonHonorsThePendingJournalDecision(t *testing.T) {
 		t.Fatalf("a pending refusal must not record an abandonment: %v", events)
 	}
 }
+
+func TestFlushHonorsPendingAcceptanceAndWithdrawal(t *testing.T) {
+	settingsPath := statsTestHome(t)
+	stateDir := t.TempDir()
+	j := SetupJournal{SchemaVersion: 1, Stage: StageCredential, StatsEnabled: true, StatsConsentAsked: true}
+	if err := WriteSetupJournal(DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueStatsEvent(DefaultFS, stateDir, StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: "e", Kind: "abandon"}); err != nil {
+		t.Fatal(err)
+	}
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	t.Setenv("JUST_CODE_STATS_URL", server.URL)
+	if err := FlushStats(context.Background(), DefaultFS, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("a pending acceptance must allow the flush, calls = %d", calls)
+	}
+	// Withdrawal (journal now false, durable false) must refuse.
+	j.StatsEnabled = false
+	if err := WriteSetupJournal(DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteStatsConsent(DefaultFS, settingsPath, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueStatsEvent(DefaultFS, stateDir, StatsEvent{SchemaVersion: StatsSchemaVersion, EventID: "e2", Kind: "setup"}); err != nil {
+		t.Fatal(err)
+	}
+	before := atomic.LoadInt32(&calls)
+	if err := FlushStats(context.Background(), DefaultFS, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&calls) != before {
+		t.Fatal("a withdrawal must not send")
+	}
+}

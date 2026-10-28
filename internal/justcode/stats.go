@@ -433,11 +433,24 @@ func removeFlushedStatsEvents(fs FS, stateDir string, sent map[string]bool) erro
 	})
 }
 
+// statsConsentForFlush resolves whether a flush may send. A pending setup
+// acceptance counts exactly as it did at record time; a withdrawal (durable
+// refusal, or `stats off` having synchronized the journal to false) wins.
+func statsConsentForFlush(fs FS, stateDir, settingsPath string) bool {
+	if StatsEnabled(fs, settingsPath) {
+		return true
+	}
+	if j, err := ReadSetupJournal(fs, stateDir); err == nil && j.StatsConsentAsked && j.StatsEnabled {
+		return true
+	}
+	return false
+}
+
 // FlushStats posts every queued event and removes the ones accepted. It is
 // silent by design: callers ignore its error (the queue survives).
 func FlushStats(ctx context.Context, fs FS, stateDir string) error {
 	settingsPath, err := UserSettingsPath()
-	if err != nil || !StatsEnabled(fs, settingsPath) {
+	if err != nil || !statsConsentForFlush(fs, stateDir, settingsPath) {
 		// Consent was withdrawn between enqueue and flush: send nothing.
 		return nil
 	}
@@ -455,7 +468,7 @@ func FlushStats(ctx context.Context, fs FS, stateDir string) error {
 	}
 	// Re-check immediately before the request: `stats off` must stop an
 	// in-flight flush as early as the process boundary allows.
-	if !StatsEnabled(fs, settingsPath) {
+	if !statsConsentForFlush(fs, stateDir, settingsPath) {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

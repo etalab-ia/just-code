@@ -1899,13 +1899,10 @@ func cancelledSetupError(stateDir string) error {
 }
 
 // recordSetupAbandon queues the last stage reached when the user leaves the
-// wizard. It is a no-op without consent. The pending setup decision wins over
-// the durable one: an answer just given must not be treated as unapplied.
+// wizard. RecordStatsEvent resolves consent itself: a journal answer wins
+// when present, and the durable decision applies otherwise (a user who
+// already opted in does not lose their exits on a fresh run).
 func recordSetupAbandon(stateDir, stage string) {
-	j, err := justcode.ReadSetupJournal(justcode.DefaultFS, stateDir)
-	if err != nil || !j.StatsConsentAsked || !j.StatsEnabled {
-		return
-	}
 	justcode.RecordStatsEvent(justcode.DefaultFS, stateDir, justcode.StatsEventInput{
 		Kind:    "abandon",
 		Stage:   stage,
