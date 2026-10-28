@@ -265,6 +265,11 @@ func run(args []string) (int, error) {
 			fmt.Fprintf(os.Stderr, "Warning: the inference platforms cannot be resolved (%v); continuing without them\n", providerErr)
 		}
 	}
+	if isLaunchAction(parsed.action) {
+		if err := validateSmallModelProviderConnection(cfg.Providers, smallModelSelection); err != nil {
+			return 1, err
+		}
+	}
 	var albertModels []justcode.AlbertModelConfig
 	if providersContain(cfg.Providers, justcode.ProviderAlbert) {
 		albertModels = resolveEnabledAlbertModels(modelSelection, smallModelSelection)
@@ -795,6 +800,15 @@ func resolveSmallModelSelection(projectRoot string) string {
 		return canonicalAlbertModelRef(pm.SmallModel)
 	}
 	return ""
+}
+
+// validateSmallModelProviderConnection prevents a manually edited manifest
+// from selecting the Albert-only model after Albert was disconnected.
+func validateSmallModelProviderConnection(providers []justcode.InferenceProvider, smallModel string) error {
+	if smallModel == justcode.MinistralSmallModelRef && !providersContain(providers, justcode.ProviderAlbert) {
+		return fmt.Errorf("small model %q requires Albert API to be connected; run 'just-code setup' to connect it, or clear smallModel in the project manifest", smallModel)
+	}
+	return nil
 }
 
 // resolveProviderSettings reads the connected platforms from the user

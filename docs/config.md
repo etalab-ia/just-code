@@ -426,7 +426,9 @@ Le petit modèle OpenCode sert à générer les titres de session. Sans choix
 explicite, il reste identique au modèle principal, y compris lorsque celui-ci
 change. Les réglages avancés permettent de choisir à la place **Ministral 3
 8B**, qui correspond à `ministral-3-8b-instruct-2512` sur Albert API et à
-`albert/ministral-3-8b` dans la configuration OpenCode. Le récapitulatif
+`albert/ministral-3-8b` dans la configuration OpenCode. Le choix explicite de
+Ministral exige qu'Albert API soit connectée ; le suivi du modèle principal
+reste disponible avec les autres plateformes. Le récapitulatif
 distingue les deux modèles lorsqu'ils diffèrent.
 
 Le choix est enregistré dans `smallModel` du manifeste projet et transmis à

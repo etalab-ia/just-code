@@ -97,6 +97,9 @@ type InitWizard struct {
 	// skips validation; a rejection is an error (the answer must change), an
 	// unreachable catalogue is a warning (the model is still recorded).
 	ValidateModel func(model string) (warning string, err error)
+	// ValidateSmallModel additionally checks that an explicit small model has
+	// a connected provider. Nil uses ValidateModel.
+	ValidateSmallModel func(model string) (warning string, err error)
 	// Print receives the review screen. Nil means stdout.
 	Print func(string)
 	// ResolveSkills pins and caches selected catalogue entries. Nil selects
@@ -381,8 +384,12 @@ func (w InitWizard) Plan(answers InitAnswers) (InitPlan, error) {
 	}
 	if model := strings.TrimSpace(answers.SmallModel); model != "" {
 		plan.Answers.SmallModel = model
-		if w.ValidateModel != nil {
-			warning, err := w.ValidateModel(model)
+		validate := w.ValidateSmallModel
+		if validate == nil {
+			validate = w.ValidateModel
+		}
+		if validate != nil {
+			warning, err := validate(model)
 			if err != nil {
 				return plan, fmt.Errorf("validate small model: %w", err)
 			}

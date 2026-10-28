@@ -465,10 +465,41 @@ func newInitSmallModelSelect(root string, value *string) *huh.Select[string] {
 	}
 	return huh.NewSelect[string]().
 		Title("Petit modèle").
-		Description("Utilisé pour générer les titres de session. Le choix par défaut suit toujours le modèle principal.").
+		Description("Utilisé pour générer les titres de session. Le choix par défaut suit toujours le modèle principal. Ministral nécessite une connexion à Albert API.").
 		Options(options...).
-		Validate(func(s string) error { _, err := validateInitModelInput(root, s); return err }).
+		Validate(func(s string) error { _, err := validateInitSmallModelInput(root, s); return err }).
 		Value(value)
+}
+
+var initAlbertConnectedFn = func() (bool, error) {
+	settings, err := resolveProviderSettings()
+	if err != nil {
+		return false, err
+	}
+	providers, err := justcode.ResolveProviders(settings)
+	if err != nil {
+		return false, err
+	}
+	return providersContain(providers, justcode.ProviderAlbert), nil
+}
+
+// validateInitSmallModelInput requires Albert for the curated Albert-only
+// model. Empty remains valid with every provider: it follows the main model.
+func validateInitSmallModelInput(root, value string) (string, error) {
+	model := normalizeInitModelInput(value)
+	if model == "" {
+		return "", nil
+	}
+	if model == justcode.MinistralSmallModelRef {
+		connected, err := initAlbertConnectedFn()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine whether Albert API is connected: %w", err)
+		}
+		if !connected {
+			return "", fmt.Errorf("Ministral 3 8B requires Albert API to be connected; run 'just-code setup' to connect it, or keep the main model")
+		}
+	}
+	return catalogueModelWarningFn(root, model)
 }
 
 // runtimeInstallHintFn is the seam the advanced settings screen uses to flag
@@ -616,7 +647,7 @@ func askInitAdvancedHuh(opts initOptions, answers justcode.InitAnswers) (justcod
 			answers.Model = normalizeInitModelInput(input)
 			modelWarning = warning
 		case "small-model":
-			warning, err := validateInitModelInput(answers.Root, input)
+			warning, err := validateInitSmallModelInput(answers.Root, input)
 			if err != nil {
 				return answers, err
 			}

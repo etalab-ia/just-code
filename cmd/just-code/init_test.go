@@ -1508,6 +1508,60 @@ func TestInvalidInheritedSmallModelOpensRepairAfterValidMainModel(t *testing.T) 
 	}
 }
 
+func TestInitSmallModelMinistralRequiresAlbertConnection(t *testing.T) {
+	setupTestEnv(t)
+	root := initTestProject(t)
+	stubCatalogueCheck(t, func(string, string) (string, error) {
+		t.Fatal("catalogue validation must not run when Albert is not connected")
+		return "", nil
+	})
+	settingsPath, err := justcode.UserSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := justcode.WriteUserSettings(justcode.DefaultFS, settingsPath, justcode.UserSettings{
+		Providers: []justcode.ProviderSettings{{Kind: justcode.ProviderMistral}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []func() error{
+		func() error { _, err := validateInitSmallModelInput(root, justcode.MinistralSmallModelRef); return err },
+		func() error {
+			return validateInitOptions(initOptions{Root: root, SmallModel: "ministral-3-8b-instruct-2512", Set: map[string]bool{"small-model": true}})
+		},
+	} {
+		if err := check(); err == nil || !strings.Contains(err.Error(), "requires Albert API") {
+			t.Fatalf("Mistral-only setup must reject Ministral: %v", err)
+		}
+	}
+	if _, err := validateInitSmallModelInput(root, ""); err != nil {
+		t.Fatalf("main-model inheritance must work without Albert: %v", err)
+	}
+	opts := initOptions{
+		Root: root, SmallModel: "ministral-3-8b-instruct-2512", Yes: true,
+		Set: map[string]bool{"root": true, "small-model": true},
+	}
+	code, err := initRun(opts, bufio.NewReader(strings.NewReader("")), false)
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "requires Albert API") {
+		t.Fatalf("noninteractive init must reject an unavailable provider: code=%d err=%v", code, err)
+	}
+	if _, statErr := os.Stat(justcode.ProjectManifestPath(root)); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected small model must not write a manifest: %v", statErr)
+	}
+}
+
+func TestSmallModelProviderConnectionAtLaunch(t *testing.T) {
+	if err := validateSmallModelProviderConnection([]justcode.InferenceProvider{{Kind: justcode.ProviderMistral}}, justcode.MinistralSmallModelRef); err == nil || !strings.Contains(err.Error(), "requires Albert API") {
+		t.Fatalf("Mistral-only launch must reject Ministral: %v", err)
+	}
+	if err := validateSmallModelProviderConnection([]justcode.InferenceProvider{{Kind: justcode.ProviderAlbert}}, justcode.MinistralSmallModelRef); err != nil {
+		t.Fatalf("Albert setup must accept Ministral: %v", err)
+	}
+	if err := validateSmallModelProviderConnection(nil, ""); err != nil {
+		t.Fatalf("inherited small model must not require Albert: %v", err)
+	}
+}
+
 func TestInitInvalidInheritedSettingsStillRejectNonInteractiveAndEOF(t *testing.T) {
 	for _, mode := range []string{"non-interactive", "yes", "eof"} {
 		t.Run(mode, func(t *testing.T) {

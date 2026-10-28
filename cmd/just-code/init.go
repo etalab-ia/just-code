@@ -366,6 +366,13 @@ func initRun(opts initOptions, in *bufio.Reader, tty bool) (code int, err error)
 			}
 			return catalogueModelWarningFn(root, model)
 		},
+		ValidateSmallModel: func(model string) (string, error) {
+			root := answers.Root
+			if pc, err := justcode.DiscoverProject(root); err == nil {
+				root = pc.Root
+			}
+			return validateInitSmallModelInput(root, model)
+		},
 	}
 	// Flags are validated before any question: a typo on the command line must
 	// not send the user through six prompts to learn about it.
@@ -729,7 +736,7 @@ func invalidInheritedInitSetting(opts initOptions, answers justcode.InitAnswers)
 		}
 	}
 	if !opts.Set["small-model"] && strings.TrimSpace(answers.SmallModel) != "" {
-		if _, err := validateInitModelInput(answers.Root, answers.SmallModel); err != nil {
+		if _, err := validateInitSmallModelInput(answers.Root, answers.SmallModel); err != nil {
 			return err
 		}
 	}
@@ -885,6 +892,11 @@ func currentProjectSkillSelection(root string) ([]string, error) {
 // engine validates everything again; this is only about failing early with the
 // message a command-line user expects.
 func validateInitOptions(opts initOptions) error {
+	if opts.Set["small-model"] {
+		if _, err := validateInitSmallModelInput(opts.Root, opts.SmallModel); err != nil {
+			return fmt.Errorf("--small-model: %w", err)
+		}
+	}
 	if opts.Set["skills"] {
 		if err := justcode.ValidateProjectSkillIDs(opts.Skills); err != nil {
 			return err
@@ -1355,7 +1367,7 @@ func askInitAdvancedLine(in *bufio.Reader, opts initOptions, answers justcode.In
 			if !ok || strings.TrimSpace(answer) == "" {
 				break
 			}
-			warning, err := validateInitModelInput(answers.Root, answer)
+			warning, err := validateInitSmallModelInput(answers.Root, answer)
 			if err != nil {
 				fmt.Printf("  %s\n", err)
 				continue
