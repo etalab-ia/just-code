@@ -723,7 +723,7 @@ setupStages:
 		Kind:    "setup",
 		Version: version,
 		Setup: &justcode.SetupStats{
-			Platforms:    setupStatsPlatforms(j.CredentialKinds),
+			Platforms:    setupStatsProviders(providers),
 			Models:       append([]string(nil), j.Models...),
 			DefaultModel: j.DefaultModel,
 			GitHubToken:  justcode.ContainsCredentialKind(j.CredentialKinds, "github"),
@@ -1912,15 +1912,14 @@ func recordSetupAbandon(stateDir, stage string) {
 	})
 }
 
-// setupStatsPlatforms lists the connected inference platforms by kind. It
-// reads the credential kinds so it works before and after the multi-platform
-// settings land, and it never records a user-supplied platform name.
-func setupStatsPlatforms(kinds []string) []string {
-	var platforms []string
-	for _, kind := range []string{"albert", "mistral", "openai-compatible"} {
-		if justcode.ContainsCredentialKind(kinds, kind) {
-			platforms = append(platforms, kind)
-		}
+// setupStatsProviders lists the platforms actually connected at the end of
+// setup, by kind. The final selection is what counts: a platform removed
+// during "Modifier" must not be reported because its key was stored earlier.
+// A user-supplied platform name is never recorded.
+func setupStatsProviders(providers []justcode.InferenceProvider) []string {
+	platforms := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		platforms = append(platforms, string(provider.Kind))
 	}
 	return platforms
 }

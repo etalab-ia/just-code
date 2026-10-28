@@ -162,3 +162,14 @@ func TestSetupConsentStaysOffWithoutATerminal(t *testing.T) {
 		t.Fatalf("a piped run must not answer consent implicitly: enabled=%v answered=%v", enabled, answered)
 	}
 }
+
+func TestSetupStatsProvidersReflectsTheFinalSelection(t *testing.T) {
+	providers, err := justcode.ResolveProviders([]justcode.ProviderSettings{{Kind: justcode.ProviderMistral}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := setupStatsProviders(providers)
+	if len(got) != 1 || got[0] != "mistral" {
+		t.Fatalf("a removed platform must not be reported: %v", got)
+	}
+}
