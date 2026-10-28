@@ -320,9 +320,12 @@ func EnqueueStatsEvent(fs FS, stateDir string, event StatsEvent) error {
 	return withStatsQueueLock(fs, stateDir, func() error {
 		// Recheck consent inside the critical section: a withdrawal that
 		// completed while this event was being built must not be undone by
-		// re-populating the queue it just cleared.
+		// re-populating the queue it just cleared. A pending setup decision
+		// counts as durable here (it was given before the wizard's apply).
 		if settingsPath, err := UserSettingsPath(); err == nil && !StatsEnabled(fs, settingsPath) {
-			return nil
+			if j, jerr := ReadSetupJournal(fs, stateDir); jerr != nil || !j.StatsConsentAsked || !j.StatsEnabled {
+				return nil
+			}
 		}
 		events, err := PendingStatsEvents(fs, stateDir)
 		if err != nil {
@@ -535,6 +538,13 @@ func RecordStatsEvent(fs FS, stateDir string, in StatsEventInput) {
 		return
 	}
 	enabled, asked := ReadStatsConsent(fs, path)
+	// A pending setup decision is newer than the durable setting: an answer
+	// just given (yes or no) must not be treated as unapplied.
+	if in.Kind == "abandon" {
+		if j, jerr := ReadSetupJournal(fs, stateDir); jerr == nil && j.StatsConsentAsked {
+			enabled, asked = j.StatsEnabled, true
+		}
+	}
 	if !enabled || (in.Kind == "abandon" && !asked) {
 		return
 	}

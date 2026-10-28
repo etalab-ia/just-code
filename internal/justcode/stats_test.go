@@ -326,3 +326,30 @@ func TestEnqueueRechecksConsentInsideTheLock(t *testing.T) {
 		t.Fatalf("a withdrawal must not be repopulated by a stale enqueue: %v", events)
 	}
 }
+
+func TestAbandonHonorsThePendingJournalDecision(t *testing.T) {
+	statsTestHome(t)
+	stateDir := t.TempDir()
+	// First-time user answered Yes but quit before SaveSettings: the
+	// durable settings say nothing, the journal carries the acceptance.
+	j := SetupJournal{SchemaVersion: 1, Stage: StageCredential, StatsEnabled: true, StatsConsentAsked: true}
+	if err := WriteSetupJournal(DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	previousSpawn := StatsFlushSpawn
+	StatsFlushSpawn = func() {}
+	t.Cleanup(func() { StatsFlushSpawn = previousSpawn })
+	RecordStatsEvent(DefaultFS, stateDir, StatsEventInput{Kind: "abandon", Stage: "review"})
+	if events, _ := PendingStatsEvents(DefaultFS, stateDir); len(events) != 1 {
+		t.Fatalf("a pending acceptance must record the abandonment: %v", events)
+	}
+	// A pending refusal must suppress it even on a previously opted-in host.
+	j.StatsEnabled = false
+	if err := WriteSetupJournal(DefaultFS, stateDir, j); err != nil {
+		t.Fatal(err)
+	}
+	RecordStatsEvent(DefaultFS, stateDir, StatsEventInput{Kind: "abandon", Stage: "review"})
+	if events, _ := PendingStatsEvents(DefaultFS, stateDir); len(events) != 1 {
+		t.Fatalf("a pending refusal must not record an abandonment: %v", events)
+	}
+}
