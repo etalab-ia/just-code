@@ -39,7 +39,9 @@ func statsCmd(args []string) (int, error) {
 		if j, err := justcode.ReadSetupJournal(fs, stateDir); err == nil && !j.StatsEnabled {
 			j.StatsEnabled = true
 			j.StatsConsentAsked = true
-			_ = justcode.WriteSetupJournal(fs, stateDir, j)
+			if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+				return 1, fmt.Errorf("cannot record the consent opt-in in the setup journal: %w", err)
+			}
 		}
 		fmt.Println("Statistiques d'usage : partagées.")
 		if justcode.StatsEndpoint() == "" {
@@ -55,11 +57,15 @@ func statsCmd(args []string) (int, error) {
 			return 1, err
 		}
 		// Invalidate a pending setup decision too: resuming an interrupted
-		// wizard must not resurrect a consent the user just withdrew.
+		// wizard must not resurrect a consent the user just withdrew. A write
+		// failure is fatal: reporting success would leave the stale journal
+		// acceptance overriding the refusal just saved.
 		if j, err := justcode.ReadSetupJournal(fs, stateDir); err == nil && j.StatsEnabled {
 			j.StatsEnabled = false
 			j.StatsConsentAsked = true
-			_ = justcode.WriteSetupJournal(fs, stateDir, j)
+			if err := justcode.WriteSetupJournal(fs, stateDir, j); err != nil {
+				return 1, fmt.Errorf("cannot record the consent withdrawal in the setup journal: %w", err)
+			}
 		}
 		fmt.Println("Statistiques d'usage : non partagées. Aucun envoi ne sera effectué.")
 		return 0, nil
