@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/huh/v2"
 	"github.com/etalab-ia/just-code/internal/justcode"
 )
 
@@ -61,5 +62,54 @@ func TestSetupPlatformStageAbortsOnUnansweredRetry(t *testing.T) {
 	var rejected justcode.RejectedCredentialError
 	if errors.As(err, &rejected) {
 		t.Fatal("unreachable is not a rejection")
+	}
+}
+
+func TestChooseSetupPlatformsTextMultiSelectAndEOF(t *testing.T) {
+	forceNonTTY(t)
+	chosen, err := chooseSetupPlatforms(nil, bufio.NewReader(strings.NewReader("2,3\n")))
+	if err != nil {
+		t.Fatalf("choose platforms: %v", err)
+	}
+	if len(chosen) != 2 || chosen[0].Kind != string(justcode.ProviderMistral) || chosen[1].Kind != string(justcode.ProviderOpenAICompatible) {
+		t.Fatalf("selection = %+v", chosen)
+	}
+	if _, err := chooseSetupPlatforms(nil, bufio.NewReader(strings.NewReader(""))); err == nil {
+		t.Fatal("EOF must cancel instead of accepting the fresh Albert default")
+	}
+}
+
+func TestChooseSetupPlatformsTextCanRemoveAlbert(t *testing.T) {
+	forceNonTTY(t)
+	chosen, err := chooseSetupPlatforms([]justcode.SetupPlatform{{Kind: string(justcode.ProviderAlbert)}, {Kind: string(justcode.ProviderMistral)}}, bufio.NewReader(strings.NewReader("2\n")))
+	if err != nil {
+		t.Fatalf("choose platforms: %v", err)
+	}
+	if len(chosen) != 1 || chosen[0].Kind != string(justcode.ProviderMistral) {
+		t.Fatalf("Albert was not removed: %+v", chosen)
+	}
+	if _, err := chooseSetupPlatforms([]justcode.SetupPlatform{{Kind: string(justcode.ProviderAlbert)}}, bufio.NewReader(strings.NewReader("\n"))); err != nil {
+		t.Fatalf("an explicit empty-line confirmation should retain current choices: %v", err)
+	}
+}
+
+func TestChooseSetupPlatformsHuhRunsMultiSelect(t *testing.T) {
+	originalHuh, originalRun := wizardHuhFn, huhRun
+	wizardHuhFn = func() bool { return true }
+	calls := 0
+	huhRun = func(form *huh.Form) error {
+		calls++
+		if form == nil {
+			t.Fatal("provider selection form was not built")
+		}
+		return nil
+	}
+	t.Cleanup(func() { wizardHuhFn, huhRun = originalHuh, originalRun })
+	chosen, err := chooseSetupPlatforms(nil, bufio.NewReader(strings.NewReader("")))
+	if err != nil || calls != 1 {
+		t.Fatalf("Huh selector: calls=%d err=%v", calls, err)
+	}
+	if len(chosen) != 1 || chosen[0].Kind != string(justcode.ProviderAlbert) {
+		t.Fatalf("Huh default selection = %+v", chosen)
 	}
 }
