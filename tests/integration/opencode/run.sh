@@ -41,17 +41,14 @@ check "version épinglée" "$WANT_VERSION" "$GOT"
 CONFIGS="$LAB/managed-configs"
 mkdir -p "$CONFIGS"
 (cd "$HERE/../../.." && go run ./tests/integration/opencode/configcompose "$CONFIGS")
-export ALBERT_API_KEY="synthetic-config-validation-key"
-export OPENAI_COMPATIBLE_API_KEY="synthetic-config-validation-key"
 for MANAGED_CONFIG in "$CONFIGS"/*.json; do
   NAME="$(basename "$MANAGED_CONFIG")"
-  if OPENCODE_CONFIG_CONTENT="$(cat "$MANAGED_CONFIG")" "$OC" debug skill >"$LAB/managed-skill.json" 2>"$LAB/managed-skill.err"; then
+  if OPENCODE_CONFIG_CONTENT="$(cat "$MANAGED_CONFIG")" ALBERT_API_KEY="synthetic-config-validation-key" OPENAI_COMPATIBLE_API_KEY="synthetic-config-validation-key" "$OC" debug skill >"$LAB/managed-skill.json" 2>"$LAB/managed-skill.err"; then
     ok "C0 configuration just-code acceptée ($NAME)"
   else
     fail "C0 configuration just-code rejetée ($NAME): $(tail -2 "$LAB/managed-skill.err" | tr '\n' ' ')"
   fi
 done
-unset ALBERT_API_KEY OPENAI_COMPATIBLE_API_KEY
 
 # --- Projet synthétique ------------------------------------------------------
 PROJ="$LAB/proj"
