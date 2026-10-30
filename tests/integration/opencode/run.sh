@@ -22,11 +22,11 @@ check() { # check <nom> <attendu> <obtenu>
 # --- Installation épinglée ---------------------------------------------------
 LAB="$(mktemp -d /tmp/p01-opencode-XXXXXX)"
 trap 'rm -rf "$LAB"' EXIT
-export HOME="$LAB/home"
-# Go writes its module cache read-only. Keep it outside the disposable HOME so
-# the EXIT trap can remove the lab when this harness runs as a normal CI user.
+# Go writes its module cache read-only. Resolve the caller's paths before
+# replacing HOME so the EXIT trap can remove the lab as a normal CI user.
 export GOMODCACHE="${GOMODCACHE:-$(go env GOMODCACHE)}"
 export GOCACHE="${GOCACHE:-$(go env GOCACHE)}"
+export HOME="$LAB/home"
 mkdir -p "$HOME"
 export XDG_CONFIG_HOME="$HOME/.config"
 export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
