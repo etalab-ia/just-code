@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.14.1](https://github.com/etalab-ia/just-code/compare/just-code-v0.14.0...just-code-v0.14.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* add provider selection to text setup ([3f82d69](https://github.com/etalab-ia/just-code/commit/3f82d694e4eba1e998c7305c726f3e9b79ada5fd))
+* **config:** omettre les limites de modèles OpenCode partielles ([62b266e](https://github.com/etalab-ia/just-code/commit/62b266e26ff10da0f6299c3e1e381627a6f60747))
+* **config:** omit partial OpenCode model limits ([cd8bff4](https://github.com/etalab-ia/just-code/commit/cd8bff4edf87b6906970e8b2f43871a5ad925bf3))
+* **setup:** allow provider selection in text mode ([d50116a](https://github.com/etalab-ia/just-code/commit/d50116a5f2fcdb528b4416b62511c40e5309ea00))
+
 ## [0.14.0](https://github.com/etalab-ia/just-code/compare/just-code-v0.13.0...just-code-v0.14.0) (2026-10-28)
 
 
