@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -759,6 +760,8 @@ var setupCredentialPresentFn = func(ctx context.Context, kind justcode.Credentia
 	return err == nil
 }
 
+var setupChoosePlatformsFn = chooseSetupPlatforms
+
 // providerSettingsOf converts resolved providers back to the settings form.
 func providerSettingsOf(providers []justcode.InferenceProvider) []justcode.ProviderSettings {
 	out := make([]justcode.ProviderSettings, 0, len(providers))
@@ -770,6 +773,7 @@ func providerSettingsOf(providers []justcode.InferenceProvider) []justcode.Provi
 
 func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.Reader, fallback bool, j *justcode.SetupJournal, editing bool, fs justcode.FS, stateDir string) ([]justcode.InferenceProvider, error) {
 	platforms := j.Platforms
+	selectPlatforms := len(platforms) == 0 && len(j.CredentialKinds) == 0
 	if len(platforms) == 0 && len(j.CredentialKinds) == 0 {
 		// A completed install has no journal. Seed the platform choices from
 		// the saved settings so re-running setup edits the existing
@@ -802,8 +806,8 @@ func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.R
 			}
 		}
 	}
-	if len(platforms) == 0 || editing {
-		chosen, err := chooseSetupPlatforms(platforms)
+	if selectPlatforms || editing {
+		chosen, err := setupChoosePlatformsFn(platforms, in)
 		if err != nil {
 			return nil, err
 		}
@@ -899,7 +903,7 @@ func setupPlatformStage(ctx context.Context, w justcode.SetupWizard, in *bufio.R
 // chooseSetupPlatforms renders the platform selection. Albert API is listed
 // first and pre-checked but can be unchecked; at least one platform is
 // required.
-func chooseSetupPlatforms(current []justcode.SetupPlatform) ([]justcode.SetupPlatform, error) {
+func chooseSetupPlatforms(current []justcode.SetupPlatform, in *bufio.Reader) ([]justcode.SetupPlatform, error) {
 	order := []justcode.ProviderKind{justcode.ProviderAlbert, justcode.ProviderMistral, justcode.ProviderOpenAICompatible}
 	labels := map[justcode.ProviderKind]string{
 		justcode.ProviderAlbert:           "Albert API                 l'IA souveraine de l'État (recommandé)",
@@ -915,15 +919,36 @@ func chooseSetupPlatforms(current []justcode.SetupPlatform) ([]justcode.SetupPla
 	}
 	selected := defaultKinds
 	if !wizardHuhFn() {
-		// Without a terminal the Space/Enter multi-select cannot be rendered.
-		// Keep the historical answer: the journal's platforms when resuming,
-		// Albert API otherwise. Interactive runs offer the full choice.
 		fmt.Println("[1/3] Plateformes d'inférence")
 		fmt.Println()
-		fmt.Println("Choisissez où l'agent envoie ses demandes. Vous pouvez en connecter plusieurs.")
+		fmt.Println("Choisissez où l'agent envoie ses demandes. Entrez les numéros séparés par des virgules pour en connecter plusieurs.")
 		fmt.Println()
-		if len(current) == 0 {
-			selected = []string{string(justcode.ProviderAlbert)}
+		for i, kind := range order {
+			mark := " "
+			if slices.Contains(defaultKinds, string(kind)) {
+				mark = "x"
+			}
+			fmt.Printf("  %d. [%s] %s\n", i+1, mark, labels[kind])
+		}
+		answer, ok := promptLine(in, "Plateformes (Entrée pour confirmer la sélection affichée) : ")
+		if !ok {
+			return nil, fmt.Errorf("setup cancelled")
+		}
+		answer = strings.TrimSpace(answer)
+		if answer != "" {
+			selected = nil
+			seen := map[string]bool{}
+			for _, part := range strings.Split(answer, ",") {
+				n, err := strconv.Atoi(strings.TrimSpace(part))
+				if err != nil || n < 1 || n > len(order) {
+					return nil, fmt.Errorf("choix invalide %q ; entrez un ou plusieurs numéros de 1 à %d", strings.TrimSpace(part), len(order))
+				}
+				kind := string(order[n-1])
+				if !seen[kind] {
+					selected = append(selected, kind)
+					seen[kind] = true
+				}
+			}
 		}
 	} else {
 		var options []huh.Option[string]
