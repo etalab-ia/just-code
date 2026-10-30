@@ -185,6 +185,16 @@ func deepMergeMaps(dst, src map[string]any) map[string]any {
 	return out
 }
 
+// completeModelLimit returns an OpenCode limit only when both values are
+// known. OpenCode rejects a partial limit object; unknown metadata therefore
+// omits the whole object and leaves OpenCode's defaults in effect.
+func completeModelLimit(context, output int) map[string]any {
+	if context <= 0 || output <= 0 {
+		return nil
+	}
+	return map[string]any{"context": context, "output": output}
+}
+
 // renderOverlayJSON renders the managed overlay as the JSON injected into
 // OPENCODE_CONFIG_CONTENT. It carries managed fields ONLY — the provider
 // block, permissions and schema come from the embedded asset, which remains
@@ -212,14 +222,7 @@ func renderOverlayJSON(o ManagedOverlay) (string, error) {
 				"input":  inputs,
 				"output": []string{"text"},
 			}
-			limit := map[string]any{}
-			if model.Context > 0 {
-				limit["context"] = model.Context
-			}
-			if model.Output > 0 {
-				limit["output"] = model.Output
-			}
-			if len(limit) > 0 {
+			if limit := completeModelLimit(model.Context, model.Output); limit != nil {
 				definition["limit"] = limit
 			}
 			if len(model.RequestBody) > 0 {
@@ -258,14 +261,7 @@ func renderOverlayJSON(o ManagedOverlay) (string, error) {
 				if model.ModelID != "" {
 					definition["modelID"] = model.ModelID
 				}
-				limit := map[string]any{}
-				if model.Context > 0 {
-					limit["context"] = model.Context
-				}
-				if model.Output > 0 {
-					limit["output"] = model.Output
-				}
-				if len(limit) > 0 {
+				if limit := completeModelLimit(model.Context, model.Output); limit != nil {
 					definition["limit"] = limit
 				}
 				models[model.ID] = definition

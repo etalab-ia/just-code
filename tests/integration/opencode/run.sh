@@ -22,6 +22,10 @@ check() { # check <nom> <attendu> <obtenu>
 # --- Installation épinglée ---------------------------------------------------
 LAB="$(mktemp -d /tmp/p01-opencode-XXXXXX)"
 trap 'rm -rf "$LAB"' EXIT
+# Go writes its module cache read-only. Resolve the caller's paths before
+# replacing HOME so the EXIT trap can remove the lab as a normal CI user.
+export GOMODCACHE="${GOMODCACHE:-$(go env GOMODCACHE)}"
+export GOCACHE="${GOCACHE:-$(go env GOCACHE)}"
 export HOME="$LAB/home"
 mkdir -p "$HOME"
 export XDG_CONFIG_HOME="$HOME/.config"
@@ -33,6 +37,22 @@ npm install --prefix "$LAB/runner" "$PIN" >/dev/null 2>&1
 OC="$LAB/runner/node_modules/.bin/opencode"
 GOT="$("$OC" --version)"
 check "version épinglée" "$WANT_VERSION" "$GOT"
+
+# --- Configurations managées just-code --------------------------------------
+# OpenCode impose context ET output dès qu'un objet limit est présent. Faire
+# valider les documents réellement composés par just-code, pas seulement leurs
+# champs JSON : une sélection ne doit pas laisser une autre définition invalide.
+CONFIGS="$LAB/managed-configs"
+mkdir -p "$CONFIGS"
+(cd "$HERE/../../.." && go run ./tests/integration/opencode/configcompose "$CONFIGS")
+for MANAGED_CONFIG in "$CONFIGS"/*.json; do
+  NAME="$(basename "$MANAGED_CONFIG")"
+  if OPENCODE_CONFIG_CONTENT="$(cat "$MANAGED_CONFIG")" ALBERT_API_KEY="synthetic-config-validation-key" OPENAI_COMPATIBLE_API_KEY="synthetic-config-validation-key" "$OC" debug skill >"$LAB/managed-skill.json" 2>"$LAB/managed-skill.err"; then
+    ok "C0 configuration just-code acceptée ($NAME)"
+  else
+    fail "C0 configuration just-code rejetée ($NAME): $(tail -2 "$LAB/managed-skill.err" | tr '\n' ' ')"
+  fi
+done
 
 # --- Projet synthétique ------------------------------------------------------
 PROJ="$LAB/proj"
