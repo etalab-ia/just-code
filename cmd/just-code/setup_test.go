@@ -509,8 +509,18 @@ func setupTestEnv(t *testing.T) (stateDir, settingsPath string) {
 func forceNonTTY(t *testing.T) {
 	t.Helper()
 	orig := stdinIsTTYFn
+	origChoosePlatforms := setupChoosePlatformsFn
 	stdinIsTTYFn = func() bool { return false }
-	t.Cleanup(func() { stdinIsTTYFn = orig })
+	setupChoosePlatformsFn = func(current []justcode.SetupPlatform, _ *bufio.Reader) ([]justcode.SetupPlatform, error) {
+		if len(current) > 0 {
+			return current, nil
+		}
+		return []justcode.SetupPlatform{{Kind: string(justcode.ProviderAlbert)}}, nil
+	}
+	t.Cleanup(func() {
+		stdinIsTTYFn = orig
+		setupChoosePlatformsFn = origChoosePlatforms
+	})
 }
 
 // forceIntro pins the intro gate for the test. Pass true to simulate a run
