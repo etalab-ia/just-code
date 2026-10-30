@@ -99,6 +99,11 @@ OpenCode. Un seul modèle est par défaut, toutes plateformes confondues. Si
 est aussi exposé pour que le lancement reste possible. Le choix par défaut peut
 ensuite être modifié avec `just-code setup`.
 
+OpenCode exige que chaque objet `limit` définisse à la fois `context` et
+`output`. just-code n'écrit cet objet que lorsque les deux valeurs sont
+connues. Si l'une manque dans les métadonnées du modèle, il omet tout l'objet :
+aucune limite n'est inventée, et les valeurs par défaut d'OpenCode s'appliquent.
+
 Les plateformes connectées sont enregistrées dans `settings.json`
 (`providers`) : leur type, leur nom et, pour une plateforme compatible OpenAI,
 son URL de base. Les clés restent dans le magasin d'identifiants, jamais dans ce

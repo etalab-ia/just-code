@@ -110,6 +110,88 @@ func TestComposeConfigContentMarksGemmaAsVisionCapable(t *testing.T) {
 	}
 }
 
+func TestComposeConfigContentNeverEmitsPartialModelLimits(t *testing.T) {
+	for _, choice := range CuratedAlbertModels() {
+		t.Run(choice.OpenCodeID, func(t *testing.T) {
+			content, err := ComposeConfigContent(ManagedOverlay{
+				Model:      choice.Ref(),
+				SmallModel: choice.Ref(),
+				Models:     []AlbertModelConfig{choice.AlbertModelConfig()},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var config map[string]any
+			if err := json.Unmarshal([]byte(content), &config); err != nil {
+				t.Fatal(err)
+			}
+			if config["model"] != choice.Ref() || config["small_model"] != choice.Ref() {
+				t.Fatalf("model selection = %v / %v, want %s", config["model"], config["small_model"], choice.Ref())
+			}
+			models := config["provider"].(map[string]any)["albert"].(map[string]any)["models"].(map[string]any)
+			if len(models) != 1 || models[choice.OpenCodeID] == nil {
+				t.Fatalf("an unselected model survived selection: %v", models)
+			}
+			assertValidModelLimits(t, models)
+		})
+	}
+}
+
+func TestComposeConfigContentHandlesPartialProviderLimits(t *testing.T) {
+	content, err := ComposeConfigContent(ManagedOverlay{
+		Model:      "openai-compatible/complete",
+		SmallModel: "openai-compatible/context-only",
+		Providers: []ProviderOverlay{{
+			Kind: "openai-compatible", Name: "Test", BaseURL: "https://api.example.com/v1", APIKeyEnv: OpenAICompatibleAPIKeyEnv,
+			Models: []ProviderModelConfig{
+				{ID: "complete", Name: "Complete", Context: 1024, Output: 256},
+				{ID: "context-only", Name: "Context only", Context: 1024},
+				{ID: "output-only", Name: "Output only", Output: 256},
+				{ID: "unknown", Name: "Unknown"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatal(err)
+	}
+	models := config["provider"].(map[string]any)["openai-compatible"].(map[string]any)["models"].(map[string]any)
+	assertValidModelLimits(t, models)
+
+	complete := models["complete"].(map[string]any)
+	limit := complete["limit"].(map[string]any)
+	if limit["context"] != float64(1024) || limit["output"] != float64(256) {
+		t.Fatalf("verified limits were lost: %v", limit)
+	}
+	for _, id := range []string{"context-only", "output-only", "unknown"} {
+		model := models[id].(map[string]any)
+		if _, exists := model["limit"]; exists {
+			t.Errorf("%s must omit limit and let OpenCode apply its defaults: %v", id, model["limit"])
+		}
+	}
+}
+
+func assertValidModelLimits(t *testing.T, models map[string]any) {
+	t.Helper()
+	if len(models) == 0 {
+		t.Fatal("model map must not be empty")
+	}
+	for id, raw := range models {
+		model := raw.(map[string]any)
+		limit, exists := model["limit"]
+		if !exists {
+			continue
+		}
+		fields := limit.(map[string]any)
+		if fields["context"] == nil || fields["output"] == nil {
+			t.Errorf("%s has a partial OpenCode limit: %v", id, fields)
+		}
+	}
+}
+
 func TestDetectOverlayConflicts(t *testing.T) {
 	overlay := ManagedOverlay{Model: "albert/gpt-oss-120b"}
 	project := map[string]any{

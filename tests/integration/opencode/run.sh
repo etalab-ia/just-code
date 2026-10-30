@@ -34,6 +34,25 @@ OC="$LAB/runner/node_modules/.bin/opencode"
 GOT="$("$OC" --version)"
 check "version épinglée" "$WANT_VERSION" "$GOT"
 
+# --- Configurations managées just-code --------------------------------------
+# OpenCode impose context ET output dès qu'un objet limit est présent. Faire
+# valider les documents réellement composés par just-code, pas seulement leurs
+# champs JSON : une sélection ne doit pas laisser une autre définition invalide.
+CONFIGS="$LAB/managed-configs"
+mkdir -p "$CONFIGS"
+(cd "$HERE/../../.." && go run ./tests/integration/opencode/configcompose "$CONFIGS")
+export ALBERT_API_KEY="synthetic-config-validation-key"
+export OPENAI_COMPATIBLE_API_KEY="synthetic-config-validation-key"
+for MANAGED_CONFIG in "$CONFIGS"/*.json; do
+  NAME="$(basename "$MANAGED_CONFIG")"
+  if OPENCODE_CONFIG_CONTENT="$(cat "$MANAGED_CONFIG")" "$OC" debug skill >"$LAB/managed-skill.json" 2>"$LAB/managed-skill.err"; then
+    ok "C0 configuration just-code acceptée ($NAME)"
+  else
+    fail "C0 configuration just-code rejetée ($NAME): $(tail -2 "$LAB/managed-skill.err" | tr '\n' ' ')"
+  fi
+done
+unset ALBERT_API_KEY OPENAI_COMPATIBLE_API_KEY
+
 # --- Projet synthétique ------------------------------------------------------
 PROJ="$LAB/proj"
 mkdir -p "$PROJ"
